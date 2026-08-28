@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# DSH 运行时数据（session 日志、preset 缓存、profile）
+.dsh-home/
+
+# spike 工作目录
+.workspace/
+
+# 生成的应用产物（运行时落盘，非源码）
+apps/
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
