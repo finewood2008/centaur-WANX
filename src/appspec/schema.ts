@@ -66,6 +66,11 @@ export const MemoryBinding = z.object({
   retrieval: RetrievalStrategy.optional().default("semantic"),
 });
 
+/** 工作流程：助手每次干活的步骤。编译成 DSH 的 SKILL.md。 */
+export const Workflow = z.object({
+  steps: z.array(z.string().min(1)).optional().default([]),
+});
+
 /** 交付定义 */
 export const Delivery = z.object({
   form: z.string().min(1, "交付物形式不能为空"),
@@ -88,6 +93,10 @@ export const AppSpecSchema = z.object({
   memory_binding: MemoryBinding,
   capabilities: z.array(Capability).min(1, "capabilities 至少声明一项能力"),
   delivery: Delivery,
+  /** 每次干活的步骤。非空时编译出 SKILL.md 并挂载技能插件。 */
+  workflow: Workflow.optional().default({ steps: [] }),
+  /** 明确不许做的事。进 persona 的硬约束段。 */
+  boundaries: z.array(z.string().min(1)).optional().default([]),
   params: z.array(AppParam).optional().default([]),
 });
 

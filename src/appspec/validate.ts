@@ -11,6 +11,8 @@ const KNOWN_TOP_LEVEL_KEYS = [
   "memory_binding",
   "capabilities",
   "delivery",
+  "workflow",
+  "boundaries",
   "params",
 ] as const;
 

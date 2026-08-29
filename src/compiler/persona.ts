@@ -44,8 +44,25 @@ export function buildPersonaText(appspec: AppSpec): string {
   L.push("");
   L.push("交付：");
   L.push(`- 交付物形式：${appspec.delivery.form}`);
-  L.push(`- 产出去向：${OUTPUT_LABEL[appspec.delivery.output]}`);
+  // output 说要写记忆，但没有绑定任何可写库时，按「仅回复」渲染。
+  // 否则会产出一段自相矛盾的指令：让它写入，却没说写哪，也没挂写工具。
+  const canWrite = appspec.memory_binding.write.length > 0;
+  const output = !canWrite && appspec.delivery.output !== "chat" ? "chat" : appspec.delivery.output;
+  L.push(`- 产出去向：${OUTPUT_LABEL[output]}`);
   L.push(`- 触发方式：${TRIGGER_LABEL[appspec.delivery.trigger]}`);
+
+  if (appspec.boundaries.length > 0) {
+    L.push("");
+    L.push("边界（这些事不许做，没有例外）：");
+    for (const b of appspec.boundaries) {
+      L.push(`- ${b}`);
+    }
+  }
+
+  if (appspec.workflow.steps.length > 0) {
+    L.push("");
+    L.push("你有一份工作手册，干活前先按它的步骤走。");
+  }
 
   if (appspec.params.length > 0) {
     L.push("");

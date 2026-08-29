@@ -55,7 +55,9 @@ const CAPABILITY_ALIASES: Record<string, Capability> = {
  * 对 LLM 输出的原始对象做确定性规范化，再做 schema 校验：
  * 1. capabilities 把自由命名映射回标准枚举，去重；
  * 2. memory_binding.read 缺失时默认 ["*"]；
- * 3. delivery.form 缺失时用 goal 兜底。
+ * 3. delivery.form 缺失时用 goal 兜底；
+ * 4. workflow 允许模型直接给数组（而非 {steps}），boundaries 允许给字符串；
+ * 5. delivery.output 说要写记忆但没绑定可写库时，降为 chat（否则产出自相矛盾的指令）。
  * 未知/非法值保留，交由校验器报错（触发修复重试）。
  */
 export function normalizeAppSpec(input: unknown): unknown {
@@ -100,12 +102,31 @@ export function normalizeAppSpec(input: unknown): unknown {
     });
   }
 
+  // 模型常把 workflow 直接写成数组，或写成 { steps: "一句话" }
+  if (Array.isArray(obj.workflow)) {
+    obj.workflow = { steps: obj.workflow };
+  } else if (obj.workflow && typeof obj.workflow === "object") {
+    const wf = obj.workflow as Record<string, unknown>;
+    if (typeof wf.steps === "string") wf.steps = [wf.steps];
+  }
+
+  if (typeof obj.boundaries === "string") {
+    obj.boundaries = [obj.boundaries];
+  }
+
   const delivery = obj.delivery as Record<string, unknown> | undefined;
   if (delivery && (typeof delivery.form !== "string" || delivery.form.trim() === "")) {
     delivery.form =
       typeof obj.goal === "string" && obj.goal.trim() !== ""
         ? `完成目标：${obj.goal}`
         : "按目标执行并汇报";
+  }
+
+  // output 声称要写记忆，却没有可写库 → 降为 chat。
+  // 不降的话，persona 会写着「写入记忆库」但没说写哪，也没挂写工具。
+  const writeList = mb && Array.isArray(mb.write) ? (mb.write as unknown[]) : [];
+  if (delivery && writeList.length === 0 && (delivery.output === "memory" || delivery.output === "both")) {
+    delivery.output = "chat";
   }
 
   return obj;

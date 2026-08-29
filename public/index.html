@@ -3,223 +3,77 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>万象 · Agent 工作区</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --page: #f7f7f5;
-      --panel: #ffffff;
-      --panel-soft: #f1f2f0;
-      --sidebar: #fbfbfa;
-      --line: #e5e6e3;
-      --line-strong: #d7d9d5;
-      --ink: #17181b;
-      --muted: #6f7378;
-      --quiet: #9a9da1;
-      --accent: #111214;
-      --accent-soft: #ececea;
-      --success: #247a50;
-      --success-soft: #e9f5ed;
-      --warning: #9b681e;
-      --shadow: 0 12px 34px rgba(20, 24, 28, .06);
-    }
-    * { box-sizing: border-box; }
-    html, body { min-height: 100%; }
-    body { margin: 0; background: var(--page); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.55; }
-    button, textarea { font: inherit; }
-    button { cursor: pointer; }
-    button:disabled { cursor: not-allowed; opacity: .45; }
-    .hidden { display: none !important; }
-    .shell { min-height: 100vh; display: grid; grid-template-columns: 252px minmax(0, 1fr); }
-    .sidebar { display: flex; min-width: 0; min-height: 100vh; flex-direction: column; padding: 22px 14px 16px; border-right: 1px solid var(--line); background: var(--sidebar); }
-    .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 24px; }
-    .brand-mark { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 8px; background: var(--accent); color: white; font-size: 14px; font-weight: 700; }
-    .brand-name { display: block; font-size: 15px; font-weight: 700; }
-    .brand-subtitle { display: block; margin-top: 1px; color: var(--quiet); font-size: 11px; }
-    .new-app { display: flex; width: 100%; min-height: 40px; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--accent); border-radius: 7px; background: var(--accent); color: white; font-size: 13px; font-weight: 650; }
-    .new-app:hover { background: #2b2d30; }
-    .new-app-icon { font-size: 18px; line-height: 1; font-weight: 400; }
-    .primary-nav { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; }
-    .nav-button { display: flex; width: 100%; min-height: 36px; align-items: center; gap: 9px; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; text-align: left; }
-    .nav-button:hover { border-color: var(--line); background: var(--panel-soft); color: var(--ink); }
-    .nav-button.active { border-color: var(--line); background: var(--panel-soft); color: var(--ink); font-weight: 650; }
-    .nav-icon { display: grid; width: 20px; height: 20px; place-items: center; color: var(--quiet); font-size: 14px; }
-    .nav-button.active .nav-icon { color: var(--ink); }
-    .section-label { display: flex; align-items: center; justify-content: space-between; margin: 27px 8px 9px; color: var(--quiet); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-    .count { color: var(--quiet); font-size: 11px; font-weight: 500; letter-spacing: 0; }
-    .app-list { display: flex; min-height: 0; flex-direction: column; gap: 3px; overflow-y: auto; }
-    .app-item { display: flex; width: 100%; min-height: 49px; align-items: center; gap: 10px; padding: 7px 8px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ink); text-align: left; }
-    .app-item:hover { border-color: var(--line); background: var(--panel-soft); }
-    .app-item.active { border-color: var(--line-strong); background: var(--panel-soft); }
-    .app-mark { display: grid; width: 29px; height: 29px; flex: 0 0 auto; place-items: center; border-radius: 7px; background: #e6e7e4; color: #5d6267; font-size: 12px; font-weight: 700; }
-    .app-item-copy { min-width: 0; }
-    .app-item-name { display: block; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-    .app-item-meta { display: block; margin-top: 2px; overflow: hidden; color: var(--quiet); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-    .empty-apps { padding: 15px 8px; color: var(--quiet); font-size: 12px; }
-    .sidebar-foot { margin-top: auto; padding: 15px 8px 0; border-top: 1px solid var(--line); color: var(--quiet); font-size: 11px; }
-    .dsh-state { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
-    .state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--quiet); }
-    .state-dot.online { background: var(--success); }
-    .state-dot.busy { background: var(--warning); }
-    .state-dot.error { background: #bd4f4f; }
-    .workspace { display: flex; min-width: 0; min-height: 100vh; flex-direction: column; }
-    .topbar { display: flex; min-height: 70px; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 34px; border-bottom: 1px solid var(--line); background: rgba(251, 251, 250, .88); }
-    .breadcrumb { color: var(--quiet); font-size: 11px; }
-    .topbar-title { margin: 2px 0 0; font-size: 17px; font-weight: 650; }
-    .topbar-actions { display: flex; align-items: center; gap: 15px; }
-    .status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-    .dsh-button { display: inline-flex; min-height: 34px; align-items: center; gap: 7px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); color: var(--ink); font-size: 12px; font-weight: 600; }
-    .dsh-button:hover { border-color: #aeb1ad; background: var(--panel-soft); }
-    .dsh-button-icon { font-size: 14px; line-height: 1; }
-    .workspace-body { display: flex; min-width: 0; flex: 1; }
-    .creator { display: grid; width: min(1260px, 100%); grid-template-columns: minmax(0, 1fr) 316px; gap: 36px; margin: 0 auto; padding: 46px 34px 55px; }
-    .creator-main { min-width: 0; max-width: 780px; }
-    .eyebrow { color: var(--quiet); font-size: 11px; font-weight: 700; letter-spacing: .11em; }
-    .creator-heading h2 { max-width: 650px; margin: 10px 0 7px; font-size: 29px; line-height: 1.2; letter-spacing: 0; }
-    .creator-heading p { max-width: 610px; margin: 0; color: var(--muted); font-size: 14px; }
-    .conversation { display: flex; min-height: 375px; flex-direction: column; margin-top: 38px; }
-    .messages { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 17px; padding-bottom: 22px; }
-    .message { max-width: min(690px, 91%); }
-    .message.user { align-self: flex-end; }
-    .message.assistant { align-self: flex-start; }
-    .message-meta { margin-bottom: 5px; color: var(--quiet); font-size: 11px; font-weight: 600; }
-    .message.user .message-meta { color: #777b80; text-align: right; }
-    .message-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
-    .message.assistant .message-text { padding: 13px 15px; border: 1px solid var(--line); border-radius: 8px 8px 8px 2px; background: var(--panel); box-shadow: 0 2px 8px rgba(20, 24, 28, .025); }
-    .message.user .message-text { padding: 12px 15px; border-radius: 8px 8px 2px 8px; background: var(--accent); color: white; }
-    .message.system { align-self: center; color: var(--quiet); font-size: 12px; }
-    .typing { align-self: flex-start; color: var(--quiet); font-size: 12px; }
-    .typing::after { content: ""; display: inline-block; width: 22px; margin-left: 4px; border-bottom: 2px dotted #8b8e92; vertical-align: middle; }
-    .option-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
-    .option-button { padding: 7px 11px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--ink); font-size: 12px; text-align: left; }
-    .option-button:hover { border-color: #9ca09c; background: var(--panel-soft); }
-    .composer { display: flex; align-items: flex-end; gap: 8px; padding: 10px 11px 10px 14px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); box-shadow: var(--shadow); }
-    .composer textarea { min-width: 0; min-height: 40px; max-height: 140px; flex: 1; padding: 9px 2px 7px; border: 0; outline: 0; resize: none; overflow-y: auto; background: transparent; color: var(--ink); line-height: 1.45; }
-    .composer textarea::placeholder { color: #a4a7aa; }
-    .send-button, .generate-button { min-height: 36px; flex: 0 0 auto; border-radius: 6px; font-size: 12px; font-weight: 650; }
-    .send-button { width: 38px; padding: 0; border: 0; background: var(--accent); color: white; font-size: 17px; }
-    .send-button:hover { background: #2b2d30; }
-    .generate-button { padding: 0 12px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); }
-    .generate-button:hover:not(:disabled) { background: var(--panel-soft); }
-    .inspector { min-width: 0; padding-top: 4px; }
-    .inspector-title { margin: 0 0 13px; font-size: 12px; font-weight: 700; }
-    .inspector-empty { padding: 17px 0; border-top: 1px solid var(--line); color: var(--quiet); font-size: 12px; }
-    .summary { padding: 17px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
-    .summary-head { display: flex; align-items: flex-start; gap: 10px; }
-    .summary-mark { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 8px; background: var(--accent-soft); color: #555a60; font-weight: 700; }
-    .summary-name { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 16px; line-height: 1.3; }
-    .summary-slug { margin-top: 3px; color: var(--quiet); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; overflow-wrap: anywhere; }
-    .summary-description { margin: 17px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-    .summary-section { margin-top: 17px; padding-top: 14px; border-top: 1px solid var(--line); }
-    .summary-label { display: block; margin-bottom: 8px; color: var(--quiet); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-    .chips { display: flex; flex-wrap: wrap; gap: 5px; }
-    .chip { padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel-soft); color: #5e6368; font-size: 11px; }
-    .summary-goal { margin: 0; font-size: 12px; line-height: 1.6; }
-    .summary-meta { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
-    .meta-cell { min-width: 0; padding: 9px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-    .meta-key { display: block; margin-bottom: 2px; color: var(--quiet); font-size: 10px; }
-    .meta-value { display: block; overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-    .handoff { margin-top: 18px; padding: 14px 0 0; border-top: 1px solid #cce5d4; }
-    .handoff-title { margin: 0; color: #1e6040; font-size: 13px; font-weight: 700; }
-    .handoff-copy { margin: 6px 0 13px; color: #47745b; font-size: 12px; line-height: 1.55; }
-    .open-dsh { display: inline-flex; min-height: 35px; align-items: center; gap: 7px; padding: 0 11px; border: 1px solid #227a4f; border-radius: 6px; background: #227a4f; color: white; font-size: 12px; font-weight: 650; }
-    .open-dsh:hover { background: #1c6542; }
-    .handoff-link { display: block; margin-top: 9px; color: #2d7650; font-size: 11px; overflow-wrap: anywhere; }
-    .hint { margin: 19px 0 0; color: var(--quiet); font-size: 11px; line-height: 1.6; }
-    @media (max-width: 900px) {
-      .shell { display: block; }
-      .sidebar { position: relative; min-height: auto; padding: 12px 14px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
-      .brand { padding: 0 4px 10px; }
-      .new-app { position: absolute; top: 13px; right: 14px; width: 36px; min-height: 36px; padding: 0; }
-      .new-app span:last-child { display: none; }
-      .primary-nav { flex-direction: row; margin-top: 0; }
-      .nav-button { justify-content: center; }
-      .section-label { margin: 12px 4px 7px; }
-      .app-list { flex-direction: row; overflow-x: auto; padding-bottom: 2px; }
-      .app-item { width: 174px; min-height: 45px; flex: 0 0 174px; }
-      .sidebar-foot { display: none; }
-      .topbar { padding: 13px 18px; }
-      .creator { display: block; padding: 34px 18px 42px; }
-      .creator-main { max-width: none; }
-      .inspector { margin-top: 38px; }
-    }
-    @media (max-width: 520px) {
-      .topbar { min-height: 62px; }
-      .topbar-actions { gap: 8px; }
-      .status { max-width: 105px; overflow: hidden; text-overflow: ellipsis; }
-      .dsh-button { padding: 0 9px; }
-      .creator-heading h2 { font-size: 24px; }
-      .composer { gap: 5px; padding-left: 11px; }
-      .generate-button { padding: 0 9px; }
-    }
-  </style>
+  <title>半人马AI-万象</title>
+  <link rel="stylesheet" href="/static/app.css?v=6df4713c">
 </head>
 <body>
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand"><div class="brand-mark" aria-hidden="true">万</div><div><span class="brand-name">万象</span><span class="brand-subtitle">Agent 工作区</span></div></div>
-      <button id="new-app" class="new-app" type="button" aria-label="新建 Agent"><span class="new-app-icon" aria-hidden="true">+</span><span>新建 Agent</span></button>
-      <nav class="primary-nav" aria-label="工作区导航">
-        <button id="create-nav" class="nav-button active" type="button"><span class="nav-icon" aria-hidden="true">＋</span><span>创建 Agent</span></button>
-        <button id="runtime-nav" class="nav-button" type="button"><span class="nav-icon" aria-hidden="true">▶</span><span>运行工作区</span></button>
-      </nav>
-      <div class="section-label"><span>我的 Agent</span><span id="app-count" class="count">0</span></div>
-      <nav id="app-list" class="app-list" aria-label="我的 Agent"></nav>
-      <div class="sidebar-foot"><div>本地运行核心</div><div class="dsh-state"><span id="dsh-state-dot" class="state-dot" aria-hidden="true"></span><span id="dsh-state-text">运行区未启动</span></div></div>
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">万</div>
+        <div>
+          <span class="brand-zh">半人马AI-万象</span>
+          <span class="brand-en">CentaurAI-WanX</span>
+        </div>
+      </div>
+      <button class="make" id="restart" type="button">
+        <span class="make-plus" aria-hidden="true">＋</span>
+        <span><span class="make-zh">造一个助手</span><span class="make-en">Build an assistant</span></span>
+      </button>
+      <div class="side-label"><span>我的助手</span><span id="app-count">0</span></div>
+      <nav id="app-list" class="app-list" aria-label="我的助手"></nav>
+      <div class="side-foot">它在你自己的电脑上跑<br><span id="dsh-state">还没开始</span></div>
     </aside>
-    <main class="workspace">
-      <header class="topbar"><div><div id="breadcrumb" class="breadcrumb">万象 / 创建 Agent</div><h1 id="topbar-title" class="topbar-title">定义一个新 Agent</h1></div><div class="topbar-actions"><div id="status" class="status"><span class="state-dot" aria-hidden="true"></span><span id="status-text">准备就绪</span></div><button id="top-dsh" class="dsh-button" type="button"><span class="dsh-button-icon" aria-hidden="true">▶</span><span>运行工作区</span></button></div></header>
-      <div class="workspace-body"><div id="creator" class="creator">
-        <section class="creator-main" aria-labelledby="creator-title">
-          <div class="creator-heading"><span class="eyebrow">AGENT SPEC</span><h2 id="creator-title">描述一个你想长期使用的 Agent</h2><p>用自然语言说清楚目标和工作方式，万象会把需求整理成可以直接运行的 Agent。</p></div>
-          <div class="conversation"><div id="create-messages" class="messages" aria-live="polite"></div><div class="composer"><textarea id="create-input" rows="1" placeholder="例如：帮我跟进客户，整理每次沟通并提醒下一步" aria-label="Agent 需求"></textarea><button id="generate" class="generate-button" type="button" disabled>生成 Agent</button><button id="create-send" class="send-button" type="button" aria-label="发送">→</button></div></div>
-        </section>
-        <aside class="inspector" aria-label="Agent 摘要">
-          <h2 class="inspector-title">Agent 摘要</h2>
-          <div id="inspector-empty" class="inspector-empty">完成几轮需求整理后，这里会显示 Agent 配置。</div>
-          <div id="summary" class="summary hidden">
-            <div class="summary-head"><div id="summary-mark" class="summary-mark" aria-hidden="true">应</div><div><h3 id="summary-name" class="summary-name"></h3><div id="summary-slug" class="summary-slug"></div></div></div>
-            <p id="summary-description" class="summary-description"></p>
-            <div class="summary-section"><span class="summary-label">目标</span><p id="summary-goal" class="summary-goal"></p></div>
-            <div class="summary-section"><span class="summary-label">配置</span><div class="summary-meta"><div class="meta-cell"><span class="meta-key">领域</span><strong id="summary-domain" class="meta-value"></strong></div><div class="meta-cell"><span class="meta-key">触发</span><strong id="summary-trigger" class="meta-value"></strong></div><div class="meta-cell"><span class="meta-key">输出</span><strong id="summary-output" class="meta-value"></strong></div><div class="meta-cell"><span class="meta-key">记忆检索</span><strong id="summary-retrieval" class="meta-value"></strong></div></div></div>
-            <div class="summary-section"><span class="summary-label">能力</span><div id="summary-capabilities" class="chips"></div></div>
-            <div id="handoff" class="handoff hidden"><h3 class="handoff-title">Agent 已就绪</h3><p class="handoff-copy">配置已保存，进入运行工作区后即可选择这个 Agent 开始对话。</p><button id="open-dsh" class="open-dsh" type="button"><span aria-hidden="true">▶</span><span>进入运行工作区</span></button></div>
+
+    <section class="center">
+      <div class="topbar">
+        <div>
+          <div class="top-title" id="top-title">造一个助手</div>
+          <div class="top-en" id="top-en">Build an assistant</div>
+        </div>
+        <div class="meters" id="meters" hidden>
+          <div class="meter">
+            <div class="meter-top"><span>已聊清</span><b id="m1">0 / 9</b></div>
+            <div class="meter-track"><div class="meter-fill" id="f1"></div></div>
           </div>
-          <p class="hint">生成后的 Agent 会保存在本地运行空间中，之后可从左侧列表再次运行。</p>
-        </aside>
-      </div></div>
-    </main>
+          <div class="meter doc">
+            <div class="meter-top"><span>文档已写</span><b id="m2">0 / 11</b></div>
+            <div class="meter-track"><div class="meter-fill" id="f2"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="scroll" id="scroll"><div class="stage" id="stage"></div></div>
+    </section>
+
+    <aside class="prd">
+      <div class="prd-bar">
+        <div>
+          <div class="prd-bar-zh">助手需求文档</div>
+          <div class="prd-bar-en">Assistant PRD</div>
+        </div>
+        <button class="expand" id="expand" type="button">展开文档</button>
+      </div>
+      <div class="prd-scroll" id="prd-scroll"></div>
+      <div class="prd-foot">
+        <button class="btn-solid" id="to-confirm" type="button" disabled>通读并确认</button>
+        <div class="prd-foot-note" id="foot-note">还没开始</div>
+      </div>
+    </aside>
   </div>
-  <script>
-    const els = { appList: document.getElementById("app-list"), appCount: document.getElementById("app-count"), newApp: document.getElementById("new-app"), createNav: document.getElementById("create-nav"), runtimeNav: document.getElementById("runtime-nav"), createMessages: document.getElementById("create-messages"), createInput: document.getElementById("create-input"), createSend: document.getElementById("create-send"), generate: document.getElementById("generate"), status: document.getElementById("status"), statusText: document.getElementById("status-text"), topDsh: document.getElementById("top-dsh"), inspectorEmpty: document.getElementById("inspector-empty"), summary: document.getElementById("summary"), summaryMark: document.getElementById("summary-mark"), summaryName: document.getElementById("summary-name"), summarySlug: document.getElementById("summary-slug"), summaryDescription: document.getElementById("summary-description"), summaryGoal: document.getElementById("summary-goal"), summaryDomain: document.getElementById("summary-domain"), summaryTrigger: document.getElementById("summary-trigger"), summaryOutput: document.getElementById("summary-output"), summaryRetrieval: document.getElementById("summary-retrieval"), summaryCapabilities: document.getElementById("summary-capabilities"), handoff: document.getElementById("handoff"), openDsh: document.getElementById("open-dsh"), dshStateDot: document.getElementById("dsh-state-dot"), dshStateText: document.getElementById("dsh-state-text") };
-    const DOMAIN_LABELS = { customer_management: "客户管理", research: "研究", content: "内容", archive: "归档", personal_assistant: "个人助理", general: "通用" };
-    const CAPABILITY_LABELS = { search: "搜索", summarize: "总结", extract: "提取", compose: "撰写", notify: "通知", api_call: "调用 API", browse: "浏览网页" };
-    const TRIGGER_LABELS = { manual: "手动", conversational: "对话" };
-    const OUTPUT_LABELS = { memory: "记忆库", chat: "对话", both: "对话 + 记忆库" };
-    const RETRIEVAL_LABELS = { semantic: "语义", recent: "最近", entity: "实体", keyword: "关键词" };
-    const state = { busy: false, apps: [], currentApp: null, createMessages: [] };
-    function normalizeApp(raw) { if (typeof raw === "string") return { slug: raw, name: raw, description: "", goal: "", domain: "general", capabilities: [], memoryBinding: { read: ["*"], write: [], retrieval: "semantic" }, delivery: { form: "", trigger: "conversational", output: "chat" }, params: [] }; return { slug: typeof raw?.slug === "string" ? raw.slug : "", name: typeof raw?.name === "string" ? raw.name : "未命名 Agent", description: typeof raw?.description === "string" ? raw.description : "", goal: typeof raw?.goal === "string" ? raw.goal : "", domain: typeof raw?.domain === "string" ? raw.domain : "general", capabilities: Array.isArray(raw?.capabilities) ? raw.capabilities : [], memoryBinding: raw?.memoryBinding || { read: ["*"], write: [], retrieval: "semantic" }, delivery: raw?.delivery || { form: "", trigger: "conversational", output: "chat" }, params: Array.isArray(raw?.params) ? raw.params : [] }; }
-    function appInitial(app) { return (app?.name || "应").trim().slice(0, 1) || "应"; }
-    function setStatus(text, kind) { els.statusText.textContent = text; const dot = els.status.querySelector(".state-dot"); dot.className = `state-dot${kind ? ` ${kind}` : ""}`; }
-    function setBusy(value, text) { state.busy = value; els.createSend.disabled = value; els.generate.disabled = value || state.createMessages.length === 0; if (text) setStatus(text, value ? "busy" : ""); }
-    function clearTyping() { els.createMessages.querySelectorAll(".typing").forEach((node) => node.remove()); }
-    function showTyping() { clearTyping(); const node = document.createElement("div"); node.className = "typing"; node.textContent = "正在整理"; els.createMessages.appendChild(node); els.createMessages.scrollTop = els.createMessages.scrollHeight; }
-    function addMessage(role, text, label) { clearTyping(); const node = document.createElement("article"); node.className = `message ${role}`; const meta = document.createElement("div"); meta.className = "message-meta"; meta.textContent = label; const body = document.createElement("div"); body.className = "message-text"; body.textContent = String(text ?? ""); node.append(meta, body); els.createMessages.appendChild(node); els.createMessages.scrollTop = els.createMessages.scrollHeight; }
-    function addSystem(text) { clearTyping(); const node = document.createElement("div"); node.className = "message system"; node.textContent = text; els.createMessages.appendChild(node); }
-    function addOptions(options) { const valid = Array.isArray(options) ? options.filter((item) => typeof item === "string").slice(0, 3) : []; if (!valid.length) return; const list = document.createElement("div"); list.className = "option-list"; valid.forEach((option) => { const button = document.createElement("button"); button.type = "button"; button.className = "option-button"; button.textContent = option; button.addEventListener("click", () => { if (!state.busy) submitText(option); }); list.appendChild(button); }); els.createMessages.appendChild(list); }
-    async function api(path, payload, timeoutMs = 120000) { const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs); try { const init = { signal: controller.signal }; if (payload !== undefined) { init.method = "POST"; init.headers = { "Content-Type": "application/json" }; init.body = JSON.stringify(payload); } const response = await fetch(path, init); const data = await response.json().catch(() => ({})); if (!response.ok || data.ok === false) throw new Error(data.error || `请求失败（${response.status}）`); return data; } finally { clearTimeout(timer); } }
-    function renderApps() { els.appList.innerHTML = ""; els.appCount.textContent = String(state.apps.length); if (!state.apps.length) { const empty = document.createElement("div"); empty.className = "empty-apps"; empty.textContent = "还没有 Agent"; els.appList.appendChild(empty); return; } state.apps.forEach((app) => { const button = document.createElement("button"); button.type = "button"; button.className = `app-item${state.currentApp?.slug === app.slug ? " active" : ""}`; const mark = document.createElement("span"); mark.className = "app-mark"; mark.textContent = appInitial(app); const copy = document.createElement("span"); copy.className = "app-item-copy"; const name = document.createElement("span"); name.className = "app-item-name"; name.textContent = app.name; const meta = document.createElement("span"); meta.className = "app-item-meta"; meta.textContent = `${DOMAIN_LABELS[app.domain] || app.domain} · 可运行`; copy.append(name, meta); button.append(mark, copy); button.addEventListener("click", () => selectApp(app)); els.appList.appendChild(button); }); }
-    function renderSummary(app, generated) { if (!app) { els.inspectorEmpty.classList.remove("hidden"); els.summary.classList.add("hidden"); return; } els.inspectorEmpty.classList.add("hidden"); els.summary.classList.remove("hidden"); const memory = app.memoryBinding || {}; const delivery = app.delivery || {}; els.summaryMark.textContent = appInitial(app); els.summaryName.textContent = app.name; els.summarySlug.textContent = app.slug ? `Agent ID · ${app.slug}` : ""; els.summaryDescription.textContent = app.description || "暂无描述"; els.summaryGoal.textContent = app.goal || "暂无目标说明"; els.summaryDomain.textContent = DOMAIN_LABELS[app.domain] || app.domain || "通用"; els.summaryTrigger.textContent = TRIGGER_LABELS[delivery.trigger] || delivery.trigger || "对话"; els.summaryOutput.textContent = OUTPUT_LABELS[delivery.output] || delivery.output || "对话"; els.summaryRetrieval.textContent = RETRIEVAL_LABELS[memory.retrieval] || memory.retrieval || "语义"; els.summaryCapabilities.innerHTML = ""; const caps = app.capabilities?.length ? app.capabilities : ["基础对话"]; caps.forEach((capability) => { const chip = document.createElement("span"); chip.className = "chip"; chip.textContent = CAPABILITY_LABELS[capability] || capability; els.summaryCapabilities.appendChild(chip); }); els.handoff.classList.toggle("hidden", !generated); }
-    function selectApp(app) { state.currentApp = normalizeApp(app); renderSummary(state.currentApp, true); renderApps(); void openDsh(); }
-    function resetCreate() { state.currentApp = null; state.createMessages = []; els.createMessages.innerHTML = ""; renderSummary(null, false); renderApps(); addMessage("assistant", "你好，我会帮你把想法整理成一个可运行的 Agent。你希望它长期负责什么？", "万象"); setStatus("准备就绪", ""); els.createInput.focus({ preventScroll: true }); }
-    async function sendCreate(text) { const content = String(text || "").trim(); if (!content) return; state.createMessages.push({ role: "user", content }); addMessage("user", content, "你"); showTyping(); setStatus("正在整理需求", "busy"); try { const data = await api("/api/chat", { messages: state.createMessages, generate: false }); state.createMessages.push({ role: "assistant", content: data.reply || "" }); addMessage("assistant", data.reply || "", "万象"); addOptions(data.options); setStatus("可以继续补充", ""); } catch (error) { addMessage("assistant", `请求失败：${error.message}`, "系统"); setStatus("请求失败", "error"); } }
-    async function generateApp() { if (!state.createMessages.length || state.busy) return; setBusy(true, "正在生成 Agent"); showTyping(); try { const data = await api("/api/chat", { messages: state.createMessages, generate: true }, 180000); if (data.done && data.app) { addMessage("assistant", data.reply || `Agent「${data.app.name}」已生成`, "万象"); const app = normalizeApp(data.app); state.currentApp = app; state.apps = [app, ...state.apps.filter((item) => item.slug !== app.slug)]; renderSummary(app, true); renderApps(); setStatus("Agent 已就绪", ""); } else { addMessage("assistant", data.reply || "还需要一些信息。", "万象"); setStatus("还需要补充", ""); } } catch (error) { addMessage("assistant", `生成失败：${error.message}`, "系统"); setStatus("生成失败", "error"); } finally { setBusy(false); } }
-    async function openDsh() { setStatus("正在连接运行区", "busy"); try { if (state.currentApp) await api("/api/activate", { app: state.currentApp.slug }, 15000); const data = await api("/api/dsh", undefined, 45000); const dshUrl = data.dshUrl || ""; els.dshStateDot.classList.add("online"); els.dshStateText.textContent = "运行区在线"; const runtimeUrl = state.currentApp ? `${dshUrl}?agent=${encodeURIComponent(state.currentApp.slug)}` : dshUrl; if (!runtimeUrl) throw new Error("运行区地址不可用"); window.location.assign(runtimeUrl); } catch (error) { els.dshStateText.textContent = "运行区启动失败"; setStatus("运行区连接失败", "error"); addSystem(`无法进入运行区：${error.message}`); } }
-    function submitText(text) { if (state.busy) return; els.createInput.value = ""; resizeInput(); setBusy(true); sendCreate(text).finally(() => setBusy(false)); }
-    function resizeInput() { els.createInput.style.height = "auto"; els.createInput.style.height = `${Math.min(els.createInput.scrollHeight, 140)}px`; }
-    async function loadApps() { try { const data = await api("/api/apps", undefined, 15000); state.apps = Array.isArray(data.apps) ? data.apps.map(normalizeApp).filter((app) => app.slug) : []; renderApps(); } catch { renderApps(); } }
-    els.newApp.addEventListener("click", resetCreate); els.createNav.addEventListener("click", () => els.createInput.focus({ preventScroll: true })); els.runtimeNav.addEventListener("click", openDsh); els.createSend.addEventListener("click", () => { if (!state.busy) { const text = els.createInput.value.trim(); if (text) submitText(text); } }); els.generate.addEventListener("click", generateApp); els.openDsh.addEventListener("click", openDsh); els.topDsh.addEventListener("click", openDsh); els.createInput.addEventListener("input", resizeInput); els.createInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); const text = els.createInput.value.trim(); if (text) submitText(text); } });
-    resetCreate(); loadApps();
-  </script>
+
+  <div class="overlay hidden" id="overlay">
+    <div class="overlay-inner">
+      <div class="overlay-bar">
+        <div>
+          <div class="prd-bar-zh">助手需求文档</div>
+          <div class="prd-bar-en">Assistant PRD</div>
+        </div>
+        <button class="btn-quiet" id="overlay-close" type="button">收起</button>
+      </div>
+      <div id="overlay-doc"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=6df4713c"></script>
 </body>
 </html>

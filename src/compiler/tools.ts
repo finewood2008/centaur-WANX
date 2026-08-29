@@ -1,4 +1,4 @@
-import type { Capability, Domain } from "../appspec/schema";
+import type { Capability } from "../appspec/schema";
 
 /**
  * 知君插件（占位，尚未实现）。这些插件名在 DSH 里不存在，
@@ -32,16 +32,4 @@ export const CAPABILITY_TOOL_PLUGINS: Record<Capability, string[]> = {
   notify: ["@centaur/plugin-notify"],
   api_call: ["@deepseek-ai/dsh-tool-web"],
   browse: ["@deepseek-ai/dsh-tool-web"],
-};
-
-/**
- * domain → 默认注入的技能名（skills/ 目录下的技能）。
- */
-export const DOMAIN_SKILLS: Record<Domain, string[]> = {
-  customer_management: ["客户跟进SOP"],
-  research: ["研究简报SOP"],
-  content: ["内容生产SOP"],
-  archive: ["归档整理SOP"],
-  personal_assistant: [],
-  general: [],
 };

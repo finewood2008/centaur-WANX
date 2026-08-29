@@ -21,6 +21,8 @@ export interface AppPackage {
     write: string[];
     retrieval: RetrievalStrategy;
   };
+  /** 生成的技能文件（相对应用目录的路径 → 内容）。workflow 为空时为 null。 */
+  skill: { path: string; content: string } | null;
   meta: {
     name: string;
     description: string;
@@ -30,6 +32,8 @@ export interface AppPackage {
     capabilities: AppSpec["capabilities"];
     memory_binding: AppSpec["memory_binding"];
     delivery: AppSpec["delivery"];
+    workflow: AppSpec["workflow"];
+    boundaries: AppSpec["boundaries"];
     params: AppSpec["params"];
   };
 }

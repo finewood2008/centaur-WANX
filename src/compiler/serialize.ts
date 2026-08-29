@@ -34,10 +34,13 @@ export function serializePreset(pkg: AppPackage): SerializedPreset {
  */
 export function serializeAppPackage(pkg: AppPackage): Record<string, string> {
   const { presetYml, agentCordisYml } = serializePreset(pkg);
-  return {
+  const files: Record<string, string> = {
     "preset.yml": presetYml,
     "agent.cordis.yml": agentCordisYml,
     "memory-binding.yml": dump(pkg.memoryBinding, { lineWidth: -1, noRefs: true }),
     "app.yml": dump(pkg.meta, { lineWidth: -1, noRefs: true }),
   };
+  // 技能文件的键带子目录，writeAppPackage 会按需建目录。
+  if (pkg.skill) files[pkg.skill.path] = pkg.skill.content;
+  return files;
 }

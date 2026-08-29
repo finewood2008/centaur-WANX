@@ -1,13 +1,21 @@
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { dump, load } from "js-yaml";
-import { runPipeline, writeAppPackage } from "./pipeline";
+import { runFinalize, runPipeline, writeAppPackage } from "./pipeline";
 import { deepseekFromEnv } from "./definer/deepseek";
-import { conductDialog, generateFromConversation, type ChatMessage } from "./definer/interviewer";
+import {
+  buildPmPrompt,
+  fallbackAsk,
+  OPENING,
+  parsePmOutput,
+  visiblePart,
+  type ChatMessage,
+} from "./definer/interviewer";
+import { emptyDraft, applyPatch, missingSlots, SLOT_KEYS, type PRDDraft, type SlotKey } from "./definer/draft";
 import { slugFromName } from "./appspec/slug";
 import type { AppSpec } from "./appspec/schema";
 
@@ -122,8 +130,52 @@ async function installApp(slug: string, files: Record<string, string>): Promise<
   await mkdir(presetDir, { recursive: true });
   await writeFile(join(presetDir, "preset.yml"), files["preset.yml"] ?? "", "utf-8");
   await writeFile(join(presetDir, "agent.cordis.yml"), files["agent.cordis.yml"] ?? "", "utf-8");
-  await writeDshDefaultPreset(slug);
+
+  // 技能文件必须装进 $DSH_HOME/skills/ 才会被 DSH 发现。
+  //
+  // 本来想用 preset 里的 `customSkillDirs` 指向应用自己的目录、配
+  // `includeDefaultRoots: false` 做隔离——实测**行不通**：DSH 会整个忽略 preset 里
+  // 给 skill-filesystem 写的 config（写死 includeDefaultRoots:false 之后，默认根里的
+  // 技能照样被发现）。内置的 standard preset 同样是空配置。
+  // 唯一可靠的装载点就是这里的用户根。
+  //
+  // 代价：助手之间的技能不隔离，彼此可见。技能名带 slug 前缀不会撞，
+  // 但这是个已知缺口——DSH 支持按 preset 隔离技能之后要回来改。
+  for (const [name, content] of Object.entries(files)) {
+    if (!name.startsWith("skills/")) continue;
+    const target = join(DSH_HOME, name);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf-8");
+  }
+  await pruneOrphanSkills();
+
+  // 这里**不**写 DSH default preset。生成不等于激活——
+  // 「先跑一次给你看」那一下才激活，由 /api/activate 负责。
   return appDir;
+}
+
+/**
+ * 清掉 `$DSH_HOME/skills/` 里没有对应应用的技能。
+ *
+ * 技能现在装在共享的用户根下、助手之间不隔离，所以一个改过名的助手会留下
+ * 旧 slug 的技能，被其他所有助手看见，且永远不会消失。只动 `app-*-workflow`
+ * 这个我们自己的命名，绝不碰用户手写的技能。
+ */
+async function pruneOrphanSkills(): Promise<void> {
+  const skillsRoot = join(DSH_HOME, "skills");
+  let entries;
+  try {
+    entries = await readdir(skillsRoot, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const match = /^(app-[a-z0-9]+)-workflow$/u.exec(entry.name);
+    if (!match) continue;
+    if (await readAppSummary(match[1]) !== null) continue;
+    await rm(join(skillsRoot, entry.name), { recursive: true, force: true });
+  }
 }
 
 async function writeDshPatch(): Promise<void> {
@@ -188,40 +240,188 @@ async function acknowledgeDshOnboarding(): Promise<void> {
   await writeFile(DSH_SETTINGS, dump(settings, { noRefs: true, lineWidth: 100 }), "utf-8");
 }
 
+const MAX_TURNS = 20;
+
+/** 界面契约版本。界面或接口有不兼容改动时 +1。 */
+const UI_REVISION = 2;
+
+/** 客户端告诉我们它刚回答的是哪个槽位。槽位名不合法就丢掉。 */
+function parseAnswered(input: unknown): { slot: SlotKey; value: string | string[] } | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const obj = input as { slot?: unknown; value?: unknown };
+  if (typeof obj.slot !== "string" || !(SLOT_KEYS as readonly string[]).includes(obj.slot)) return null;
+  const value = Array.isArray(obj.value)
+    ? obj.value.filter((x): x is string => typeof x === "string" && x.trim() !== "")
+    : typeof obj.value === "string" && obj.value.trim() !== ""
+      ? obj.value.trim()
+      : null;
+  if (value === null || (Array.isArray(value) && value.length === 0)) return null;
+  return { slot: obj.slot as SlotKey, value };
+}
+
+function parseDraft(input: unknown): PRDDraft {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return emptyDraft();
+  const obj = input as { slots?: unknown; derived?: unknown };
+  const base = emptyDraft();
+  // 走 applyPatch 做一遍清洗：客户端传来的东西不直接信。
+  const { draft } = applyPatch(base, obj.slots, obj.derived);
+  return draft;
+}
+
+/**
+ * 产品经理的一轮：SSE 流式吐散文，结束时给出结构化的 patch / ask / 新草稿。
+ *
+ * 分隔符之前的字符实时推给界面，之后的攒起来解析——用户永远看不到 JSON。
+ */
 async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let body: { messages?: unknown; draft?: unknown; turn?: unknown; answered?: unknown };
   try {
-    const body = JSON.parse(await readBody(req)) as { messages?: unknown; generate?: unknown };
-    const messages = parseMessages(body.messages);
-    if (messages === null) {
-      return json(res, 400, { ok: false, error: "缺少 messages 数组" });
-    }
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return json(res, 400, { ok: false, error: "请求体不是合法 JSON" });
+  }
+  const messages = parseMessages(body.messages);
+  if (messages === null) return json(res, 400, { ok: false, error: "缺少 messages 数组" });
+  const draft = parseDraft(body.draft);
+  const turn = Number.isFinite(Number(body.turn)) ? Math.max(0, Number(body.turn)) : 0;
 
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
     const llm = deepseekFromEnv();
+    const prompt = buildPmPrompt(messages, draft, turn);
 
-    if (body.generate === true) {
-      const outcome = await generateFromConversation(messages, llm);
-      if (outcome.done && outcome.app) {
-        const slug = slugFromName(outcome.app.name);
-        const appDir = await installApp(slug, outcome.app.files);
-        json(res, 200, {
-          ok: true,
-          done: true,
-          reply: outcome.reply,
-          app: {
-            ...appSummary(slug, outcome.app.appspec),
-            dir: appDir,
-          },
-        });
-      } else {
-        json(res, 200, { ok: true, done: false, reply: outcome.reply });
+    let raw = "";
+    let emitted = 0;
+    const flush = (final: boolean): void => {
+      const visible = visiblePart(raw, final);
+      if (visible.length > emitted) {
+        send("delta", { text: visible.slice(emitted) });
+        emitted = visible.length;
       }
-      return;
+    };
+
+    if (typeof llm.stream === "function") {
+      await llm.stream(prompt, (delta) => {
+        raw += delta;
+        flush(false);
+      });
+    } else {
+      raw = await llm.complete(prompt);
+    }
+    flush(true);
+
+    const parsed = parsePmOutput(raw);
+    let { draft: nextDraft, touched } = applyPatch(draft, parsed.patch, parsed.derive);
+
+    // 用户刚答过的那个槽位必须落地。模型偶尔会忘了写 patch，
+    // 那时草稿就永远填不满、进度条一直是 0 —— 这条由代码兜底，不靠模型自觉。
+    const answered = parseAnswered(body.answered);
+    if (answered && nextDraft.slots[answered.slot] === undefined) {
+      const patched = applyPatch(nextDraft, { [answered.slot]: { value: answered.value } }, null);
+      nextDraft = patched.draft;
+      touched = [...patched.touched, ...touched];
     }
 
-    const guide = await conductDialog(messages, llm);
-    json(res, 200, { ok: true, done: false, reply: guide.text, options: guide.options ?? [] });
+    const missing = missingSlots(nextDraft);
+    const nextTurn = turn + 1;
+
+    // 完整性由代码把关，**两头都管**：
+    // 槽位没填满就不接受模型说的 done；填满了也不许它接着问——
+    // 实测模型在 9/9 之后会一直重问同一个槽位，界面就卡在那儿转圈。
+    const done = missing.length === 0 || nextTurn >= MAX_TURNS;
+    // 「每一轮都有选择项」同样由代码兜底：模型没给合法选项就补一组。
+    const ask = done ? null : (parsed.ask ?? fallbackAsk(missing[0]));
+
+    send("done", {
+      prose: parsed.prose,
+      draft: nextDraft,
+      touched,
+      ask,
+      done,
+      turn: nextTurn,
+      answered: 9 - missing.length,
+    });
+  } catch (e) {
+    send("error", { error: (e as Error).message });
+  } finally {
+    res.end();
+  }
+}
+
+/** 确认后组装：草稿 → 助手，落盘并装进 DSH。 */
+async function handleFinalize(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const body = JSON.parse(await readBody(req)) as { draft?: unknown; turns?: unknown };
+    const draft = parseDraft(body.draft);
+    if (Object.keys(draft.slots).length === 0) {
+      return json(res, 400, { ok: false, error: "还没聊出任何东西" });
+    }
+    const llm = deepseekFromEnv();
+    const outcome = await runFinalize(draft, llm, {
+      turns: Number(body.turns ?? 0),
+      date: new Date().toISOString().slice(0, 10),
+      appsDir: APPS_DIR,
+    });
+    if (!outcome.ok) return json(res, 422, { ok: false, error: outcome.error });
+
+    const slug = slugFromName(outcome.appspec.name);
+    const appDir = await installApp(slug, outcome.files);
+    json(res, 200, {
+      ok: true,
+      ...appSummary(slug, outcome.appspec),
+      dir: appDir,
+      repairs: outcome.repairs,
+      prdUrl: `/api/apps/${slug}/prd.md`,
+    });
   } catch (e) {
     json(res, 500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/** 导出人读的 PRD。 */
+async function handlePrd(res: ServerResponse, slug: string): Promise<void> {
+  try {
+    const text = await readFile(join(APPS_DIR, slug, "prd.md"), "utf-8");
+    res.writeHead(200, {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${slug}-prd.md"`,
+    });
+    res.end(text);
+  } catch {
+    json(res, 404, { ok: false, error: "这个助手还没有文档" });
+  }
+}
+
+const STATIC_TYPES: Record<string, string> = {
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
+
+/**
+ * 万象自己的静态资源。
+ * 注意路径是 `/static/` 不是 `/assets/`——后者被路由转发给 DSH 了。
+ */
+async function serveStatic(res: ServerResponse, path: string): Promise<void> {
+  const name = path.slice("/static/".length).split("?")[0];
+  const ext = name.slice(name.lastIndexOf("."));
+  if (!/^[\w.-]+$/u.test(name) || !STATIC_TYPES[ext]) {
+    return json(res, 404, { ok: false, error: "not found" });
+  }
+  try {
+    const text = await readFile(join(__dirname, "..", "public", "static", name), "utf-8");
+    res.writeHead(200, { "Content-Type": STATIC_TYPES[ext], "Cache-Control": "no-store" });
+    res.end(text);
+  } catch {
+    json(res, 404, { ok: false, error: "not found" });
   }
 }
 
@@ -234,7 +434,10 @@ async function handleCreate(req: IncomingMessage, res: ServerResponse): Promise<
     }
 
     const llm = deepseekFromEnv();
-    const r = await runPipeline(intent, llm, { includeCentaurPlugins: false });
+    const r = await runPipeline(intent, llm, {
+      includeCentaurPlugins: false,
+      appsDir: APPS_DIR,
+    });
     if (!r.ok) {
       return json(res, 422, { ok: false, error: r.error });
     }
@@ -286,10 +489,40 @@ async function handleActivate(req: IncomingMessage, res: ServerResponse): Promis
 let dshWebProcess: ChildProcess | null = null;
 let dshStartPromise: Promise<string> | null = null;
 
+/**
+ * 探测 DSH Web 是否起来了。
+ *
+ * 用 node:http 而不是 fetch：机器上配了 HTTP(S)_PROXY 时，若同时开了
+ * NODE_USE_ENV_PROXY（DeepSeek 调用需要它），fetch 会把**回环请求也塞进代理**，
+ * 探测于是永远失败、DSH 报「启动超时」。node:http 不认代理环境变量，直连回环。
+ */
 function dshIsReady(): Promise<boolean> {
-  return fetch(DSH_URL, { signal: AbortSignal.timeout(1500) })
-    .then(async (response) => response.ok && (await response.text()).includes("__DSH_BOOT__"))
-    .catch(() => false);
+  return new Promise((resolve) => {
+    const request = httpRequest(
+      { hostname: "127.0.0.1", port: DSH_PORT, path: "/", method: "GET", timeout: 1500 },
+      (response) => {
+        if (response.statusCode !== 200) {
+          response.resume();
+          resolve(false);
+          return;
+        }
+        let body = "";
+        response.setEncoding("utf-8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+          if (body.includes("__DSH_BOOT__")) {
+            response.destroy();
+            resolve(true);
+          }
+        });
+        response.on("end", () => resolve(body.includes("__DSH_BOOT__")));
+        response.on("error", () => resolve(false));
+      },
+    );
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => resolve(false));
+    request.end();
+  });
 }
 
 async function waitForDsh(child: ChildProcess): Promise<string> {
@@ -316,6 +549,9 @@ async function ensureDshWeb(): Promise<string> {
       [DSH_BIN, "web", "--patch", DSH_PATCH, "--no-open", "--host", "127.0.0.1", "--port", String(DSH_PORT)],
       {
         cwd: join(__dirname, ".."),
+        // 代理相关的环境变量要**原样继承**：DSH 里跑的助手同样要连 DeepSeek。
+        // 关键是 package.json 的 start 里带了 NO_PROXY 把回环排除掉——
+        // 少了那一条，NODE_USE_ENV_PROXY 会把本机请求也塞进代理，DSH 起不来。
         env: { ...process.env, DSH_HOME },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -363,65 +599,28 @@ async function handleDsh(res: ServerResponse): Promise<void> {
   }
 }
 
+/**
+ * 给 DSH 页面贴万象的牌。
+ *
+ * 只做文案替换和底色对齐——**不做深度换肤**：DSH 前端引用了 `--dsw-*` 设计变量，
+ * 但整个 @deepseek-ai 里没有任何地方定义它们，颜色烤死在每次发版都变的哈希类名里。
+ * 也不再往 DSH 头部注入「创建助手」的链接：它现在跑在万象外壳的 iframe 里，
+ * 侧边栏一直都在，注入的链接反而会把 iframe 导航走。
+ */
 function brandRuntimeHtml(html: string): string {
   const branding = `<style>
-    #wanxiang-create-agent {
-      display: flex;
-      min-height: 38px;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      margin: 7px 14px 3px;
-      padding: 0 12px;
-      border: 1px solid #e1e2e4;
-      border-radius: 10px;
-      background: #fff;
-      color: #15171a;
-      font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      text-decoration: none;
-      white-space: nowrap;
-    }
-    #wanxiang-create-agent:hover { background: #f5f6f7; }
-    #wanxiang-create-agent.wanxiang-create-compact { min-width: 38px; padding: 0; }
-    #wanxiang-create-agent.wanxiang-create-compact .wanxiang-create-copy { display: none; }
-    .wanxiang-create-icon { font-size: 18px; font-weight: 400; }
+    html, body { background: #FAF9F5; }
   </style><script>(() => {
     const replacements = new Map([
-      ["DeepSeek Harness", "万象"],
-      ["DSH Local Build", "万象"],
-      ["Into the Unknown", "万象"],
-      ["探索未至之境", "万象"]
+      ["DeepSeek Harness", "半人马AI-万象"],
+      ["DSH Local Build", "半人马AI-万象"],
+      ["Into the Unknown", "半人马AI-万象"],
+      ["探索未至之境", "半人马AI-万象"]
     ]);
-    const newSessionButton = () => document.querySelector(
-      'button[aria-label="新建会话"], button[aria-label="新会话"], button[aria-label="New session"], button[aria-label="New Session"]'
-    );
-    const ensureCreatorLink = () => {
-      const newSession = newSessionButton();
-      if (!newSession) return;
-      let link = document.getElementById("wanxiang-create-agent");
-      if (!link) {
-        link = document.createElement("a");
-        link.id = "wanxiang-create-agent";
-        link.href = "/";
-        link.setAttribute("aria-label", "创建 Agent");
-        link.title = "创建 Agent";
-        link.classList.add("wanxiang-create-compact");
-        link.innerHTML = '<span class="wanxiang-create-icon" aria-hidden="true">+</span><span class="wanxiang-create-copy">创建 Agent</span>';
-        newSession.insertAdjacentElement("afterend", link);
-      }
-    };
-    let activatedAgentStarted = false;
-    const startActivatedAgent = () => {
-      if (activatedAgentStarted || !new URLSearchParams(location.search).get("agent")) return;
-      const button = newSessionButton();
-      if (!button) return;
-      activatedAgentStarted = true;
-      setTimeout(() => button.click(), 350);
-    };
     let scheduled = false;
     const apply = () => {
       scheduled = false;
-      if (document.title !== "万象") document.title = "万象";
+      if (document.title !== "半人马AI-万象") document.title = "半人马AI-万象";
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       let node;
       while ((node = walker.nextNode())) {
@@ -436,8 +635,6 @@ function brandRuntimeHtml(html: string): string {
         const replacement = replacements.get(key);
         if (replacement) node.data = node.data.replace(key, replacement);
       }
-      ensureCreatorLink();
-      startActivatedAgent();
     };
     const schedule = () => {
       if (scheduled) return;
@@ -448,7 +645,7 @@ function brandRuntimeHtml(html: string): string {
     addEventListener("DOMContentLoaded", apply);
   })()</script>`;
   return html
-    .replace("<title>DeepSeek Harness</title>", "<title>万象</title>")
+    .replace("<title>DeepSeek Harness</title>", "<title>半人马AI-万象</title>")
     .replace("</body>", `${branding}</body>`);
 }
 
@@ -556,7 +753,14 @@ async function proxyDshUpgrade(
 
 async function serveIndex(res: ServerResponse): Promise<void> {
   const html = await readFile(INDEX_HTML, "utf-8");
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  // no-store：旧版首页是整页内联的，一旦被浏览器缓存住，改了也看不见。
+  // 开发期就别让它缓存。静态资源另外带 ?v= 指纹。
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store, must-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+  });
   res.end(html);
 }
 
@@ -576,6 +780,18 @@ const server = createServer((req, res) => {
     if (req.method === "GET" && path === "/api/apps") {
       return handleListApps(res);
     }
+    if (req.method === "POST" && path === "/api/finalize") {
+      return handleFinalize(req, res);
+    }
+    if (req.method === "GET" && path.startsWith("/api/apps/") && path.endsWith("/prd.md")) {
+      return handlePrd(res, path.slice("/api/apps/".length, -"/prd.md".length));
+    }
+    if (req.method === "GET" && path.startsWith("/static/")) {
+      return serveStatic(res, path);
+    }
+    if (req.method === "GET" && path === "/api/opening") {
+      return json(res, 200, { ok: true, opening: OPENING });
+    }
     if (req.method === "GET" && path === "/api/dsh") {
       return handleDsh(res);
     }
@@ -591,7 +807,9 @@ const server = createServer((req, res) => {
       return proxyDsh(req, res, `${path}${url.search}`);
     }
     if (req.method === "GET" && path === "/health") {
-      return json(res, 200, { ok: true, status: "up" });
+      // ui 是界面契约版本。桌面外壳靠它认出「端口被一个老实例占着」——
+      // 老实例的 /health 只回 {ok,status}，复用它的话用户看到的还是旧界面。
+      return json(res, 200, { ok: true, status: "up", app: "wanxiang", ui: UI_REVISION });
     }
     json(res, 404, { ok: false, error: "not found" });
   })().catch((e) => json(res, 500, { ok: false, error: (e as Error).message }));

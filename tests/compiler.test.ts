@@ -82,15 +82,30 @@ describe("compile", () => {
     expect(capabilityTools.length).toBe(0);
   });
 
-  it("domain 注入默认技能", () => {
-    const pkg = compileFrom(valid); // customer_management
-    expect(pkg.preset.agentCordis.some((e) => e.id === "skill-filesystem")).toBe(true);
+  it("有 workflow 才挂技能插件，且产出技能文件", () => {
+    const pkg = compileFrom({ ...valid, workflow: { steps: ["先翻最近的往来", "挑出没兑现的承诺"] } });
+    const fs = pkg.preset.agentCordis.find((e) => e.id === "skill-filesystem");
+    expect(fs).toBeDefined();
     expect(pkg.preset.agentCordis.some((e) => e.id === "tool-skill")).toBe(true);
+    expect(pkg.skill?.path).toMatch(/^skills\/.+\/SKILL\.md$/u);
+    // 不给 config：DSH 会整个忽略 preset 里给 skill-filesystem 写的配置，
+    // 写了等于在产物里留一句不生效的谎。技能靠装进 $DSH_HOME/skills 被发现。
+    expect(fs?.config).toBeUndefined();
   });
 
-  it("general domain 不注入技能", () => {
-    const pkg = compileFrom({ ...valid, domain: "general" });
+  it("没有 workflow 就不挂技能插件（不留空挂名）", () => {
+    const pkg = compileFrom(valid); // 没给 workflow
+    expect(pkg.skill).toBeNull();
+    expect(pkg.preset.agentCordis.some((e) => e.id === "skill-filesystem")).toBe(false);
     expect(pkg.preset.agentCordis.some((e) => e.id === "tool-skill")).toBe(false);
+  });
+
+  it("domain 不再决定技能挂载", () => {
+    const withWorkflow = { ...valid, workflow: { steps: ["一步"] } };
+    for (const domain of ["general", "customer_management", "research"]) {
+      const pkg = compileFrom({ ...withWorkflow, domain });
+      expect(pkg.preset.agentCordis.some((e) => e.id === "tool-skill")).toBe(true);
+    }
   });
 
   it("includeCentaurPlugins=false 过滤占位插件", () => {

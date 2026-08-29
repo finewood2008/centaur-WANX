@@ -8,8 +8,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "wanxiang": "tsx bin/wanxiang.ts",
-    "start": "tsx src/server.ts"
+    "wanxiang": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx bin/wanxiang.ts",
+    "start": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx src/server.ts",
+    "desktop": "electron electron/main.cjs",
+    "icon": "electron scripts/make-icon.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "^0.1.0-rc.6",
@@ -26,8 +28,10 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.4.0",
+    "electron": "^44.0.0",
     "tsx": "^4.23.12",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
-  }
+  },
+  "main": "electron/main.cjs"
 }
