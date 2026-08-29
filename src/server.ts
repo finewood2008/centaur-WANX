@@ -6,7 +6,8 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { dump, load } from "js-yaml";
 import { runFinalize, runPipeline, writeAppPackage } from "./pipeline";
-import { deepseekFromEnv } from "./definer/deepseek";
+import { deepseekFromEnv, verifyKey } from "./definer/deepseek";
+import { configPath, keySource, maskKey, readConfig, resolveKey, writeConfig } from "./config";
 import {
   buildPmPrompt,
   fallbackAsk,
@@ -294,6 +295,12 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
+  if (!resolveKey()) {
+    send("error", { error: "还没设置模型 key", needsKey: true });
+    res.end();
+    return;
+  }
+
   try {
     const llm = deepseekFromEnv();
     const prompt = buildPmPrompt(messages, draft, turn);
@@ -364,6 +371,7 @@ async function handleFinalize(req: IncomingMessage, res: ServerResponse): Promis
     if (Object.keys(draft.slots).length === 0) {
       return json(res, 400, { ok: false, error: "还没聊出任何东西" });
     }
+    if (!resolveKey()) return json(res, 400, { ok: false, error: "还没设置模型 key", needsKey: true });
     const llm = deepseekFromEnv();
     const outcome = await runFinalize(draft, llm, {
       turns: Number(body.turns ?? 0),
@@ -381,6 +389,52 @@ async function handleFinalize(req: IncomingMessage, res: ServerResponse): Promis
       repairs: outcome.repairs,
       prdUrl: `/api/apps/${slug}/prd.md`,
     });
+  } catch (e) {
+    json(res, 500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/** 当前的模型设置。**永远不把完整 key 送回前端**，只给遮罩形式。 */
+function settingsPayload(): Record<string, unknown> {
+  const config = readConfig();
+  const key = resolveKey();
+  const source = keySource();
+  return {
+    ok: true,
+    hasKey: Boolean(key),
+    source,
+    masked: key ? maskKey(key) : null,
+    baseUrl: process.env.DEEPSEEK_BASE_URL ?? config.baseUrl ?? "https://api.deepseek.com",
+    model: process.env.DEEPSEEK_MODEL ?? config.model ?? "deepseek-chat",
+    configPath: configPath(),
+    // 环境变量优先级更高。用户改了配置却不生效时，界面要能说清为什么。
+    envOverride: source === "env",
+  };
+}
+
+async function handleSaveSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const body = JSON.parse(await readBody(req)) as {
+      apiKey?: unknown;
+      baseUrl?: unknown;
+      model?: unknown;
+    };
+    const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+    const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : undefined;
+    const model = typeof body.model === "string" ? body.model.trim() : undefined;
+
+    if (apiKey === "") return json(res, 400, { ok: false, error: "请填入模型 key" });
+
+    // 先验再存。存了一把用不了的 key，用户会在聊到一半时才发现。
+    const failure = await verifyKey(apiKey, baseUrl);
+    if (failure) return json(res, 400, { ok: false, error: failure });
+
+    writeConfig({
+      deepseekApiKey: apiKey,
+      baseUrl: baseUrl || undefined,
+      model: model || undefined,
+    });
+    json(res, 200, settingsPayload());
   } catch (e) {
     json(res, 500, { ok: false, error: (e as Error).message });
   }
@@ -552,7 +606,10 @@ async function ensureDshWeb(): Promise<string> {
         // 代理相关的环境变量要**原样继承**：DSH 里跑的助手同样要连 DeepSeek。
         // 关键是 package.json 的 start 里带了 NO_PROXY 把回环排除掉——
         // 少了那一条，NODE_USE_ENV_PROXY 会把本机请求也塞进代理，DSH 起不来。
-        env: { ...process.env, DSH_HOME },
+        //
+        // key 也要显式传进去：它可能来自配置文件而不是环境变量，
+        // 不传的话助手能被造出来、却跑不起来。
+        env: { ...process.env, DSH_HOME, DEEPSEEK_API_KEY: resolveKey() ?? "" },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -779,6 +836,12 @@ const server = createServer((req, res) => {
     }
     if (req.method === "GET" && path === "/api/apps") {
       return handleListApps(res);
+    }
+    if (req.method === "GET" && path === "/api/settings") {
+      return json(res, 200, settingsPayload());
+    }
+    if (req.method === "POST" && path === "/api/settings") {
+      return handleSaveSettings(req, res);
     }
     if (req.method === "POST" && path === "/api/finalize") {
       return handleFinalize(req, res);

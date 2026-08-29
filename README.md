@@ -50,7 +50,7 @@ npm run icon             # 重新生成 electron/icon.png（需要图形环境�
 ```sh
 npm install
 
-# 跑测试（103 测试 + typecheck）
+# 跑测试（115 测试 + typecheck）
 npm test
 npm run typecheck
 
@@ -67,6 +67,7 @@ npx tsx bin/wanxiang.ts "帮我做一个跟进客户的助手" --no-memory
 
 ```
 src/
+  config.ts   # 本地配置（模型 key），用户目录、0600、仓库之外
   appspec/    # AppSpec schema + 校验器 + slug（中文名→英文 preset id）
   compiler/   # 确定性编译器（persona / tools / compile / serialize / skill）
   definer/    # 产品经理与定义器（draft / interviewer / prompt / normalize / define / deepseek）
@@ -77,16 +78,25 @@ src/
   server.ts   # Web 服务（SSE 对话 / finalize / 运行区代理）
 public/       # 前端：index.html + static/app.css + static/app.js（含打印样式）
 electron/     # 桌面外壳（main.cjs / launch.sh / icon.svg）
-tests/        # 103 测试
+tests/        # 115 测试
 scripts/      # 图标生成、DSH runtime spike
 ```
 
+## 模型 key 怎么配
+
+**打开应用第一屏就会让你配**，填一把 key、点「验证并保存」即可——先验证再保存，不会等到聊了一半才发现 key 不能用。之后从侧边栏「模型设置」随时改。
+
+存在 `~/.config/wanxiang/config.json`，权限 `0600`，**在仓库之外**，不会被误提交。造好的助手运行时用的也是这把 key（服务会显式传给 DSH 子进程）。
+
+`DEEPSEEK_API_KEY` 环境变量**优先级更高**：手动 `export` 过的人说了算，配置文件是给双击启动的桌面应用兜底的。两者都有时界面会提示是环境变量在生效，免得你改了设置却不明白为什么没变。
+
 ## 环境变量
 
-- `DEEPSEEK_API_KEY`：DeepSeek API key（定义器 + 运行时 LLM 调用必需）
+- `DEEPSEEK_API_KEY`：优先于配置文件；不设也行，用界面配
 - `WANXIANG_PORT`：Web 服务端口（默认 8787，本机 8787 常被占用建议 8788）
 - `WANXIANG_DSH_PORT`：万象启动或复用的 DSH Web 端口（默认 8891）
 - `WANXIANG_DSH_HOME`：DSH 与万象共享的 home 目录（默认项目根目录下的 `.dsh-home`）
+- `WANXIANG_CONFIG`：配置文件位置（默认 `~/.config/wanxiang/config.json`）
 
 ### 代理（配了代理的机器必看）
 

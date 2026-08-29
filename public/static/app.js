@@ -39,6 +39,8 @@
     busy: false,
     app: null,
     pending: null,
+    ask: null,
+    settings: null,
   };
 
   /* ================= 文档 ================= */
@@ -192,6 +194,11 @@
     try {
       result = await streamTurn((delta) => { prose += delta; paint(false); });
     } catch (e) {
+      if (e.needsKey) {
+        await loadSettings();
+        renderSettings({ reason: "还没设置模型 key，先把它配上再继续。" });
+        return;
+      }
       const box = document.createElement("div");
       box.className = "err";
       box.textContent = `没能问下去：${e.message}`;
@@ -255,7 +262,13 @@
               if (!data) continue;
               const payload = JSON.parse(data);
               if (event === "delta") onDelta(payload.text);
-              else if (event === "error") { settled = true; reject(new Error(payload.error)); return; }
+              else if (event === "error") {
+                settled = true;
+                const err = new Error(payload.error);
+                err.needsKey = payload.needsKey === true;
+                reject(err);
+                return;
+              }
               else if (event === "done") { settled = true; resolve(payload); return; }
             }
           }
@@ -504,12 +517,114 @@
     }
   }
 
+  /* ================= 模型设置 ================= */
+  async function loadSettings() {
+    try {
+      const r = await fetch("/api/settings");
+      state.settings = await r.json();
+    } catch {
+      state.settings = { ok: false, hasKey: false };
+    }
+    const dot = el("key-dot");
+    if (dot) dot.classList.toggle("on", Boolean(state.settings && state.settings.hasKey));
+    return state.settings;
+  }
+
+  /**
+   * 设置界面。没配 key 时它就是第一屏——配置模型是使用产品的第一步，
+   * 不该等到聊了半天才被「缺少 key」拦住。
+   */
+  function renderSettings(options) {
+    const opts = options || {};
+    const cfg = state.settings || {};
+    state.phase = "settings";
+    el("meters").hidden = true;
+    el("top-title").textContent = opts.firstRun ? "先配一下模型" : "模型设置";
+    el("top-en").textContent = "Model settings";
+    el("stage").className = "stage";
+    el("stage").innerHTML =
+      `<h2 class="lede">${opts.firstRun ? "先把模型接上" : "模型设置"}</h2>` +
+      `<p class="sub">${
+        opts.firstRun
+          ? "万象靠 DeepSeek 的模型跟你对话、造助手。填一把 key 就能开始，它只存在你自己电脑上。"
+          : "改完会先验证再保存。造好的助手运行时也用这把 key。"
+      }</p>` +
+      (opts.reason ? `<div class="setup-state bad">${esc(opts.reason)}</div>` : "") +
+      '<div class="setup">' +
+      '<div class="field"><label for="k">模型 key</label>' +
+      `<p class="note">在 platform.deepseek.com 的 API keys 页面申请，形如 sk-…${
+        cfg.hasKey ? `。当前已保存：<b>${esc(cfg.masked || "")}</b>` : ""
+      }</p>` +
+      `<input id="k" type="password" autocomplete="off" spellcheck="false" placeholder="${
+        cfg.hasKey ? "留空则保持不变" : "sk-…"
+      }"></div>` +
+      '<details class="adv"><summary>高级：换服务地址或模型</summary>' +
+      '<div class="field"><label for="b">服务地址</label>' +
+      `<input id="b" type="text" spellcheck="false" value="${esc(cfg.baseUrl || "")}"></div>` +
+      '<div class="field"><label for="m">模型</label>' +
+      `<input id="m" type="text" spellcheck="false" value="${esc(cfg.model || "")}"></div></details>` +
+      '<div class="multi-foot"><button class="btn-solid" id="save-key" type="button">验证并保存</button>' +
+      (cfg.hasKey && !opts.firstRun
+        ? '<button class="btn-quiet" id="settings-back" type="button">返回</button>'
+        : "") +
+      '</div><div id="setup-state"></div>' +
+      (cfg.envOverride
+        ? '<div class="setup-path">注意：当前生效的是环境变量 DEEPSEEK_API_KEY，它的优先级高于这里保存的值。想用这里的设置，先把那个环境变量取消掉。</div>'
+        : "") +
+      (cfg.configPath ? `<div class="setup-path">存在 ${esc(cfg.configPath)}（权限 0600）</div>` : "") +
+      "</div>";
+
+    const stateBox = el("setup-state");
+    const save = el("save-key");
+    save.addEventListener("click", async () => {
+      const key = el("k").value.trim();
+      if (!key) {
+        stateBox.className = "setup-state bad";
+        stateBox.textContent = cfg.hasKey ? "没改就直接返回吧，留空不会覆盖已保存的 key。" : "先填一把 key。";
+        return;
+      }
+      save.disabled = true;
+      stateBox.className = "setup-state busy";
+      stateBox.textContent = "正在验证…";
+      try {
+        const r = await fetch("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: key, baseUrl: el("b").value.trim(), model: el("m").value.trim() }),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) throw new Error(d.error || `保存失败（${r.status}）`);
+        state.settings = d;
+        const dot = el("key-dot");
+        if (dot) dot.classList.add("on");
+        stateBox.className = "setup-state ok";
+        stateBox.textContent = "验证通过，已保存。";
+        setTimeout(restart, 700);
+      } catch (e) {
+        stateBox.className = "setup-state bad";
+        stateBox.textContent = e.message;
+      } finally {
+        save.disabled = false;
+      }
+    });
+    const back = el("settings-back");
+    if (back) back.addEventListener("click", restart);
+    toTop();
+  }
+
   /* ================= 空状态 ================= */
-  function restart() {
+  async function restart() {
     Object.assign(state, {
       phase: "empty", messages: [], draft: { slots: {}, derived: {} },
       turn: 0, answered: 0, busy: false, app: null, pending: null, ask: null,
     });
+    const cfg = await loadSettings();
+    // 没有 key 就别装作能用。第一屏直接给设置，而不是让他聊到一半撞墙。
+    if (!cfg || !cfg.hasKey) {
+      renderSettings({ firstRun: true });
+      loadApps();
+      return;
+    }
     el("meters").hidden = true;
     el("top-title").textContent = "造一个助手";
     el("top-en").textContent = "Build an assistant";
@@ -557,7 +672,11 @@
   }
 
   /* ================= 接线 ================= */
-  el("restart").addEventListener("click", restart);
+  el("restart").addEventListener("click", () => { void restart(); });
+  el("open-settings").addEventListener("click", async () => {
+    await loadSettings();
+    renderSettings({});
+  });
   el("to-confirm").addEventListener("click", () => goConfirm());
   el("expand").addEventListener("click", () => {
     el("overlay-doc").innerHTML = docHtml("ov-");
@@ -568,5 +687,5 @@
     if (e.key === "Escape") el("overlay").classList.add("hidden");
   });
 
-  restart();
+  void restart();
 })();
