@@ -1,4 +1,4 @@
-import type { Domain, RetrievalStrategy } from "../appspec/schema";
+import type { AppSpec, Domain, RetrievalStrategy } from "../appspec/schema";
 
 /** DSH agent.cordis.yml 中的一个插件条目 */
 export interface PluginEntry {
@@ -26,5 +26,10 @@ export interface AppPackage {
     description: string;
     schema_version: string;
     domain: Domain;
+    goal: string;
+    capabilities: AppSpec["capabilities"];
+    memory_binding: AppSpec["memory_binding"];
+    delivery: AppSpec["delivery"];
+    params: AppSpec["params"];
   };
 }

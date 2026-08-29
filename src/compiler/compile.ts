@@ -75,6 +75,18 @@ export function compile(
       description: appspec.description,
       schema_version: appspec.schema_version,
       domain: appspec.domain,
+      goal: appspec.goal,
+      capabilities: [...appspec.capabilities],
+      memory_binding: {
+        read: [...appspec.memory_binding.read],
+        write: [...appspec.memory_binding.write],
+        retrieval: appspec.memory_binding.retrieval,
+      },
+      delivery: { ...appspec.delivery },
+      params: appspec.params.map((param) => ({
+        ...param,
+        options: param.options ? [...param.options] : undefined,
+      })),
     },
   };
 }

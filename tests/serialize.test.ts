@@ -83,4 +83,19 @@ describe("serializePreset", () => {
     expect(mb.read).toContain("客户档案库");
     expect(mb.retrieval).toBe("entity");
   });
+
+  it("app.yml 包含运行区所需的应用摘要", () => {
+    const pkg = compileFrom(valid);
+    const files = serializeAppPackage(pkg);
+    const meta = load(files["app.yml"]) as {
+      goal: string;
+      capabilities: string[];
+      memory_binding: { read: string[] };
+      delivery: { form: string };
+    };
+    expect(meta.goal).toBe(valid.goal);
+    expect(meta.capabilities).toEqual(valid.capabilities);
+    expect(meta.memory_binding.read).toEqual(valid.memory_binding.read);
+    expect(meta.delivery.form).toBe(valid.delivery.form);
+  });
 });
