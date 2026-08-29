@@ -10,10 +10,10 @@
  * 好处是它有独立的缓存和窗口，不会像浏览器那样攥着旧页面不放。
  */
 const { app, BrowserWindow, shell, Menu } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const { request } = require("node:http");
 const { join } = require("node:path");
-const { existsSync, appendFileSync, mkdirSync } = require("node:fs");
+const { existsSync, appendFileSync, mkdirSync, readFileSync, readdirSync } = require("node:fs");
 const { homedir } = require("node:os");
 
 const ROOT = join(__dirname, "..");
@@ -23,6 +23,9 @@ const URL = `http://127.0.0.1:${PORT}`;
 
 let serverProcess = null;
 let win = null;
+
+/** splash 上的按钮用它发信号；主进程在 will-navigate 里截住，不需要 preload。 */
+const ACTION_PREFIX = "http://wanxiang.invalid/";
 
 /**
  * 双击 .desktop 启动时没有终端，出了错什么都看不到。
@@ -85,6 +88,70 @@ async function isUp() {
   return (await probe()) === "ours";
 }
 
+/** 这个进程是不是万象的服务。看 cmdline，认不出就不碰。 */
+function isWanxiangServer(pid) {
+  try {
+    const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf-8").replace(/\0/g, " ");
+    return cmd.includes("src/server.ts");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 找出占着 PORT 的那个万象服务的 pid。
+ *
+ * 先问 ss 要端口上的 pid；拿不到就退回扫 /proc 找命令行像万象服务的进程。
+ * 两条路都**必须**过 isWanxiangServer 这一关——绝不对认不出的进程动手。
+ */
+function findStalePid() {
+  try {
+    const out = execFileSync("ss", ["-lntp", `sport = :${PORT}`], { encoding: "utf-8" });
+    for (const m of out.matchAll(/pid=(\d+)/gu)) {
+      const pid = Number(m[1]);
+      if (pid !== process.pid && isWanxiangServer(pid)) return pid;
+    }
+  } catch {
+    /* ss 不在或没权限，走下面的兜底 */
+  }
+  try {
+    for (const name of readdirSync("/proc")) {
+      if (!/^\d+$/u.test(name)) continue;
+      const pid = Number(name);
+      if (pid !== process.pid && isWanxiangServer(pid)) return pid;
+    }
+  } catch {
+    /* 读不了 /proc 就算了 */
+  }
+  return null;
+}
+
+/** 收掉旧实例并等端口真的空出来。 */
+async function killStale() {
+  const pid = findStalePid();
+  if (pid === null) {
+    log("没找到能确认身份的旧服务进程，不动手");
+    return false;
+  }
+  log("收掉旧服务 pid", pid);
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (e) {
+    log("收不掉:", e.message);
+    return false;
+  }
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if ((await probe()) === "none") {
+      log("端口已空出来");
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  log("等了 8 秒端口还没空");
+  return false;
+}
+
 function startServer() {
   const tsx = join(ROOT, "node_modules", ".bin", "tsx");
   if (!existsSync(tsx)) throw new Error(`找不到 ${tsx}，先在项目目录跑一次 npm install`);
@@ -124,7 +191,7 @@ async function waitUntilUp(timeoutMs = 45000) {
   return false;
 }
 
-function splash(title, detail) {
+function splash(title, detail, action) {
   return (
     "data:text/html;charset=utf-8," +
     encodeURIComponent(`<html><head><meta charset="utf-8"><style>
@@ -135,12 +202,19 @@ function splash(title, detail) {
         display:grid;place-items:center;font-size:24px;font-weight:700}
       h1{margin:0 0 6px;font-size:17px;font-weight:650}
       p{margin:0;color:#5C5A54;font-size:13.5px}
+      a.btn{display:inline-block;margin-top:18px;padding:10px 18px;border-radius:10px;
+        background:#D97757;color:#fff;font-size:14px;font-weight:650;text-decoration:none}
+      a.btn:hover{background:#C15F3C}
+      .hint{margin-top:12px;color:#8A877E;font-size:12px}
     </style></head><body><div class="box"><div class="mark">万</div>
-    <h1>${title}</h1><p>${detail}</p></div></body></html>`)
+    <h1>${title}</h1><p>${detail}</p>
+    ${action ? `<a class="btn" href="${ACTION_PREFIX}${action}">${action === "kill" ? "收掉旧的，用新版打开" : "重试"}</a>` : ""}
+    </div></body></html>`)
   );
 }
 
-async function createWindow() {
+/** 建窗口、挂事件。只在启动时做一次。 */
+function createWindow() {
   const iconPath = join(__dirname, "icon.png");
   win = new BrowserWindow({
     width: 1440,
@@ -160,21 +234,43 @@ async function createWindow() {
     return { action: "deny" };
   });
 
-  await win.loadURL(splash("正在启动万象", "第一次启动要装载运行核心，通常十几秒。"));
-  log("窗口已创建");
+  // splash 上的按钮走这里。用假域名当信令，省掉一个 preload 文件。
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith(ACTION_PREFIX)) return;
+    event.preventDefault();
+    const action = url.slice(ACTION_PREFIX.length).replace(/\/$/u, "");
+    void (async () => {
+      if (action === "kill") {
+        await win.loadURL(splash("正在收掉旧的", "稍等，马上用新版打开。"));
+        await killStale();
+      }
+      await bootIntoApp();
+    })();
+  });
+}
 
+/**
+ * 探测端口 → 该拉服务就拉 → 加载界面。
+ * 单独拆出来，是因为「收掉旧的」按钮要重跑这一段，而窗口不该重建。
+ */
+async function bootIntoApp() {
   const found = await probe();
   log(`端口 ${PORT} 探测结果: ${found}`);
 
   if (found === "stale" || found === "foreign") {
     const who = found === "stale" ? "一个旧版本的万象" : "另一个程序";
     log(`端口被${who}占着，拒绝复用`);
+    const stalePid = found === "stale" ? findStalePid() : null;
+    const canKill = stalePid !== null;
+    log(`能否自己收掉: ${canKill}${stalePid ? " (pid " + stalePid + ")" : ""}`);
     await win.loadURL(
       splash(
         `端口 ${PORT} 被占用了`,
-        `上面跑着${who}。用它的话你看到的还是旧界面，所以我不复用。<br><br>` +
-          `先收掉它：<code style="background:#F0EEE6;padding:2px 6px;border-radius:5px">` +
-          `pkill -f 'tsx src/server.ts'</code><br>然后重新打开本应用。`,
+        canKill
+          ? `上面跑着${who}。用它的话你看到的还是旧界面，所以我不复用。`
+          : `上面跑着${who}，我没法确认它的身份，不敢动它。<br><br>` +
+              `请先手动收掉占用 ${PORT} 的进程，再重新打开本应用。`,
+        canKill ? "kill" : null,
       ),
     );
     return;
@@ -212,9 +308,12 @@ process.on("uncaughtException", (e) => {
   log("未捕获异常:", e && e.stack ? e.stack : String(e));
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   log("=== 万象桌面启动 ===", "root=" + ROOT);
-  return createWindow();
+  createWindow();
+  await win.loadURL(splash("正在启动万象", "第一次启动要装载运行核心，通常十几秒。"));
+  log("窗口已创建");
+  await bootIntoApp();
 }).catch(async (e) => {
   log("启动失败:", e && e.stack ? e.stack : String(e));
   if (!win) {
@@ -224,7 +323,10 @@ app.whenReady().then(() => {
 });
 app.on("window-all-closed", () => app.quit());
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+    void bootIntoApp();
+  }
 });
 app.on("before-quit", () => {
   // 只收自己拉起来的那个；用户手动跑的 npm start 不动它。
