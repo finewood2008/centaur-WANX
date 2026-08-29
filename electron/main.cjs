@@ -13,7 +13,7 @@ const { app, BrowserWindow, shell, Menu } = require("electron");
 const { spawn, execFileSync } = require("node:child_process");
 const { request } = require("node:http");
 const { join } = require("node:path");
-const { existsSync, appendFileSync, mkdirSync, readFileSync, readdirSync } = require("node:fs");
+const { existsSync, appendFileSync, mkdirSync, readFileSync, readdirSync, statSync } = require("node:fs");
 const { homedir } = require("node:os");
 
 const ROOT = join(__dirname, "..");
@@ -45,7 +45,7 @@ function log(...parts) {
 }
 
 /** 这个外壳要求的界面契约版本。服务端 /health 的 ui 低于它就是老实例。 */
-const REQUIRED_UI = 2;
+const REQUIRED_UI = 3;
 
 /**
  * 端口上是什么。用 node:http 直连回环，绕开代理环境变量。
@@ -55,6 +55,42 @@ const REQUIRED_UI = 2;
  * 分清楚很重要：端口被一个老版本万象占着时直接复用，用户看到的还是旧界面——
  * 这正是「改了半天还是旧的」的由来。
  */
+/**
+ * 源码里最新的修改时间。跟服务的启动时刻一比就知道它是不是过期了。
+ *
+ * 只看会影响浏览器所见的目录。手改版本号那套不够可靠：`index.html` 每次现读，
+ * 旧进程会把新 HTML 配旧路由表发出去，界面于是半新半旧。
+ */
+function newestSourceMtime() {
+  let newest = 0;
+  const walk = (dir, depth) => {
+    if (depth > 4) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+        continue;
+      }
+      try {
+        const t = statSync(full).mtimeMs;
+        if (t > newest) newest = t;
+      } catch {
+        /* 读不到就跳过 */
+      }
+    }
+  };
+  walk(join(ROOT, "src"), 0);
+  walk(join(ROOT, "public"), 0);
+  return newest;
+}
+
 function probe() {
   return new Promise((resolve) => {
     const req = request({ hostname: "127.0.0.1", port: PORT, path: "/health", timeout: 1500 }, (res) => {
@@ -66,7 +102,16 @@ function probe() {
         try {
           const info = JSON.parse(body);
           if (info.app === "wanxiang") {
-            resolve(Number(info.ui) >= REQUIRED_UI ? "ours" : "stale");
+            if (Number(info.ui) < REQUIRED_UI) { resolve("stale"); return; }
+            // 版本号对得上，还要看它是不是比代码还老。
+            const startedAt = Number(info.startedAt) || 0;
+            const newest = newestSourceMtime();
+            if (startedAt > 0 && newest > startedAt) {
+              log(`服务启动于 ${new Date(startedAt).toISOString()}，源码更新于 ${new Date(newest).toISOString()}`);
+              resolve("stale");
+              return;
+            }
+            resolve("ours");
             return;
           }
           // 旧版万象的 /health 只回 {ok:true,status:"up"}，没有 app 字段。

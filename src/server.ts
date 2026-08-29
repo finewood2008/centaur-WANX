@@ -243,8 +243,18 @@ async function acknowledgeDshOnboarding(): Promise<void> {
 
 const MAX_TURNS = 20;
 
-/** 界面契约版本。界面或接口有不兼容改动时 +1。 */
-const UI_REVISION = 2;
+/** 界面契约版本。接口有不兼容改动时 +1。 */
+const UI_REVISION = 3;
+
+/**
+ * 进程启动时刻。桌面外壳拿它跟源码的最新修改时间比：
+ * 服务比代码还老，就是个该换掉的旧进程。
+ *
+ * 光靠手改 UI_REVISION 不够——`index.html` 是每次请求现读磁盘的，
+ * 旧进程会把**新的 HTML** 配上**旧的路由表**发出去。加了 .png 支持之前的进程
+ * 就这样：页面引用 logo，进程却不认识 .png，于是左上角一张裂图。
+ */
+const STARTED_AT = Date.now();
 
 /** 客户端告诉我们它刚回答的是哪个槽位。槽位名不合法就丢掉。 */
 function parseAnswered(input: unknown): { slot: SlotKey; value: string | string[] } | null {
@@ -882,7 +892,7 @@ const server = createServer((req, res) => {
     if (req.method === "GET" && path === "/health") {
       // ui 是界面契约版本。桌面外壳靠它认出「端口被一个老实例占着」——
       // 老实例的 /health 只回 {ok,status}，复用它的话用户看到的还是旧界面。
-      return json(res, 200, { ok: true, status: "up", app: "wanxiang", ui: UI_REVISION });
+      return json(res, 200, { ok: true, status: "up", app: "wanxiang", ui: UI_REVISION, startedAt: STARTED_AT });
     }
     json(res, 404, { ok: false, error: "not found" });
   })().catch((e) => json(res, 500, { ok: false, error: (e as Error).message }));
