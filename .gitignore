@@ -16,3 +16,6 @@ apps/
 .env
 .env.*
 !.env.example
+
+# 图标生成的临时目录
+.icon-stage/

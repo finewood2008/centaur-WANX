@@ -37,8 +37,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .sidebar { display: flex; flex-direction: column; gap: 5px; padding: 20px 15px 15px;
   border-right: 1px solid var(--line); background: var(--paper-deep); }
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 4px 18px; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 auto;
-  border-radius: var(--r-btn); background: var(--accent); color: #fff; font-weight: 700; font-size: 16px; }
+.brand-mark { width: 36px; height: 36px; flex: 0 0 auto; object-fit: contain; display: block; }
 .brand-zh { display: block; font-size: 14.5px; font-weight: 650; }
 .brand-en { display: block; margin-top: -1px; font-size: 11px; letter-spacing: .04em; color: var(--ink-3); }
 .make { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px;

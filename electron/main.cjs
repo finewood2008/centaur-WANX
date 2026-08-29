@@ -191,6 +191,22 @@ async function waitUntilUp(timeoutMs = 45000) {
   return false;
 }
 
+/**
+ * splash 是 data: URL，引不了本地文件，所以把 64px 的图标内联进去（约 5KB）。
+ * 读不到就返回空 src，宁可少一张图，也不该因为图标让启动界面起不来。
+ */
+let logoCache = null;
+function logoDataUri() {
+  if (logoCache !== null) return logoCache;
+  try {
+    const png = readFileSync(join(ROOT, "public", "static", "favicon.png"));
+    logoCache = "data:image/png;base64," + png.toString("base64");
+  } catch {
+    logoCache = "";
+  }
+  return logoCache;
+}
+
 function splash(title, detail, action) {
   return (
     "data:text/html;charset=utf-8," +
@@ -198,15 +214,14 @@ function splash(title, detail, action) {
       body{margin:0;height:100vh;display:grid;place-items:center;background:#FAF9F5;color:#141413;
         font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif}
       .box{text-align:center;max-width:440px;padding:24px}
-      .mark{width:52px;height:52px;margin:0 auto 16px;border-radius:14px;background:#D97757;color:#fff;
-        display:grid;place-items:center;font-size:24px;font-weight:700}
+      .mark{width:72px;height:72px;margin:0 auto 14px;display:block;object-fit:contain}
       h1{margin:0 0 6px;font-size:17px;font-weight:650}
       p{margin:0;color:#5C5A54;font-size:13.5px}
       a.btn{display:inline-block;margin-top:18px;padding:10px 18px;border-radius:10px;
         background:#D97757;color:#fff;font-size:14px;font-weight:650;text-decoration:none}
       a.btn:hover{background:#C15F3C}
       .hint{margin-top:12px;color:#8A877E;font-size:12px}
-    </style></head><body><div class="box"><div class="mark">万</div>
+    </style></head><body><div class="box"><img class="mark" src="${logoDataUri()}" alt="">
     <h1>${title}</h1><p>${detail}</p>
     ${action ? `<a class="btn" href="${ACTION_PREFIX}${action}">${action === "kill" ? "收掉旧的，用新版打开" : "重试"}</a>` : ""}
     </div></body></html>`)

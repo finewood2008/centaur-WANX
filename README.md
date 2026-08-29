@@ -38,8 +38,12 @@ DSH 那半边**不做深度换肤**：它的 CSS 引用了 `--dsw-*` 设计变�
 
 ```sh
 npm run desktop          # 或者从命令行起同一个应用
-npm run icon             # 重新生成 electron/icon.png（需要图形环境）
+npm run icon             # 从 public/static/logo.png 重新生成各尺寸图标（需要图形环境）
 ```
+
+品牌图标是半人马 logo。源图 `public/static/logo.png`，`npm run icon` 用 Electron 的渲染器
+把它切成 `electron/icon.png`（512，桌面与窗口）、`public/static/logo-256.png`（界面）、
+`public/static/favicon.png`（标签页）。本机没有 `convert`/`rsvg-convert`，这是不引新依赖的做法。
 
 > Electron 的 `chrome-sandbox` 在本机不是 `root:4755`，启动器带了 `--no-sandbox`。
 > 想开回沙箱，跑一次：

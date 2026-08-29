@@ -11,7 +11,7 @@
     "wanxiang": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx bin/wanxiang.ts",
     "start": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx src/server.ts",
     "desktop": "electron electron/main.cjs",
-    "icon": "electron scripts/make-icon.mjs"
+    "icon": "electron scripts/make-icon.cjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "^0.1.0-rc.6",

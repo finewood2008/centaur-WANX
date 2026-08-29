@@ -458,7 +458,12 @@ const STATIC_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
 };
+
+/** 图片必须按二进制读。用 utf-8 读 PNG 会把它读坏，浏览器只显示裂图。 */
+const BINARY_TYPES = new Set([".png"]);
 
 /**
  * 万象自己的静态资源。
@@ -471,9 +476,14 @@ async function serveStatic(res: ServerResponse, path: string): Promise<void> {
     return json(res, 404, { ok: false, error: "not found" });
   }
   try {
-    const text = await readFile(join(__dirname, "..", "public", "static", name), "utf-8");
-    res.writeHead(200, { "Content-Type": STATIC_TYPES[ext], "Cache-Control": "no-store" });
-    res.end(text);
+    const file = join(__dirname, "..", "public", "static", name);
+    const body = BINARY_TYPES.has(ext) ? await readFile(file) : await readFile(file, "utf-8");
+    res.writeHead(200, {
+      "Content-Type": STATIC_TYPES[ext],
+      // 图片带指纹意义不大，但也不该缓存住——换 logo 时用户不该看到旧的。
+      "Cache-Control": "no-store",
+    });
+    res.end(body);
   } catch {
     json(res, 404, { ok: false, error: "not found" });
   }
