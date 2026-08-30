@@ -70,16 +70,51 @@ describe("compile", () => {
     expect(memoryTools.length).toBeGreaterThan(0);
   });
 
+  it("基线工具集始终在：读写文件、检索、待办、工作指令", () => {
+    // web profile 把 host 平面的工具全 disable 了，preset 里没列的助手就真的没有。
+    const pkg = compileFrom({ ...valid, capabilities: ["summarize"] });
+    const ids = pkg.preset.agentCordis.map((e) => e.id);
+    for (const id of ["agent-instructions", "tool-fs", "tool-fs-search", "tool-todo"]) {
+      expect(ids).toContain(id);
+    }
+  });
+
+  it("永远不挂 shell 与编排类工具——助手面向不懂技术的用户", () => {
+    const pkg = compileFrom({ ...valid, capabilities: ["search", "browse", "api_call"] });
+    const names = pkg.preset.agentCordis.map((e) => e.name).join(" ");
+    for (const banned of ["tool-bash", "tool-pwsh", "tool-subagent", "tool-workflow", "tool-ralph"]) {
+      expect(names).not.toContain(banned);
+    }
+  });
+
   it("capabilities 映射到工具并去重", () => {
     const pkg = compileFrom({ ...valid, capabilities: ["search", "browse"] });
     const webTools = pkg.preset.agentCordis.filter((e) => e.name === "@deepseek-ai/dsh-tool-web");
     expect(webTools.length).toBe(1);
   });
 
-  it("summarize/extract/compose 不挂专门工具", () => {
+  it("只选 search 时 tool-web 不放开 fetch；选了 browse/api_call 才放开", () => {
+    const searchOnly = compileFrom({ ...valid, capabilities: ["search"] });
+    const web1 = searchOnly.preset.agentCordis.find((e) => e.id === "tool-web");
+    expect((web1?.config as { fetch: boolean }).fetch).toBe(false);
+
+    const withBrowse = compileFrom({ ...valid, capabilities: ["browse"] });
+    const web2 = withBrowse.preset.agentCordis.find((e) => e.id === "tool-web");
+    expect((web2?.config as { fetch: boolean }).fetch).toBe(true);
+  });
+
+  it("summarize/extract/compose 不挂联网工具", () => {
     const pkg = compileFrom({ ...valid, capabilities: ["summarize", "extract", "compose"] });
-    const capabilityTools = pkg.preset.agentCordis.filter((e) => e.id.startsWith("capability-tool-"));
-    expect(capabilityTools.length).toBe(0);
+    expect(pkg.preset.agentCordis.some((e) => e.id === "tool-web")).toBe(false);
+  });
+
+  it("order 透传进 preset——DSH 选择器按它排序，调用方传创建时间戳", () => {
+    const r = validateAppSpec(valid);
+    if (!r.ok) throw new Error("invalid");
+    const pkg = compile(r.value, { order: 1756500000 });
+    expect(pkg.preset.order).toBe(1756500000);
+    // 不传保持 0，编译仍是纯函数
+    expect(compile(r.value).preset.order).toBe(0);
   });
 
   it("有 workflow 才挂技能插件，且产出技能文件", () => {

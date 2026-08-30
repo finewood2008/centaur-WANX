@@ -9,7 +9,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "wanxiang": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx bin/wanxiang.ts",
-    "start": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx src/server.ts",
+    "start": "NODE_USE_ENV_PROXY=1 NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 tsx src/main.ts",
     "desktop": "electron electron/main.cjs",
     "icon": "electron scripts/make-icon.cjs",
     "seed-demo": "tsx scripts/seed-demo.ts"
@@ -21,10 +21,8 @@
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
     "js-yaml": "^5.4.1",
-    "zod": "^3.23.8"
-  },
-  "overrides": {
-    "@deepseek-ai/dsh-*": "0.1.0-rc.6"
+    "zod": "^3.23.8",
+    "@centaur/wanxiang": "file:packages/wanxiang-bundle"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

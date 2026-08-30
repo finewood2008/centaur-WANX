@@ -53,11 +53,37 @@ export function writeConfig(patch: WanxiangConfig): WanxiangConfig {
 }
 
 /**
- * 取当前生效的 key。环境变量优先——手动 `export` 过的人应该说了算，
+ * key 的来源哨兵。
+ *
+ * syncKeyEnv() 会把配置文件里的 key 写进 process.env.DEEPSEEK_API_KEY——
+ * DSH 的 llm 适配器按 env 名解析凭据，不写它就「助手能被造出来、却跑不起来」。
+ * 但写完之后 env 里就永远有值了，「环境变量优先」这条规则会把用户后来在界面里
+ * 换的新 key 挡在外面。所以第一次 sync 时记下 key 究竟从哪来：真从 shell 来的，
+ * env 继续说了算；是我们自己写进去的，配置文件才是事实源。
+ */
+const KEY_ORIGIN_ENV = "WANXIANG_KEY_ORIGIN";
+
+/**
+ * 取当前生效的 key。shell 环境变量优先——手动 `export` 过的人应该说了算，
  * 配置文件是给双击启动的桌面应用兜底的。
  */
 export function resolveKey(): string | undefined {
+  if (process.env[KEY_ORIGIN_ENV] === "config") {
+    return readConfig().deepseekApiKey || process.env.DEEPSEEK_API_KEY?.trim() || undefined;
+  }
   return process.env.DEEPSEEK_API_KEY?.trim() || readConfig().deepseekApiKey;
+}
+
+/**
+ * 把当前生效的 key 同步进 process.env.DEEPSEEK_API_KEY，并在第一次调用时
+ * 记下来源。boot 时和每次保存设置后都要调。
+ */
+export function syncKeyEnv(): void {
+  if (!process.env[KEY_ORIGIN_ENV]) {
+    process.env[KEY_ORIGIN_ENV] = process.env.DEEPSEEK_API_KEY?.trim() ? "env" : "config";
+  }
+  const key = resolveKey();
+  if (key) process.env.DEEPSEEK_API_KEY = key;
 }
 
 export function resolveBaseUrl(): string | undefined {
@@ -70,6 +96,9 @@ export function resolveModel(): string | undefined {
 
 /** key 从哪来的。界面上要说清楚，免得用户改了配置却被环境变量盖着还纳闷。 */
 export function keySource(): "env" | "config" | "none" {
+  if (process.env[KEY_ORIGIN_ENV] === "config") {
+    return readConfig().deepseekApiKey ? "config" : "none";
+  }
   if (process.env.DEEPSEEK_API_KEY?.trim()) return "env";
   if (readConfig().deepseekApiKey) return "config";
   return "none";

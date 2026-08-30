@@ -39,8 +39,9 @@
 
 不是嫌麻烦，是两条硬的：
 
-1. **助手在自己的工作目录里有 shell 权限。** 一个人人可访问的公开实例，
-   等于把任意代码执行开放给匿名访客。
+1. **「细聊」是 DSH 的完整界面**，standard preset 下有 shell——一个人人可访问的公开
+   实例，等于把任意代码执行开放给匿名访客。（万象生成的助手已经不带 shell，
+   但完整界面这条门还在。）
 2. **服务端没有任何认证**，而每次「让它跑一次」都在烧真金白银的 token；
    DSH 的 default preset 还是个全局设置，多人并发会互相覆盖。
 
@@ -53,11 +54,26 @@ Codespaces 恰好把这两条都解掉了：一人一个容器，用自己的 ke
 DSH（引擎）→ 知君插件＋底座（记忆）→ 万象（平台/元应用）→ 用户应用（DSH preset/bundle）
 ```
 
-万象是统一对外产品，DSH 是运行核心。**助手跑在万象自己的进程里**——万象经 DSH 的 library API `boot` 一个 headless 运行时，每次跑活儿开一个挂着该助手 preset 的独立会话（`agentPresets.mount` ＋ 独立 cwd），边跑边把进度流式推给界面。界面是万象自己的，不是嵌进来的。
+万象是统一对外产品，DSH 是运行核心。**万象本身是 DSH 的一个 bundle**：启动时 boot 一条
+`wanxiang` profile —— `dsh-base + dsh-web-app + @centaur/wanxiang`（见
+`packages/wanxiang-bundle/`）——**一个进程、一个端口**。万象的界面挂在 `/`、API 挂在
+`/wanx/*`，DSH 自己的 SPA 留在 fallback（`/chat`），中间没有子进程、没有反向代理。
 
-**每次跑都开全新会话。** 同一个助手、同样的资料，行为不该因为「这是第几次跑」而变——跟编译器的确定性是同一条原则。跨次状态将来走记忆绑定，显式声明，不是会话历史的副产品。
+「让它跑一次」和浏览器里的「跟它细聊」**共享同一个运行时**：同一个 agent 平面、同一套
+preset 语义。每次跑开一个挂着该助手 preset 的全新会话（`agentPresets.mount` ＋ 独立
+cwd），边跑边把进度流式推给界面；跑出来的会话也持久化在 `$DSH_HOME/sessions`，
+细聊界面里看得见。同一个助手、同样的资料，行为不该因为「这是第几次跑」而变——
+跟编译器的确定性是同一条原则。
 
-DSH 的完整聊天界面保留为**「跟它细聊」**这个次要入口（iframe ＋ 万象统一代理 HTTP/WebSocket，共享同一个 `DSH_HOME`），适合来回商量的场合。那一屏**不做换肤**：DSH 的 CSS 引用了 `--dsw-*` 设计变量，但整个 `@deepseek-ai` 里没有任何地方定义它们，颜色烤死在每次发版都变的哈希类名里。界面上直说那是完整的对话界面——比顶一层随对方发版就碎的皮诚实。
+助手的能力由 preset 说了算：web 组合把 host 平面所有面向模型的工具都关掉了，preset 里
+没列的工具助手就真的没有。万象编译出的 preset 带一个固定基线（读写文件、检索、待办、
+工作手册），**刻意不给 shell**——`capabilities` 里点了联网类能力才挂 `tool-web`，选了
+browse/api_call 才放开 fetch。访谈里的选择从这里开始是真话，不再是文档字段。
+
+「跟它细聊」打开的是 DSH 的完整界面（同源 iframe，`/chat`）。换肤走 DSH 的正规机制：
+主题 token 在运行时下发的 `dsh-client-ui-theme` 里有完整定义（`--dsw-*` 两层、含
+`overrideTokens` API），品牌是 `sidebar.brand.*` 插槽的官方白牌位——此前 README 里
+「颜色烤死在哈希类名里、深度换肤做不到」的说法**是错的**，已随品牌插件一并修正。
 
 ## 功能特性
 
@@ -97,14 +113,14 @@ npm run icon             # 从 public/static/logo.png 重新生成各尺寸图�
 ```sh
 npm install
 
-# 跑测试（151 测试 + typecheck）
+# 跑测试（163 测试 + typecheck）
 npm test
 npm run typecheck
 
-# 启动 Web 服务（统一的 Agent 创建 + 运行工作区）
+# 启动（单进程：万象界面、API、DSH 完整界面都在这一个端口上）
 export DEEPSEEK_API_KEY=你的key
-WANXIANG_PORT=8788 WANXIANG_DSH_PORT=8891 npm start
-# 打开 http://127.0.0.1:8788
+WANXIANG_PORT=8788 npm start
+# 打开 http://127.0.0.1:8788（细聊在 /chat）
 
 # CLI 生成应用（--no-memory 生成 DSH 兼容变体，知君插件未实现前默认）
 npx tsx bin/wanxiang.ts "帮我做一个跟进客户的助手" --no-memory
@@ -119,12 +135,15 @@ src/
   compiler/   # 确定性编译器（persona / tools / compile / serialize / skill）
   definer/    # 产品经理与定义器（draft / interviewer / prompt / normalize / define / deepseek）
   prd/        # 11 节文档结构（sections）与确定性渲染（render）
-  runtime/    # DSH library 运行时适配器（无头调用，用于验证）
+  runtime/    # run-agent（会话驱动，服务与探针共用）+ 独立 headless 运行时（探针用）
   pipeline.ts # 编排层（runPipeline / runFinalize）
   cli.ts      # CLI
   runs.ts     # 产出存储（每次跑的元数据 + 交付物落盘、回看）
   materials.ts# 「资料」——用户交给助手的东西，落在会话 cwd 根下
-  server.ts   # Web 服务（SSE 对话 / finalize / 跑一次 / 资料 / 细聊代理）
+  main.ts     # 启动入口：boot wanxiang profile（dsh-base + dsh-web-app + @centaur/wanxiang）
+  server.ts   # 万象的路由与处理器，由 bundle 挂在 DSH 的 webserver 上
+packages/
+  wanxiang-bundle/  # @centaur/wanxiang——万象作为 DSH bundle 的组合层
 public/       # 前端：index.html + static/app.css + static/app.js（含打印样式）
 electron/     # 桌面外壳（main.cjs / launch.sh / icon.svg）
 tests/        # 151 测试
@@ -144,7 +163,6 @@ examples/     # 示例助手，npm run seed-demo 装进本机
 
 - `DEEPSEEK_API_KEY`：优先于配置文件；不设也行，用界面配
 - `WANXIANG_PORT`：Web 服务端口（默认 8787，本机 8787 常被占用建议 8788）
-- `WANXIANG_DSH_PORT`：万象启动或复用的 DSH Web 端口（默认 8891）
 - `WANXIANG_DSH_HOME`：DSH 与万象共享的 home 目录（默认项目根目录下的 `.dsh-home`）
 - `WANXIANG_APPS`：助手落盘目录（默认 `~/.local/share/wanxiang/apps`）。**必须在 git 仓库之外**，原因见上面「助手的目录长什么样」
 - `WANXIANG_CONFIG`：配置文件位置（默认 `~/.config/wanxiang/config.json`）
@@ -182,32 +200,35 @@ examples/     # 示例助手，npm run seed-demo 装进本机
 
 ## 接口
 
+万象让出真正的 `/api`——那是 DSH connection 插件的 RPC 前缀——自己的接口都在 `/wanx` 下。
+
 对话与生成：
 
 | | |
 |---|---|
-| `POST /api/chat` | 产品经理的一轮，SSE 流式 |
-| `POST /api/finalize` | 确认后组装：草稿 → 助手，落盘并装好 |
-| `POST /api/create` | 一句话单发生成（CLI / 测试用，不走访谈） |
-| `GET /api/apps` | 我的助手 |
-| `GET /api/apps/:slug/prd.md` | 导出需求文档 |
+| `POST /wanx/api/chat` | 产品经理的一轮，SSE 流式 |
+| `POST /wanx/api/finalize` | 确认后组装：草稿 → 助手，落盘并装好 |
+| `POST /wanx/api/create` | 一句话单发生成（CLI / 测试用，不走访谈） |
+| `GET /wanx/api/apps` | 我的助手 |
+| `GET /wanx/api/apps/:slug/prd.md` | 导出需求文档 |
 
 助手干活：
 
 | | |
 |---|---|
-| `POST /api/apps/:slug/run` | 跑一次，SSE：`step` 白话进度 / `text` 助手的话 / `done` 落盘后的记录 |
-| `GET /api/apps/:slug/runs` | 历史产出，新的在前，带一句话摘要 |
-| `GET /api/apps/:slug/runs/:id` | 某一次的完整交付物 |
-| `GET /api/apps/:slug/materials` | 它能看的资料 |
-| `POST /api/apps/:slug/materials` | 存一份资料（`{name, text}`）或删一份（`{name, remove:true}`） |
+| `POST /wanx/api/apps/:slug/run` | 跑一次，SSE：`step` 白话进度 / `text` 助手的话 / `done` 落盘后的记录 |
+| `GET /wanx/api/apps/:slug/runs` | 历史产出，新的在前，带一句话摘要 |
+| `GET /wanx/api/apps/:slug/runs/:id` | 某一次的完整交付物 |
+| `GET /wanx/api/apps/:slug/materials` | 它能看的资料 |
+| `POST /wanx/api/apps/:slug/materials` | 存一份资料（`{name, text}`）或删一份（`{name, remove:true}`） |
 
 模型与细聊：
 
 | | |
 |---|---|
-| `GET/POST /api/settings` | 模型 key，永远只回遮罩形式 |
-| `GET /api/dsh` ＋ `/runtime/*` | 「跟它细聊」——DSH 完整界面，万象统一代理 |
+| `GET/POST /wanx/api/settings` | 模型 key，永远只回遮罩形式 |
+| `GET /chat`（及其他未认领路径） | 「跟它细聊」——DSH 的 SPA fallback，同进程同端口，无代理 |
+| `POST /wanx/api/activate` | 把 DSH 的默认 preset 设为某助手，细聊新会话就用它 |
 
 ## 相关文档
 

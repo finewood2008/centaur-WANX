@@ -24,7 +24,8 @@ export async function runPipeline(
     maxRepairs?: number;
     outDir?: string;
     includeCentaurPlugins?: boolean;
-    appsDir?: string;
+    /** preset 在 DSH 选择器里的排序值，见 CompileOptions.order。 */
+    order?: number;
   } = {},
 ): Promise<PipelineResult> {
   const defined = await defineAppSpec(intent, llm, { maxRepairs: options.maxRepairs });
@@ -34,7 +35,7 @@ export async function runPipeline(
 
   const pkg = compile(defined.value, {
     includeCentaurPlugins: options.includeCentaurPlugins,
-    appsDir: options.appsDir,
+    order: options.order,
   });
   const files = serializeAppPackage(pkg);
 
@@ -59,7 +60,7 @@ export type FinalizeResult =
 export async function runFinalize(
   draft: PRDDraft,
   llm: LLMClient,
-  options: { turns?: number; date: string; appsDir?: string; maxRepairs?: number } = { date: "" },
+  options: { turns?: number; date: string; order?: number; maxRepairs?: number } = { date: "" },
 ): Promise<FinalizeResult> {
   const filled = fillGuesses(draft);
   const defined = await defineAppSpec(draftToIntent(filled), llm, {
@@ -78,7 +79,7 @@ export async function runFinalize(
   const wanted = asText(filled.derived.name).trim();
   if (wanted.length >= 2 && wanted.length <= 30) appspec.name = wanted;
 
-  const pkg = compile(appspec, { includeCentaurPlugins: false, appsDir: options.appsDir });
+  const pkg = compile(appspec, { includeCentaurPlugins: false, order: options.order });
   const files = serializeAppPackage(pkg);
 
   files["prd.md"] = renderPrd(filled, {

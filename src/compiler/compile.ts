@@ -1,14 +1,23 @@
 import type { AppSpec } from "../appspec/schema";
 import { buildPersonaText } from "./persona";
-import { CAPABILITY_TOOL_PLUGINS, CENTAUR_PLUGINS, MEMORY_TOOL_PLUGINS } from "./tools";
+import {
+  BASELINE_TOOL_ROWS,
+  capabilityWebConfig,
+  CENTAUR_PLUGINS,
+  MEMORY_TOOL_PLUGINS,
+} from "./tools";
 import { compileSkill } from "./skill";
 import type { AppPackage, PluginEntry } from "./types";
 
 export interface CompileOptions {
   /** false 时过滤掉所有 @centaur/* 占位插件（知君插件尚未实现），生成 DSH 兼容变体。 */
   includeCentaurPlugins?: boolean;
-  /** 保留给调用方，当前编译不再依赖它（技能装载走 $DSH_HOME/skills）。 */
-  appsDir?: string;
+  /**
+   * preset 在 DSH 选择器里的排序值（越小越靠前）。编译保持纯函数——调用方传
+   * 创建时刻的时间戳进来；不传就是 0。全部写 0 的话，DSH 的 roster 会退回按
+   * 目录名（哈希 slug）排序，对用户是乱序。
+   */
+  order?: number;
 }
 
 /**
@@ -28,11 +37,20 @@ export function compile(appspec: AppSpec, options: CompileOptions = {}): AppPack
     name,
   }));
 
-  const toolNames = uniqueSorted(appspec.capabilities.flatMap((c) => CAPABILITY_TOOL_PLUGINS[c]));
-  const capabilityTools: PluginEntry[] = toolNames.map((name, i) => ({
-    id: `capability-tool-${i}`,
-    name,
+  // 基线工具集：文件读写与检索、待办、工作手册。没有它们，web profile 下的
+  // 助手连自己资料夹里的东西都读不了（host 平面的工具在 web bundle 里全被
+  // disabled，preset 说什么它才有什么）。
+  const baseline: PluginEntry[] = BASELINE_TOOL_ROWS.map((row) => ({
+    id: row.id,
+    name: row.name,
+    ...("config" in row && row.config ? { config: { ...row.config } } : {}),
   }));
+
+  // capabilities 里点了联网类能力才挂 tool-web；browse/api_call 额外放开 fetch。
+  const webConfig = capabilityWebConfig(appspec.capabilities);
+  const capabilityTools: PluginEntry[] = webConfig
+    ? [{ id: "tool-web", name: "@deepseek-ai/dsh-tool-web", config: webConfig }]
+    : [];
 
   // 技能插件的挂载条件是「生成了工作流程」，不是过去那张挂名的 DOMAIN_SKILLS 表。
   // 挂载条件写错，SKILL.md 会被生成出来却从不加载——整个「自动开发」静默失效。
@@ -51,6 +69,7 @@ export function compile(appspec: AppSpec, options: CompileOptions = {}): AppPack
 
   const agentCordis: PluginEntry[] = [
     persona,
+    ...baseline,
     ...memoryTools,
     ...capabilityTools,
     ...skillPlugins,
@@ -60,7 +79,7 @@ export function compile(appspec: AppSpec, options: CompileOptions = {}): AppPack
     preset: {
       name: appspec.name,
       description: appspec.description,
-      order: 0,
+      order: options.order ?? 0,
       agentCordis,
     },
     memoryBinding: {
@@ -92,6 +111,3 @@ export function compile(appspec: AppSpec, options: CompileOptions = {}): AppPack
   };
 }
 
-function uniqueSorted(arr: string[]): string[] {
-  return [...new Set(arr)].sort();
-}

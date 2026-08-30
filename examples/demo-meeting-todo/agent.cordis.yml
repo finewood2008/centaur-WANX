@@ -6,8 +6,6 @@
 
       你的目标：将会议记录中的待办事项整理为结构化清单，确保完整性，不遗漏任何可能构成待办的内容。
 
-      额外要求：以完整性为首要目标，不因主观判断省略任何疑似待办；仅处理会议记录，不承担提醒或排期职责。
-
       记忆：
       - 可读记忆库：*
       - 检索策略：语义检索
@@ -33,6 +31,20 @@
       - 输出清单的详细程度，包括是否显示原文位置标注、缺失字段的展示方式等：未设置
       - 缺失字段的标注样式，包括标记词汇、颜色或符号：未设置
       - 输出清单的分组粒度，支持按负责人、按会议段落或按时间维度：未设置
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
 - id: tool-skill

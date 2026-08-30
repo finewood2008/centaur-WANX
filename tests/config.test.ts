@@ -13,6 +13,7 @@ beforeEach(() => {
   savedKey = process.env.DEEPSEEK_API_KEY;
   process.env.WANXIANG_CONFIG = join(dir, "config.json");
   delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.WANXIANG_KEY_ORIGIN;
 });
 
 afterEach(() => {
@@ -20,6 +21,7 @@ afterEach(() => {
   else process.env.WANXIANG_CONFIG = saved;
   if (savedKey === undefined) delete process.env.DEEPSEEK_API_KEY;
   else process.env.DEEPSEEK_API_KEY = savedKey;
+  delete process.env.WANXIANG_KEY_ORIGIN;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -38,6 +40,28 @@ describe("config", () => {
     expect(c.resolveKey()).toBe("sk-abc");
     expect(c.keySource()).toBe("config");
     expect(statSync(c.configPath()).mode & 0o777).toBe(0o600);
+  });
+
+  it("syncKeyEnv：key 来自配置文件时，env 被写上但事实源仍是配置", () => {
+    // DSH 的 llm 适配器按 env 名解析凭据，所以必须写 env；
+    // 但写完 keySource 不能从此谎报 "env"，否则用户换 key 看不懂为什么没生效。
+    c.writeConfig({ deepseekApiKey: "sk-v1" });
+    c.syncKeyEnv();
+    expect(process.env.DEEPSEEK_API_KEY).toBe("sk-v1");
+    expect(c.keySource()).toBe("config");
+    // 轮换：界面里换了 key，env 里还留着旧值——新 key 必须赢
+    c.writeConfig({ deepseekApiKey: "sk-v2" });
+    expect(c.resolveKey()).toBe("sk-v2");
+    c.syncKeyEnv();
+    expect(process.env.DEEPSEEK_API_KEY).toBe("sk-v2");
+  });
+
+  it("syncKeyEnv：key 真从 shell 来的，env 继续说了算", () => {
+    process.env.DEEPSEEK_API_KEY = "sk-shell";
+    c.syncKeyEnv();
+    c.writeConfig({ deepseekApiKey: "sk-config" });
+    expect(c.resolveKey()).toBe("sk-shell");
+    expect(c.keySource()).toBe("env");
   });
 
   it("环境变量优先于配置文件，且能说清来源", () => {

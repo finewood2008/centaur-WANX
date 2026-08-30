@@ -45,7 +45,7 @@ function log(...parts) {
 }
 
 /** 这个外壳要求的界面契约版本。服务端 /health 的 ui 低于它就是老实例。 */
-const REQUIRED_UI = 2;
+const REQUIRED_UI = 3;
 
 /**
  * 端口上是什么。用 node:http 直连回环，绕开代理环境变量。
@@ -92,7 +92,8 @@ async function isUp() {
 function isWanxiangServer(pid) {
   try {
     const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf-8").replace(/\0/g, " ");
-    return cmd.includes("src/server.ts");
+    // 单进程融合后入口是 src/main.ts；老版本是 src/server.ts，两个都认。
+    return cmd.includes("src/main.ts") || cmd.includes("src/server.ts");
   } catch {
     return false;
   }
@@ -155,8 +156,8 @@ async function killStale() {
 function startServer() {
   const tsx = join(ROOT, "node_modules", ".bin", "tsx");
   if (!existsSync(tsx)) throw new Error(`找不到 ${tsx}，先在项目目录跑一次 npm install`);
-  log("拉起服务:", tsx, "src/server.ts", "端口", PORT);
-  serverProcess = spawn(tsx, ["src/server.ts"], {
+  log("拉起服务:", tsx, "src/main.ts", "端口", PORT);
+  serverProcess = spawn(tsx, ["src/main.ts"], {
     cwd: ROOT,
     env: {
       ...process.env,

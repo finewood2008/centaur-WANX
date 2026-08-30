@@ -230,7 +230,7 @@
 
   function streamTurn(onDelta) {
     return new Promise((resolve, reject) => {
-      fetch("/api/chat", {
+      fetch("/wanx/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -443,7 +443,7 @@
     }, 1200);
 
     try {
-      const response = await fetch("/api/finalize", {
+      const response = await fetch("/wanx/api/finalize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ draft: state.draft, turns: state.turn }),
@@ -571,7 +571,7 @@
   }
 
   async function saveMaterial(slug, name, text, remove) {
-    const r = await fetch(`/api/apps/${encodeURIComponent(slug)}/materials`, {
+    const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/materials`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(remove ? { name, remove: true } : { name, text }),
@@ -659,8 +659,8 @@
     let mats = [];
     try {
       const [runsRes, matsRes] = await Promise.all([
-        fetch(`/api/apps/${encodeURIComponent(slug)}/runs`),
-        fetch(`/api/apps/${encodeURIComponent(slug)}/materials`),
+        fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/runs`),
+        fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/materials`),
       ]);
       const rd = await runsRes.json();
       const md_ = await matsRes.json();
@@ -706,7 +706,7 @@
     el("do-run").addEventListener("click", () => runApp(slug));
     if (el("see-prd")) {
       el("see-prd").addEventListener("click", () => {
-        window.open(`/api/apps/${encodeURIComponent(slug)}/prd.md`, "_blank");
+        window.open(`/wanx/api/apps/${encodeURIComponent(slug)}/prd.md`, "_blank");
       });
     }
     el("deep-chat").addEventListener("click", () => goDeepChat(slug));
@@ -743,7 +743,7 @@
     };
 
     try {
-      const response = await fetch(`/api/apps/${encodeURIComponent(slug)}/run`, { method: "POST" });
+      const response = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/run`, { method: "POST" });
       if (!response.ok || !response.body) throw new Error(`跑不起来（${response.status}）`);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -795,7 +795,7 @@
 
   async function openRun(slug, id) {
     try {
-      const r = await fetch(`/api/apps/${encodeURIComponent(slug)}/runs/${encodeURIComponent(id)}`);
+      const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/runs/${encodeURIComponent(id)}`);
       const d = await r.json();
       if (d.ok === false) throw new Error(d.error);
       renderResult(slug, d.run, d.output);
@@ -856,19 +856,19 @@
     el("stage").className = "stage wide";
     el("stage").innerHTML = '<div class="build"><h2>正在打开对话</h2><span class="build-en">Starting</span></div>';
     try {
-      await fetch("/api/activate", {
+      // 激活 = 把 DSH 的默认 preset 设成这个助手；SPA 新建会话时就会用它。
+      await fetch("/wanx/api/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ app: slug }),
       });
-      const r = await fetch("/api/dsh");
-      const d = await r.json();
-      if (d.ok === false) throw new Error(d.error);
       el("dsh-state").textContent = "运行中";
       el("stage").innerHTML =
         '<div class="chat-bar"><button class="btn-quiet" id="chat-back" type="button">← 回到助手</button>' +
         '<span class="chat-note">这是完整的对话界面，适合来回商量。跑固定活儿用「让它跑一次」更省事。</span></div>' +
-        `<iframe class="runtime" title="对话" src="/runtime/?agent=${encodeURIComponent(slug)}"></iframe>`;
+        // 同一进程同一端口：/chat 不是路由，是 SPA 的 fallback——DSH 前端对
+        // 无扩展名路径返回 index.html，整个完整界面就开在这儿。
+        `<iframe class="runtime" title="对话" src="/chat"></iframe>`;
       el("chat-back").addEventListener("click", () => goApp(slug));
     } catch (e) {
       el("stage").className = "stage";
@@ -882,7 +882,7 @@
   /* ================= 我的助手 ================= */
   async function loadApps() {
     try {
-      const r = await fetch("/api/apps");
+      const r = await fetch("/wanx/api/apps");
       const d = await r.json();
       const apps = Array.isArray(d.apps) ? d.apps : [];
       state.apps = apps;
@@ -910,7 +910,7 @@
   /* ================= 模型设置 ================= */
   async function loadSettings() {
     try {
-      const r = await fetch("/api/settings");
+      const r = await fetch("/wanx/api/settings");
       state.settings = await r.json();
     } catch {
       state.settings = { ok: false, hasKey: false };
@@ -978,7 +978,7 @@
       stateBox.className = "setup-state busy";
       stateBox.textContent = "正在验证…";
       try {
-        const r = await fetch("/api/settings", {
+        const r = await fetch("/wanx/api/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ apiKey: key, baseUrl: el("b").value.trim(), model: el("m").value.trim() }),

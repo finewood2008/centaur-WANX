@@ -1,0 +1,24 @@
+# 万象 bundle 的组合层，摞在 dsh-base + dsh-web-app 之上。
+#
+# 万象不再是包在 DSH 外面的壳：产品界面（exact /、/static）与 API（prefix /wanx）
+# 直接挂在 DSH 的 webserver 上，「跑一次」和浏览器里的「细聊」共享同一个
+# 运行时、同一个 agent 平面、同一套 preset 语义。
+
+# 官方品牌行让位。空着时侧栏显示 DSH 的兜底鱼标——万象自己的品牌插件
+# 在下一阶段补上（sidebar.brand.mark / sidebar.brand.name 两个插槽）。
+- id: ui-brand-official
+  disabled: true
+
+# 目录选择留在浏览器里，不在服务器宿主上弹原生窗口。
+- id: directory-picker
+  disabled: true
+
+- insert:
+    - id: directory-picker-browser-host
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: directory-picker-browser-client
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+
+    # 万象自己：路由注册 + job 运行时（见包内 src/index.ts）。
+    - id: wanxiang
+      name: '@centaur/wanxiang'
