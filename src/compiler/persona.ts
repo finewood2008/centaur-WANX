@@ -41,6 +41,15 @@ export function buildPersonaText(appspec: AppSpec): string {
   }
   L.push(`- 检索策略：${RETRIEVAL_LABEL[appspec.memory_binding.retrieval]}`);
 
+  // 记忆库现在没有真的后端，persona 里那几个库名只是用户的说法。
+  // 不说清楚这一点，助手会真的去满文件系统找一个叫「work_logs」的东西——
+  // 实测一次运行为此空转 80 秒，最后交回一份空清单。
+  L.push("");
+  L.push("资料在哪：");
+  L.push("- 你能看的东西全在当前工作目录里，用文件工具去看。");
+  L.push("- 目录里没有的，就是没有。不要去别的地方翻，也不要凭空编。");
+  L.push("- 找不到资料时，直接说清楚缺什么、该把东西放哪，别交一份空的东西回去。");
+
   L.push("");
   L.push("交付：");
   L.push(`- 交付物形式：${appspec.delivery.form}`);

@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { dump, load } from "js-yaml";
@@ -19,10 +20,34 @@ import {
 import { emptyDraft, applyPatch, missingSlots, SLOT_KEYS, type PRDDraft, type SlotKey } from "./definer/draft";
 import { slugFromName } from "./appspec/slug";
 import type { AppSpec } from "./appspec/schema";
+import { WanxiangRuntime } from "./runtime/dsh-runtime";
+import {
+  listRuns,
+  newRunId,
+  readRun,
+  saveRun,
+  workspaceDir,
+  type RunRecord,
+} from "./runs";
+import {
+  deleteMaterial,
+  listMaterials,
+  saveMaterial,
+  MAX_MATERIAL_BYTES,
+} from "./materials";
 
 const PORT = Number(process.env.WANXIANG_PORT ?? 8787);
 const DSH_PORT = Number(process.env.WANXIANG_DSH_PORT ?? 8891);
-const APPS_DIR = process.env.WANXIANG_APPS ?? join(process.cwd(), "apps");
+/**
+ * 应用落盘目录。**必须在 git 仓库之外。**
+ *
+ * DSH 发现项目技能时走 findProjectRoot——向上找 `.git`，找不到才用 cwd 本身。
+ * 应用要是落在仓库里，所有应用的 projectRoot 都会解析到仓库根，共享同一个
+ * `<repo>/.dsh/skills`，按应用隔离就没了。放在家目录下，每个应用的 workspace
+ * 自己就是 projectRoot。
+ */
+const APPS_DIR =
+  process.env.WANXIANG_APPS ?? join(homedir(), ".local", "share", "wanxiang", "apps");
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML = join(__dirname, "..", "public", "index.html");
 const DSH_HOME = process.env.WANXIANG_DSH_HOME ?? join(__dirname, "..", ".dsh-home");
@@ -41,6 +66,12 @@ type AppSummary = {
   memoryBinding: AppSpec["memory_binding"];
   delivery: AppSpec["delivery"];
   params: AppSpec["params"];
+  /** 界面上「它会做的事」那一段。用户在第 7 节亲口排的步骤。 */
+  workflow: AppSpec["workflow"];
+  /** 「它不会做的事」。让用户看得见边界，比看不见更安心。 */
+  boundaries: AppSpec["boundaries"];
+  /** 有没有需求文档。走 /api/create 单发造出来的助手没有，界面不该给个点了 404 的按钮。 */
+  hasPrd: boolean;
 };
 
 function appSummary(slug: string, appspec: AppSpec): AppSummary {
@@ -61,6 +92,9 @@ function appSummary(slug: string, appspec: AppSpec): AppSummary {
       ...param,
       options: param.options ? [...param.options] : undefined,
     })),
+    workflow: { steps: [...appspec.workflow.steps] },
+    boundaries: [...appspec.boundaries],
+    hasPrd: false,
   };
 }
 
@@ -84,13 +118,32 @@ function summaryFromStoredMeta(slug: string, raw: unknown): AppSummary | null {
       ? (meta.delivery as AppSpec["delivery"])
       : { form: goal, trigger: "conversational" as const, output: "chat" as const };
   const params = Array.isArray(meta.params) ? (meta.params as AppSpec["params"]) : [];
-  return { slug, name, description, goal, domain: domain as AppSpec["domain"], capabilities, memoryBinding, delivery, params };
+  const wf = meta.workflow;
+  const steps =
+    wf && typeof wf === "object" && !Array.isArray(wf) && Array.isArray((wf as { steps?: unknown }).steps)
+      ? ((wf as { steps: unknown[] }).steps.filter((x): x is string => typeof x === "string"))
+      : [];
+  const boundaries = Array.isArray(meta.boundaries)
+    ? meta.boundaries.filter((x): x is string => typeof x === "string")
+    : [];
+  return {
+    slug, name, description, goal, domain: domain as AppSpec["domain"],
+    capabilities, memoryBinding, delivery, params,
+    workflow: { steps }, boundaries,
+    hasPrd: false,
+  };
 }
 
 async function readAppSummary(slug: string): Promise<AppSummary | null> {
   try {
     const text = await readFile(join(APPS_DIR, slug, "app.yml"), "utf-8");
-    return summaryFromStoredMeta(slug, load(text));
+    const summary = summaryFromStoredMeta(slug, load(text));
+    if (!summary) return null;
+    summary.hasPrd = await readFile(join(APPS_DIR, slug, "prd.md"), "utf-8").then(
+      () => true,
+      () => false,
+    );
+    return summary;
   } catch {
     return null;
   }
@@ -132,52 +185,33 @@ async function installApp(slug: string, files: Record<string, string>): Promise<
   await writeFile(join(presetDir, "preset.yml"), files["preset.yml"] ?? "", "utf-8");
   await writeFile(join(presetDir, "agent.cordis.yml"), files["agent.cordis.yml"] ?? "", "utf-8");
 
-  // 技能文件必须装进 $DSH_HOME/skills/ 才会被 DSH 发现。
+  // 技能装进**应用自己的 workspace**：`<workspace>/.dsh/skills/<name>/SKILL.md`。
   //
-  // 本来想用 preset 里的 `customSkillDirs` 指向应用自己的目录、配
-  // `includeDefaultRoots: false` 做隔离——实测**行不通**：DSH 会整个忽略 preset 里
-  // 给 skill-filesystem 写的 config（写死 includeDefaultRoots:false 之后，默认根里的
-  // 技能照样被发现）。内置的 standard preset 同样是空配置。
-  // 唯一可靠的装载点就是这里的用户根。
+  // preset 里的 `customSkillDirs` / `includeDefaultRoots` 确实不生效（实测：写进
+  // agent.cordis.yml 的 config 根本到不了 skill-filesystem 实例）。但 DSH 还有一条
+  // 根是通的——findProjectRoot(cwd) 之下的 `.dsh/skills`。实测放在那儿的技能会被发现。
   //
-  // 代价：助手之间的技能不隔离，彼此可见。技能名带 slug 前缀不会撞，
-  // 但这是个已知缺口——DSH 支持按 preset 隔离技能之后要回来改。
+  // 所以隔离的做法不是「挡住共享根」（关不掉），而是**让共享根保持空**：万象不再往
+  // `$DSH_HOME/skills/` 写任何东西，每个应用只看得见自己 workspace 里的手册。
+  // 前提是 APPS_DIR 在 git 仓库之外——见上面的注释。
+  const workspace = workspaceDir(APPS_DIR, slug);
   for (const [name, content] of Object.entries(files)) {
     if (!name.startsWith("skills/")) continue;
-    const target = join(DSH_HOME, name);
+    const target = join(workspace, ".dsh", name);
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content, "utf-8");
   }
-  await pruneOrphanSkills();
 
   // 这里**不**写 DSH default preset。生成不等于激活——
   // 「先跑一次给你看」那一下才激活，由 /api/activate 负责。
   return appDir;
 }
 
-/**
- * 清掉 `$DSH_HOME/skills/` 里没有对应应用的技能。
- *
- * 技能现在装在共享的用户根下、助手之间不隔离，所以一个改过名的助手会留下
- * 旧 slug 的技能，被其他所有助手看见，且永远不会消失。只动 `app-*-workflow`
- * 这个我们自己的命名，绝不碰用户手写的技能。
+/*
+ * 曾经这里有个 pruneOrphanSkills()：技能装在共享的 $DSH_HOME/skills/ 下、助手之间
+ * 不隔离，改过名的助手会留下旧 slug 的技能被所有人看见。技能改装进应用自己的
+ * workspace 之后，共享根里不再有万象的东西，孤儿问题不存在了，那个补丁已删除。
  */
-async function pruneOrphanSkills(): Promise<void> {
-  const skillsRoot = join(DSH_HOME, "skills");
-  let entries;
-  try {
-    entries = await readdir(skillsRoot, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const match = /^(app-[a-z0-9]+)-workflow$/u.exec(entry.name);
-    if (!match) continue;
-    if (await readAppSummary(match[1]) !== null) continue;
-    await rm(join(skillsRoot, entry.name), { recursive: true, force: true });
-  }
-}
 
 async function writeDshPatch(): Promise<void> {
   const patch = [
@@ -395,6 +429,7 @@ async function handleFinalize(req: IncomingMessage, res: ServerResponse): Promis
     json(res, 200, {
       ok: true,
       ...appSummary(slug, outcome.appspec),
+      hasPrd: true,
       dir: appDir,
       repairs: outcome.repairs,
       prdUrl: `/api/apps/${slug}/prd.md`,
@@ -444,14 +479,24 @@ async function handleSaveSettings(req: IncomingMessage, res: ServerResponse): Pr
       baseUrl: baseUrl || undefined,
       model: model || undefined,
     });
+
+    // key 是在「起进程」那一刻被快照进去的：job 运行时 boot 时读一次，
+    // DSH 子进程 spawn 时塞进 env 一次。改了 key 却不收掉它们，助手会继续
+    // 拿一把作废的 key 去跑，直到用户重启万象——而他完全不知道为什么。
+    await resetRuntimes();
+
     json(res, 200, settingsPayload());
   } catch (e) {
     json(res, 500, { ok: false, error: (e as Error).message });
   }
 }
 
+/** slug 直接进文件路径，凡是从 URL 来的都要过这一关。 */
+const SLUG_RE = /^[a-z0-9-]+$/u;
+
 /** 导出人读的 PRD。 */
 async function handlePrd(res: ServerResponse, slug: string): Promise<void> {
+  if (!SLUG_RE.test(slug)) return json(res, 400, { ok: false, error: "无效的助手标识" });
   try {
     const text = await readFile(join(APPS_DIR, slug, "prd.md"), "utf-8");
     res.writeHead(200, {
@@ -558,6 +603,199 @@ async function handleActivate(req: IncomingMessage, res: ServerResponse): Promis
   } catch (error) {
     json(res, 500, { ok: false, error: (error as Error).message });
   }
+}
+
+/* ═══════════════ job 模式运行时 ═══════════════════════════════════
+ *
+ * 助手在万象自己的进程里跑，不再靠 iframe 嵌 DSH 的聊天界面。
+ *
+ * 为什么：访谈把用户引向「定期跑一次、产出一份东西」的模型（第 9 节「触发方式」、
+ * 第 8 节「交付物」），那是个 job，不是聊天。聊天窗口装不下 job——没有「跑」这个
+ * 动作，没有产出历史，也没有地方挂定时。
+ *
+ * 每次跑都开**全新会话**：同一个助手、同样的输入，行为不该因为「这是第几次跑」
+ * 而变——跟编译器的确定性是同一条原则。跨次状态将来走记忆绑定，显式声明，
+ * 不是会话历史的副产品。
+ */
+
+let runtime: WanxiangRuntime | null = null;
+let runtimeBoot: Promise<WanxiangRuntime> | null = null;
+
+async function ensureRuntime(): Promise<WanxiangRuntime> {
+  if (runtime?.booted) return runtime;
+  if (!runtimeBoot) {
+    runtimeBoot = (async () => {
+      const r = new WanxiangRuntime();
+      await r.boot({ dshHome: DSH_HOME });
+      runtime = r;
+      return r;
+    })();
+    // boot 失败要把 promise 清掉，否则第一次失败之后永远重试不了。
+    runtimeBoot.catch(() => {
+      runtimeBoot = null;
+      runtime = null;
+    });
+  }
+  return runtimeBoot;
+}
+
+/**
+ * 交给助手的任务文本。
+ *
+ * 实测：任务写得中性（「今天适合做什么？」）时，模型是靠 glob 撞见工作手册的
+ * ——它读到了，但那不是可靠的契约。所以这里**显式**让它按手册走。
+ * 同时把交付物形式说清楚，那是用户在第 8 节亲口选的。
+ */
+function buildJobTask(app: AppSummary, materials: string[]): string {
+  const lines = [
+    "按你的工作手册跑一遍。",
+    `产出：${app.delivery.form}`,
+  ];
+  // 把资料清单直接给它。不给的话它会满目录 glob 去找——实测一次运行为此
+  // 空转了 80 秒，连着推了 18 条一模一样的进度。
+  if (materials.length > 0) {
+    lines.push("", "当前目录下的资料（只有这些，不用再去别处找）：");
+    for (const name of materials) lines.push(`- ${name}`);
+  } else {
+    lines.push(
+      "",
+      "当前目录下还没有任何资料。别去别处翻，也别编——" +
+        "直接说清楚你需要什么样的资料，让用户放进来。",
+    );
+  }
+  lines.push("", "直接给结果本身，不要复述手册、不要解释你打算怎么做。");
+  return lines.join("\n");
+}
+
+async function handleListMaterials(res: ServerResponse, slug: string): Promise<void> {
+  json(res, 200, { ok: true, materials: await listMaterials(APPS_DIR, slug) });
+}
+
+/** 存一份资料，或删掉一份。名字清洗在 materials.ts 里，这里只管协议。 */
+async function handleSaveMaterial(
+  req: IncomingMessage,
+  res: ServerResponse,
+  slug: string,
+): Promise<void> {
+  try {
+    const body = JSON.parse(await readBody(req)) as {
+      name?: unknown;
+      text?: unknown;
+      remove?: unknown;
+    };
+    const name = typeof body.name === "string" ? body.name : "";
+    if (name.trim() === "") return json(res, 400, { ok: false, error: "先给这份资料起个名字" });
+
+    if (body.remove === true) {
+      await deleteMaterial(APPS_DIR, slug, name);
+      return json(res, 200, { ok: true, materials: await listMaterials(APPS_DIR, slug) });
+    }
+
+    const text = typeof body.text === "string" ? body.text : "";
+    if (text.trim() === "") return json(res, 400, { ok: false, error: "内容是空的" });
+    const saved = await saveMaterial(APPS_DIR, slug, name, text);
+    if (!saved) {
+      const tooBig = Buffer.byteLength(text, "utf-8") > MAX_MATERIAL_BYTES;
+      return json(res, 400, {
+        ok: false,
+        error: tooBig ? "这份资料太大了，先拆小一点" : "这个名字不能用，换一个",
+      });
+    }
+    json(res, 200, { ok: true, materials: await listMaterials(APPS_DIR, slug) });
+  } catch (e) {
+    json(res, 500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/** 跑一次。SSE：step 是白话进度，text 是助手的话，done 带上落盘后的记录。 */
+async function handleRun(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+  const app = await readAppSummary(slug);
+  if (!app) return json(res, 404, { ok: false, error: "没有这个助手" });
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  if (!resolveKey()) {
+    send("error", { error: "还没设置模型 key", needsKey: true });
+    res.end();
+    return;
+  }
+
+  const id = newRunId();
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
+  const task = buildJobTask(app, materials);
+  let sessionId: string | null = null;
+
+  try {
+    send("step", { text: "正在唤醒助手" });
+    const rt = await ensureRuntime();
+    sessionId = await rt.createSession(slug, workspaceDir(APPS_DIR, slug));
+
+    const output = await rt.runTaskStream(sessionId, task, (e) => {
+      send(e.kind, { text: e.text });
+    });
+
+    const record: RunRecord = {
+      id,
+      status: "ok",
+      task,
+      startedAt,
+      ms: Date.now() - started,
+      trigger: "manual",
+    };
+    await saveRun(APPS_DIR, slug, record, output);
+    send("done", { run: record, output });
+  } catch (e) {
+    const message = (e as Error).message;
+    const record: RunRecord = {
+      id,
+      status: "failed",
+      task,
+      startedAt,
+      ms: Date.now() - started,
+      trigger: "manual",
+      error: message,
+    };
+    // 失败也存档：用户下次打开该看得见「上次没跑成，因为什么」。
+    await saveRun(APPS_DIR, slug, record, "").catch(() => {});
+    send("error", { error: message });
+  } finally {
+    if (sessionId) runtime?.releaseSession(sessionId);
+    res.end();
+  }
+}
+
+/**
+ * 收掉两个持有旧 key 的东西，下次用到时各自重起。
+ * 换 key 之后必须调——见 handleSaveSettings 里的说明。
+ */
+async function resetRuntimes(): Promise<void> {
+  const old = runtime;
+  runtime = null;
+  runtimeBoot = null;
+  if (old) await old.dispose().catch(() => {});
+  if (dshWebProcess?.exitCode === null) {
+    dshWebProcess.kill("SIGTERM");
+    dshWebProcess = null;
+  }
+}
+
+async function handleListRuns(res: ServerResponse, slug: string): Promise<void> {
+  json(res, 200, { ok: true, runs: await listRuns(APPS_DIR, slug) });
+}
+
+async function handleReadRun(res: ServerResponse, slug: string, id: string): Promise<void> {
+  const one = await readRun(APPS_DIR, slug, id);
+  if (!one) return json(res, 404, { ok: false, error: "没有这次记录" });
+  json(res, 200, { ok: true, run: one.record, output: one.output });
 }
 
 let dshWebProcess: ChildProcess | null = null;
@@ -677,53 +915,21 @@ async function handleDsh(res: ServerResponse): Promise<void> {
 }
 
 /**
- * 给 DSH 页面贴万象的牌。
+ * 给 DSH 页面对一下底色。
  *
- * 只做文案替换和底色对齐——**不做深度换肤**：DSH 前端引用了 `--dsw-*` 设计变量，
- * 但整个 @deepseek-ai 里没有任何地方定义它们，颜色烤死在每次发版都变的哈希类名里。
- * 也不再往 DSH 头部注入「创建助手」的链接：它现在跑在万象外壳的 iframe 里，
- * 侧边栏一直都在，注入的链接反而会把 iframe 导航走。
+ * 这里**只**改标题和背景。以前还挂了个 MutationObserver 满页替换文本节点，
+ * 想把 DSH 的字样都换成万象——那层皮会随对方每次发版随机碎掉，而且它引用的
+ * `--dsw-*` 设计变量在整个 @deepseek-ai 里根本没有定义，颜色烤死在哈希类名里，
+ * 深度换肤本来就做不到。
+ *
+ * 现在也不需要了：助手的主界面是万象自己的（看它会做什么 → 跑一次 → 看产出），
+ * DSH 这一屏退居「跟它细聊」，界面上已经明说这是完整的对话界面。
+ * 老实承认，比顶着一层随时会碎的皮强。
  */
 function brandRuntimeHtml(html: string): string {
-  const branding = `<style>
-    html, body { background: #FAF9F5; }
-  </style><script>(() => {
-    const replacements = new Map([
-      ["DeepSeek Harness", "半人马AI-万象"],
-      ["DSH Local Build", "半人马AI-万象"],
-      ["Into the Unknown", "半人马AI-万象"],
-      ["探索未至之境", "半人马AI-万象"]
-    ]);
-    let scheduled = false;
-    const apply = () => {
-      scheduled = false;
-      if (document.title !== "半人马AI-万象") document.title = "半人马AI-万象";
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      let node;
-      while ((node = walker.nextNode())) {
-        const key = node.data.trim();
-        const parent = node.parentElement;
-        const smallBuildLabel = parent && /^[a-f0-9]{7}$/iu.test(key)
-          && Number.parseFloat(getComputedStyle(parent).fontSize) <= 10;
-        if (key === "Preview" || key === "预览版" || smallBuildLabel) {
-          if (parent) parent.style.display = "none";
-          continue;
-        }
-        const replacement = replacements.get(key);
-        if (replacement) node.data = node.data.replace(key, replacement);
-      }
-    };
-    const schedule = () => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(apply);
-    };
-    new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
-    addEventListener("DOMContentLoaded", apply);
-  })()</script>`;
   return html
     .replace("<title>DeepSeek Harness</title>", "<title>半人马AI-万象</title>")
-    .replace("</body>", `${branding}</body>`);
+    .replace("</body>", "<style>html, body { background: #FAF9F5; }</style></body>");
 }
 
 function dshTargetPath(pathWithQuery: string): string {
@@ -868,6 +1074,19 @@ const server = createServer((req, res) => {
     }
     if (req.method === "GET" && path.startsWith("/api/apps/") && path.endsWith("/prd.md")) {
       return handlePrd(res, path.slice("/api/apps/".length, -"/prd.md".length));
+    }
+    // /api/apps/<slug>/run | /runs | /runs/<id>
+    const appPath =
+      /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials)(?:\/([\w-]+))?$/u.exec(path);
+    if (appPath) {
+      const [, slug, kind, id] = appPath;
+      if (req.method === "POST" && kind === "run") return handleRun(req, res, slug);
+      if (req.method === "GET" && kind === "runs" && !id) return handleListRuns(res, slug);
+      if (req.method === "GET" && kind === "runs" && id) return handleReadRun(res, slug, id);
+      if (req.method === "GET" && kind === "materials") return handleListMaterials(res, slug);
+      if (req.method === "POST" && kind === "materials") {
+        return handleSaveMaterial(req, res, slug);
+      }
     }
     if (req.method === "GET" && path.startsWith("/static/")) {
       return serveStatic(res, path);
