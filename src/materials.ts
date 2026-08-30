@@ -21,6 +21,32 @@ export interface Material {
 export const MAX_MATERIAL_BYTES = 512 * 1024;
 
 /**
+ * DSH 会把 workspace 里这些名字当成 agent 指令自动读进模型上下文
+ * （dsh-agent-instructions / skill 发现）。资料是**数据**不是指令——放行这些
+ * 名字等于让用户无意中把一份资料提权成「每次运行都注入、且永久驻留」的指令。
+ * 存的时候直接拒。
+ */
+const RESERVED_NAMES = new Set(["agents.md", "claude.md", "skill.md", "readme.md"]);
+
+/**
+ * 把一个「要读/删的资料名」解析成 workspace 下的安全精确名。
+ *
+ * 和 safeName 分工不同：safeName 是**写入时**把用户起的名字规范化成磁盘名；
+ * 读和删必须**精确匹配** listMaterials 给出的磁盘真实名，只做安全校验——
+ * 绝不再过一遍 safeName。否则磁盘上一个 `a  b.md`（助手写的、含两个空格）
+ * 列表照原样显示，删除时 safeName 把它合并成 `a b.md`，要么删不掉、要么
+ * 删错另一个文件。返回 null 表示这个名字不安全或不该碰。
+ */
+export function resolveExisting(name: string): string | null {
+  const n = String(name ?? "");
+  if (n === "" || n.length > 255) return null;
+  if (n.includes("/") || n.includes("\\") || n.includes("\u0000")) return null;
+  if (n.startsWith(".")) return null; // 隐藏文件 / .dsh / 穿越，都不是「资料」
+  if (n === "." || n === "..") return null;
+  return n;
+}
+
+/**
  * 文件名清洗。名字直接进路径，也直接给用户看，所以两头都要管：
  * 挡住穿越和隐藏文件，同时保留中文——用户会用中文起名。
  */
@@ -69,6 +95,7 @@ export async function saveMaterial(
 ): Promise<Material | null> {
   const safe = safeName(name);
   if (safe === null) return null;
+  if (RESERVED_NAMES.has(safe.toLowerCase())) return null;
   if (Buffer.byteLength(text, "utf-8") > MAX_MATERIAL_BYTES) return null;
   const dir = workspaceDir(appsDir, slug);
   await mkdir(dir, { recursive: true });
@@ -82,20 +109,22 @@ export async function readMaterial(
   slug: string,
   name: string,
 ): Promise<string | null> {
-  const safe = safeName(name);
-  if (safe === null) return null;
+  const exact = resolveExisting(name);
+  if (exact === null) return null;
   try {
-    return await readFile(join(workspaceDir(appsDir, slug), safe), "utf-8");
+    return await readFile(join(workspaceDir(appsDir, slug), exact), "utf-8");
   } catch {
     return null;
   }
 }
 
 export async function deleteMaterial(appsDir: string, slug: string, name: string): Promise<boolean> {
-  const safe = safeName(name);
-  if (safe === null) return false;
+  const exact = resolveExisting(name);
+  if (exact === null) return false;
+  const target = join(workspaceDir(appsDir, slug), exact);
   try {
-    await rm(join(workspaceDir(appsDir, slug), safe), { force: true });
+    // force:false —— 不存在要如实报 false，别让「点了删除其实没删掉」静默成功。
+    await rm(target);
     return true;
   } catch {
     return false;

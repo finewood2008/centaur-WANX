@@ -130,7 +130,45 @@ export async function runAgentTask(
     dispose?.();
   }
 
-  return lastAssistantText(agent, firstSeq);
+  const text = lastAssistantText(agent, firstSeq);
+
+  // DSH 的驱动循环 kick() 用 `catch(_error){}` 吞掉一次 turn 里的任何异常
+  // （凭证缺失、断网、工具失败），失败被写进 turn/end 的 reason={kind:"error"}
+  // 之后 agent 照常回到 idle。whenIdle() 于是正常 resolve、这里不抛。
+  // 不主动去读那条 error，跑失败就会被当成「跑成功、交付物为空」存档——
+  // 用户在历史里永远看不到「上次为什么没跑成」。
+  //
+  // 只在**没有拿到有效产出**时才把 error 抛出来：中途某 turn 出错但助手最终
+  // 还是给了东西，算成功；彻底没产出又有 error turn，才是真失败。
+  if (text.trim() === "") {
+    const failure = lastTurnError(agent, firstSeq);
+    if (failure) throw new Error(failure);
+  }
+
+  return text;
+}
+
+/**
+ * firstSeq 之后最后一条「失败」的 turn/end 的错误信息，没有则返回 null。
+ * DSH 把它写成 reason={kind:"error", error:{message, code}}（aborted 不算失败）。
+ */
+export function lastTurnError(agent: any, firstSeq: number): string | null {
+  let failure: string | null = null;
+  for (const event of agent.session.events) {
+    if (event.seq < firstSeq) continue;
+    if (event.type !== "turn/end") continue;
+    const reason = event.data?.reason;
+    if (reason?.kind === "error") {
+      const err = reason.error;
+      const msg = typeof err?.message === "string" && err.message !== "" ? err.message : "";
+      const code = typeof err?.code === "string" ? err.code : "";
+      failure = msg || code || "运行时出错，助手没有产出";
+    } else if (reason?.kind === "completed" || reason === undefined) {
+      // 后面又有成功的 turn，把之前的失败清掉——以最后一次为准。
+      failure = null;
+    }
+  }
+  return failure;
 }
 
 /** 从 firstSeq 之后的事件里取助手最后一段非空文本。 */

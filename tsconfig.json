@@ -8,5 +8,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "tests"]
+  "include": [
+    "src",
+    "tests",
+    "scripts",
+    "bin"
+  ]
 }

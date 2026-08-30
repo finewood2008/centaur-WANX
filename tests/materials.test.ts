@@ -57,7 +57,8 @@ describe("saveMaterial / readMaterial", () => {
   it("存进去能读回来", async () => {
     const m = await saveMaterial(apps, "app-x", "八月往来", "见了张总，答应下周给方案");
     expect(m?.name).toBe("八月往来.md");
-    expect(await readMaterial(apps, "app-x", "八月往来")).toContain("张总");
+    // 读用列表返回的真实名（前端就是这么做的），不是规范化前的名字
+    expect(await readMaterial(apps, "app-x", m!.name)).toContain("张总");
   });
 
   it("落在 workspace 根下——那就是会话的 cwd，助手一睁眼就看得见", async () => {
@@ -68,8 +69,8 @@ describe("saveMaterial / readMaterial", () => {
 
   it("同名覆盖", async () => {
     await saveMaterial(apps, "app-x", "记录", "旧的");
-    await saveMaterial(apps, "app-x", "记录", "新的");
-    expect(await readMaterial(apps, "app-x", "记录")).toBe("新的");
+    const m = await saveMaterial(apps, "app-x", "记录", "新的");
+    expect(await readMaterial(apps, "app-x", m!.name)).toBe("新的");
   });
 
   it("名字非法就不写", async () => {
@@ -82,6 +83,36 @@ describe("saveMaterial / readMaterial", () => {
 
   it("读不存在的返回 null 而不是抛", async () => {
     expect(await readMaterial(apps, "app-x", "没有这个")).toBeNull();
+  });
+
+  it("读删按磁盘真实名精确匹配，不再过 safeName（否则删错文件）", async () => {
+    // 助手写的 / 手动放的文件可能带两个空格——safeName 会把它合并成另一个名字
+    const ws = workspaceDir(apps, "app-x");
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, "a  b.md"), "两个空格", "utf-8"); // 磁盘真实名
+    // listMaterials 原样返回它
+    expect((await listMaterials(apps, "app-x")).map((m) => m.name)).toContain("a  b.md");
+    // 按列表给的名字精确读得到
+    expect(await readMaterial(apps, "app-x", "a  b.md")).toBe("两个空格");
+    // safeName("a  b.md")="a b.md"，用旧逻辑会读错——现在读不到
+    expect(await readMaterial(apps, "app-x", "a b.md")).toBeNull();
+  });
+
+  it("删不存在的如实报 false，不静默成功", async () => {
+    expect(await deleteMaterial(apps, "app-x", "根本没有.md")).toBe(false);
+  });
+
+  it("读删挡穿越与隐藏文件", async () => {
+    for (const bad of ["../x", "a/b", ".hidden", "..", ".dsh"]) {
+      expect(await readMaterial(apps, "app-x", bad)).toBeNull();
+      expect(await deleteMaterial(apps, "app-x", bad)).toBe(false);
+    }
+  });
+
+  it("拒绝存 DSH 会当指令的保留名——资料是数据不是指令", async () => {
+    for (const name of ["AGENTS.md", "CLAUDE.md", "claude", "SKILL.md"]) {
+      expect(await saveMaterial(apps, "app-x", name, "x")).toBeNull();
+    }
   });
 });
 
@@ -113,9 +144,9 @@ describe("listMaterials", () => {
 });
 
 describe("deleteMaterial", () => {
-  it("删掉之后列表里就没了", async () => {
-    await saveMaterial(apps, "app-x", "记录", "x");
-    expect(await deleteMaterial(apps, "app-x", "记录")).toBe(true);
+  it("删掉之后列表里就没了（用列表返回的真实名删）", async () => {
+    const saved = await saveMaterial(apps, "app-x", "记录", "x");
+    expect(await deleteMaterial(apps, "app-x", saved!.name)).toBe(true);
     expect(await listMaterials(apps, "app-x")).toEqual([]);
   });
 

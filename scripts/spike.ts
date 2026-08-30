@@ -92,8 +92,8 @@ const { installModelSelection } = await import("@deepseek-ai/dsh-agent");
 const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
 const { SessionId } = await import("@deepseek-ai/dsh-session");
 
-const agents = ctx.get("agents");
-const sessions = ctx.get("sessions");
+const agents = ctx.get("agents")!;
+const sessions = ctx.get("sessions")!;
 const selection = ctx.get("agentDefaultModel").currentSelection();
 
 const cwd = join(PROJECT, ".workspace");

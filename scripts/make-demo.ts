@@ -112,3 +112,5 @@ console.log(`  slug     : ${app.slug}`);
 console.log(`  修复次数 : ${app.repairs}`);
 console.log(`  有文档   : ${app.hasPrd}`);
 console.log(`  落盘     : ${app.dir}`);
+
+export {};

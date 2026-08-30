@@ -10,7 +10,7 @@
  * 同一个 agent 平面——两边工具集不一致的 bug 从结构上消失。
  */
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { syncKeyEnv, resolveKey } from "./config";
@@ -37,22 +37,26 @@ function ensureProfile(): void {
   const profileDir = join(DSH_HOME, "profiles", "wanxiang");
   mkdirSync(profileDir, { recursive: true });
 
+  // 每次对齐 bundles，而不是仅在缺失时创建：万象升级增删了一个 bundle 时，
+  // 老用户的 profile 里那份 package.json 早就存在，只创建的话他永远拿不到
+  // 新组合。只在真的不一致时写盘（避免每次启动都 no-op 改文件时间戳）。
   const manifest = join(profileDir, "package.json");
-  if (!existsSync(manifest)) {
-    writeFileSync(
-      manifest,
-      JSON.stringify(
-        {
-          name: "dsh-profile-wanxiang",
-          private: true,
-          dependencies: {},
-          dsh: { profile: { bundles: BUNDLES } },
-        },
-        null,
-        2,
-      ) + "\n",
-      "utf-8",
-    );
+  const desired = {
+    name: "dsh-profile-wanxiang",
+    private: true,
+    dependencies: {},
+    dsh: { profile: { bundles: BUNDLES } },
+  };
+  let current: unknown;
+  try {
+    current = JSON.parse(readFileSync(manifest, "utf-8"));
+  } catch {
+    current = null;
+  }
+  const currentBundles = (current as { dsh?: { profile?: { bundles?: unknown } } } | null)?.dsh
+    ?.profile?.bundles;
+  if (JSON.stringify(currentBundles) !== JSON.stringify(BUNDLES)) {
+    writeFileSync(manifest, JSON.stringify(desired, null, 2) + "\n", "utf-8");
   }
 
   const linkDir = join(profileDir, "node_modules", "@centaur");

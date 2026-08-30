@@ -19,3 +19,6 @@ apps/
 
 # 图标生成的临时目录
 .icon-stage/
+
+# CLI 默认输出目录（bin/wanxiang.ts --out 默认 ./wanxiang-apps，README 叫在仓库根跑）
+wanxiang-apps/
