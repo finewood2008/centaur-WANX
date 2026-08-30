@@ -75,6 +75,16 @@ describe("saveRun / readRun", () => {
     expect(back?.output).toContain("三条待跟进");
   });
 
+  it("manualVersion 可选字段 round-trip（调教循环记「这次用的第几版手册」）", async () => {
+    const r = { ...record(), manualVersion: 3 };
+    await saveRun(apps, "app-x", r, "x");
+    expect((await readRun(apps, "app-x", r.id))?.record.manualVersion).toBe(3);
+    // 老记录没有该字段照样读
+    const legacy = record();
+    await saveRun(apps, "app-x", legacy, "y");
+    expect((await readRun(apps, "app-x", legacy.id))?.record.manualVersion).toBeUndefined();
+  });
+
   it("落在 <app>/runs/<id>/ 下", async () => {
     const r = record();
     await saveRun(apps, "app-x", r, "x");

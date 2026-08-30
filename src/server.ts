@@ -4,7 +4,18 @@ import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dump, load } from "js-yaml";
-import { runFinalize, runPipeline, writeAppPackage } from "./pipeline";
+import { runFinalize, runPipeline } from "./pipeline";
+import { installApp, readPresetOrder } from "./install";
+import { buildUiBlueprint, heroKindLabel, type UiBlueprint } from "./compiler/ui";
+import { applyRevision, applyRollback, reviseManual } from "./tuning";
+import { headRevision, listRevisions, reconcile, sliceOf, slicesEqual } from "./revisions";
+import { compileSkill } from "./compiler/skill";
+import {
+  buildParamsSection,
+  readParamValues,
+  validateParamValues,
+  writeParamValues,
+} from "./params-store";
 import { validateAppSpec } from "./appspec/validate";
 import { compile } from "./compiler/compile";
 import { serializePreset } from "./compiler/serialize";
@@ -91,6 +102,8 @@ type AppSummary = {
   boundaries: AppSpec["boundaries"];
   /** 有没有需求文档。走 /api/create 单发造出来的助手没有，界面不该给个点了 404 的按钮。 */
   hasPrd: boolean;
+  /** 工作台蓝图——app.yml 的纯函数投影，现算不落盘，永不过期。 */
+  blueprint: UiBlueprint;
 };
 
 function appSummary(slug: string, appspec: AppSpec): AppSummary {
@@ -114,6 +127,7 @@ function appSummary(slug: string, appspec: AppSpec): AppSummary {
     workflow: { steps: [...appspec.workflow.steps] },
     boundaries: [...appspec.boundaries],
     hasPrd: false,
+    blueprint: buildUiBlueprint(appspec),
   };
 }
 
@@ -145,12 +159,29 @@ function summaryFromStoredMeta(slug: string, raw: unknown): AppSummary | null {
   const boundaries = Array.isArray(meta.boundaries)
     ? meta.boundaries.filter((x): x is string => typeof x === "string")
     : [];
-  return {
+  const summary: AppSummary = {
     slug, name, description, goal, domain: domain as AppSpec["domain"],
     capabilities, memoryBinding, delivery, params,
     workflow: { steps }, boundaries,
     hasPrd: false,
+    blueprint: buildUiBlueprint({
+      domain: domain as AppSpec["domain"],
+      delivery,
+      params,
+    }),
   };
+  return summary;
+}
+
+/** 读回完整的 AppSpec（app.yml 过校验）。调教要在真规格上做手术，摘要不够。 */
+async function readAppSpec(slug: string): Promise<AppSpec | null> {
+  try {
+    const meta = load(await readFile(join(APPS_DIR, slug, "app.yml"), "utf-8"));
+    const validated = validateAppSpec(meta);
+    return validated.ok ? validated.value : null;
+  } catch {
+    return null;
+  }
 }
 
 async function readAppSummary(slug: string): Promise<AppSummary | null> {
@@ -195,36 +226,11 @@ function parseMessages(input: unknown): ChatMessage[] | null {
   return msgs;
 }
 
-/** 把应用包落盘到 apps/<slug>/，同时把 preset 装到 DSH_HOME/.agent-presets/<slug>/。 */
-async function installApp(slug: string, files: Record<string, string>): Promise<string> {
-  const appDir = join(APPS_DIR, slug);
-  await writeAppPackage(files, appDir);
-  const presetDir = join(DSH_HOME, ".agent-presets", slug);
-  await mkdir(presetDir, { recursive: true });
-  await writeFile(join(presetDir, "preset.yml"), files["preset.yml"] ?? "", "utf-8");
-  await writeFile(join(presetDir, "agent.cordis.yml"), files["agent.cordis.yml"] ?? "", "utf-8");
-
-  // 技能装进**应用自己的 workspace**：`<workspace>/.dsh/skills/<name>/SKILL.md`。
-  //
-  // preset 里的 `customSkillDirs` / `includeDefaultRoots` 确实不生效（实测：写进
-  // agent.cordis.yml 的 config 根本到不了 skill-filesystem 实例）。但 DSH 还有一条
-  // 根是通的——findProjectRoot(cwd) 之下的 `.dsh/skills`。实测放在那儿的技能会被发现。
-  //
-  // 所以隔离的做法不是「挡住共享根」（关不掉），而是**让共享根保持空**：万象不再往
-  // `$DSH_HOME/skills/` 写任何东西，每个应用只看得见自己 workspace 里的手册。
-  // 前提是 APPS_DIR 在 git 仓库之外——见上面的注释。
-  const workspace = workspaceDir(APPS_DIR, slug);
-  for (const [name, content] of Object.entries(files)) {
-    if (!name.startsWith("skills/")) continue;
-    const target = join(workspace, ".dsh", name);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, content, "utf-8");
-  }
-
-  // 这里不写任何「默认助手」之类的全局状态——不存在那种东西。
-  // 用哪个助手是建会话时的显式参数（agentPreset + cwd），见 runtime/agent-session.ts。
-  return appDir;
-}
+/*
+ * 应用包的落盘原语在 src/install.ts（创建与调教共用同一条路径）。
+ * 这里不写任何「默认助手」之类的全局状态——不存在那种东西。
+ * 用哪个助手是建会话时的显式参数（agentPreset + cwd），见 runtime/agent-session.ts。
+ */
 
 /**
  * 自愈：把旧编译器装出来的 preset 升级到当前基线。
@@ -264,15 +270,7 @@ export async function healInstalledPresets(): Promise<void> {
       if (!validated.ok) continue;
 
       // 保留原 order（preset.yml 里的），别把用户的排序洗掉。
-      let order = 0;
-      try {
-        const preset = load(await readFile(join(APPS_DIR, slug, "preset.yml"), "utf-8"));
-        if (preset && typeof preset === "object" && typeof (preset as { order?: unknown }).order === "number") {
-          order = (preset as { order: number }).order;
-        }
-      } catch {
-        /* 没有就用 0 */
-      }
+      const order = await readPresetOrder(APPS_DIR, slug);
 
       const { presetYml, agentCordisYml } = serializePreset(
         compile(validated.value, { includeCentaurPlugins: false, order }),
@@ -470,7 +468,7 @@ async function handleFinalize(req: IncomingMessage, res: ServerResponse): Promis
     if (!outcome.ok) return json(res, 422, { ok: false, error: outcome.error });
 
     const slug = slugFromName(outcome.appspec.name);
-    const appDir = await installApp(slug, outcome.files);
+    const appDir = await installApp(APPS_DIR, DSH_HOME, slug, outcome.files);
     json(res, 200, {
       ok: true,
       ...appSummary(slug, outcome.appspec),
@@ -607,7 +605,7 @@ async function handleCreate(req: IncomingMessage, res: ServerResponse): Promise<
     }
 
     const slug = slugFromName(r.appspec.name);
-    const appDir = await installApp(slug, r.files);
+    const appDir = await installApp(APPS_DIR, DSH_HOME, slug, r.files);
 
     json(res, 200, {
       ok: true,
@@ -658,11 +656,14 @@ let hostCtx: any = null;
  * ——它读到了，但那不是可靠的契约。所以这里**显式**让它按手册走。
  * 同时把交付物形式说清楚，那是用户在第 8 节亲口选的。
  */
-function buildJobTask(app: AppSummary, materials: string[]): string {
+function buildJobTask(app: AppSummary, materials: string[], paramsSection: string[] = []): string {
   const lines = [
     "按你的工作手册跑一遍。",
     `产出：${app.delivery.form}`,
   ];
+  // 用户拧过的旋钮（params.yml）注入在这里——运行期的生效值，
+  // 段落开头会声明它盖过手册里渲染的默认值（见 buildParamsSection）。
+  lines.push(...paramsSection);
   // 把资料清单直接给它。不给的话它会满目录 glob 去找——实测一次运行为此
   // 空转了 80 秒，连着推了 18 条一模一样的进度。
   if (materials.length > 0) {
@@ -723,6 +724,13 @@ async function handleSaveMaterial(
 const runningApps = new Set<string>();
 
 /**
+ * 正在调教（修订手册）的应用。跑与调互斥，两个方向都要挡：
+ * 调教中放行一次跑，跑出来的结果「出自旧手册」，用户刚提的意见看起来没生效。
+ * check-and-set 与首个 await 之间必须零间隙——纪律与 runningApps 相同。
+ */
+const tuningApps = new Set<string>();
+
+/**
  * 跑一次的执行体。SSE 的 handleRun 和调度器共用——两边只在「进度去哪」和
  * 「trigger 记成什么」上不同。
  */
@@ -736,6 +744,7 @@ async function executeRun(
   // check-and-set 紧挨、中间无 await：否则两个并发请求都能穿过 has()→add() 的
   // 窗口，同一助手被并发跑两次。add 之后的 await 都在闸门之内，安全。
   if (runningApps.has(slug)) throw new Error("它正在跑，等这一次结束");
+  if (tuningApps.has(slug)) throw new Error("正在改它的手册，改完再跑");
   runningApps.add(slug);
 
   const id = newRunId();
@@ -745,16 +754,28 @@ async function executeRun(
   // 万一抛错时它仍有值。
   let task = "按你的工作手册跑一遍。";
   let disposeAgent: (() => Promise<void>) | null = null;
+  // 这次跑用的是第几版手册——进闸后读账本头，成功失败两处记录都带上，
+  // 用户在历史里才能把「产出」和「当时的手册」对上号。无账本则不写该字段。
+  const manualVersion = (await headRevision(APPS_DIR, slug))?.version;
   try {
     const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
-    task = buildJobTask(app, materials);
+    const paramValues = await readParamValues(APPS_DIR, slug);
+    task = buildJobTask(app, materials, buildParamsSection(app.params, paramValues));
     onEvent("step", { text: "正在唤醒助手" });
     const created = await createAppAgent(hostCtx, slug, workspaceDir(APPS_DIR, slug));
     disposeAgent = created.dispose;
     const output = await runAgentTask(hostCtx, created.agent, task, (e) => {
       onEvent(e.kind, { text: e.text });
     });
-    const record: RunRecord = { id, status: "ok", task, startedAt, ms: Date.now() - started, trigger };
+    const record: RunRecord = {
+      id,
+      status: "ok",
+      task,
+      startedAt,
+      ms: Date.now() - started,
+      trigger,
+      ...(manualVersion !== undefined ? { manualVersion } : {}),
+    };
     await saveRun(APPS_DIR, slug, record, output);
     return { ok: true, record, output };
   } catch (e) {
@@ -767,6 +788,7 @@ async function executeRun(
       ms: Date.now() - started,
       trigger,
       error: message,
+      ...(manualVersion !== undefined ? { manualVersion } : {}),
     };
     // 失败也存档：用户下次打开该看得见「上次没跑成，因为什么」。
     await saveRun(APPS_DIR, slug, record, "").catch(() => {});
@@ -849,7 +871,7 @@ async function scheduleTickOnce(): Promise<void> {
     return;
   }
   for (const slug of slugs) {
-    if (runningApps.has(slug)) continue;
+    if (runningApps.has(slug) || tuningApps.has(slug)) continue;
     const spec = await readSchedule(APPS_DIR, slug);
     if (!spec || !isDue(spec, new Date(), BOOT_AT)) continue;
     console.log(`[wanxiang] 定时到点，跑「${slug}」`);
@@ -916,6 +938,123 @@ async function handleReadRun(res: ServerResponse, slug: string, id: string): Pro
   const one = await readRun(APPS_DIR, slug, id);
   if (!one) return json(res, 404, { ok: false, error: "没有这次记录" });
   json(res, 200, { ok: true, run: one.record, output: one.output });
+}
+
+/* ═══════════════ 调教循环 ═══════════════════════════════════════════
+ *
+ * 用户说「这里不对，以后要…」→ LLM 修订工作手册 → 回写 app.yml → 全量
+ * 重编译落盘 → 记账。app.yml 永远是当前态权威，账本只是历史（生效物先行，
+ * 崩在记账前最多丢一条注记，账本永不撒谎）。机制细节见 src/tuning.ts。
+ */
+
+/** 一次调教。{text, runId?} → 铸出新版手册（或 applicable:false 的指路）。 */
+async function handleTune(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+  if (!resolveKey()) return json(res, 400, { ok: false, error: "还没设置模型 key", needsKey: true });
+  let body: { text?: unknown; runId?: unknown };
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return json(res, 400, { ok: false, error: "请求体不是合法 JSON" });
+  }
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (text === "") return json(res, 400, { ok: false, error: "先说说哪里不对" });
+  const runId = typeof body.runId === "string" ? body.runId : undefined;
+
+  const spec = await readAppSpec(slug);
+  if (!spec) return json(res, 404, { ok: false, error: "没有这个助手" });
+
+  // 跑与调互斥（两个方向都挡，见 tuningApps 的注释）。check-and-set 零间隙。
+  if (runningApps.has(slug)) return json(res, 409, { ok: false, error: "它正在跑，等这一次结束再调" });
+  if (tuningApps.has(slug)) return json(res, 409, { ok: false, error: "正在改手册，稍等一下" });
+  tuningApps.add(slug);
+  try {
+    const revised = await reviseManual(spec, text, deepseekFromEnv());
+    if (!revised.ok) return json(res, 502, { ok: false, error: revised.error });
+    if (!revised.applicable || !revised.slice) {
+      return json(res, 200, { ok: true, changed: false, note: revised.note });
+    }
+    if (slicesEqual(revised.slice, sliceOf(spec))) {
+      return json(res, 200, { ok: true, changed: false, note: revised.note || "手册不用改，它已经是这样做的" });
+    }
+    const applied = await applyRevision(APPS_DIR, DSH_HOME, slug, spec, revised.slice, {
+      kind: "revise",
+      note: revised.note,
+      feedback: text,
+      ...(runId ? { runId } : {}),
+    });
+    json(res, 200, { ok: true, changed: true, ...applied });
+  } catch (e) {
+    json(res, 500, { ok: false, error: (e as Error).message });
+  } finally {
+    tuningApps.delete(slug);
+  }
+}
+
+/** 手册资源：当前版本、渲染好的正文、历史。蓝图与手册都是 app.yml 的现算投影。 */
+async function handleGetManual(res: ServerResponse, slug: string): Promise<void> {
+  const spec = await readAppSpec(slug);
+  if (!spec) return json(res, 404, { ok: false, error: "没有这个助手" });
+  // 对账：app.yml ≠ 账本末条时补记（调教闸被占时只读不写，避免抢账本号）。
+  const { entry, synthetic } = await reconcile(APPS_DIR, slug, sliceOf(spec), {
+    allowWrite: !tuningApps.has(slug),
+  });
+  const history = (await listRevisions(APPS_DIR, slug))
+    .map((r) => ({ version: r.version, at: r.at, kind: r.kind, note: r.note }))
+    .reverse();
+  json(res, 200, {
+    ok: true,
+    version: entry.version,
+    synthetic,
+    current: { steps: [...spec.workflow.steps], boundaries: [...spec.boundaries] },
+    skillMd: compileSkill(spec)?.content ?? null,
+    history,
+  });
+}
+
+/** 回到某一版。历史线性前进：回滚也是追加一条，走与调教相同的落盘路径。 */
+async function handleRollback(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+  let body: { to?: unknown };
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return json(res, 400, { ok: false, error: "请求体不是合法 JSON" });
+  }
+  const to = Number(body.to);
+  if (!Number.isInteger(to) || to < 0) return json(res, 400, { ok: false, error: "要回到哪一版？" });
+  const spec = await readAppSpec(slug);
+  if (!spec) return json(res, 404, { ok: false, error: "没有这个助手" });
+  if (runningApps.has(slug)) return json(res, 409, { ok: false, error: "它正在跑，等这一次结束" });
+  if (tuningApps.has(slug)) return json(res, 409, { ok: false, error: "正在改手册，稍等一下" });
+  tuningApps.add(slug);
+  try {
+    const target = (await listRevisions(APPS_DIR, slug)).find((r) => r.version === to);
+    if (!target) return json(res, 404, { ok: false, error: "没有这一版" });
+    const applied = await applyRollback(APPS_DIR, DSH_HOME, slug, spec, target);
+    json(res, 200, { ok: true, changed: true, ...applied });
+  } catch (e) {
+    json(res, 500, { ok: false, error: (e as Error).message });
+  } finally {
+    tuningApps.delete(slug);
+  }
+}
+
+/** 参数当前值。跑一次和定时都用这里存好的值。 */
+async function handleGetParams(res: ServerResponse, slug: string): Promise<void> {
+  json(res, 200, { ok: true, values: await readParamValues(APPS_DIR, slug) });
+}
+
+async function handleSaveParams(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
+  const app = await readAppSummary(slug);
+  if (!app) return json(res, 404, { ok: false, error: "没有这个助手" });
+  try {
+    const body = JSON.parse(await readBody(req)) as { values?: unknown };
+    const checked = validateParamValues(app.params, body.values);
+    if (!checked.ok) return json(res, 400, { ok: false, error: checked.error });
+    await writeParamValues(APPS_DIR, slug, checked.values);
+    json(res, 200, { ok: true, values: checked.values });
+  } catch (e) {
+    json(res, 400, { ok: false, error: (e as Error).message });
+  }
 }
 
 /* ═══════════════ 对话链路 ═══════════════════════════════════════════
@@ -1159,7 +1298,9 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     return handlePrd(res, path.slice("/api/apps/".length, -"/prd.md".length));
   }
   const appPath =
-    /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials|schedule|chats)(?:\/([\w-]+))?$/u.exec(path);
+    /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials|schedule|chats|tune|manual|params)(?:\/([\w-]+))?$/u.exec(
+      path,
+    );
   if (appPath) {
     const [, slug, kind, id] = appPath;
     if (req.method === "POST" && kind === "run") return handleRun(req, res, slug);
@@ -1171,6 +1312,13 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     if (req.method === "POST" && kind === "schedule") return handleSaveSchedule(req, res, slug);
     if (req.method === "POST" && kind === "chats" && !id) return handleCreateChat(res, slug);
     if (req.method === "GET" && kind === "chats" && !id) return handleListChats(res, slug);
+    if (req.method === "POST" && kind === "tune" && !id) return handleTune(req, res, slug);
+    if (req.method === "GET" && kind === "manual" && !id) return handleGetManual(res, slug);
+    if (req.method === "POST" && kind === "manual" && id === "rollback") {
+      return handleRollback(req, res, slug);
+    }
+    if (req.method === "GET" && kind === "params" && !id) return handleGetParams(res, slug);
+    if (req.method === "POST" && kind === "params" && !id) return handleSaveParams(req, res, slug);
   }
   const chatOp = /^\/api\/chats\/([\w-]+)(?:\/(events|say|stop))?$/u.exec(path);
   if (chatOp) {

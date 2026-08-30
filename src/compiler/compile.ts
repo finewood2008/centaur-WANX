@@ -95,6 +95,9 @@ export function compile(appspec: AppSpec, options: CompileOptions = {}): AppPack
       schema_version: appspec.schema_version,
       domain: appspec.domain,
       goal: appspec.goal,
+      // persona_note 必须进 meta：app.yml 是重编译（heal / 调教）的输入，
+      // 漏了它，第一次 round-trip 就会把创建时编进 persona 的那句静默抹掉。
+      ...(appspec.persona_note ? { persona_note: appspec.persona_note } : {}),
       capabilities: [...appspec.capabilities],
       memory_binding: {
         read: [...appspec.memory_binding.read],

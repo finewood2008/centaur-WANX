@@ -646,13 +646,22 @@ const el = (id) => document.getElementById(id);
     });
   }
 
-  /** 助手主页。 */
+  /* ================= 工作台 ========================================
+   *
+   * 打开一个助手 = 打开一个为它的活儿生的工作台。形态由蓝图决定——
+   * 蓝图是 app.yml 的纯函数投影（服务端现算随 /api/apps 下发），
+   * 前端从这里的固定组件库拼装：hero（checklist/table/digest 三型，
+   * 呈现最新交付物）+ 侧区组件（actions/materials/params/schedule/manual/runs）。
+   * 没有生成代码，没有注入面；所有动态内容一律过 esc()/md()。
+   */
+
+  /** 助手主页（工作台）。 */
   async function goApp(slug) {
     leaveTalk();
     state.phase = "app";
     setPrdVisible(false);
     el("meters").hidden = true;
-    el("stage").className = "stage";
+    el("stage").className = "stage board";
     el("stage").innerHTML = '<div class="build"><h2>正在打开</h2></div>';
     toTop();
 
@@ -667,72 +676,366 @@ const el = (id) => document.getElementById(id);
     }
     state.app = app;
 
+    const bp = app.blueprint || {
+      hero: { kind: "digest", title: "最新产出", empty: "放入资料，按一下「让它跑一次」。" },
+      side: ["actions", "materials", "schedule", "manual", "runs"],
+    };
+
     let runs = [];
     let mats = [];
     let sched = null;
+    let paramValues = {};
+    let manual = null;
     try {
-      const [runsRes, matsRes, schedRes] = await Promise.all([
+      const [runsRes, matsRes, schedRes, paramsRes, manualRes] = await Promise.all([
         fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/runs`),
         fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/materials`),
         fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/schedule`),
+        fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/params`),
+        fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/manual`),
       ]);
       const rd = await runsRes.json();
       const md_ = await matsRes.json();
       const sd = await schedRes.json();
+      const pd = await paramsRes.json().catch(() => ({}));
+      manual = await manualRes.json().catch(() => null);
       runs = Array.isArray(rd.runs) ? rd.runs : [];
       mats = Array.isArray(md_.materials) ? md_.materials : [];
       sched = sd && sd.schedule ? sd.schedule : null;
-    } catch { /* 读不出来不该挡住「跑一次」 */ }
+      paramValues = pd && pd.values ? pd.values : {};
+    } catch { /* 读不出来不该挡住工作台 */ }
 
     el("top-title").textContent = app.name;
     el("top-en").textContent = "Your assistant";
 
-    const steps = (app.workflow && app.workflow.steps) || [];
-    const bounds = app.boundaries || [];
     el("stage").innerHTML =
       '<div class="appview">' +
       `<h2 class="lede">${esc(app.name)}</h2>` +
       `<p class="sub">${esc(app.description)}</p>` +
-      '<div class="card-row">' +
-      (steps.length
-        ? '<section class="card"><div class="card-h">它会做的事</div><ol class="card-ol">' +
-          steps.map((x) => `<li>${esc(x)}</li>`).join("") +
-          "</ol></section>"
-        : "") +
-      '<section class="card"><div class="card-h">定时</div><div id="sched-box"></div></section>' +
-      '<section class="card wide-card"><div class="card-h">它的资料夹</div>' +
-      '<div id="mat-box"></div></section>' +
-      '<section class="card"><div class="card-h">你会拿到</div>' +
-      `<p class="card-lead">${esc(app.delivery.form)}</p>` +
-      (bounds.length
-        ? '<div class="card-h sub-h">它不会做</div><ul class="card-ul">' +
-          bounds.map((x) => `<li>${esc(x)}</li>`).join("") +
-          "</ul>"
-        : "") +
-      "</section></div>" +
-      '<div class="multi-foot run-bar">' +
-      '<button class="btn-solid" id="do-run" type="button">让它跑一次</button>' +
-      '<button class="btn-quiet" id="deep-chat" type="button">跟它聊聊</button>' +
-      (app.hasPrd ? '<button class="btn-quiet" id="see-prd" type="button">看需求文档</button>' : "") +
-      "</div>" +
-      '<div class="runs-h">最近的产出</div>' +
-      runsHtml(runs) +
-      '<div class="runs-h">聊过的</div><div id="chat-list" class="runs"><div class="runs-empty">正在看…</div></div>' +
-      "</div>";
+      '<div class="wb">' +
+      '<section class="wb-hero card">' +
+      `<div class="card-h">${esc(bp.hero.title)}</div><div id="wb-hero"></div>` +
+      "</section>" +
+      '<div class="wb-side" id="wb-side"></div>' +
+      "</div></div>";
 
+    renderHero(slug, bp.hero, runs);
+
+    // 侧区按蓝图顺序拼装。每个组件一张卡，容器 id 与既有 paint* 保持兼容。
+    const side = el("wb-side");
+    const widgets = {
+      actions() {
+        return card(
+          "操作",
+          '<div class="wb-actions">' +
+            '<button class="btn-solid" id="do-run" type="button">让它跑一次</button>' +
+            '<button class="btn-quiet" id="deep-chat" type="button">跟它聊聊</button>' +
+            '<button class="btn-quiet" id="wb-tune" type="button">调教它</button>' +
+            (app.hasPrd ? '<button class="btn-quiet" id="see-prd" type="button">看需求文档</button>' : "") +
+            '</div><div id="wb-tune-slot"></div>',
+        );
+      },
+      materials() {
+        return card("它的资料夹", '<div id="mat-box"></div>', "wide");
+      },
+      params() {
+        return card("可调的", '<div id="param-box"></div>');
+      },
+      schedule() {
+        return card("定时", '<div id="sched-box"></div>');
+      },
+      manual() {
+        return card("工作手册", '<div id="manual-box"></div>');
+      },
+      runs() {
+        return card(
+          "历史",
+          '<div class="runs-h" style="margin-top:0">最近的产出</div><div id="runs-box"></div>' +
+            '<div class="runs-h">聊过的</div><div id="chat-list" class="runs"><div class="runs-empty">正在看…</div></div>',
+          "wide",
+        );
+      },
+    };
+    for (const kind of bp.side) {
+      if (widgets[kind]) side.appendChild(widgets[kind]());
+    }
+
+    // 接线（组件都进了 DOM 之后）。
     paintMaterials(slug, mats);
     paintSchedule(slug, sched);
+    if (el("param-box")) paintParams(slug, app.params || [], paramValues);
+    if (el("manual-box")) paintManual(slug, manual);
+    const runsBox = el("runs-box");
+    if (runsBox) {
+      runsBox.innerHTML = runsHtml(runs);
+      for (const b of runsBox.querySelectorAll(".run-item")) {
+        b.addEventListener("click", () => openRun(slug, b.dataset.run));
+      }
+    }
     el("do-run").addEventListener("click", () => runApp(slug));
+    el("deep-chat").addEventListener("click", () => goTalk(slug));
+    el("wb-tune").addEventListener("click", () => openTuneForm(slug, null, el("wb-tune-slot")));
     if (el("see-prd")) {
       el("see-prd").addEventListener("click", () => {
         window.open(`/wanx/api/apps/${encodeURIComponent(slug)}/prd.md`, "_blank");
       });
     }
-    el("deep-chat").addEventListener("click", () => goTalk(slug));
-    for (const b of el("stage").querySelectorAll(".run-item")) {
-      b.addEventListener("click", () => openRun(slug, b.dataset.run));
-    }
     void paintChatList(slug);
+  }
+
+  function card(title, bodyHtml, extraCls) {
+    const sec = document.createElement("section");
+    sec.className = `card${extraCls ? " " + extraCls : ""}`;
+    sec.innerHTML = `<div class="card-h">${esc(title)}</div>${bodyHtml}`;
+    return sec;
+  }
+
+  /** hero：最新一次成功产出的结构化呈现。没跑过 = 空态即引导。 */
+  async function renderHero(slug, hero, runs) {
+    const box = el("wb-hero");
+    if (!box) return;
+    const latest = (runs || []).find((r) => r.status === "ok");
+    if (!latest) {
+      box.innerHTML =
+        `<div class="wb-empty">${esc(hero.empty)}</div>` +
+        '<ol class="wb-guide"><li>把资料放进「它的资料夹」</li><li>按「让它跑一次」</li><li>回到这里收东西</li></ol>';
+      return;
+    }
+    box.innerHTML = '<div class="runs-empty">正在取最新产出…</div>';
+    let output = "";
+    try {
+      const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/runs/${encodeURIComponent(latest.id)}`);
+      const d = await r.json();
+      if (d.ok === false) throw new Error(d.error);
+      output = d.output || "";
+    } catch {
+      box.innerHTML = '<div class="err">最新产出读不出来，去「历史」里翻吧。</div>';
+      return;
+    }
+
+    const meta =
+      `<div class="wb-meta">${esc(when(latest.startedAt))} · 用时 ${(latest.ms / 1000).toFixed(1)} 秒` +
+      (typeof latest.manualVersion === "number" ? ` · 手册第 ${latest.manualVersion} 版` : "") +
+      ' · <button class="linkish" id="hero-open" type="button">看完整产出</button>' +
+      ' · <button class="linkish" id="hero-copy" type="button">复制</button></div>';
+
+    if (hero.kind === "checklist") {
+      const items = extractListItems(output);
+      box.innerHTML = items.length
+        ? `<div class="chk">${items
+            .map(
+              (i) =>
+                `<div class="chk-row${i.done ? " done" : ""}"><span class="chk-box">${i.done ? "☑" : "☐"}</span><span>${esc(i.text)}</span></div>`,
+            )
+            .join("")}</div>` + meta
+        : `<article class="paper wb-paper">${md(output)}</article>` + meta;
+    } else if (hero.kind === "table") {
+      const t = extractTables(output)[0];
+      box.innerHTML = t
+        ? '<div class="md-table wb-table"><table><thead><tr>' +
+          t.head.map((c) => `<th>${esc(c)}</th>`).join("") +
+          "</tr></thead><tbody>" +
+          t.rows.map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("") +
+          "</tbody></table></div>" + meta
+        : `<article class="paper wb-paper">${md(output)}</article>` + meta;
+    } else {
+      box.innerHTML = `<article class="paper wb-paper">${md(output)}</article>` + meta;
+    }
+    el("hero-open").addEventListener("click", () => openRun(slug, latest.id));
+    el("hero-copy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(output);
+        el("hero-copy").textContent = "已复制";
+      } catch { el("hero-copy").textContent = "复制不了"; }
+    });
+  }
+
+  /** 「可调的」组件：按声明出控件，显式保存；跑一次和定时都用存好的值。 */
+  function paintParams(slug, schema, values) {
+    const box = el("param-box");
+    if (!box) return;
+    const control = (p) => {
+      const v = values[p.name] ?? p.default ?? "";
+      const id = `pf-${esc(p.name)}`;
+      if (p.type === "enum") {
+        return `<select id="${id}" data-p="${esc(p.name)}">` +
+          `<option value=""${v === "" ? " selected" : ""}>（未设置）</option>` +
+          (p.options || []).map((o) => `<option value="${esc(o)}"${v === o ? " selected" : ""}>${esc(o)}</option>`).join("") +
+          "</select>";
+      }
+      if (p.type === "boolean") {
+        return `<input id="${id}" data-p="${esc(p.name)}" type="checkbox"${v === true ? " checked" : ""}>`;
+      }
+      if (p.type === "number") return `<input id="${id}" data-p="${esc(p.name)}" type="number" value="${v === "" ? "" : esc(String(v))}">`;
+      if (p.type === "date") return `<input id="${id}" data-p="${esc(p.name)}" type="date" value="${esc(String(v || ""))}">`;
+      if (p.type === "list") {
+        const text = Array.isArray(v) ? v.join("\n") : "";
+        return `<textarea id="${id}" data-p="${esc(p.name)}" rows="3" placeholder="一行一条">${esc(text)}</textarea>`;
+      }
+      return `<input id="${id}" data-p="${esc(p.name)}" type="text" value="${esc(String(v || ""))}">`;
+    };
+    box.innerHTML =
+      '<p class="mat-note">跑一次和定时都用这里存好的值。改了记得保存。</p>' +
+      '<div class="mat-form">' +
+      schema.map((p) => `<label class="pf-row"><span class="pf-l">${esc(p.label || p.name)}${p.required ? " *" : ""}</span>${control(p)}</label>`).join("") +
+      '<div class="multi-foot"><button class="add-mat" id="pf-save" type="button">保存</button></div>' +
+      '<div id="pf-err"></div></div>';
+    el("pf-save").addEventListener("click", async () => {
+      const err = el("pf-err");
+      err.className = ""; err.textContent = "";
+      const out = {};
+      for (const node of box.querySelectorAll("[data-p]")) {
+        const name = node.dataset.p;
+        if (node.type === "checkbox") out[name] = node.checked;
+        else out[name] = node.value;
+      }
+      try {
+        const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/params`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ values: out }),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) throw new Error(d.error || "没存上");
+        err.className = "setup-state ok"; err.textContent = "存好了，下次跑就用这些值。";
+      } catch (e) {
+        err.className = "err"; err.textContent = e.message;
+      }
+    });
+  }
+
+  /** 「工作手册」组件：版本、看手册、历史、回到某版。 */
+  function paintManual(slug, manual) {
+    const box = el("manual-box");
+    if (!box) return;
+    if (!manual || manual.ok === false) {
+      box.innerHTML = '<div class="mat-empty">手册读不出来。</div>';
+      return;
+    }
+    const version = manual.synthetic ? "创建版" : `第 ${manual.version} 版`;
+    const history = Array.isArray(manual.history) ? manual.history : [];
+    box.innerHTML =
+      `<p class="card-lead" style="font-weight:500;font-size:14px">当前：${esc(version)}</p>` +
+      (manual.skillMd
+        ? '<button class="btn-quiet" id="man-view" type="button">看手册</button><div id="man-doc" hidden></div>'
+        : '<p class="mat-note">它还没有工作手册——提条意见，手册就长出来了（点「调教它」）。</p>') +
+      (history.length > 0
+        ? '<div class="man-hist">' +
+          history
+            .map(
+              (h) =>
+                `<div class="man-row"><span class="man-v">v${h.version}</span><span class="man-note">${esc(h.note || "")}</span>` +
+                `<button class="linkish" data-rb="${h.version}" type="button">回到这版</button></div>`,
+            )
+            .join("") +
+          "</div>"
+        : "") +
+      '<div id="man-err"></div>';
+    const view = el("man-view");
+    if (view) {
+      view.addEventListener("click", () => {
+        const doc = el("man-doc");
+        if (doc.hidden) {
+          doc.innerHTML = `<article class="paper wb-paper">${md(manual.skillMd)}</article>`;
+          doc.hidden = false;
+          view.textContent = "收起";
+        } else {
+          doc.hidden = true;
+          view.textContent = "看手册";
+        }
+      });
+    }
+    for (const b of box.querySelectorAll("[data-rb]")) {
+      b.addEventListener("click", async () => {
+        const err = el("man-err");
+        err.className = ""; err.textContent = "";
+        b.disabled = true;
+        try {
+          const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/manual/rollback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ to: Number(b.dataset.rb) }),
+          });
+          const d = await r.json();
+          if (!r.ok || d.ok === false) throw new Error(d.error || "没回去");
+          await loadApps();
+          goApp(slug);
+        } catch (e) {
+          err.className = "err"; err.textContent = e.message;
+          b.disabled = false;
+        }
+      });
+    }
+  }
+
+  /* ================= 调教 ================= */
+
+  /** 步骤级前后对照：不做字符 diff——一边独有的划线红/标绿，全部过 esc。 */
+  function sliceDiffHtml(before, after) {
+    const bSet = new Set(before);
+    const aSet = new Set(after);
+    const col = (title, items, other, cls) =>
+      `<div class="diff-col"><div class="diff-h">${title}</div><ol>` +
+      items.map((s) => `<li class="${other.has(s) ? "" : cls}">${esc(s)}</li>`).join("") +
+      "</ol></div>";
+    return `<div class="tune-diff">${col("改之前", before, aSet, "gone")}${col("改之后", after, bSet, "add")}</div>`;
+  }
+
+  /**
+   * 「这里不对」的调教表单。三处入口共用：结果页（带 runId）、对话里的
+   * 运行卡（带 runId）、工作台/对话顶栏（不带）。成功后刷新 state.apps——
+   * 「它会做的事」等处显示的步骤已经变了。
+   */
+  function openTuneForm(slug, runId, mount) {
+    if (!mount) return;
+    if (mount.querySelector(".tune-form")) return; // 已开着
+    const wrap = document.createElement("div");
+    wrap.className = "mat-form tune-form";
+    wrap.innerHTML =
+      '<textarea rows="3" placeholder="哪里不对？想让它以后怎么做？比如：周报要先列风险项"></textarea>' +
+      '<div class="multi-foot"><button class="btn-solid tf-go" type="button">让它记住</button>' +
+      '<button class="btn-quiet tf-x" type="button">算了</button></div>' +
+      '<div class="tf-out"></div>';
+    mount.appendChild(wrap);
+    const ta = wrap.querySelector("textarea");
+    const go = wrap.querySelector(".tf-go");
+    const out = wrap.querySelector(".tf-out");
+    ta.focus();
+    wrap.querySelector(".tf-x").addEventListener("click", () => wrap.remove());
+    go.addEventListener("click", async () => {
+      const text = ta.value.trim();
+      if (!text) { out.className = "tf-out err"; out.textContent = "先说说哪里不对"; return; }
+      go.disabled = true;
+      out.className = "tf-out";
+      out.textContent = "正在改手册…通常十几秒。";
+      try {
+        const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/tune`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(runId ? { text, runId } : { text }),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) {
+          if (d.needsKey) { leaveTalk(); await loadSettings(); renderSettings({ reason: "还没设置模型 key，先把它配上。" }); return; }
+          throw new Error(d.error || `没改成（${r.status}）`);
+        }
+        if (d.changed === false) {
+          out.innerHTML = `<div class="setup-state ok">${esc(d.note || "手册不用改")}</div>`;
+        } else {
+          out.innerHTML =
+            `<div class="setup-state ok">${esc(d.note)}</div>` +
+            sliceDiffHtml(d.before.steps, d.after.steps) +
+            `<div class="mat-note">已更新为第 ${d.version} 版，下次跑生效；正在聊的对话，新开一条才用新手册。</div>`;
+          void loadApps();
+        }
+        go.disabled = false;
+        ta.value = "";
+      } catch (e) {
+        out.className = "tf-out err";
+        out.textContent = e.message;
+        go.disabled = false; // 反馈文本还在，能直接重试
+      }
+    });
   }
 
   /** 助手主页的「聊过的」：历史对话列表，点一条接着聊。 */
@@ -870,8 +1173,16 @@ const el = (id) => document.getElementById(id);
       (failed
         ? `<div class="err">没跑成：${esc(run.error || "")}</div>`
         : `<article class="paper">${md(output)}</article>`) +
+      // 调教入口只给成功的产出：失败页的主诉是 key/网络，手册修不了。
+      (failed
+        ? ""
+        : '<div class="tune-box"><button class="btn-quiet" id="r-tune" type="button">这里不对？调教它</button>' +
+          '<div id="r-tune-slot"></div></div>') +
       '<div class="multi-foot"><button class="btn-quiet" id="r-back" type="button">← 回到助手</button></div>' +
       "</div>";
+    if (el("r-tune")) {
+      el("r-tune").addEventListener("click", () => openTuneForm(slug, run.id, el("r-tune-slot")));
+    }
     el("r-back").addEventListener("click", () => goApp(slug));
     el("r-again").addEventListener("click", () => runApp(slug));
     el("r-print").addEventListener("click", () => {
@@ -1184,8 +1495,14 @@ const el = (id) => document.getElementById(id);
       });
       if (last) last.className = "step was";
       card.querySelector(".t-run-out").innerHTML =
-        `<div class="t-run-meta">用时 ${(finished.run.ms / 1000).toFixed(1)} 秒，已存进「最近的产出」</div>` +
+        `<div class="t-run-meta">用时 ${(finished.run.ms / 1000).toFixed(1)} 秒，已存进「最近的产出」` +
+        ' · <button class="linkish t-run-tune" type="button">这里不对？调教它</button></div>' +
+        '<div class="t-run-tune-slot"></div>' +
         `<article class="paper">${md(finished.output)}</article>`;
+      card.querySelector(".t-run-tune").addEventListener("click", () => {
+        openTuneForm(talk.slug, finished.run.id, card.querySelector(".t-run-tune-slot"));
+        talkSettle();
+      });
     } catch (e) {
       if (last) last.className = "step was";
       if (e.needsKey) {
@@ -1241,6 +1558,7 @@ const el = (id) => document.getElementById(id);
       '<select id="talk-history" hidden></select>' +
       '<button class="btn-quiet" id="talk-new" type="button">新对话</button>' +
       '<button class="btn-quiet" id="talk-run" type="button">让它跑一次</button>' +
+      '<button class="btn-quiet" id="talk-tune" type="button">调教它</button>' +
       "</div>" +
       '<div class="talk-log" id="talk-log" aria-live="polite"></div>' +
       '<div class="talk-dock">' +
@@ -1254,6 +1572,15 @@ const el = (id) => document.getElementById(id);
     el("talk-back").addEventListener("click", () => { leaveTalk(); goApp(slug); });
     el("talk-new").addEventListener("click", () => goTalk(slug));
     el("talk-run").addEventListener("click", () => { void talkRun(); });
+    el("talk-tune").addEventListener("click", () => {
+      // 调教表单以卡片形式落进对话流（不带 runId——针对整体表现的意见）。
+      const holder = document.createElement("div");
+      holder.className = "t-run";
+      holder.innerHTML = '<div class="t-run-h">🔧 调教它</div>';
+      talkAppend(holder, null);
+      openTuneForm(slug, null, holder);
+      talkSettle();
+    });
     el("talk-send").addEventListener("click", () => { void talkSay(); });
     el("talk-stop").addEventListener("click", () => {
       void fetch(`/wanx/api/chats/${encodeURIComponent(talk.sessionId)}/stop`, { method: "POST" });

@@ -125,6 +125,68 @@ export function md(src) {
 }
 
 /**
+ * 从助手的 Markdown 产出里提取清单项（工作台 checklist 主区的原料）。
+ * 认 - / * / 1. 三种列表与 - [ ] 勾选框；围栏代码块里的行不算。
+ * 返回 [{text, done}]；只读呈现，勾选状态是产出的一部分，不在前端改。
+ */
+export function extractListItems(src) {
+  const items = [];
+  let inFence = false;
+  for (const raw of String(src).split("\n")) {
+    const line = raw.trimEnd();
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = /^\s*(?:[-*]|\d+[.)])\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const box = /^\[( |x|X)\]\s*(.*)$/.exec(m[1]);
+    if (box) items.push({ text: box[2], done: box[1].toLowerCase() === "x" });
+    else items.push({ text: m[1], done: false });
+  }
+  return items.filter((i) => i.text.trim() !== "");
+}
+
+/**
+ * 从 Markdown 产出里提取表格（工作台 table 主区的原料）。
+ * 返回 [{head: string[], rows: string[][]}]；与 md() 用同一套表格判定。
+ */
+export function extractTables(src) {
+  const tables = [];
+  const lines = String(src).split("\n");
+  let inFence = false;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trimEnd();
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+      i += 1;
+      continue;
+    }
+    if (
+      !inFence &&
+      /^\|.*\|\s*$/.test(line) &&
+      i + 1 < lines.length &&
+      /^\|[\s|:-]+\|\s*$/.test(lines[i + 1])
+    ) {
+      const cells = (row) => row.replace(/^\||\|\s*$/g, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) {
+        rows.push(cells(lines[i]));
+        i += 1;
+      }
+      tables.push({ head, rows });
+      continue;
+    }
+    i += 1;
+  }
+  return tables;
+}
+
+/**
  * 把一个 fetch Response 的 SSE 体解析成 {event, data} 帧的异步序列。
  *
  * 与服务端的约定：一个事件一行 JSON（载荷里的换行靠 JSON 转义活着）。

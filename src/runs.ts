@@ -25,6 +25,8 @@ export interface RunRecord {
   /** 触发方式。目前只有手动，schedule 留给 AppSpec v1.1。 */
   trigger: "manual" | "schedule";
   error?: string;
+  /** 这次跑用的手册版本（revisions 账本头）。没调教过的助手不写。 */
+  manualVersion?: number;
 }
 
 /** 列表项：元数据 ＋ 一句话摘要，不带全文（列表不该驮着几十 KB 正文）。 */

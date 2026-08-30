@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { esc, md, sseFrames } from "../public/static/lib.js";
+import { esc, extractListItems, extractTables, md, sseFrames } from "../public/static/lib.js";
 
 describe("md —— 助手输出的渲染，安全优先", () => {
   it("代码块整段原样，块内的 ** 与 | 不做行内处理", () => {
@@ -54,6 +54,36 @@ describe("md —— 助手输出的渲染，安全优先", () => {
 
   it("esc 基本面", () => {
     expect(esc('<a b="c">&')).toBe("&lt;a b=&quot;c&quot;&gt;&amp;");
+  });
+});
+
+describe("extractListItems —— 工作台清单主区的原料", () => {
+  it("三种列表形态与勾选框；代码块里的不算", () => {
+    const src = "# 待办\n- [x] 已回访张三\n- [ ] 给李四发合同\n1. 整理台账\n```\n- 这行是代码不是待办\n```\n* 补充记录";
+    expect(extractListItems(src)).toEqual([
+      { text: "已回访张三", done: true },
+      { text: "给李四发合同", done: false },
+      { text: "整理台账", done: false },
+      { text: "补充记录", done: false },
+    ]);
+  });
+
+  it("没有清单时返回空数组", () => {
+    expect(extractListItems("一段散文而已")).toEqual([]);
+  });
+});
+
+describe("extractTables —— 工作台表格主区的原料", () => {
+  it("提取表头与行", () => {
+    const src = "说明\n\n| 客户 | 状态 |\n|---|---|\n| 张三 | 跟进中 |\n| 李四 | 已成交 |\n\n后记";
+    expect(extractTables(src)).toEqual([
+      { head: ["客户", "状态"], rows: [["张三", "跟进中"], ["李四", "已成交"]] },
+    ]);
+  });
+
+  it("代码块里的伪表格不算", () => {
+    const src = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```";
+    expect(extractTables(src)).toEqual([]);
   });
 });
 

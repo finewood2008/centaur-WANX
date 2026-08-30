@@ -103,6 +103,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .stage { max-width: 660px; margin: 0 auto; padding: 26px 28px 40px; }
 .stage.wide { max-width: none; padding: 0; height: 100%; }
+/* 工作台：要宽，但保留内边距（wide 是给对话视图的满幅贴边）。 */
+.stage.board { max-width: 1120px; }
+.stage.board .appview { max-width: none; }
 
 .lede { margin: 0 0 8px; font-size: 25px; font-weight: 650; line-height: 1.3; text-wrap: balance; }
 .sub { margin: 0 0 22px; color: var(--ink-2); font-size: 14.5px; max-width: 520px; }
@@ -255,6 +258,62 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .step.was { color: var(--ink-2); }
 .step.was .dot { background: var(--ok); }
 @keyframes pulse { 50% { transform: scale(1.55); opacity: .55; } }
+
+/* ===== 工作台 =====
+ * 每个助手的专属界面：hero（最新交付物的结构化呈现）+ 侧区组件。
+ * 形态由蓝图（AppSpec 的纯函数投影）决定，组件来自这里的固定库。 */
+.wb { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px;
+  align-items: start; margin-top: 18px; }
+.wb-hero { min-height: 220px; }
+.wb-side { display: flex; flex-direction: column; gap: 14px; }
+.wb-side .card { margin: 0; }
+.wb-actions { display: flex; flex-direction: column; gap: 8px; }
+.wb-actions button { width: 100%; }
+.wb-empty { color: var(--ink-2); font-size: 14.5px; margin-bottom: 10px; }
+.wb-guide { margin: 0; padding-left: 20px; color: var(--ink-3); font-size: 13.5px; }
+.wb-guide li { margin-bottom: 4px; }
+.wb-meta { margin-top: 12px; font-size: 12.5px; color: var(--ink-3); }
+.wb-paper { border: 0; padding: 0; }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent-deep);
+  font-size: inherit; text-decoration: underline; }
+.chk { display: flex; flex-direction: column; gap: 8px; }
+.chk-row { display: flex; gap: 9px; align-items: baseline; font-size: 14.5px; }
+.chk-row .chk-box { color: var(--accent-deep); flex: 0 0 auto; }
+.chk-row.done { color: var(--ink-3); text-decoration: line-through; }
+.chk-row.done .chk-box { color: var(--ok); }
+.wb-table table { width: 100%; }
+
+/* 调教 */
+.tune-box { margin: 18px 0 6px; }
+.tune-form textarea { width: 100%; }
+.tf-out { font-size: 13.5px; }
+.tf-out.err { margin-top: 8px; }
+.tune-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0; }
+.diff-col { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+  background: var(--surface); font-size: 13.5px; }
+.diff-h { font-weight: 600; margin-bottom: 6px; color: var(--ink-2); }
+.diff-col ol { margin: 0; padding-left: 20px; }
+.diff-col li { margin-bottom: 4px; }
+.diff-col li.gone { color: var(--danger); text-decoration: line-through; }
+.diff-col li.add { color: var(--ok); }
+
+/* 可调的（params）与工作手册 */
+.pf-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px;
+  font-size: 13.5px; }
+.pf-l { color: var(--ink-2); }
+.pf-row select, .pf-row input[type="number"], .pf-row input[type="date"] {
+  font: inherit; padding: 6px 8px; border: 1px solid var(--line-strong);
+  border-radius: var(--r-chip); background: var(--surface); }
+.man-hist { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.man-row { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.man-v { flex: 0 0 auto; font-weight: 600; color: var(--ink-2); }
+.man-note { flex: 1 1 auto; min-width: 0; color: var(--ink-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.man-row .linkish { flex: 0 0 auto; }
+
+@media (max-width: 1160px) {
+  .wb { grid-template-columns: 1fr; }
+}
 
 /* ===== 对话视图 =====
  * 全站唯一增量渲染的视图：.talk-log 是自己的滚动容器（粘底但可上翻），
@@ -431,7 +490,7 @@ body.no-prd .prd { display: none; }
   /* 印交付物时反过来：显示中栏的结果，藏掉右边那份需求文档。 */
   body.print-result .center { display: block !important; }
   body.print-result .prd, body.print-result .topbar, body.print-result .result-acts,
-  body.print-result .multi-foot { display: none !important; }
+  body.print-result .multi-foot, body.print-result .tune-box { display: none !important; }
   body.print-result .scroll, body.print-result .stage { overflow: visible; padding: 0; height: auto; }
   body.print-result .paper { border: 0; padding: 0; }
   .shell { display: block; height: auto; }

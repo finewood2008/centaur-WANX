@@ -39,6 +39,17 @@ describe("compile", () => {
     expect(pkg.meta.domain).toBe("customer_management");
   });
 
+  it("persona_note 进 meta——app.yml 是重编译（heal/调教）的输入，漏了它一次 round-trip 就丢", () => {
+    const pkg = compileFrom({ ...valid, persona_note: "语气务必干脆" });
+    expect((pkg.meta as Record<string, unknown>).persona_note).toBe("语气务必干脆");
+    // round-trip：meta 再过一遍校验，persona_note 存活
+    const again = validateAppSpec(pkg.meta);
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(again.value.persona_note).toBe("语气务必干脆");
+    // 没有 persona_note 的不凭空多一个键
+    expect("persona_note" in compileFrom(valid).meta).toBe(false);
+  });
+
   it("persona 文本包含名称、目标、描述", () => {
     const pkg = compileFrom(valid);
     const persona = pkg.preset.agentCordis.find((e) => e.id === "persona");
