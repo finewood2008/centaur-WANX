@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>半人马AI-万象 · CentaurAI-WanX</title>
+  <meta name="description" content="超级个体的助手创造器——全程只做选择题，自动生成一个替你干活的专属 AI 助手。">
+  <style>
+    :root {
+      --paper: #FAF9F5;
+      --paper-deep: #F0EEE6;
+      --surface: #FFFFFF;
+      --ink: #141413;
+      --ink-2: #5C5A54;
+      --ink-3: #8A877E;
+      --line: #E5E2D9;
+      --accent: #D97757;
+      --accent-deep: #C15F3C;
+      --accent-wash: #FAEEE9;
+      --ok: #3D7A5C;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+              "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ---- nav ---- */
+    .nav {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 32px; height: 58px;
+      background: rgba(250,249,245,.92);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav-brand { display: flex; align-items: center; gap: 10px; }
+    .nav-logo {
+      width: 30px; height: 30px; border-radius: 7px; object-fit: contain;
+      background: var(--paper-deep);
+    }
+    .nav-name-zh { font-size: 15px; font-weight: 700; }
+    .nav-name-en { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+    .nav-link {
+      font-size: 14px; color: var(--ink-2);
+      padding: 6px 14px; border-radius: 8px;
+      transition: background .15s;
+    }
+    .nav-link:hover { background: var(--paper-deep); text-decoration: none; }
+
+    /* ---- hero ---- */
+    .hero {
+      max-width: 780px; margin: 0 auto;
+      padding: 80px 24px 64px;
+      text-align: center;
+    }
+    .hero-tag {
+      display: inline-block;
+      padding: 4px 14px; border-radius: 100px;
+      background: var(--accent-wash); color: var(--accent-deep);
+      font-size: 13px; font-weight: 600; letter-spacing: .04em;
+      margin-bottom: 24px;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 800; line-height: 1.25;
+      letter-spacing: -.02em;
+      margin-bottom: 18px;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 1.125rem; color: var(--ink-2);
+      max-width: 600px; margin: 0 auto 36px;
+    }
+    .hero-cta { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 13px 28px; border-radius: 12px;
+      background: var(--accent); color: #fff;
+      font-size: 15px; font-weight: 700;
+      border: none; cursor: pointer;
+      transition: background .15s, transform .1s;
+      text-decoration: none;
+    }
+    .btn-primary:hover { background: var(--accent-deep); transform: translateY(-1px); text-decoration: none; }
+    .btn-outline {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 24px; border-radius: 12px;
+      border: 1.5px solid var(--line); color: var(--ink-2);
+      background: var(--surface);
+      font-size: 15px; font-weight: 600;
+      transition: border-color .15s, background .15s;
+      text-decoration: none;
+    }
+    .btn-outline:hover { border-color: var(--accent); background: var(--accent-wash); text-decoration: none; }
+
+    /* ---- features ---- */
+    .section { max-width: 900px; margin: 0 auto; padding: 64px 24px; }
+    .section-label {
+      font-size: 12px; font-weight: 700; letter-spacing: .1em;
+      color: var(--accent); text-transform: uppercase; margin-bottom: 12px;
+    }
+    .section h2 { font-size: 1.75rem; font-weight: 800; margin-bottom: 8px; }
+    .section .sub { color: var(--ink-2); font-size: 1rem; margin-bottom: 40px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+    .card {
+      padding: 22px 22px 20px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      transition: box-shadow .15s, transform .15s;
+    }
+    .card:hover { box-shadow: 0 4px 20px rgba(0,0,0,.08); transform: translateY(-2px); }
+    .card-icon { font-size: 24px; margin-bottom: 12px; }
+    .card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
+    .card p { font-size: 0.9rem; color: var(--ink-2); }
+
+    /* ---- how it works ---- */
+    .steps { display: flex; flex-direction: column; gap: 18px; max-width: 620px; }
+    .step { display: flex; gap: 18px; align-items: flex-start; }
+    .step-num {
+      flex: 0 0 auto;
+      width: 34px; height: 34px; border-radius: 50%;
+      background: var(--accent-wash); color: var(--accent-deep);
+      font-weight: 800; font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .step-body h3 { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+    .step-body p { font-size: 0.9rem; color: var(--ink-2); }
+
+    /* ---- quickstart ---- */
+    .code-block {
+      background: #1E1E1E; color: #D4D4D4;
+      border-radius: 12px; padding: 20px 22px;
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 13.5px;
+      line-height: 1.65; overflow-x: auto; margin-top: 20px;
+    }
+    .code-block .c { color: #6A9955; }
+    .code-block .k { color: #569CD6; }
+    .code-block .s { color: #CE9178; }
+
+    /* ---- cta banner ---- */
+    .cta-banner {
+      background: var(--accent); color: #fff;
+      padding: 56px 24px;
+      text-align: center;
+    }
+    .cta-banner h2 { font-size: 1.75rem; font-weight: 800; margin-bottom: 10px; }
+    .cta-banner p { font-size: 1rem; opacity: .9; margin-bottom: 28px; }
+    .btn-white {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 13px 28px; border-radius: 12px;
+      background: #fff; color: var(--accent-deep);
+      font-size: 15px; font-weight: 700;
+      text-decoration: none;
+      transition: opacity .15s;
+    }
+    .btn-white:hover { opacity: .9; text-decoration: none; }
+
+    /* ---- footer ---- */
+    .footer {
+      padding: 32px 24px;
+      text-align: center;
+      color: var(--ink-3); font-size: 13px;
+      border-top: 1px solid var(--line);
+    }
+    .footer a { color: var(--ink-3); }
+
+    /* ---- divider ---- */
+    hr.divider { border: none; border-top: 1px solid var(--line); }
+
+    @media (max-width: 640px) {
+      .nav { padding: 0 16px; }
+      .hero { padding: 56px 16px 48px; }
+      .section { padding: 48px 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-brand">
+    <img class="nav-logo" src="https://raw.githubusercontent.com/finewood2008/centaur-WANX/main/public/static/logo-256.png" alt="半人马AI-万象 logo">
+    <div>
+      <div class="nav-name-zh">半人马AI-万象</div>
+      <div class="nav-name-en">CentaurAI-WanX</div>
+    </div>
+  </div>
+  <a class="nav-link" href="https://github.com/finewood2008/centaur-WANX" target="_blank" rel="noopener">GitHub ↗</a>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-tag">超级个体的助手创造器</div>
+  <h1>全程只做<span>选择题</span><br>造一个替你干活的助手</h1>
+  <p>
+    你跟 AI 产品经理对话，一份正式需求文档实时写出；确认后全自动生成一个
+    能跑的专属 AI 工人，把资料交给它、按一下让它跑一次，它照着工作手册完成任务、交回交付物。
+  </p>
+  <div class="hero-cta">
+    <a class="btn-primary" href="https://github.com/finewood2008/centaur-WANX#快速开始" target="_blank" rel="noopener">
+      🚀 快速开始
+    </a>
+    <a class="btn-outline" href="https://github.com/finewood2008/centaur-WANX" target="_blank" rel="noopener">
+      查看源码
+    </a>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- FEATURES -->
+<section class="section">
+  <div class="section-label">核心能力</div>
+  <h2>不只是聊天机器人</h2>
+  <p class="sub">万象造出来的助手是一个有工作手册的工人，而不是一个提示词包装器。</p>
+  <div class="grid">
+    <div class="card">
+      <div class="card-icon">🤝</div>
+      <h3>AI 产品经理对话</h3>
+      <p>每轮三拍——回读意思 → 写进文档 → 提问。全程只选，不用懂专业术语。</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📄</div>
+      <h3>对话即 PRD</h3>
+      <p>右栏实时生成 11 节双语需求文档，边聊边写，可导出 Markdown / 打印成 PDF。</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">⚙️</div>
+      <h3>确定性编译</h3>
+      <p>同一 AppSpec 永远产出同一应用包——persona 全文、插件清单、技能文件。</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">▶️</div>
+      <h3>让它跑一次</h3>
+      <p>一个按钮。进度用白话展示，跑完的交付物存进 runs/，随时回看、复制或打印。</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📁</div>
+      <h3>给它资料</h3>
+      <p>把会议记录、邮件、随手记粘进去，助手只看你放进来的东西，没有资料就说没有。</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🖥️</div>
+      <h3>三个入口</h3>
+      <p>桌面应用（推荐）/ Web 服务 / CLI，同一套逻辑，选你顺手的方式用。</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- HOW IT WORKS -->
+<section class="section">
+  <div class="section-label">使用流程</div>
+  <h2>四步造出一个助手</h2>
+  <p class="sub" style="margin-bottom: 32px;">从一句需求到一个能干活的 AI 工人，不需要写提示词、不需要懂 API。</p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h3>跟 AI 产品经理聊清楚</h3>
+        <p>描述你想要一个什么助手，它会提问、给选项，帮你把需求写清楚。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h3>通读并确认需求文档</h3>
+        <p>11 节双语 PRD 实时生成，确认无误后一键编译成助手。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <h3>给它资料</h3>
+        <p>把相关材料粘贴进去，助手的工作手册和资料一起落盘。</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <h3>让它跑一次</h3>
+        <p>按下按钮，看进度，拿交付物——每次跑都有存档，随时回看。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- QUICKSTART -->
+<section class="section">
+  <div class="section-label">快速开始</div>
+  <h2>本地运行只需三步</h2>
+  <p class="sub">需要 Node.js 18+ 和 DeepSeek API Key。</p>
+  <div class="code-block">
+    <span class="c"># 1. 安装依赖</span><br>
+    npm install<br><br>
+    <span class="c"># 2. 配置 API Key（也可在应用首屏界面配置）</span><br>
+    <span class="k">export</span> DEEPSEEK_API_KEY=<span class="s">你的key</span><br><br>
+    <span class="c"># 3. 启动 Web 服务</span><br>
+    WANXIANG_PORT=8788 npm start<br>
+    <span class="c"># 打开 http://127.0.0.1:8788</span>
+  </div>
+</section>
+
+<!-- CTA BANNER -->
+<div class="cta-banner">
+  <h2>开始造你的第一个 AI 助手</h2>
+  <p>克隆仓库，三分钟跑起来；或者直接在桌面应用里双击启动。</p>
+  <a class="btn-white" href="https://github.com/finewood2008/centaur-WANX" target="_blank" rel="noopener">
+    在 GitHub 上查看 →
+  </a>
+</div>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <p>
+    <strong>半人马AI-万象</strong> · CentaurAI-WanX &nbsp;·&nbsp;
+    <a href="https://github.com/finewood2008/centaur-WANX" target="_blank" rel="noopener">GitHub</a>
+  </p>
+  <p style="margin-top: 6px; font-size: 12px;">MIT License · 超级个体的助手创造器</p>
+</footer>
+
+</body>
+</html>
