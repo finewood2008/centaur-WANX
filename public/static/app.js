@@ -68,7 +68,7 @@
 
   function docHtml(prefix) {
     const name = state.draft.derived.name;
-    const confirmed = state.phase === "build" || state.phase === "runtime";
+    const confirmed = state.phase === "build" || state.phase === "app" || state.phase === "run" || state.phase === "result";
     const status = confirmed ? "已确认 Confirmed" : state.phase === "confirm" ? "待确认 In Review" : "草稿 Draft";
     let h = '<div class="doc"><div class="doc-head">' +
       '<div class="doc-h1">半人马AI-万象 · 助手需求文档</div>' +
@@ -390,6 +390,7 @@
   /* ================= 确认 ================= */
   function goConfirm() {
     state.phase = "confirm";
+    setPrdVisible(true);
     el("top-title").textContent = "通读并确认";
     el("top-en").textContent = "Review & confirm";
     el("stage").className = "stage";
@@ -421,6 +422,7 @@
 
   async function goBuild() {
     state.phase = "build";
+    setPrdVisible(true);
     el("top-title").textContent = "正在组装";
     el("top-en").textContent = "Assembling";
     el("stage").className = "stage";
@@ -452,7 +454,7 @@
       state.app = data;
       for (let k = 0; k < BUILD.length; k += 1) el(`step-${k}`).className = "step was";
       await loadApps();
-      setTimeout(() => goRuntime(data.slug), 500);
+      setTimeout(() => goApp(data.slug), 500);
     } catch (e) {
       clearInterval(tick);
       const box = el("build-err");
@@ -464,14 +466,395 @@
     }
   }
 
-  /* ================= 运行区（iframe 嵌 DSH） ================= */
-  async function goRuntime(slug) {
-    state.phase = "runtime";
-    el("top-title").textContent = (state.app && state.app.name) || "你的助手";
-    el("top-en").textContent = "Running";
-    el("stage").className = "stage wide";
+  /* ================= 助手主页（原生，不再 iframe 嵌 DSH） =========
+   *
+   * 用户在访谈里描述的是「定期跑一次、给我一份东西」，那是个活儿，不是聊天。
+   * 所以助手的主界面是：它会做什么 → 让它跑一次 → 看产出。
+   * DSH 的完整聊天界面退居「跟它细聊」，需要的时候才打开。
+   */
+
+  /** 极简 Markdown：交付物是助手写的，只会用到标题、列表、粗体这几样。 */
+  function md(src) {
+    const inline = (t) =>
+      esc(t)
+        .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+        .replace(/`([^`]+)`/g, "<code>$1</code>");
+    const out = [];
+    let list = null;
+    const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+    for (const raw of String(src).split("\n")) {
+      const line = raw.trimEnd();
+      const h = /^(#{1,4})\s+(.*)$/.exec(line);
+      const ul = /^[-*]\s+(.*)$/.exec(line);
+      const ol = /^\d+[.)]\s+(.*)$/.exec(line);
+      if (h) { closeList(); out.push(`<h${h[1].length + 2}>${inline(h[2])}</h${h[1].length + 2}>`); }
+      else if (ul) { if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(ul[1])}</li>`); }
+      else if (ol) { if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(ol[1])}</li>`); }
+      else if (line === "") closeList();
+      else { closeList(); out.push(`<p>${inline(line)}</p>`); }
+    }
+    closeList();
+    return out.join("");
+  }
+
+  function when(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const p = (n) => String(n).padStart(2, "0");
+    const today = new Date();
+    const sameDay = d.toDateString() === today.toDateString();
+    return sameDay
+      ? `今天 ${p(d.getHours())}:${p(d.getMinutes())}`
+      : `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function runsHtml(runs) {
+    if (!runs.length) {
+      return '<div class="runs-empty">还没跑过。点上面那个按钮，它就开始干活。</div>';
+    }
+    return (
+      '<div class="runs">' +
+      runs
+        .map(
+          (r) =>
+            `<button class="run-item${r.status === "failed" ? " bad" : ""}" data-run="${esc(r.id)}">` +
+            `<span class="run-when">${esc(when(r.startedAt))}</span>` +
+            `<span class="run-preview">${esc(r.status === "failed" ? r.error || "没跑成" : r.preview || "（空）")}</span>` +
+            `<span class="run-ms">${(r.ms / 1000).toFixed(1)}s</span></button>`,
+        )
+        .join("") +
+      "</div>"
+    );
+  }
+
+  /**
+   * 右栏那份需求文档只在「造助手」的过程中有意义——它是对话的实时投影。
+   * 看一个已有助手时它是空的，一栏「还没聊到」的骨架，纯噪音。
+   * 收起来，中间那栏也就有了该有的宽度。
+   */
+  function setPrdVisible(on) {
+    document.body.classList.toggle("no-prd", !on);
+  }
+
+  function kb(bytes) {
+    return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  /**
+   * 资料区。
+   *
+   * 这是产品最容易被忽略、却最致命的一块：助手造出来了，但没人给它东西看。
+   * 实测那种情况下它会满目录翻 80 秒，最后交回一份空清单——用户根本不知道
+   * 问题出在自己没放资料。所以没有资料时这里说得很直白。
+   */
+  function materialsHtml(mats) {
+    if (!mats.length) {
+      return (
+        '<div class="mat-empty">还是空的。它只看得见这里的东西——' +
+        "什么都不放，它跑出来的就是一份空的。</div>"
+      );
+    }
+    return (
+      '<p class="mat-note">它干活时写下的东西也会落在这儿，下次跑还看得见。' +
+      "不想要的直接删掉。</p>" +
+      '<div class="mats">' +
+      mats
+        .map(
+          (m) =>
+            `<div class="mat"><span class="mat-name">${esc(m.name)}</span>` +
+            `<span class="mat-size">${kb(m.bytes)}</span>` +
+            `<button class="mat-x" type="button" data-mat="${esc(m.name)}" aria-label="删掉">×</button></div>`,
+        )
+        .join("") +
+      "</div>"
+    );
+  }
+
+  async function saveMaterial(slug, name, text, remove) {
+    const r = await fetch(`/api/apps/${encodeURIComponent(slug)}/materials`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(remove ? { name, remove: true } : { name, text }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || "没存上");
+    return d.materials || [];
+  }
+
+  /** 把资料区重新画一遍并接上事件。加完/删完都走这里。 */
+  function paintMaterials(slug, mats) {
+    const box = el("mat-box");
+    if (!box) return;
+    box.innerHTML = materialsHtml(mats) +
+      '<button class="add-mat" id="add-mat" type="button">＋ 加一份资料</button>' +
+      '<div id="mat-form"></div><div id="mat-err"></div>';
+    el("add-mat").addEventListener("click", () => openMaterialForm(slug));
+    for (const b of box.querySelectorAll(".mat-x")) {
+      b.addEventListener("click", async () => {
+        try {
+          paintMaterials(slug, await saveMaterial(slug, b.dataset.mat, "", true));
+        } catch (e) {
+          const err = el("mat-err");
+          if (err) { err.className = "err"; err.textContent = e.message; }
+        }
+      });
+    }
+  }
+
+  function openMaterialForm(slug) {
+    const form = el("mat-form");
+    if (!form) return;
+    el("add-mat").disabled = true;
+    form.innerHTML =
+      '<div class="mat-form">' +
+      '<input id="mat-name" type="text" placeholder="给它起个名字，比如「八月客户往来」" spellcheck="false">' +
+      '<textarea id="mat-text" rows="7" placeholder="把内容粘进来。会议记录、邮件、清单、随手记的东西都行。"></textarea>' +
+      '<div class="multi-foot"><button class="btn-solid" id="mat-save" type="button">存进去</button>' +
+      '<button class="btn-quiet" id="mat-cancel" type="button">算了</button></div></div>';
+    el("mat-name").focus();
+    el("mat-cancel").addEventListener("click", () => {
+      form.innerHTML = "";
+      el("add-mat").disabled = false;
+    });
+    el("mat-save").addEventListener("click", async () => {
+      const name = el("mat-name").value.trim();
+      const text = el("mat-text").value;
+      const err = el("mat-err");
+      err.className = "";
+      err.textContent = "";
+      if (!name) { err.className = "err"; err.textContent = "先给它起个名字"; return; }
+      if (!text.trim()) { err.className = "err"; err.textContent = "内容是空的"; return; }
+      el("mat-save").disabled = true;
+      try {
+        paintMaterials(slug, await saveMaterial(slug, name, text, false));
+      } catch (e) {
+        err.className = "err";
+        err.textContent = e.message;
+        el("mat-save").disabled = false;
+      }
+    });
+  }
+
+  /** 助手主页。 */
+  async function goApp(slug) {
+    state.phase = "app";
+    setPrdVisible(false);
+    el("meters").hidden = true;
+    el("stage").className = "stage";
+    el("stage").innerHTML = '<div class="build"><h2>正在打开</h2></div>';
+    toTop();
+
+    let app = (state.apps || []).find((a) => a.slug === slug);
+    if (!app) {
+      await loadApps();
+      app = (state.apps || []).find((a) => a.slug === slug);
+    }
+    if (!app) {
+      el("stage").innerHTML = '<div class="err">找不到这个助手</div>';
+      return;
+    }
+    state.app = app;
+
+    let runs = [];
+    let mats = [];
+    try {
+      const [runsRes, matsRes] = await Promise.all([
+        fetch(`/api/apps/${encodeURIComponent(slug)}/runs`),
+        fetch(`/api/apps/${encodeURIComponent(slug)}/materials`),
+      ]);
+      const rd = await runsRes.json();
+      const md_ = await matsRes.json();
+      runs = Array.isArray(rd.runs) ? rd.runs : [];
+      mats = Array.isArray(md_.materials) ? md_.materials : [];
+    } catch { /* 读不出来不该挡住「跑一次」 */ }
+
+    el("top-title").textContent = app.name;
+    el("top-en").textContent = "Your assistant";
+
+    const steps = (app.workflow && app.workflow.steps) || [];
+    const bounds = app.boundaries || [];
     el("stage").innerHTML =
-      '<div class="build"><h2>正在把它接上运行区</h2><span class="build-en">Starting runtime</span></div>';
+      '<div class="appview">' +
+      `<h2 class="lede">${esc(app.name)}</h2>` +
+      `<p class="sub">${esc(app.description)}</p>` +
+      '<div class="card-row">' +
+      (steps.length
+        ? '<section class="card"><div class="card-h">它会做的事</div><ol class="card-ol">' +
+          steps.map((x) => `<li>${esc(x)}</li>`).join("") +
+          "</ol></section>"
+        : "") +
+      '<section class="card wide-card"><div class="card-h">它的资料夹</div>' +
+      '<div id="mat-box"></div></section>' +
+      '<section class="card"><div class="card-h">你会拿到</div>' +
+      `<p class="card-lead">${esc(app.delivery.form)}</p>` +
+      (bounds.length
+        ? '<div class="card-h sub-h">它不会做</div><ul class="card-ul">' +
+          bounds.map((x) => `<li>${esc(x)}</li>`).join("") +
+          "</ul>"
+        : "") +
+      "</section></div>" +
+      '<div class="multi-foot run-bar">' +
+      '<button class="btn-solid" id="do-run" type="button">让它跑一次</button>' +
+      (app.hasPrd ? '<button class="btn-quiet" id="see-prd" type="button">看需求文档</button>' : "") +
+      '<button class="btn-quiet" id="deep-chat" type="button">跟它细聊</button>' +
+      "</div>" +
+      '<div class="runs-h">最近的产出</div>' +
+      runsHtml(runs) +
+      "</div>";
+
+    paintMaterials(slug, mats);
+    el("do-run").addEventListener("click", () => runApp(slug));
+    if (el("see-prd")) {
+      el("see-prd").addEventListener("click", () => {
+        window.open(`/api/apps/${encodeURIComponent(slug)}/prd.md`, "_blank");
+      });
+    }
+    el("deep-chat").addEventListener("click", () => goDeepChat(slug));
+    for (const b of el("stage").querySelectorAll(".run-item")) {
+      b.addEventListener("click", () => openRun(slug, b.dataset.run));
+    }
+  }
+
+  /** 跑一次。SSE：白话进度 + 助手的话，结束落到结果页。 */
+  async function runApp(slug) {
+    state.phase = "run";
+    setPrdVisible(false);
+    el("stage").className = "stage";
+    el("stage").innerHTML =
+      '<div class="running"><h2 class="lede">它正在干活</h2>' +
+      '<p class="sub">通常十几秒。跑完的东西会存下来，随时能回头看。</p>' +
+      '<div class="steps live" id="live"></div>' +
+      '<div class="live-text" id="live-text"></div>' +
+      '<div id="run-err"></div></div>';
+    toTop();
+
+    const live = el("live");
+    const liveText = el("live-text");
+    let lastStep = null;
+    const addStep = (text) => {
+      if (lastStep) lastStep.className = "step was";
+      const d = document.createElement("div");
+      d.className = "step now";
+      d.innerHTML = '<span class="dot" aria-hidden="true"></span><span></span>';
+      d.querySelector("span:last-child").textContent = text;
+      live.appendChild(d);
+      lastStep = d;
+      d.scrollIntoView({ block: "nearest", behavior: REDUCED ? "auto" : "smooth" });
+    };
+
+    try {
+      const response = await fetch(`/api/apps/${encodeURIComponent(slug)}/run`, { method: "POST" });
+      if (!response.ok || !response.body) throw new Error(`跑不起来（${response.status}）`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = null;
+      let failed = null;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep;
+        while ((sep = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          let event = "message", data = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+          const payload = JSON.parse(data);
+          if (event === "step") addStep(payload.text);
+          else if (event === "text") liveText.textContent = payload.text;
+          else if (event === "done") finished = payload;
+          else if (event === "error") failed = payload;
+        }
+      }
+
+      if (lastStep) lastStep.className = "step was";
+      if (failed) {
+        if (failed.needsKey) { await loadSettings(); renderSettings({ reason: "还没设置模型 key，先把它配上。" }); return; }
+        throw new Error(failed.error || "没跑成");
+      }
+      if (!finished) throw new Error("连接中断了");
+      renderResult(slug, finished.run, finished.output);
+    } catch (e) {
+      const box = el("run-err");
+      if (box) { box.className = "err"; box.textContent = `没跑成：${e.message}`; }
+      const back = document.createElement("button");
+      back.className = "btn-quiet";
+      back.type = "button";
+      back.textContent = "返回";
+      back.style.marginTop = "16px";
+      back.addEventListener("click", () => goApp(slug));
+      el("stage").querySelector(".running").appendChild(back);
+    }
+  }
+
+  async function openRun(slug, id) {
+    try {
+      const r = await fetch(`/api/apps/${encodeURIComponent(slug)}/runs/${encodeURIComponent(id)}`);
+      const d = await r.json();
+      if (d.ok === false) throw new Error(d.error);
+      renderResult(slug, d.run, d.output);
+    } catch (e) {
+      el("stage").innerHTML = `<div class="err">打不开这次记录：${esc(e.message)}</div>`;
+    }
+  }
+
+  /** 结果页 —— 产品真正交付的那一屏。 */
+  function renderResult(slug, run, output) {
+    state.phase = "result";
+    setPrdVisible(false);
+    el("stage").className = "stage";
+    el("top-title").textContent = (state.app && state.app.name) || "产出";
+    el("top-en").textContent = "Result";
+    const failed = run.status === "failed";
+    el("stage").innerHTML =
+      '<div class="result">' +
+      '<div class="result-bar">' +
+      `<div><div class="result-when">${esc(when(run.startedAt))}</div>` +
+      `<div class="result-meta">用时 ${(run.ms / 1000).toFixed(1)} 秒</div></div>` +
+      '<div class="result-acts">' +
+      '<button class="btn-quiet" id="r-copy" type="button">复制</button>' +
+      '<button class="btn-quiet" id="r-print" type="button">打印 / 存 PDF</button>' +
+      '<button class="btn-solid" id="r-again" type="button">再跑一次</button>' +
+      "</div></div>" +
+      (failed
+        ? `<div class="err">没跑成：${esc(run.error || "")}</div>`
+        : `<article class="paper">${md(output)}</article>`) +
+      '<div class="multi-foot"><button class="btn-quiet" id="r-back" type="button">← 回到助手</button></div>' +
+      "</div>";
+    el("r-back").addEventListener("click", () => goApp(slug));
+    el("r-again").addEventListener("click", () => runApp(slug));
+    el("r-print").addEventListener("click", () => {
+      // 默认的打印样式是给右栏那份需求文档用的；印交付物要临时反过来。
+      document.body.classList.add("print-result");
+      window.print();
+      setTimeout(() => document.body.classList.remove("print-result"), 0);
+    });
+    el("r-copy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(output);
+        el("r-copy").textContent = "已复制";
+        setTimeout(() => { el("r-copy").textContent = "复制"; }, 1500);
+      } catch {
+        el("r-copy").textContent = "复制不了";
+      }
+    });
+    toTop();
+  }
+
+  /** 跟它细聊 —— 打开 DSH 的完整界面。次要入口，不再是主路径。 */
+  async function goDeepChat(slug) {
+    state.phase = "chatting";
+    setPrdVisible(false);
+    el("top-title").textContent = (state.app && state.app.name) || "细聊";
+    el("top-en").textContent = "Talk it through";
+    el("stage").className = "stage wide";
+    el("stage").innerHTML = '<div class="build"><h2>正在打开对话</h2><span class="build-en">Starting</span></div>';
     try {
       await fetch("/api/activate", {
         method: "POST",
@@ -483,10 +866,16 @@
       if (d.ok === false) throw new Error(d.error);
       el("dsh-state").textContent = "运行中";
       el("stage").innerHTML =
-        `<iframe class="runtime" title="运行区" src="/runtime/?agent=${encodeURIComponent(slug)}"></iframe>`;
+        '<div class="chat-bar"><button class="btn-quiet" id="chat-back" type="button">← 回到助手</button>' +
+        '<span class="chat-note">这是完整的对话界面，适合来回商量。跑固定活儿用「让它跑一次」更省事。</span></div>' +
+        `<iframe class="runtime" title="对话" src="/runtime/?agent=${encodeURIComponent(slug)}"></iframe>`;
+      el("chat-back").addEventListener("click", () => goApp(slug));
     } catch (e) {
       el("stage").className = "stage";
-      el("stage").innerHTML = `<div class="err">运行区没起来：${esc(e.message)}</div>`;
+      el("stage").innerHTML =
+        `<div class="err">对话界面没起来：${esc(e.message)}</div>` +
+        '<div class="multi-foot"><button class="btn-quiet" id="chat-back2" type="button">← 回到助手</button></div>';
+      el("chat-back2").addEventListener("click", () => goApp(slug));
     }
   }
 
@@ -496,6 +885,7 @@
       const r = await fetch("/api/apps");
       const d = await r.json();
       const apps = Array.isArray(d.apps) ? d.apps : [];
+      state.apps = apps;
       el("app-count").textContent = String(apps.length);
       const list = el("app-list");
       list.innerHTML = "";
@@ -509,7 +899,7 @@
         b.className = "side-item" + (state.app && state.app.slug === app.slug ? " on" : "");
         b.innerHTML = '<span class="side-dot" aria-hidden="true"></span><span></span>';
         b.querySelector("span:last-child").textContent = app.name;
-        b.addEventListener("click", () => { state.app = app; goRuntime(app.slug); });
+        b.addEventListener("click", () => { state.app = app; goApp(app.slug); });
         list.appendChild(b);
       }
     } catch {
@@ -536,6 +926,7 @@
    */
   function renderSettings(options) {
     const opts = options || {};
+    setPrdVisible(false);
     const cfg = state.settings || {};
     state.phase = "settings";
     el("meters").hidden = true;
@@ -617,7 +1008,9 @@
     Object.assign(state, {
       phase: "empty", messages: [], draft: { slots: {}, derived: {} },
       turn: 0, answered: 0, busy: false, app: null, pending: null, ask: null,
+      apps: state.apps || [],
     });
+    setPrdVisible(true);
     const cfg = await loadSettings();
     // 没有 key 就别装作能用。第一屏直接给设置，而不是让他聊到一半撞墙。
     if (!cfg || !cfg.hasKey) {

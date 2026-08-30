@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: 安装依赖
+        # 跳过 Electron 的二进制下载（一百多 MB）：CI 只跑类型检查和单元测试，
+        # 桌面外壳不参与，下载它纯属浪费。
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        # 测试全程不碰网络也不需要 DEEPSEEK_API_KEY：
+        # 定义器用 FakeLLMClient，DeepSeek 客户端的测试 stub 掉了 global.fetch。
+        run: npm test

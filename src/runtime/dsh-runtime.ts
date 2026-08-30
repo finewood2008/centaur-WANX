@@ -13,6 +13,52 @@ export interface RuntimeConfig {
 }
 
 /**
+ * 跑一次任务时推给界面的进度。
+ *
+ * `step` 是给用户看的白话（「正在翻资料」），不是工具名——界面上不出现
+ * glob / bash 这种词。`text` 是助手说的话。
+ */
+export interface RunEvent {
+  kind: "step" | "text";
+  text: string;
+}
+
+/**
+ * 工具名 → 白话。用户不该在界面上看见 glob、bash 这些词。
+ * 认不出的工具统一说「正在处理」，绝不把原始工具名漏出去。
+ */
+const STEP_LABEL: Record<string, string> = {
+  glob: "正在翻找资料",
+  grep: "正在检索内容",
+  read: "正在读材料",
+  write: "正在写文件",
+  edit: "正在修改文件",
+  bash: "正在执行操作",
+  skill: "正在读工作手册",
+  web_search: "正在联网查找",
+  web_fetch: "正在读取网页",
+  todo_write: "正在梳理步骤",
+};
+
+function stepLabel(tool: string): string {
+  return STEP_LABEL[tool] ?? STEP_LABEL[tool.toLowerCase()] ?? "正在处理";
+}
+
+/** 从一条 session 事件里抽出要推给界面的东西。认不出的事件返回空数组。 */
+function toRunEvents(event: any): RunEvent[] {
+  if (event?.type !== "assistant/message") return [];
+  const out: RunEvent[] = [];
+  for (const block of event.data?.message?.content ?? []) {
+    if (block?.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
+      out.push({ kind: "text", text: block.text });
+    } else if (block?.type === "tool_use" || block?.type === "tool-call") {
+      out.push({ kind: "step", text: stepLabel(String(block.name ?? "")) });
+    }
+  }
+  return out;
+}
+
+/**
  * 万象运行时：把「生成的应用」（DSH preset）经 DSH library API 在框架下跑起来。
  *
  * 封装了 spike 验证过的关键路径：
@@ -26,6 +72,11 @@ export class WanxiangRuntime {
   private agents: any = null;
   private sessions: any = null;
   private agentMap = new Map<string, any>();
+
+  /** boot 过了没有。server 靠它决定要不要等 bootPromise。 */
+  get booted(): boolean {
+    return this.ctx !== null;
+  }
 
   async boot(config: RuntimeConfig): Promise<void> {
     process.env.DSH_HOME = config.dshHome;
@@ -103,20 +154,65 @@ export class WanxiangRuntime {
 
   /** 驱动一轮对话，返回 assistant 的文本回复。 */
   async runTask(sessionId: string, task: string): Promise<string> {
+    return this.runTaskStream(sessionId, task, () => {});
+  }
+
+  /**
+   * 驱动一轮对话，边跑边把进度推给 onEvent，结束后返回完整文本。
+   *
+   * 订阅 cordis 的 `session/event`（回调签名是 `(session, event)`），只收本
+   * session 的。跑一次要 5～15 秒，不流式的话用户对着白屏干等——对着不懂技术
+   * 的用户，那等同于「卡住了」。
+   */
+  async runTaskStream(
+    sessionId: string,
+    task: string,
+    onEvent: (event: RunEvent) => void,
+  ): Promise<string> {
     const { createUserMessage } = await import("@deepseek-ai/dsh-llm");
     const agent = this.agentMap.get(sessionId);
     if (!agent) throw new Error(`session not found: ${sessionId}`);
 
     await agent.whenIdle();
     const firstSeq = agent.session.seq;
-    agent.followup(
-      createUserMessage({
-        content: [{ type: "text", text: task }],
-        source: { kind: "user" },
-      }),
-    );
-    await agent.whenIdle();
-    await this.sessions.flush(agent.session);
+
+    // 订阅要在 followup 之前挂上，否则最前面几条事件会漏掉。
+    //
+    // 连续重复的进度要折叠：实测一次运行里连着推了 18 条「正在执行操作」，
+    // 那不是进度，是噪音——用户看到的是一串一模一样的行在刷屏。
+    let lastStep = "";
+    let dispose: (() => void) | undefined;
+    try {
+      dispose = this.ctx.on("session/event", (session: any, event: any) => {
+        if (session?.id !== agent.session.id) return;
+        if (typeof event?.seq === "number" && event.seq < firstSeq) return;
+        for (const e of toRunEvents(event)) {
+          if (e.kind === "step") {
+            if (e.text === lastStep) continue;
+            lastStep = e.text;
+          } else {
+            lastStep = "";
+          }
+          onEvent(e);
+        }
+      });
+    } catch {
+      // 订阅不上就退化成非流式：结果照样拿得到，只是没有中途进度。
+    }
+
+    try {
+      agent.followup(
+        createUserMessage({
+          content: [{ type: "text", text: task }],
+          source: { kind: "user" },
+        }),
+      );
+      await agent.whenIdle();
+      await this.sessions.flush(agent.session);
+    } finally {
+      dispose?.();
+    }
+
     return this.lastAssistantText(agent, firstSeq);
   }
 
@@ -133,6 +229,11 @@ export class WanxiangRuntime {
       }
     }
     return text;
+  }
+
+  /** 收掉一个会话。job 模式每次跑都开新会话，跑完就该收掉。 */
+  releaseSession(sessionId: string): void {
+    this.agentMap.delete(sessionId);
   }
 
   async dispose(): Promise<void> {

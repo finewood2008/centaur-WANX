@@ -282,8 +282,104 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 }
 
 /* ---- 打印：浏览器直接「打印成 PDF」就是一份能发出去的正式文档 ---- */
+/* ---- 助手主页 / 运行 / 结果 ---------------------------------------
+ * 助手不再是嵌在万象里的另一个界面，它是万象自己的一页。
+ * 主路径：看清楚它会做什么 → 让它跑一次 → 拿到一份东西。
+ */
+.appview { max-width: 720px; }
+.card-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px; margin: 4px 0 22px; }
+.card { padding: 15px 17px 17px; border: 1px solid var(--line);
+  border-radius: var(--r-card); background: var(--surface); }
+.card-h { font-size: 12px; letter-spacing: .04em; color: var(--ink-3); margin-bottom: 9px; }
+.card-h.sub-h { margin-top: 16px; }
+.card-lead { margin: 0; font-size: 15.5px; font-weight: 600; }
+.card-ol, .card-ul { margin: 0; padding-left: 20px; font-size: 14.5px; }
+.card-ol li, .card-ul li { margin-bottom: 5px; }
+.card-ol li::marker { color: var(--accent); font-weight: 650; }
+.card-ul { list-style: none; padding-left: 2px; }
+.card-ul li { position: relative; padding-left: 16px; color: var(--ink-2); }
+.card-ul li::before { content: "×"; position: absolute; left: 2px; color: var(--ink-3); }
+
+/* 资料：用户交给助手的东西。没有它，助手跑出来的就是一份空的。 */
+/* 看已有助手时收起右栏的需求文档，中间那栏才有该有的宽度。 */
+body.no-prd .shell { grid-template-columns: 240px minmax(0, 1fr); }
+body.no-prd .prd { display: none; }
+
+.wide-card { grid-column: 1 / -1; }
+.mat-note { margin: 0 0 10px; font-size: 12.5px; color: var(--ink-3); }
+.mats { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.mat { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center;
+  gap: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-chip);
+  background: var(--paper); font-size: 14px; }
+.mat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mat-size { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mat-x { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--ink-3); font-size: 16px; line-height: 1; }
+.mat-x:hover { background: var(--accent-wash); color: var(--danger); }
+.mat-empty { margin-bottom: 12px; padding: 12px 14px; border: 1px dashed var(--line-strong);
+  border-radius: var(--r-chip); color: var(--ink-2); font-size: 13.5px; }
+.add-mat { padding: 7px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-btn);
+  background: var(--surface); font-size: 13.5px; }
+.add-mat:hover:not(:disabled) { background: var(--paper-deep); }
+.mat-form { margin-top: 12px; }
+.mat-form input, .mat-form textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line-strong);
+  border-radius: var(--r-btn); background: var(--surface); font: inherit; color: var(--ink);
+  margin-bottom: 8px; resize: vertical; }
+.mat-form textarea { font-size: 14px; line-height: 1.6; }
+.mat-form input:focus, .mat-form textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.run-bar { margin: 0 0 30px; }
+.runs-h { margin: 0 0 10px; font-size: 12px; letter-spacing: .04em; color: var(--ink-3); }
+.runs { display: flex; flex-direction: column; gap: 4px; }
+.run-item { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; align-items: center;
+  gap: 12px; width: 100%; padding: 10px 13px; border: 1px solid var(--line);
+  border-radius: var(--r-btn); background: var(--surface); text-align: left; font-size: 14px;
+  transition: border-color .15s ease; }
+.run-item:hover { border-color: var(--line-strong); }
+.run-item.bad .run-preview { color: var(--danger); }
+.run-when { color: var(--ink-3); font-size: 12.5px; }
+.run-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-ms { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.runs-empty { padding: 16px; border: 1px dashed var(--line-strong); border-radius: var(--r-card);
+  color: var(--ink-3); font-size: 14px; }
+
+.running { max-width: 620px; margin-top: 8px; }
+.steps.live { margin: 22px 0 0; max-height: 260px; overflow-y: auto; }
+.live-text { margin-top: 20px; padding: 14px 16px; border-left: 2px solid var(--accent);
+  background: var(--accent-wash); border-radius: 0 var(--r-card) var(--r-card) 0;
+  font-size: 14.5px; color: var(--ink-2); white-space: pre-wrap; }
+.live-text:empty { display: none; }
+
+.result { max-width: 720px; }
+.result-bar { display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+.result-when { font-size: 17px; font-weight: 650; }
+.result-meta { font-size: 12.5px; color: var(--ink-3); }
+.result-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.paper { padding: 30px 34px; border: 1px solid var(--line); border-radius: var(--r-card);
+  background: var(--surface); font-size: 15px; line-height: 1.75; }
+.paper h3 { margin: 0 0 12px; font-size: 20px; font-weight: 650; }
+.paper h4 { margin: 22px 0 8px; font-size: 16px; font-weight: 650; }
+.paper h5, .paper h6 { margin: 18px 0 6px; font-size: 14px; font-weight: 650; color: var(--ink-2); }
+.paper p { margin: 0 0 12px; }
+.paper ul, .paper ol { margin: 0 0 14px; padding-left: 22px; }
+.paper li { margin-bottom: 6px; }
+.paper li::marker { color: var(--accent); }
+.paper code { padding: 1px 5px; border-radius: 5px; background: var(--paper-deep); font-size: 13.5px; }
+.paper > :last-child { margin-bottom: 0; }
+
+.chat-bar { display: flex; align-items: center; gap: 14px; padding: 0 0 12px; flex-wrap: wrap; }
+.chat-note { font-size: 12.5px; color: var(--ink-3); }
+
 @media print {
   .sidebar, .center, .prd-bar, .prd-foot, .overlay-bar { display: none !important; }
+  /* 印交付物时反过来：显示中栏的结果，藏掉右边那份需求文档。 */
+  body.print-result .center { display: block !important; }
+  body.print-result .prd, body.print-result .topbar, body.print-result .result-acts,
+  body.print-result .multi-foot { display: none !important; }
+  body.print-result .scroll, body.print-result .stage { overflow: visible; padding: 0; height: auto; }
+  body.print-result .paper { border: 0; padding: 0; }
   .shell { display: block; height: auto; }
   .prd { border: 0; background: #fff; }
   .prd-scroll { overflow: visible; padding: 0; }

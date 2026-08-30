@@ -1,0 +1,29 @@
+{
+  "name": "半人马AI-万象",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:24",
+
+  // 跳过 Electron 的二进制下载：Codespace 里跑的是 Web 服务，桌面外壳用不上。
+  "containerEnv": {
+    "ELECTRON_SKIP_BINARY_DOWNLOAD": "1",
+    "WANXIANG_PORT": "8788",
+    "WANXIANG_DSH_PORT": "8891"
+  },
+
+  "postCreateCommand": "npm install",
+
+  // 8788 是万象自己的界面；8891 是它按需拉起的 DSH 子进程，
+  // 走万象的反向代理，不需要单独打开。
+  "forwardPorts": [8788],
+  "portsAttributes": {
+    "8788": {
+      "label": "万象",
+      "onAutoForward": "openBrowser"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "esbenp.prettier-vscode"]
+    }
+  }
+}
