@@ -85,6 +85,8 @@ browse/api_call 才放开 fetch。访谈里的选择从这里开始是真话，�
 - **给它资料**：把会议记录、邮件、随手记的东西粘进去，存在助手自己的工作目录里。它只看得见你放进来的东西——没有资料，它跑出来的就是一份空的，界面会直说这一点。
 - **让它跑一次**：一个按钮。进度是白话（「正在翻找资料」「正在读材料」），界面上不出现工具名。跑完的交付物存进 `runs/`，能复制、能打印成 PDF、能随时翻回来。
 - **技能按助手隔离**：每个助手的工作手册装在它自己的 `workspace/.dsh/skills/`，共享根保持空，助手之间互相看不见。
+- **定时**：助手主页上把「到点自动跑」打开（每小时 / 每天 / 每周几点），万象开着它就自己跑，产出照常进「最近的产出」。宕机漏掉的只补最新一次，绝不补跑风暴。
+- **外部能力（MCP）**：侧栏「外部能力」页接上一个 MCP server，所有助手（含细聊）都多一批 `mcp__<server>__<tool>` 工具，改动热生效不用重启。
 - **桌面应用 / Web / CLI 三个入口**。
 
 ## 桌面应用（推荐）
@@ -193,7 +195,7 @@ examples/     # 示例助手，npm run seed-demo 装进本机
 ## 已知边界（M0/M1）
 
 - 知君插件（`@centaur/plugin-memory-read/write`）尚未实现，助手当前以 DSH 兼容变体运行（无记忆绑定）；实现后恢复 `includeCentaurPlugins: true`。在此之前 persona 明说「你能看的东西全在当前工作目录里」——不说清楚的话，助手会真去满文件系统找一个叫 `work_logs` 的东西，实测为此空转 80 秒，最后交回一份空清单
-- `delivery.trigger` 只编译进 persona 的一句话，**没有调度器**：访谈里「每周固定跑一次」这个选项目前兑现不了，只能手动按「让它跑一次」。要 AppSpec v1.1 把 `trigger` 扩成 `manual | schedule | event` 才能落地
+- 定时已兑现，但走的是**运行期设置**（每个应用一份 `schedule.yml`，助手主页上调），不是 AppSpec 字段：spec 是冻结的规格，「几点跑」是用户随时会拧的旋钮。访谈里 `delivery.trigger` 表达意图，定时卡才是兑现处；两者目前没有自动联动（访谈里选了「每周固定跑」不会自动打开定时）
 - `memory-binding.yml` 和 `retrieval` 的四个策略目前是声明，没有后端消费它们
 - 「资料来源」这一问目前只能由用户自己写——知君的 `memory.list_scopes()` 还没有，给不出真实资料让他勾
 - 应用 preset 目录名（＝DSH preset id）受 DSH `PRESET_ID` 正则约束（小写字母/数字/连字符），中文名经 `slugFromName` 哈希派生
@@ -221,6 +223,8 @@ examples/     # 示例助手，npm run seed-demo 装进本机
 | `GET /wanx/api/apps/:slug/runs/:id` | 某一次的完整交付物 |
 | `GET /wanx/api/apps/:slug/materials` | 它能看的资料 |
 | `POST /wanx/api/apps/:slug/materials` | 存一份资料（`{name, text}`）或删一份（`{name, remove:true}`） |
+| `GET/POST /wanx/api/apps/:slug/schedule` | 定时（`{enabled, every: hour\|day\|week, at, weekday}`），到点自动跑 |
+| `GET/POST /wanx/api/mcp` | 外部能力：接上/断开 MCP server，写 profile 补丁层，热生效 |
 
 模型与细聊：
 

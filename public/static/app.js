@@ -536,6 +536,66 @@
     document.body.classList.toggle("no-prd", !on);
   }
 
+  /**
+   * 定时卡。兑现访谈里「每周固定跑一次」那类承诺——万象开着，到点它就自己跑，
+   * 产出照常进「最近的产出」。宕机漏掉的只补最新一次，不会补跑风暴。
+   */
+  const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+  function paintSchedule(slug, sched) {
+    const box = el("sched-box");
+    if (!box) return;
+    const s = sched || { enabled: false, every: "day", at: "09:00", weekday: 1 };
+    const desc = !s.enabled
+      ? "没开。它只在你按「让它跑一次」时干活。"
+      : s.every === "hour" ? "每小时整点自动跑一次。"
+      : s.every === "day" ? `每天 ${esc(s.at || "09:00")} 自动跑一次。`
+      : `每${WEEKDAYS[s.weekday ?? 1]} ${esc(s.at || "09:00")} 自动跑一次。`;
+    box.innerHTML =
+      `<p class="card-lead" style="font-weight:500;font-size:14px">${desc}</p>` +
+      '<div class="mat-form" style="margin-top:8px">' +
+      `<label style="display:block;margin-bottom:6px"><input id="sc-on" type="checkbox"${s.enabled ? " checked" : ""}> 到点自动跑</label>` +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
+      `<select id="sc-every">` +
+      `<option value="hour"${s.every === "hour" ? " selected" : ""}>每小时</option>` +
+      `<option value="day"${s.every === "day" ? " selected" : ""}>每天</option>` +
+      `<option value="week"${s.every === "week" ? " selected" : ""}>每周</option></select>` +
+      `<select id="sc-wd"${s.every !== "week" ? ' style="display:none"' : ""}>` +
+      WEEKDAYS.map((w, i) => `<option value="${i}"${(s.weekday ?? 1) === i ? " selected" : ""}>${w}</option>`).join("") +
+      "</select>" +
+      `<input id="sc-at" type="time" value="${esc(s.at || "09:00")}"${s.every === "hour" ? ' style="display:none"' : ""}>` +
+      '<button class="add-mat" id="sc-save" type="button">保存</button></div>' +
+      '<div id="sc-err"></div></div>';
+
+    el("sc-every").addEventListener("change", () => {
+      const v = el("sc-every").value;
+      el("sc-wd").style.display = v === "week" ? "" : "none";
+      el("sc-at").style.display = v === "hour" ? "none" : "";
+    });
+    el("sc-save").addEventListener("click", async () => {
+      const err = el("sc-err");
+      err.className = ""; err.textContent = "";
+      const payload = {
+        enabled: el("sc-on").checked,
+        every: el("sc-every").value,
+        at: el("sc-at").value || "09:00",
+        weekday: Number(el("sc-wd").value),
+      };
+      try {
+        const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/schedule`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) throw new Error(d.error || "没存上");
+        paintSchedule(slug, d.schedule);
+      } catch (e) {
+        err.className = "err"; err.textContent = e.message;
+      }
+    });
+  }
+
   function kb(bytes) {
     return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
   }
@@ -657,15 +717,19 @@
 
     let runs = [];
     let mats = [];
+    let sched = null;
     try {
-      const [runsRes, matsRes] = await Promise.all([
+      const [runsRes, matsRes, schedRes] = await Promise.all([
         fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/runs`),
         fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/materials`),
+        fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/schedule`),
       ]);
       const rd = await runsRes.json();
       const md_ = await matsRes.json();
+      const sd = await schedRes.json();
       runs = Array.isArray(rd.runs) ? rd.runs : [];
       mats = Array.isArray(md_.materials) ? md_.materials : [];
+      sched = sd && sd.schedule ? sd.schedule : null;
     } catch { /* 读不出来不该挡住「跑一次」 */ }
 
     el("top-title").textContent = app.name;
@@ -683,6 +747,7 @@
           steps.map((x) => `<li>${esc(x)}</li>`).join("") +
           "</ol></section>"
         : "") +
+      '<section class="card"><div class="card-h">定时</div><div id="sched-box"></div></section>' +
       '<section class="card wide-card"><div class="card-h">它的资料夹</div>' +
       '<div id="mat-box"></div></section>' +
       '<section class="card"><div class="card-h">你会拿到</div>' +
@@ -703,6 +768,7 @@
       "</div>";
 
     paintMaterials(slug, mats);
+    paintSchedule(slug, sched);
     el("do-run").addEventListener("click", () => runApp(slug));
     if (el("see-prd")) {
       el("see-prd").addEventListener("click", () => {

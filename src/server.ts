@@ -45,6 +45,14 @@ import {
   MAX_MATERIAL_BYTES,
 } from "./materials";
 import { addMcpServer, listMcpServers, removeMcpServer } from "./mcp";
+import {
+  isDue,
+  markScheduleRun,
+  readSchedule,
+  validateSchedule,
+  writeSchedule,
+  type ScheduleSpec,
+} from "./schedule";
 
 /**
  * 应用落盘目录。**必须在 git 仓库之外。**
@@ -719,6 +727,57 @@ async function handleSaveMaterial(
   }
 }
 
+/** 同一个应用同一时刻只跑一个：手动和定时都过这道闸。 */
+const runningApps = new Set<string>();
+
+/**
+ * 跑一次的执行体。SSE 的 handleRun 和调度器共用——两边只在「进度去哪」和
+ * 「trigger 记成什么」上不同。
+ */
+async function executeRun(
+  slug: string,
+  trigger: RunRecord["trigger"],
+  onEvent: (event: string, data: { text: string }) => void,
+): Promise<{ ok: boolean; record: RunRecord; output: string; error?: string }> {
+  const app = await readAppSummary(slug);
+  if (!app) throw new Error("没有这个助手");
+  if (runningApps.has(slug)) throw new Error("它正在跑，等这一次结束");
+
+  const id = newRunId();
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
+  const task = buildJobTask(app, materials);
+
+  runningApps.add(slug);
+  try {
+    onEvent("step", { text: "正在唤醒助手" });
+    const agent = await createAppAgent(hostCtx, slug, workspaceDir(APPS_DIR, slug));
+    const output = await runAgentTask(hostCtx, agent, task, (e) => {
+      onEvent(e.kind, { text: e.text });
+    });
+    const record: RunRecord = { id, status: "ok", task, startedAt, ms: Date.now() - started, trigger };
+    await saveRun(APPS_DIR, slug, record, output);
+    return { ok: true, record, output };
+  } catch (e) {
+    const message = (e as Error).message;
+    const record: RunRecord = {
+      id,
+      status: "failed",
+      task,
+      startedAt,
+      ms: Date.now() - started,
+      trigger,
+      error: message,
+    };
+    // 失败也存档：用户下次打开该看得见「上次没跑成，因为什么」。
+    await saveRun(APPS_DIR, slug, record, "").catch(() => {});
+    return { ok: false, record, output: "", error: message };
+  } finally {
+    runningApps.delete(slug);
+  }
+}
+
 /** 跑一次。SSE：step 是白话进度，text 是助手的话，done 带上落盘后的记录。 */
 async function handleRun(req: IncomingMessage, res: ServerResponse, slug: string): Promise<void> {
   const app = await readAppSummary(slug);
@@ -739,46 +798,84 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, slug: string
     return;
   }
 
-  const id = newRunId();
-  const startedAt = new Date().toISOString();
-  const started = Date.now();
-  const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
-  const task = buildJobTask(app, materials);
-
   try {
-    send("step", { text: "正在唤醒助手" });
-    const agent = await createAppAgent(hostCtx, slug, workspaceDir(APPS_DIR, slug));
-
-    const output = await runAgentTask(hostCtx, agent, task, (e) => {
-      send(e.kind, { text: e.text });
-    });
-
-    const record: RunRecord = {
-      id,
-      status: "ok",
-      task,
-      startedAt,
-      ms: Date.now() - started,
-      trigger: "manual",
-    };
-    await saveRun(APPS_DIR, slug, record, output);
-    send("done", { run: record, output });
+    const result = await executeRun(slug, "manual", send);
+    if (result.ok) send("done", { run: result.record, output: result.output });
+    else send("error", { error: result.error });
   } catch (e) {
-    const message = (e as Error).message;
-    const record: RunRecord = {
-      id,
-      status: "failed",
-      task,
-      startedAt,
-      ms: Date.now() - started,
-      trigger: "manual",
-      error: message,
-    };
-    // 失败也存档：用户下次打开该看得见「上次没跑成，因为什么」。
-    await saveRun(APPS_DIR, slug, record, "").catch(() => {});
-    send("error", { error: message });
+    send("error", { error: (e as Error).message });
   } finally {
     res.end();
+  }
+}
+
+/* ── 定时 ────────────────────────────────────────────────────────────
+ * 每分钟扫一遍：谁的 schedule.yml 到点了就跑一次（trigger 记 "schedule"）。
+ * 补偿 latest-only：先写 lastRunAt 再跑——宕机跨过三个周期也只补一次，
+ * 失败会照常记进 runs 台账，绝不因为补跑风暴烧掉用户的 token。
+ */
+
+const BOOT_AT = new Date();
+
+async function scheduleTick(): Promise<void> {
+  if (!resolveKey()) return; // 没 key 跑不了，安静等着
+  let slugs: string[];
+  try {
+    slugs = (await readdir(APPS_DIR, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return;
+  }
+  for (const slug of slugs) {
+    if (runningApps.has(slug)) continue;
+    const spec = await readSchedule(APPS_DIR, slug);
+    if (!spec || !isDue(spec, new Date(), BOOT_AT)) continue;
+    await markScheduleRun(APPS_DIR, slug, new Date());
+    console.log(`[wanxiang] 定时到点，跑「${slug}」`);
+    try {
+      const r = await executeRun(slug, "schedule", () => {});
+      console.log(
+        r.ok
+          ? `[wanxiang] 定时跑完「${slug}」：${(r.record.ms / 1000).toFixed(1)}s`
+          : `[wanxiang] 定时没跑成「${slug}」：${r.error}`,
+      );
+    } catch (e) {
+      console.warn(`[wanxiang] 定时任务异常「${slug}」:`, (e as Error).message);
+    }
+  }
+}
+
+async function handleGetSchedule(res: ServerResponse, slug: string): Promise<void> {
+  const spec = await readSchedule(APPS_DIR, slug);
+  json(res, 200, { ok: true, schedule: spec });
+}
+
+async function handleSaveSchedule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  slug: string,
+): Promise<void> {
+  try {
+    if ((await readAppSummary(slug)) === null) {
+      return json(res, 404, { ok: false, error: "没有这个助手" });
+    }
+    const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+    const spec: ScheduleSpec = {
+      enabled: body.enabled === true,
+      every: body.every === "hour" || body.every === "week" ? body.every : "day",
+      ...(typeof body.at === "string" ? { at: body.at } : {}),
+      ...(typeof body.weekday === "number" ? { weekday: body.weekday } : {}),
+    };
+    // 保留既有的 lastRunAt——改配置不该把「跑过了」的记忆洗掉
+    const prev = await readSchedule(APPS_DIR, slug);
+    if (prev?.lastRunAt) spec.lastRunAt = prev.lastRunAt;
+    const invalid = validateSchedule(spec);
+    if (invalid) return json(res, 400, { ok: false, error: invalid });
+    await writeSchedule(APPS_DIR, slug, spec);
+    json(res, 200, { ok: true, schedule: spec });
+  } catch (e) {
+    json(res, 400, { ok: false, error: (e as Error).message });
   }
 }
 
@@ -833,7 +930,7 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     return handlePrd(res, path.slice("/api/apps/".length, -"/prd.md".length));
   }
   const appPath =
-    /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials)(?:\/([\w-]+))?$/u.exec(path);
+    /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials|schedule)(?:\/([\w-]+))?$/u.exec(path);
   if (appPath) {
     const [, slug, kind, id] = appPath;
     if (req.method === "POST" && kind === "run") return handleRun(req, res, slug);
@@ -841,6 +938,8 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     if (req.method === "GET" && kind === "runs" && id) return handleReadRun(res, slug, id);
     if (req.method === "GET" && kind === "materials") return handleListMaterials(res, slug);
     if (req.method === "POST" && kind === "materials") return handleSaveMaterial(req, res, slug);
+    if (req.method === "GET" && kind === "schedule") return handleGetSchedule(res, slug);
+    if (req.method === "POST" && kind === "schedule") return handleSaveSchedule(req, res, slug);
   }
   if (req.method === "GET" && path === "/api/mcp") return handleListMcp(res);
   if (req.method === "POST" && path === "/api/mcp") return handleMutateMcp(req, res);
@@ -933,4 +1032,10 @@ export function registerWanxiangRoutes(ctx: any): void {
   for (const route of routes) {
     ctx.effect(() => ctx.webServer.register(route), `wanxiang: ${route.kind} ${route.path}`);
   }
+
+  // 定时扫描挂在插件生命周期上：插件卸载（热重组）时 interval 一起收掉。
+  ctx.effect(() => {
+    const timer = setInterval(() => void scheduleTick(), 60_000);
+    return () => clearInterval(timer);
+  }, "wanxiang: schedule tick");
 }
