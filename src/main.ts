@@ -10,7 +10,16 @@
  * 同一个 agent 平面——两边工具集不一致的 bug 从结构上消失。
  */
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { syncKeyEnv, resolveKey } from "./config";
@@ -19,7 +28,9 @@ import { acknowledgeDshOnboarding, APPS_DIR, healInstalledPresets } from "./serv
 const require = createRequire(import.meta.url);
 const PROJECT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const PORT = Number(process.env.WANXIANG_PORT ?? 8788);
+const PORT_RAW = Number(process.env.WANXIANG_PORT ?? 8788);
+// 非法端口回落到默认，别把 NaN 塞进假 argv 变成一句用户看不懂的 "--port NaN" 报错。
+const PORT = Number.isInteger(PORT_RAW) && PORT_RAW >= 0 && PORT_RAW <= 65535 ? PORT_RAW : 8788;
 const DSH_HOME = process.env.WANXIANG_DSH_HOME ?? join(PROJECT, ".dsh-home");
 
 /** 万象 profile 的三层组合。顺序即层叠顺序，后面的盖前面的。 */
@@ -41,30 +52,51 @@ function ensureProfile(): void {
   // 老用户的 profile 里那份 package.json 早就存在，只创建的话他永远拿不到
   // 新组合。只在真的不一致时写盘（避免每次启动都 no-op 改文件时间戳）。
   const manifest = join(profileDir, "package.json");
-  const desired = {
-    name: "dsh-profile-wanxiang",
-    private: true,
-    dependencies: {},
-    dsh: { profile: { bundles: BUNDLES } },
-  };
-  let current: unknown;
+  let current: Record<string, unknown> = {};
   try {
-    current = JSON.parse(readFileSync(manifest, "utf-8"));
+    const parsed = JSON.parse(readFileSync(manifest, "utf-8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) current = parsed;
   } catch {
-    current = null;
+    /* 没有或坏了，从空开始 */
   }
-  const currentBundles = (current as { dsh?: { profile?: { bundles?: unknown } } } | null)?.dsh
-    ?.profile?.bundles;
+  const currentBundles = (current.dsh as { profile?: { bundles?: unknown } } | undefined)?.profile
+    ?.bundles;
   if (JSON.stringify(currentBundles) !== JSON.stringify(BUNDLES)) {
-    writeFileSync(manifest, JSON.stringify(desired, null, 2) + "\n", "utf-8");
+    // 合并而不是覆写：升级只该改 bundles，用户/pnpm 在这份 manifest 里加的
+    // dependencies 或别的键不能被抹掉（老用户装过 out-of-tree 插件就在这里）。
+    const next = {
+      name: "dsh-profile-wanxiang",
+      private: true,
+      dependencies: {},
+      ...current,
+      dsh: {
+        ...(current.dsh as Record<string, unknown> | undefined),
+        profile: {
+          ...((current.dsh as { profile?: Record<string, unknown> } | undefined)?.profile),
+          bundles: BUNDLES,
+        },
+      },
+    };
+    writeFileSync(manifest, JSON.stringify(next, null, 2) + "\n", "utf-8");
   }
 
   const linkDir = join(profileDir, "node_modules", "@centaur");
   const link = join(linkDir, "wanxiang");
-  if (!existsSync(link)) {
-    mkdirSync(linkDir, { recursive: true });
-    symlinkSync(join(PROJECT, "packages", "wanxiang-bundle"), link, "dir");
+  const wantTarget = join(PROJECT, "packages", "wanxiang-bundle");
+  mkdirSync(linkDir, { recursive: true });
+  // 用 lstat 看**链接本身**（existsSync 跟随软链看目标，断链会误判成不存在，
+  // 随后 symlinkSync 对仍在的链接文件抛 EEXIST，启动直接崩，且旧链指向另一份
+  // checkout 时会静默加载别人的代码）。目标不符就删掉重建——仓库改名/搬动后
+  // 也能自愈，不用用户手动去删软链。
+  let linkOk = false;
+  try {
+    const st = lstatSync(link);
+    if (st.isSymbolicLink() && readlinkSync(link) === wantTarget) linkOk = true;
+    else rmSync(link, { force: true });
+  } catch {
+    /* 不存在，直接建 */
   }
+  if (!linkOk) symlinkSync(wantTarget, link, "dir");
 }
 
 async function main(): Promise<void> {
@@ -76,9 +108,8 @@ async function main(): Promise<void> {
   // 首启动的欢迎页确认 + 中文 locale，写进 DSH 的 settings.yaml。
   await acknowledgeDshOnboarding();
 
-  const { boot, loadProfile, healProfilesModuleFallback, watchUserPatches } = await import(
-    "@deepseek-ai/dsh-app-boot"
-  );
+  const { boot, loadProfile, healProfilesModuleFallback, watchUserPatches, loadOptionalPatches } =
+    await import("@deepseek-ai/dsh-app-boot");
   const { provideCmdline } = await import("@deepseek-ai/dsh-cmdline");
   const INSTALL_ANCHOR = require.resolve("@deepseek-ai/dsh/package.json");
 
@@ -119,7 +150,22 @@ async function main(): Promise<void> {
     },
   ];
   const bundlePatches = profile.layers.flatMap((l: any) => l.patches);
-  const patches = [...bundlePatches, ...(profile as any).patches, ...overlays];
+  // 机器级用户补丁层（$DSH_HOME/cordis.patch.yml），层叠在 profile 补丁之后、
+  // overlays 之前——和 dsh CLI 一致。丢了它，用户在这份文件里写的东西静默失效。
+  const homePatchPath = join(DSH_HOME, "cordis.patch.yml");
+  const readHomePatches = (): unknown[] => {
+    try {
+      return (loadOptionalPatches("wanxiang", homePatchPath) as unknown[]) ?? [];
+    } catch {
+      return [];
+    }
+  };
+  const patches = [
+    ...bundlePatches,
+    ...(profile as any).patches,
+    ...readHomePatches(),
+    ...overlays,
+  ];
 
   const ctx = await boot("wanxiang", rootConfigPath, patches, (bootCtx: any) => {
     // web-startup（shipped 的 CLI 参数解析器）等 cmdlineArgs；webserver 与
@@ -151,7 +197,12 @@ async function main(): Promise<void> {
     await watchUserPatches(ctx, {
       binName: "wanxiang",
       filename: (profile as any).patchPath ?? join(profile.dir, "cordis.patch.yml"),
-      compose: (userPatches: unknown[]) => [...bundlePatches, ...userPatches, ...overlays],
+      compose: (userPatches: unknown[]) => [
+        ...bundlePatches,
+        ...userPatches,
+        ...readHomePatches(),
+        ...overlays,
+      ],
     });
   } catch (e) {
     console.warn(

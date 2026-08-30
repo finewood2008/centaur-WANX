@@ -56,15 +56,26 @@ export function toRunEvents(event: any): RunEvent[] {
   return out;
 }
 
-/** 创建一个挂在指定 preset 上的隔离会话，返回 agent 句柄。 */
-export async function createAppAgent(ctx: any, presetId: string, cwd: string): Promise<any> {
+/**
+ * 创建一个挂在指定 preset 上的隔离会话。
+ *
+ * 返回 `{ agent, dispose }`——**dispose 必须调**。agents.create 返回的 disposer
+ * 释放的是 agent scope（detachSession / detachAgent / loop）；丢掉它，长驻的单
+ * 进程里每跑一次就泄漏一个活着的 agent。session log 在 runAgentTask 里已 flush
+ * 到磁盘，dispose 之后细聊界面照样看得见这次会话。
+ */
+export async function createAppAgent(
+  ctx: any,
+  presetId: string,
+  cwd: string,
+): Promise<{ agent: any; dispose: () => void }> {
   const { installModelSelection } = await import("@deepseek-ai/dsh-agent");
   const { SessionId } = await import("@deepseek-ai/dsh-session");
   const agentPresets = ctx.get("agentPresets");
   const selection = ctx.get("agentDefaultModel").currentSelection();
   mkdirSync(cwd, { recursive: true });
 
-  const { agent } = await ctx.get("agents").create({
+  const created = await ctx.get("agents").create({
     sessionId: SessionId(`session-${randomUUID()}`),
     meta: { cwd, agentPreset: presetId },
     agentOptions: { provider: selection.provider, model: selection.model },
@@ -75,7 +86,10 @@ export async function createAppAgent(ctx: any, presetId: string, cwd: string): P
       }
     },
   });
-  return agent;
+  return {
+    agent: created.agent,
+    dispose: typeof created.dispose === "function" ? created.dispose : () => {},
+  };
 }
 
 /**

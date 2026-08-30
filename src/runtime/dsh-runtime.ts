@@ -29,7 +29,7 @@ export interface RuntimeConfig {
  */
 export class WanxiangRuntime {
   private ctx: any = null;
-  private agentMap = new Map<string, any>();
+  private agentMap = new Map<string, { agent: any; dispose: () => void }>();
 
   /** boot 过了没有。 */
   get booted(): boolean {
@@ -97,9 +97,9 @@ export class WanxiangRuntime {
   /** 创建一个挂在指定 preset 上的隔离会话。 */
   async createSession(presetId: string, cwd: string): Promise<string> {
     if (!this.ctx) throw new Error("runtime not booted");
-    const agent = await createAppAgent(this.ctx, presetId, cwd);
+    const { agent, dispose } = await createAppAgent(this.ctx, presetId, cwd);
     const sessionId = String(agent.session.id);
-    this.agentMap.set(sessionId, agent);
+    this.agentMap.set(sessionId, { agent, dispose });
     return sessionId;
   }
 
@@ -114,21 +114,29 @@ export class WanxiangRuntime {
     task: string,
     onEvent: (event: RunEvent) => void,
   ): Promise<string> {
-    const agent = this.agentMap.get(sessionId);
-    if (!agent) throw new Error(`session not found: ${sessionId}`);
-    return runAgentTask(this.ctx, agent, task, onEvent);
+    const entry = this.agentMap.get(sessionId);
+    if (!entry) throw new Error(`session not found: ${sessionId}`);
+    return runAgentTask(this.ctx, entry.agent, task, onEvent);
   }
 
   /** 直接读某个会话从 seq 之后的最终文本（给需要自定义驱动的调用方）。 */
   lastText(sessionId: string, firstSeq: number): string {
-    const agent = this.agentMap.get(sessionId);
-    if (!agent) throw new Error(`session not found: ${sessionId}`);
-    return lastAssistantText(agent, firstSeq);
+    const entry = this.agentMap.get(sessionId);
+    if (!entry) throw new Error(`session not found: ${sessionId}`);
+    return lastAssistantText(entry.agent, firstSeq);
   }
 
-  /** 收掉一个会话。job 模式每次跑都开新会话，跑完就该收掉。 */
+  /** 收掉一个会话，释放它的 agent scope。 */
   releaseSession(sessionId: string): void {
-    this.agentMap.delete(sessionId);
+    const entry = this.agentMap.get(sessionId);
+    if (entry) {
+      try {
+        entry.dispose();
+      } catch {
+        /* 释放失败不阻断 */
+      }
+      this.agentMap.delete(sessionId);
+    }
   }
 
   async dispose(): Promise<void> {

@@ -45,6 +45,7 @@ import {
   MAX_MATERIAL_BYTES,
 } from "./materials";
 import { addMcpServer, listMcpServers, removeMcpServer } from "./mcp";
+import { isTrustedWanxRequest } from "./trust";
 import {
   isDue,
   markScheduleRun,
@@ -243,7 +244,17 @@ export async function healInstalledPresets(): Promise<void> {
     try {
       const cordisPath = join(APPS_DIR, slug, "agent.cordis.yml");
       const current = await readFile(cordisPath, "utf-8");
-      if (current.includes("@deepseek-ai/dsh-tool-fs")) continue; // 已是新基线
+      // 判据用 agent-instructions 这个精确行——"dsh-tool-fs" 是 "dsh-tool-fs-search"
+      // 的前缀，裸子串会误判。另外 DSH 侧的 preset 副本缺失时也要重装（.dsh-home
+      // 被清过），否则那个助手 mount 不起来却永远不自愈。
+      const dshPresetExists = await readFile(
+        join(DSH_HOME, ".agent-presets", slug, "agent.cordis.yml"),
+        "utf-8",
+      ).then(
+        () => true,
+        () => false,
+      );
+      if (current.includes("@deepseek-ai/dsh-agent-instructions") && dshPresetExists) continue;
 
       const meta = load(await readFile(join(APPS_DIR, slug, "app.yml"), "utf-8"));
       const validated = validateAppSpec(meta);
@@ -470,7 +481,7 @@ async function handleFinalize(req: IncomingMessage, res: ServerResponse): Promis
       hasPrd: true,
       dir: appDir,
       repairs: outcome.repairs,
-      prdUrl: `/api/apps/${slug}/prd.md`,
+      prdUrl: `/wanx/api/apps/${slug}/prd.md`,
     });
   } catch (e) {
     json(res, 500, { ok: false, error: (e as Error).message });
@@ -741,19 +752,25 @@ async function executeRun(
 ): Promise<{ ok: boolean; record: RunRecord; output: string; error?: string }> {
   const app = await readAppSummary(slug);
   if (!app) throw new Error("没有这个助手");
+  // check-and-set 紧挨、中间无 await：否则两个并发请求都能穿过 has()→add() 的
+  // 窗口，同一助手被并发跑两次。add 之后的 await 都在闸门之内，安全。
   if (runningApps.has(slug)) throw new Error("它正在跑，等这一次结束");
+  runningApps.add(slug);
 
   const id = newRunId();
   const startedAt = new Date().toISOString();
   const started = Date.now();
-  const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
-  const task = buildJobTask(app, materials);
-
-  runningApps.add(slug);
+  // task 提到 try 外：catch 分支的 record 要用它；占位值保证 listMaterials
+  // 万一抛错时它仍有值。
+  let task = "按你的工作手册跑一遍。";
+  let disposeAgent: (() => void) | null = null;
   try {
+    const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
+    task = buildJobTask(app, materials);
     onEvent("step", { text: "正在唤醒助手" });
-    const agent = await createAppAgent(hostCtx, slug, workspaceDir(APPS_DIR, slug));
-    const output = await runAgentTask(hostCtx, agent, task, (e) => {
+    const created = await createAppAgent(hostCtx, slug, workspaceDir(APPS_DIR, slug));
+    disposeAgent = created.dispose;
+    const output = await runAgentTask(hostCtx, created.agent, task, (e) => {
       onEvent(e.kind, { text: e.text });
     });
     const record: RunRecord = { id, status: "ok", task, startedAt, ms: Date.now() - started, trigger };
@@ -774,6 +791,12 @@ async function executeRun(
     await saveRun(APPS_DIR, slug, record, "").catch(() => {});
     return { ok: false, record, output: "", error: message };
   } finally {
+    // 释放这次跑用掉的 agent scope，别在长驻进程里越攒越多。
+    try {
+      disposeAgent?.();
+    } catch {
+      /* dispose 抛错不该盖过这次运行本身的结果 */
+    }
     runningApps.delete(slug);
   }
 }
@@ -831,17 +854,19 @@ async function scheduleTick(): Promise<void> {
     if (runningApps.has(slug)) continue;
     const spec = await readSchedule(APPS_DIR, slug);
     if (!spec || !isDue(spec, new Date(), BOOT_AT)) continue;
-    await markScheduleRun(APPS_DIR, slug, new Date());
     console.log(`[wanxiang] 定时到点，跑「${slug}」`);
     try {
       const r = await executeRun(slug, "schedule", () => {});
+      // 真跑了才记 lastRunAt（不论助手成没成）。撞上手动跑导致 executeRun 抛
+      // 「正在跑」时走 catch，不 mark——这个周期下个 tick 再试，不被静默吞掉。
+      await markScheduleRun(APPS_DIR, slug, new Date());
       console.log(
         r.ok
           ? `[wanxiang] 定时跑完「${slug}」：${(r.record.ms / 1000).toFixed(1)}s`
           : `[wanxiang] 定时没跑成「${slug}」：${r.error}`,
       );
     } catch (e) {
-      console.warn(`[wanxiang] 定时任务异常「${slug}」:`, (e as Error).message);
+      console.warn(`[wanxiang] 定时这轮没跑（${(e as Error).message}），下次再试「${slug}」`);
     }
   }
 }
@@ -869,7 +894,13 @@ async function handleSaveSchedule(
     };
     // 保留既有的 lastRunAt——改配置不该把「跑过了」的记忆洗掉
     const prev = await readSchedule(APPS_DIR, slug);
-    if (prev?.lastRunAt) spec.lastRunAt = prev.lastRunAt;
+    if (prev?.lastRunAt) {
+      spec.lastRunAt = prev.lastRunAt;
+    } else if (spec.enabled) {
+      // 头一回开启定时：把锚设成此刻，从下一个周期开始跑。不设的话锚会回落到
+      // 启动时刻，服务已开很久时「每天 09:00」这类会在保存后一分钟内立刻误跑。
+      spec.lastRunAt = new Date().toISOString();
+    }
     const invalid = validateSchedule(spec);
     if (invalid) return json(res, 400, { ok: false, error: invalid });
     await writeSchedule(APPS_DIR, slug, spec);
@@ -916,6 +947,12 @@ async function serveIndex(res: ServerResponse): Promise<void> {
  *                       /plugins、/api 各归其主
  */
 async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // /wanx 的每个端点都能改状态（写 MCP 组合会热加载执行 stdio 命令、改模型
+  // 后端能被 SSRF）。DSH 给自己的 /api 挂了浏览器信任栅栏，我们这套是单独
+  // 注册的、绕过了它——所以在这儿自己挡：非回环 Host / 跨站 origin 一律 403。
+  if (!isTrustedWanxRequest(req)) {
+    return json(res, 403, { ok: false, error: "跨源请求被拒绝" });
+  }
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   // /wanx/api/chat → /api/chat：老路径原样复用，前端只改了前缀。
   const path = url.pathname.replace(/^\/wanx/u, "");

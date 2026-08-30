@@ -923,11 +923,16 @@
     el("stage").innerHTML = '<div class="build"><h2>正在打开对话</h2><span class="build-en">Starting</span></div>';
     try {
       // 激活 = 把 DSH 的默认 preset 设成这个助手；SPA 新建会话时就会用它。
-      await fetch("/wanx/api/activate", {
+      const actRes = await fetch("/wanx/api/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ app: slug }),
       });
+      const actData = await actRes.json().catch(() => ({ ok: false }));
+      // 激活失败别静默打开——那样细聊到的会是上一个默认助手，用户还以为是这个。
+      if (!actRes.ok || actData.ok === false) {
+        throw new Error(actData.error || "没能切到这个助手");
+      }
       el("dsh-state").textContent = "运行中";
       el("stage").innerHTML =
         '<div class="chat-bar"><button class="btn-quiet" id="chat-back" type="button">← 回到助手</button>' +

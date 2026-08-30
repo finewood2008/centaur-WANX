@@ -77,6 +77,25 @@ describe("isDue —— 补偿是 latest-only", () => {
     expect(isDue(after, at(2026, 8, 30, 15, 0), boot)).toBe(false);
   });
 
+  it("坏掉的 lastRunAt 回落到 bootAt，不静默弄死定时", () => {
+    const boot = at(2026, 8, 30, 8, 0);
+    const broken = { ...spec, lastRunAt: "不是时间" };
+    // 回落 bootAt：09:00 过后照常触发，而不是永远 false
+    expect(isDue(broken, at(2026, 8, 30, 9, 1), boot)).toBe(true);
+    expect(isDue(broken, at(2026, 8, 30, 8, 30), boot)).toBe(false);
+  });
+
+  it("刚开启（lastRunAt 设成此刻）不立即误跑，下个周期才触发", () => {
+    const boot = at(2026, 8, 20, 8, 0); // 服务已开很久
+    // 服务端 handleSaveSchedule 在开启时把 lastRunAt 设成 now，模拟之
+    const nowEnable = at(2026, 8, 30, 15, 0);
+    const justEnabled = { ...spec, lastRunAt: nowEnable.toISOString() };
+    // 15:00 开启「每天 09:00」，当天不该再跑（今天 09:00 已过且锚在 15:00）
+    expect(isDue(justEnabled, at(2026, 8, 30, 15, 1), boot)).toBe(false);
+    // 次日 09:00 才跑
+    expect(isDue(justEnabled, at(2026, 8, 31, 9, 1), boot)).toBe(true);
+  });
+
   it("从没跑过：以启动时刻为锚——启动前欠的账不补，启动后到点才跑", () => {
     const boot = at(2026, 8, 30, 10, 0); // 今天 09:00 已经过了
     expect(isDue(spec, at(2026, 8, 30, 10, 5), boot)).toBe(false); // 不补启动前的

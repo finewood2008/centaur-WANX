@@ -87,7 +87,12 @@ export function nextRunAt(spec: ScheduleSpec, from: Date): Date {
  */
 export function isDue(spec: ScheduleSpec, now: Date, bootAt: Date): boolean {
   if (!spec.enabled) return false;
-  const anchor = spec.lastRunAt ? new Date(spec.lastRunAt) : bootAt;
+  // 坏的 lastRunAt 回落到 bootAt——别让一个解析不了的时间戳把定时静默弄死。
+  let anchor = bootAt;
+  if (spec.lastRunAt) {
+    const parsed = new Date(spec.lastRunAt);
+    if (!Number.isNaN(parsed.getTime())) anchor = parsed;
+  }
   if (Number.isNaN(anchor.getTime())) return false;
   // 从 anchor 往后一毫秒起算，避免同一时刻反复触发。
   const next = nextRunAt(spec, new Date(anchor.getTime() + 1));
