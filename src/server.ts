@@ -44,6 +44,7 @@ import {
   saveMaterial,
   MAX_MATERIAL_BYTES,
 } from "./materials";
+import { addMcpServer, listMcpServers, removeMcpServer } from "./mcp";
 
 /**
  * 应用落盘目录。**必须在 git 仓库之外。**
@@ -59,6 +60,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML = join(__dirname, "..", "public", "index.html");
 const DSH_HOME = process.env.WANXIANG_DSH_HOME ?? join(__dirname, "..", ".dsh-home");
 const DSH_SETTINGS = join(DSH_HOME, "settings.yaml");
+/** MCP 行写在 wanxiang profile 的用户补丁层——boot 的 HMR 盯着它，改完热生效。 */
+const MCP_PATCH_FILE = join(DSH_HOME, "profiles", "wanxiang", "cordis.patch.yml");
 
 type AppSummary = {
   slug: string;
@@ -839,11 +842,47 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     if (req.method === "GET" && kind === "materials") return handleListMaterials(res, slug);
     if (req.method === "POST" && kind === "materials") return handleSaveMaterial(req, res, slug);
   }
+  if (req.method === "GET" && path === "/api/mcp") return handleListMcp(res);
+  if (req.method === "POST" && path === "/api/mcp") return handleMutateMcp(req, res);
   if (req.method === "GET" && path === "/api/opening") {
     return json(res, 200, { ok: true, opening: OPENING });
   }
   if (req.method === "POST" && path === "/api/activate") return handleActivate(req, res);
   json(res, 404, { ok: false, error: "not found" });
+}
+
+/** 外部能力（MCP）：列表。 */
+async function handleListMcp(res: ServerResponse): Promise<void> {
+  try {
+    json(res, 200, { ok: true, servers: await listMcpServers(MCP_PATCH_FILE) });
+  } catch (e) {
+    json(res, 500, { ok: false, error: (e as Error).message });
+  }
+}
+
+/** 外部能力（MCP）：接上或断开。改动写补丁层，HMR 热生效。 */
+async function handleMutateMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+    if (body.remove === true) {
+      const name = typeof body.serverName === "string" ? body.serverName : "";
+      const servers = await removeMcpServer(MCP_PATCH_FILE, name);
+      return json(res, 200, { ok: true, servers });
+    }
+    const servers = await addMcpServer(MCP_PATCH_FILE, {
+      serverName: String(body.serverName ?? ""),
+      transport: body.transport === "streamable-http" ? "streamable-http" : "stdio",
+      command: typeof body.command === "string" ? body.command : undefined,
+      args:
+        typeof body.args === "string" && body.args.trim() !== ""
+          ? body.args.trim().split(/\s+/u)
+          : undefined,
+      url: typeof body.url === "string" ? body.url : undefined,
+    });
+    json(res, 200, { ok: true, servers });
+  } catch (e) {
+    json(res, 400, { ok: false, error: (e as Error).message });
+  }
 }
 
 /** 包一层：路由 handler 抛错时回 500，别把 socket 晾着。 */

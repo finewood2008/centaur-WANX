@@ -907,6 +907,115 @@
     }
   }
 
+  /* ================= 外部能力（MCP） =================
+   * 给助手接现成的外部工具——DSH 的 MCP 通道，一行配置一个 server。
+   * 接上之后所有助手（含细聊）都能用；改动热生效，不用重启。
+   */
+  function mcpItemHtml(s) {
+    const what = s.transport === "stdio"
+      ? `命令：${esc(s.command || "")}${s.args && s.args.length ? " " + esc(s.args.join(" ")) : ""}`
+      : `地址：${esc(s.url || "")}`;
+    return `<div class="mat"><span class="mat-name"><b>${esc(s.serverName)}</b>　<span class="mat-size">${what}</span></span>` +
+      `<span></span><button class="mat-x" type="button" data-mcp="${esc(s.serverName)}" aria-label="断开">×</button></div>`;
+  }
+
+  function paintMcp(servers) {
+    const box = el("mcp-list");
+    if (!box) return;
+    box.innerHTML = servers.length
+      ? `<div class="mats">${servers.map(mcpItemHtml).join("")}</div>`
+      : '<div class="mat-empty">还没接任何外部能力。接上一个，所有助手就都多一批工具。</div>';
+    for (const b of box.querySelectorAll(".mat-x")) {
+      b.addEventListener("click", async () => {
+        try {
+          const r = await fetch("/wanx/api/mcp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ remove: true, serverName: b.dataset.mcp }),
+          });
+          const d = await r.json();
+          if (!r.ok || d.ok === false) throw new Error(d.error || "没断开");
+          paintMcp(d.servers || []);
+        } catch (e) {
+          const err = el("mcp-err");
+          if (err) { err.className = "err"; err.textContent = e.message; }
+        }
+      });
+    }
+  }
+
+  async function renderMcp() {
+    state.phase = "mcp";
+    setPrdVisible(false);
+    el("meters").hidden = true;
+    el("top-title").textContent = "外部能力";
+    el("top-en").textContent = "External capabilities (MCP)";
+    el("stage").className = "stage";
+    el("stage").innerHTML =
+      '<h2 class="lede">给助手接外部能力</h2>' +
+      '<p class="sub">MCP 是接现成工具的标准口子：接上一个 server，所有助手（包括细聊）都会多一批工具，' +
+      "改动即时生效。工具名会长成 mcp__名称__xxx 的样子。</p>" +
+      '<div id="mcp-list"></div><div id="mcp-err"></div>' +
+      '<div class="mat-form" style="margin-top:18px">' +
+      '<input id="mcp-name" type="text" placeholder="给它起个名，比如 github（小写字母数字连字符）" spellcheck="false">' +
+      '<div class="multi-foot" style="margin:0 0 8px">' +
+      '<label><input type="radio" name="mcp-t" value="stdio" checked> 本机命令（stdio）</label>' +
+      '<label><input type="radio" name="mcp-t" value="streamable-http"> 网络地址（http）</label></div>' +
+      '<input id="mcp-cmd" type="text" placeholder="命令与参数，比如：npx -y @modelcontextprotocol/server-github" spellcheck="false">' +
+      '<input id="mcp-url" type="text" placeholder="http(s) 地址，比如：http://127.0.0.1:3000/mcp" spellcheck="false" style="display:none">' +
+      '<div class="multi-foot"><button class="btn-solid" id="mcp-add" type="button">接上</button>' +
+      '<button class="btn-quiet" id="mcp-back" type="button">返回</button></div></div>';
+
+    for (const radio of el("stage").querySelectorAll('input[name="mcp-t"]')) {
+      radio.addEventListener("change", () => {
+        const http = radio.value === "streamable-http" && radio.checked;
+        el("mcp-cmd").style.display = http ? "none" : "";
+        el("mcp-url").style.display = http ? "" : "none";
+      });
+    }
+    el("mcp-back").addEventListener("click", restart);
+    el("mcp-add").addEventListener("click", async () => {
+      const err = el("mcp-err");
+      err.className = ""; err.textContent = "";
+      const transport = el("stage").querySelector('input[name="mcp-t"]:checked').value;
+      const cmdline = el("mcp-cmd").value.trim();
+      const payload = {
+        serverName: el("mcp-name").value.trim(),
+        transport,
+        command: transport === "stdio" ? cmdline.split(/\s+/)[0] : undefined,
+        args: transport === "stdio" ? cmdline.split(/\s+/).slice(1).join(" ") : undefined,
+        url: transport === "streamable-http" ? el("mcp-url").value.trim() : undefined,
+      };
+      el("mcp-add").disabled = true;
+      try {
+        const r = await fetch("/wanx/api/mcp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (!r.ok || d.ok === false) throw new Error(d.error || "没接上");
+        el("mcp-name").value = ""; el("mcp-cmd").value = ""; el("mcp-url").value = "";
+        paintMcp(d.servers || []);
+      } catch (e) {
+        err.className = "err"; err.textContent = e.message;
+      } finally {
+        el("mcp-add").disabled = false;
+      }
+    });
+
+    try {
+      const r = await fetch("/wanx/api/mcp");
+      const d = await r.json();
+      if (d.ok === false) throw new Error(d.error);
+      paintMcp(d.servers || []);
+    } catch (e) {
+      const err = el("mcp-err");
+      err.className = "err"; err.textContent = "读不出清单：" + e.message;
+    }
+    toTop();
+  }
+
   /* ================= 模型设置 ================= */
   async function loadSettings() {
     try {
@@ -1066,6 +1175,7 @@
 
   /* ================= 接线 ================= */
   el("restart").addEventListener("click", () => { void restart(); });
+  el("open-mcp").addEventListener("click", () => { void renderMcp(); });
   el("open-settings").addEventListener("click", async () => {
     await loadSettings();
     renderSettings({});
