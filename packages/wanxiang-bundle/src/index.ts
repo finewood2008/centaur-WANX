@@ -19,4 +19,17 @@ export const inject = ["webServer", "agents", "sessions", "agentPresets", "agent
 
 export function apply(ctx: any): void {
   registerWanxiangRoutes(ctx);
+
+  // SPA（细聊）的 index.html 里标题是构建期硬编码的「DeepSeek Harness」，
+  // 运行时插槽换不了它——tapIndex 是 webserver 给的正规注入钩子，
+  // 每次 index 响应（含 SPA fallback）都会过一遍。favicon 顺带补上。
+  ctx.effect(
+    () =>
+      ctx.webServer.tapIndex((html: string) =>
+        html
+          .replace("<title>DeepSeek Harness</title>", "<title>半人马AI-万象 · 细聊</title>")
+          .replace("</head>", '<link rel="icon" href="/static/favicon.png"></head>'),
+      ),
+    "wanxiang: index taps",
+  );
 }
