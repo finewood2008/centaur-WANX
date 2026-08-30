@@ -1,19 +1,21 @@
-import { mkdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createSession, type AgentHold } from "./agent-session";
+import { projectSessionEvent } from "./chat-events";
+import { makePresenter } from "./tool-view";
 
 /**
- * 在一个已经 boot 好的 DSH ctx 上创建会话、驱动一轮任务。
+ * 「跑一次」的会话驱动：在共享的宿主 ctx 上建一条一次性会话、驱动一轮任务。
  *
- * 这层与「ctx 是怎么来的」无关：万象服务进程用它驱动共享的 web-profile ctx
- * （与浏览器细聊同一个运行时——同一个 agent 平面、同一套 preset 语义），
- * `WanxiangRuntime` 用它驱动自己 boot 的 headless ctx（探针与测试）。
+ * 会话构造统一走 agent-session.ts（对话链路也从那儿出生）；这里只保留
+ * job 语义：每次全新会话（确定性）、跑完即收。进度事件由 chat-events 的
+ * 投影 + tool-view 的呈现器给出——与对话界面同一份翻译，只是压扁成
+ * step/text 两种（跑一次的界面只要白话进度条）。
  */
 
 /**
  * 跑一次任务时推给界面的进度。
  *
- * `step` 是给用户看的白话（「正在翻资料」），不是工具名——界面上不出现
- * glob / bash 这种词。`text` 是助手说的话。
+ * `step` 是给用户看的白话（「正在读「八月客户往来.md」」），不是工具名——
+ * 界面上不出现 glob / bash 这种词。`text` 是助手说的话。
  */
 export interface RunEvent {
   kind: "step" | "text";
@@ -21,82 +23,26 @@ export interface RunEvent {
 }
 
 /**
- * 工具名 → 白话。用户不该在界面上看见 glob、read 这些词。
- * 认不出的工具统一说「正在处理」，绝不把原始工具名漏出去。
- */
-const STEP_LABEL: Record<string, string> = {
-  glob: "正在翻找资料",
-  grep: "正在检索内容",
-  read: "正在读材料",
-  read_image: "正在看图片",
-  write: "正在写文件",
-  edit: "正在修改文件",
-  bash: "正在执行操作",
-  skill: "正在读工作手册",
-  web_search: "正在联网查找",
-  web_fetch: "正在读取网页",
-  todo_write: "正在梳理步骤",
-};
-
-function stepLabel(tool: string): string {
-  return STEP_LABEL[tool] ?? STEP_LABEL[tool.toLowerCase()] ?? "正在处理";
-}
-
-/** 从一条 session 事件里抽出要推给界面的东西。认不出的事件返回空数组。 */
-export function toRunEvents(event: any): RunEvent[] {
-  if (event?.type !== "assistant/message") return [];
-  const out: RunEvent[] = [];
-  for (const block of event.data?.message?.content ?? []) {
-    if (block?.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
-      out.push({ kind: "text", text: block.text });
-    } else if (block?.type === "tool_use" || block?.type === "tool-call") {
-      out.push({ kind: "step", text: stepLabel(String(block.name ?? "")) });
-    }
-  }
-  return out;
-}
-
-/**
  * 创建一个挂在指定 preset 上的隔离会话。
  *
- * 返回 `{ agent, dispose }`——**dispose 必须调**。agents.create 返回的 disposer
- * 释放的是 agent scope（detachSession / detachAgent / loop）；丢掉它，长驻的单
- * 进程里每跑一次就泄漏一个活着的 agent。session log 在 runAgentTask 里已 flush
- * 到磁盘，dispose 之后细聊界面照样看得见这次会话。
+ * 返回 `{ agent, dispose }`——**dispose 必须 await**：它停掉驱动循环、等它
+ * 退出、从 registry 摘除、卸掉 scope。丢掉或不 await，长驻的单进程里每跑
+ * 一次就漏一次没做完的拆卸。session log 在 runAgentTask 里已 flush 到磁盘，
+ * dispose 之后历史照样读得到。
  */
 export async function createAppAgent(
   ctx: any,
   presetId: string,
   cwd: string,
-): Promise<{ agent: any; dispose: () => void }> {
-  const { installModelSelection } = await import("@deepseek-ai/dsh-agent");
-  const { SessionId } = await import("@deepseek-ai/dsh-session");
-  const agentPresets = ctx.get("agentPresets");
-  const selection = ctx.get("agentDefaultModel").currentSelection();
-  mkdirSync(cwd, { recursive: true });
-
-  const created = await ctx.get("agents").create({
-    sessionId: SessionId(`session-${randomUUID()}`),
-    meta: { cwd, agentPreset: presetId },
-    agentOptions: { provider: selection.provider, model: selection.model },
-    setup: async (agentCtx: any) => {
-      installModelSelection(agentCtx, { current: selection, assembled: undefined });
-      if (agentPresets) {
-        await agentPresets.mount(agentCtx, presetId);
-      }
-    },
-  });
-  return {
-    agent: created.agent,
-    dispose: typeof created.dispose === "function" ? created.dispose : () => {},
-  };
+): Promise<AgentHold> {
+  return createSession(ctx, { slug: presetId, kind: "run", cwd });
 }
 
 /**
  * 驱动一轮任务，边跑边把进度推给 onEvent，结束后返回助手的最终文本。
  *
  * 订阅 cordis 的 `session/event`（回调签名 `(session, event)`），只收本
- * session 的。连续重复的进度折叠——实测一次运行连着推了 18 条
+ * session 的。连续重复的进度折叠——实测一次运行连着推了 18 条一样的
  * 「正在执行操作」，那不是进度，是噪音。
  */
 export async function runAgentTask(
@@ -109,6 +55,7 @@ export async function runAgentTask(
 
   await agent.whenIdle();
   const firstSeq = agent.session.seq;
+  const present = makePresenter(ctx, agent);
 
   // 订阅要在 followup 之前挂上，否则最前面几条事件会漏掉。
   let lastStep = "";
@@ -117,14 +64,15 @@ export async function runAgentTask(
     dispose = ctx.on("session/event", (session: any, event: any) => {
       if (session?.id !== agent.session.id) return;
       if (typeof event?.seq === "number" && event.seq < firstSeq) return;
-      for (const e of toRunEvents(event)) {
-        if (e.kind === "step") {
-          if (e.text === lastStep) continue;
-          lastStep = e.text;
-        } else {
+      for (const ce of projectSessionEvent(event, present)) {
+        if (ce.t === "tool.call") {
+          if (ce.label === lastStep) continue;
+          lastStep = ce.label;
+          onEvent({ kind: "step", text: ce.label });
+        } else if (ce.t === "assistant") {
           lastStep = "";
+          onEvent({ kind: "text", text: ce.text });
         }
-        onEvent(e);
       }
     });
   } catch {
@@ -146,11 +94,10 @@ export async function runAgentTask(
 
   const text = lastAssistantText(agent, firstSeq);
 
-  // DSH 的驱动循环 kick() 用 `catch(_error){}` 吞掉一次 turn 里的任何异常
-  // （凭证缺失、断网、工具失败），失败被写进 turn/end 的 reason={kind:"error"}
-  // 之后 agent 照常回到 idle。whenIdle() 于是正常 resolve、这里不抛。
-  // 不主动去读那条 error，跑失败就会被当成「跑成功、交付物为空」存档——
-  // 用户在历史里永远看不到「上次为什么没跑成」。
+  // 内核的驱动循环 kick() 吞掉一次 turn 里的任何异常（凭证缺失、断网、工具
+  // 失败），失败被写进 turn/end 的 reason={kind:"error"} 之后 agent 照常回到
+  // idle。whenIdle() 于是正常 resolve、这里不抛。不主动去读那条 error，跑失败
+  // 就会被当成「跑成功、交付物为空」存档——用户永远看不到「上次为什么没跑成」。
   //
   // 只在**没有拿到有效产出**时才把 error 抛出来：中途某 turn 出错但助手最终
   // 还是给了东西，算成功；彻底没产出又有 error turn，才是真失败。
@@ -164,7 +111,7 @@ export async function runAgentTask(
 
 /**
  * firstSeq 之后最后一条「失败」的 turn/end 的错误信息，没有则返回 null。
- * DSH 把它写成 reason={kind:"error", error:{message, code}}（aborted 不算失败）。
+ * 内核把它写成 reason={kind:"error", error:{message, code}}（aborted 不算失败）。
  */
 export function lastTurnError(agent: any, firstSeq: number): string | null {
   let failure: string | null = null;

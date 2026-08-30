@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "万象（centaur-WANX）—— 超级个体的应用创造器，以 DSH 为引擎，对话生成可运行的应用",
+  "description": "万象（centaur-WANX）—— 超级个体的助手创造器：对话生成可运行的助手，跑活与多轮对话都在万象自己的界面里",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

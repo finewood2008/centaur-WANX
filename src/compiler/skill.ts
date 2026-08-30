@@ -1,7 +1,10 @@
 import type { AppSpec } from "../appspec/schema";
 import { slugFromName } from "../appspec/slug";
 
-/** 技能包在应用目录下的相对位置。DSH 的 customSkillDirs 指向 `skills/`。 */
+/**
+ * 技能包在应用目录下的相对位置。安装时由 installApp 复制到应用 workspace 的
+ * `.dsh/skills/` 下（preset 的 customSkillDirs 实测不生效，别指望它）。
+ */
 export const SKILLS_SUBDIR = "skills";
 
 /**

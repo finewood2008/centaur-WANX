@@ -1,24 +1,131 @@
-# 万象 bundle 的组合层，摞在 dsh-base + dsh-web-app 之上。
+# 万象的组合层，摞在 dsh-base 之上。
 #
-# 万象不再是包在 DSH 外面的壳：产品界面（exact /、/static）与 API（prefix /wanx）
-# 直接挂在 DSH 的 webserver 上，「跑一次」和浏览器里的「细聊」共享同一个
-# 运行时、同一个 agent 平面、同一套 preset 语义。
+# 这是产品的唯一组合层：DSH 只提供内核（会话 / agent / 工具注册表 / 持久化 /
+# 沙箱），界面、传输、模型面工具的编排全部归万象。dsh-web-app 那一层已经不在
+# 组合里——它带来的 SPA、/api RPC 平面、几十个 dsh-client-ui-* 行随之全部消失。
+#
+# 注意：cordis patch 无 deep merge，是整个 config 替换。凡是覆写既有行的地方，
+# 都要把那一行的全部字段重述一遍。
 
-# 官方品牌行让位。空着时侧栏显示 DSH 的兜底鱼标——万象自己的品牌插件
-# 在下一阶段补上（sidebar.brand.mark / sidebar.brand.name 两个插槽）。
-- id: ui-brand-official
+# ── 1. host 平面的收口 ──────────────────────────────────────────────
+
+# 系统提示词里不留运行内核的自我介绍。
+#   · harness:identity（"You are an AI agent powered by DeepSeek Harness."）
+#     是 dsh-system-prompt 构造时按 includeHarnessIdentity 注册的，默认 true，
+#     base 挂这行时只给了 persona 没关它——只能在这里关。
+#   · harness:source 与 app:web-surface 两段由 dsh-web-app 的 web-runtime 行
+#     注册，那一层已不在组合里，自动消失。
+#   · persona 留空（与 base 同值）：每个助手的人格由它自己 preset 里的
+#     dsh-persona 行在 agent scope 提供，会遮蔽这里的部署级 persona。
+#   · 刻意不用 dsh-persona 的 complete: true——那会把 sections 整体替换成只剩
+#     persona 一条，连带压掉 tool:edit / tool:glob / skill / todo_write 等
+#     工具使用说明，实质降低工具使用质量。这里只精准摘掉一句自我介绍。
+- id: system-prompt
+  config:
+    persona: ''
+    includeHarnessIdentity: false
+
+# 审批链路的应答者住在被拆掉的 SPA 客户端里。留 'ask' 会在无应答者时
+# fail-closed 成 'unavailable'——一句无法解释的失败。改成 'never'：越界写入被
+# 确定性拒绝（'rejected'），工具会给模型一条可读的拒绝理由，模型自己改道。
+# 这正是产品要的边界：助手只能在自己的资料夹里干活，写不出去。
+# （唯一的调用方是 tool-fs 的「沙箱升级一次性重试」路径；边界内正常读写从不询问。）
+- id: approval
+  config:
+    policy: never
+
+# permission-presets 按「沙箱档位 + 审批策略」的组合默认值去 preset 表里找
+# 匹配项，找不到就拒绝启动。base 的表全是 approval: ask 的组合——上面把审批
+# 改成 never 之后必须连表一起重述。万象只有一种立场：助手在自己的资料夹里
+# 全权干活（workspace-write），出界确定性被拒（never）。
+- id: permission
+  config:
+    presets:
+      workspace-write:
+        sandbox: workspace-write
+        approval: never
+    defaultPreset: workspace-write
+
+# ── 2. 模型面工具全部退到 preset 平面 ──────────────────────────────
+#
+# 这 23 行原样搬自 dsh-web-app 的「the agent plane moves behind agent
+# presets」一节。它们是万象 `capabilities` 之所以是真话的机制：host 平面
+# 不给任何模型面工具，preset 里写了什么助手才有什么。web-app 拆掉后这份
+# 责任移交万象。
+#
+# disable 而不是删除是刻意的：base 是共用的，删掉的行会在有人重排组合的
+# 那一天悄悄长回来。
+#
+# 注：web-app 那份清单里还有一行 `hmr: disabled: true`，这里不抄——万象
+# 反过来需要 HMR（MCP 热生效靠它），由 src/boot.ts 的 overlay 配窄根。
+
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-str-replace-editor
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+- id: tool-result-pruner
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: agent-instructions
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-web
   disabled: true
 
-# 目录选择留在浏览器里，不在服务器宿主上弹原生窗口。
-- id: directory-picker
-  disabled: true
-
+# ── 3. 万象自己需要的行 ────────────────────────────────────────────
 - insert:
-    - id: directory-picker-browser-host
-      name: '@deepseek-ai/dsh-host-directory-picker-browse'
-    - id: directory-picker-browser-client
-      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+    # HTTP 载体。原来由 dsh-web-app 的 webserver 行提供、host/port 从
+    # web-startup 懒读命令行；万象没有命令行，直接从自己的 env 读
+    # （src/boot.ts 在 boot 之前把归一化后的端口写回 WANXIANG_PORT）。
+    - id: webserver
+      name: '@deepseek-ai/dsh-host-webserver'
+      config:
+        host: '127.0.0.1'
+        port: !!js Number(process.env.WANXIANG_PORT ?? 8788)
 
-    # 万象自己：路由注册 + job 运行时（见包内 src/index.ts）。
+    # preset 花名册。shipped root 与 default 由 src/boot.ts 的 overlay 重述
+    # （它要 require.resolve 出安装目录旁的只读 root，YAML 里做不到）。
+    # 万象每次建会话都显式传 preset id；default 只是兜底，指向出厂 standard，
+    # 永远不指向任何用户助手——「当前是哪个助手」只活在会话 header 上。
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: standard
+
+    # 万象自己：路由 + 对话运行时 + job 运行时（见包内 src/index.ts）。
     - id: wanxiang
       name: '@centaur/wanxiang'

@@ -36,7 +36,7 @@ export function printUsage(): string {
   -o, --out <dir>      输出目录（默认 ./wanxiang-apps，按应用名建子目录）
   --model <name>       DeepSeek 模型名（默认 deepseek-chat）
   --base-url <url>     API 地址（默认 https://api.deepseek.com）
-  --no-memory          生成 DSH 兼容变体（过滤所有 @centaur/* 知君占位插件，M0 阶段用）
+  --no-memory          不挂尚未实现的记忆插件（过滤 @centaur/* 知君占位行，M0 阶段用）
   --max-repairs <n>    定义失败重试次数（默认 3）
   -h, --help           显示帮助`;
 }

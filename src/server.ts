@@ -30,6 +30,9 @@ import {
 import { slugFromName } from "./appspec/slug";
 import type { AppSpec } from "./appspec/schema";
 import { createAppAgent, runAgentTask } from "./runtime/run-agent";
+import { ChatPool } from "./runtime/chat-pool";
+import { CHAT_PREFIX } from "./runtime/agent-session";
+import { projectSessionEvent, type ChatEvent } from "./runtime/chat-events";
 import {
   listRuns,
   newRunId,
@@ -218,8 +221,8 @@ async function installApp(slug: string, files: Record<string, string>): Promise<
     await writeFile(target, content, "utf-8");
   }
 
-  // 这里**不**写 DSH default preset。生成不等于激活——
-  // 「先跑一次给你看」那一下才激活，由 /api/activate 负责。
+  // 这里不写任何「默认助手」之类的全局状态——不存在那种东西。
+  // 用哪个助手是建会话时的显式参数（agentPreset + cwd），见 runtime/agent-session.ts。
   return appDir;
 }
 
@@ -292,53 +295,46 @@ export async function healInstalledPresets(): Promise<void> {
  * workspace 之后，共享根里不再有万象的东西，孤儿问题不存在了，那个补丁已删除。
  */
 
-async function writeDshDefaultPreset(slug: string): Promise<void> {
-  let settings: Record<string, unknown> = {};
+/**
+ * 一次性迁移：抹掉旧版万象写进内核 settings.yaml 的三个键。
+ *
+ * `agent-presets.default` 是旧「激活」机制的落点——全局单值，整台机器一份，
+ * 谁最后点谁说了算。现在每条会话在 header 里自己带 agentPreset，这个键彻底
+ * 失去意义；留着它尤其危险：settings 的用户层优先级高于组合层，某天有人读
+ * defaultId 会拿到一个业务助手的 slug 而不是 standard。
+ * `ui-onboarding` / `locale` 的消费者（SPA 欢迎弹窗、client locale）都已
+ * 不在组合里，一并清掉。其余键原样保留。
+ */
+export async function pruneLegacyDshSettings(): Promise<void> {
+  let settings: Record<string, unknown>;
   try {
     const parsed = load(await readFile(DSH_SETTINGS, "utf-8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      settings = parsed as Record<string, unknown>;
-    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    settings = parsed as Record<string, unknown>;
   } catch {
-    // A new DSH home has no settings file yet.
+    return; // 没有文件就没有遗留
   }
-  const previous = settings["agent-presets"];
-  const agentPresets = previous && typeof previous === "object" && !Array.isArray(previous)
-    ? previous as Record<string, unknown>
-    : {};
-  settings["agent-presets"] = { ...agentPresets, default: slug };
-  await mkdir(DSH_HOME, { recursive: true });
-  await writeFile(DSH_SETTINGS, dump(settings, { noRefs: true, lineWidth: 100 }), "utf-8");
-}
-
-export async function acknowledgeDshOnboarding(): Promise<void> {
-  let settings: Record<string, unknown> = {};
-  try {
-    const parsed = load(await readFile(DSH_SETTINGS, "utf-8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      settings = parsed as Record<string, unknown>;
+  let changed = false;
+  // permission 也要清：旧界面的权限设置页可能存过 defaultPreset
+  // （如 danger-full-access），在新的单档表下是非法值，插件注册时会抛。
+  for (const key of ["agent-presets", "ui-onboarding", "locale", "permission"]) {
+    if (key in settings) {
+      delete settings[key];
+      changed = true;
     }
-  } catch {
-    // A new DSH home has no settings file yet.
   }
-  const previous = settings["ui-onboarding"];
-  const onboarding = previous && typeof previous === "object" && !Array.isArray(previous)
-    ? previous as Record<string, unknown>
-    : {};
-  settings["ui-onboarding"] = { ...onboarding, welcomeNoticeVersion: "2026-08-13.1" };
-  const previousLocale = settings.locale;
-  const locale = previousLocale && typeof previousLocale === "object" && !Array.isArray(previousLocale)
-    ? previousLocale as Record<string, unknown>
-    : {};
-  settings.locale = { ...locale, preference: "zh" };
+  if (!changed) return;
   await mkdir(DSH_HOME, { recursive: true });
   await writeFile(DSH_SETTINGS, dump(settings, { noRefs: true, lineWidth: 100 }), "utf-8");
 }
 
 const MAX_TURNS = 20;
 
-/** 界面契约版本。界面或接口有不兼容改动时 +1。3 = 单进程融合：API 迁到 /wanx/api，细聊在 /chat。 */
-const UI_REVISION = 3;
+/**
+ * 界面契约版本。界面或接口有不兼容改动时 +1。
+ * 4 = 内核表面拆除：自建对话界面，/chat 与 /api 不再存在，切换收归万象层。
+ */
+const UI_REVISION = 4;
 
 /** 客户端告诉我们它刚回答的是哪个槽位。槽位名不合法就丢掉。 */
 function parseAnswered(input: unknown): { slot: SlotKey; value: string | string[] } | null {
@@ -637,34 +633,19 @@ async function handleListApps(res: ServerResponse): Promise<void> {
   }
 }
 
-async function handleActivate(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  try {
-    const body = JSON.parse(await readBody(req)) as { app?: unknown };
-    const app = typeof body.app === "string" ? body.app.trim() : "";
-    if (!/^[a-z0-9-]+$/u.test(app)) {
-      return json(res, 400, { ok: false, error: "无效的 Agent 标识" });
-    }
-    if (await readAppSummary(app) === null) {
-      return json(res, 404, { ok: false, error: "Agent 不存在" });
-    }
-    await writeDshDefaultPreset(app);
-    json(res, 200, { ok: true, app });
-  } catch (error) {
-    json(res, 500, { ok: false, error: (error as Error).message });
-  }
-}
-
-/* ═══════════════ job 模式运行时 ═══════════════════════════════════
+/* ═══════════════ 运行时：跑一次 + 对话 ═══════════════════════════
  *
- * 助手在万象自己的进程里跑——而且就跑在**同一个** DSH 运行时上：万象服务
- * boot 的是完整的 web profile（见 src/main.ts），「跑一次」和浏览器里的
- * 「细聊」共享同一个 ctx、同一个 agent 平面、同一套 preset 语义。以前
- * 「跑一次走 headless、细聊走 web 子进程」导致同一个助手在两种模式下
- * 工具集完全不同的 bug，从结构上消失了。
+ * 助手在万象自己的进程里跑——「跑一次」和「对话」都在同一个宿主 ctx 上
+ * 建会话，同一个 agent 平面、同一套 preset 语义。preset 与 cwd 在建会话
+ * 那一刻显式写进 header（见 runtime/agent-session.ts），此后不可变——
+ * 「当前是哪个助手」只活在会话头上，不存在任何全局状态。
  *
- * 每次跑都开**全新会话**：同一个助手、同样的输入，行为不该因为「这是第几次跑」
- * 而变——跟编译器的确定性是同一条原则。跨次状态将来走记忆绑定，显式声明，
- * 不是会话历史的副产品。
+ * 两类会话共存，靠 id 前缀分家：
+ *   wanx-run-<slug>-…   一次性。每次跑都开**全新会话**：同一个助手、同样的
+ *                       输入，行为不该因为「这是第几次跑」而变——跟编译器的
+ *                       确定性是同一条原则。跑完即收，产出进 runs 台账。
+ *   wanx-chat-<slug>-…  长活。上下文持续、可打断、可回放，由 ChatPool 管
+ *                       生命周期；会话日志就是它的记录，不进 runs。
  */
 
 /** 万象插件 apply 时塞进来的宿主 ctx。路由只在插件激活后注册，所以不会是 null。 */
@@ -763,7 +744,7 @@ async function executeRun(
   // task 提到 try 外：catch 分支的 record 要用它；占位值保证 listMaterials
   // 万一抛错时它仍有值。
   let task = "按你的工作手册跑一遍。";
-  let disposeAgent: (() => void) | null = null;
+  let disposeAgent: (() => Promise<void>) | null = null;
   try {
     const materials = (await listMaterials(APPS_DIR, slug)).map((m) => m.name);
     task = buildJobTask(app, materials);
@@ -792,8 +773,11 @@ async function executeRun(
     return { ok: false, record, output: "", error: message };
   } finally {
     // 释放这次跑用掉的 agent scope，别在长驻进程里越攒越多。
+    // dispose 是 async（停驱动循环、等退出、摘 registry、卸 scope）——必须
+    // await 完再放开 runningApps 的闸，否则「收掉的 agent 还在写日志」与
+    // 下一次跑并发。
     try {
-      disposeAgent?.();
+      await disposeAgent?.();
     } catch {
       /* dispose 抛错不该盖过这次运行本身的结果 */
     }
@@ -834,13 +818,27 @@ async function handleRun(req: IncomingMessage, res: ServerResponse, slug: string
 
 /* ── 定时 ────────────────────────────────────────────────────────────
  * 每分钟扫一遍：谁的 schedule.yml 到点了就跑一次（trigger 记 "schedule"）。
- * 补偿 latest-only：先写 lastRunAt 再跑——宕机跨过三个周期也只补一次，
- * 失败会照常记进 runs 台账，绝不因为补跑风暴烧掉用户的 token。
+ * 补偿 latest-only：宕机跨过三个周期也只补一次。**真跑了才 mark**——撞上
+ * 手动跑导致 executeRun 抛「正在跑」时不 mark，这个周期下个 tick 再试，
+ * 不被静默吞掉；失败照常记进 runs 台账，绝不补跑风暴。
+ * tick 自身全局互斥：一次跑可能超过 60 秒，两个 tick 并发的话，前一个
+ * 「跑完还没 mark」的几毫秒窗口会让后一个立刻重跑同一个应用。
  */
 
 const BOOT_AT = new Date();
+let scheduleTicking = false;
 
 async function scheduleTick(): Promise<void> {
+  if (scheduleTicking) return;
+  scheduleTicking = true;
+  try {
+    await scheduleTickOnce();
+  } finally {
+    scheduleTicking = false;
+  }
+}
+
+async function scheduleTickOnce(): Promise<void> {
   if (!resolveKey()) return; // 没 key 跑不了，安静等着
   let slugs: string[];
   try {
@@ -920,6 +918,201 @@ async function handleReadRun(res: ServerResponse, slug: string, id: string): Pro
   json(res, 200, { ok: true, run: one.record, output: one.output });
 }
 
+/* ═══════════════ 对话链路 ═══════════════════════════════════════════
+ *
+ * 与助手的多轮对话。会话由 ChatPool 管（建/复活/扇出/回收），这里只做协议：
+ *   POST   /api/apps/<slug>/chats     新开一条对话 → {sessionId}
+ *   GET    /api/apps/<slug>/chats     该助手的历史对话列表
+ *   GET    /api/chats/<sid>/events    SSE：先回放（?from=seq 之后的历史），再接直播
+ *   POST   /api/chats/<sid>/say       发一句话（运行中=插话，空闲=新一轮）
+ *   POST   /api/chats/<sid>/stop      停下当前这轮（turn/end 会以 aborted 收尾）
+ *   DELETE /api/chats/<sid>           收掉活着的 agent（日志保留，随时能再开）
+ *
+ * SSE 铁律：一个事件一行 JSON。载荷里带换行的文本靠 JSON 转义活下来；
+ * 拆成多行 data: 的话客户端解析会吃掉空白。
+ */
+
+let chatPool: ChatPool | null = null;
+
+async function handleCreateChat(res: ServerResponse, slug: string): Promise<void> {
+  if (!SLUG_RE.test(slug)) return json(res, 400, { ok: false, error: "无效的助手标识" });
+  if ((await readAppSummary(slug)) === null) {
+    return json(res, 404, { ok: false, error: "没有这个助手" });
+  }
+  if (!chatPool) return json(res, 503, { ok: false, error: "对话服务还没就绪" });
+  const entry = await chatPool.create(slug);
+  json(res, 200, { ok: true, sessionId: entry.sessionId });
+}
+
+async function handleListChats(res: ServerResponse, slug: string): Promise<void> {
+  if (!SLUG_RE.test(slug)) return json(res, 400, { ok: false, error: "无效的助手标识" });
+  const q = hostCtx?.get?.("sessionQuery");
+  if (!q) return json(res, 200, { ok: true, chats: [] });
+  const { SessionId } = await import("@deepseek-ai/dsh-session");
+  // 按 cwd 过滤（每个助手的 workspace 天然唯一），再按 id 前缀把「跑一次」的
+  // 会话滤掉——两类会话同 cwd 同 preset，分家靠前缀。
+  const records: any[] = await q.filterSessions([
+    { kind: "cwd", values: [workspaceDir(APPS_DIR, slug)] },
+  ]);
+  const chats = records.filter(
+    (r) => String(r.header.id).startsWith(CHAT_PREFIX) && r.header.agentPreset === slug,
+  );
+  chats.sort((a, b) => (b.header.createdAt ?? 0) - (a.header.createdAt ?? 0));
+  const titled = await Promise.allSettled(
+    chats.map((c) => q.readTitleSnapshot(SessionId(String(c.header.id)))),
+  );
+  json(res, 200, {
+    ok: true,
+    chats: chats.map((c, i) => {
+      const snap = titled[i].status === "fulfilled" ? (titled[i] as any).value : null;
+      return {
+        sessionId: String(c.header.id),
+        title: snap?.title?.title ?? "新对话",
+        createdAt: new Date(c.header.createdAt ?? 0).toISOString(),
+        live: c.live === true,
+      };
+    }),
+  });
+}
+
+/** 对话 SSE：先回放历史（打字机增量不回放，权威全文在 assistant 事件里），再接直播。 */
+async function handleChatStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sid: string,
+): Promise<void> {
+  if (!chatPool) return json(res, 503, { ok: false, error: "对话服务还没就绪" });
+
+  // close 监听必须在任何 await **之前**挂上：open()（冷复活要读盘）期间连接
+  // 断掉的话，事后再挂的监听永远收不到那个已经发射过的事件——订阅者就成了
+  // 幽灵，把 entry 永久钉在池里（sweep 和淘汰都看 subscribers.size）。
+  let closed = req.destroyed === true;
+  let cleanup: () => void = () => {};
+  req.on("close", () => {
+    closed = true;
+    cleanup();
+  });
+
+  let entry;
+  try {
+    entry = await chatPool.open(sid);
+  } catch (e) {
+    if (closed) return;
+    return json(res, 404, { ok: false, error: (e as Error).message });
+  }
+  if (closed) return;
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const url = new URL(req.url ?? "/", "http://127.0.0.1");
+  const fromRaw = Number(url.searchParams.get("from") ?? 0);
+  const from = Number.isFinite(fromRaw) && fromRaw > 0 ? fromRaw : 0;
+
+  const agent = entry.hold.agent;
+  send("hello", {
+    sessionId: sid,
+    slug: entry.slug,
+    running: agent.status === "running",
+  });
+
+  // 先订阅（进队列），再回放，最后放行直播——中间落进来的事件不丢。
+  let replaying = true;
+  let lastReplayed = 0;
+  const queue: ChatEvent[] = [];
+  const deliver = (ce: ChatEvent): void => {
+    if (ce.t === "bye") {
+      // 池要收掉这条会话（DELETE / 热重组）：干脆地结束流，
+      // 别让客户端对着一条永远不再出声的连接干等。
+      try {
+        res.end();
+      } catch {
+        /* 已经断了 */
+      }
+      return;
+    }
+    if (replaying) {
+      queue.push(ce);
+      return;
+    }
+    send("chat", ce);
+  };
+  const off = chatPool.subscribe(sid, deliver);
+  const ping = setInterval(() => {
+    try {
+      send("ping", {});
+    } catch {
+      /* 连接快没了，close 会收拾 */
+    }
+  }, 15_000);
+  cleanup = () => {
+    clearInterval(ping);
+    off();
+  };
+  if (closed) {
+    // open() 返回与挂好订阅之间断掉的最后一个窗口。
+    cleanup();
+    try {
+      res.end();
+    } catch {
+      /* 已经断了 */
+    }
+    return;
+  }
+
+  for (const ev of agent.session.events) {
+    if (typeof ev.seq === "number" && ev.seq < from) continue;
+    for (const ce of projectSessionEvent(ev, entry.present)) {
+      if (ce.t === "delta") continue; // 回放不打字机
+      send("chat", ce);
+      if ("seq" in ce && typeof ce.seq === "number") lastReplayed = Math.max(lastReplayed, ce.seq);
+    }
+  }
+  replaying = false;
+  for (const ce of queue) {
+    // 回放循环可能已经带出了排队里的同一条（events 数组是活的）——按 seq 去重。
+    if ("seq" in ce && typeof ce.seq === "number" && ce.seq <= lastReplayed) continue;
+    send("chat", ce);
+  }
+  queue.length = 0;
+}
+
+async function handleChatSay(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sid: string,
+): Promise<void> {
+  if (!chatPool) return json(res, 503, { ok: false, error: "对话服务还没就绪" });
+  if (!resolveKey()) return json(res, 400, { ok: false, error: "还没设置模型 key", needsKey: true });
+  try {
+    const body = JSON.parse(await readBody(req)) as { text?: unknown };
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    if (text === "") return json(res, 400, { ok: false, error: "内容是空的" });
+    await chatPool.say(sid, text); // 不在线会先复活——用户的话不该丢
+    json(res, 202, { ok: true });
+  } catch (e) {
+    json(res, 400, { ok: false, error: (e as Error).message });
+  }
+}
+
+async function handleChatStop(res: ServerResponse, sid: string): Promise<void> {
+  if (!chatPool) return json(res, 503, { ok: false, error: "对话服务还没就绪" });
+  chatPool.stop(sid);
+  json(res, 202, { ok: true });
+}
+
+async function handleChatDelete(res: ServerResponse, sid: string): Promise<void> {
+  if (!chatPool) return json(res, 503, { ok: false, error: "对话服务还没就绪" });
+  await chatPool.close(sid);
+  json(res, 202, { ok: true });
+}
+
 async function serveIndex(res: ServerResponse): Promise<void> {
   const html = await readFile(INDEX_HTML, "utf-8");
   // no-store：旧版首页是整页内联的，一旦被浏览器缓存住，改了也看不见。
@@ -934,22 +1127,21 @@ async function serveIndex(res: ServerResponse): Promise<void> {
 }
 
 /**
- * 万象自己的路由，挂在 DSH 的 webserver 上（同进程、同端口）。
+ * 万象自己的路由，挂在运行内核的 webserver 上（同进程、同端口）。
  *
  * 版图：
  *   exact  /            万象首页（三栏产品界面）
  *   exact  /health      桌面外壳的探活与界面契约版本
- *   prefix /static      万象的静态资源（DSH 的 SPA 用 /assets，不冲突）
- *   prefix /wanx        万象的全部 API（内部仍按 /api/... 分发——DSH 的
- *                       connection 插件以 prefix 占住了真正的 /api）
- *   其余                落到 DSH 的 SPA fallback：/chat 之类无扩展名路径
- *                       返回 SPA index（「细聊」就开在那儿），/assets、
- *                       /plugins、/api 各归其主
+ *   prefix /static      万象的静态资源
+ *   prefix /wanx        万象的全部 API（内部仍按 /api/... 分发——/wanx 前缀
+ *                       是历史沿革，保持它前端就零改动）
+ *   其余                404。没有第二个界面：以前留给内核 SPA 的 fallback
+ *                       （/chat、/api、/assets、/plugins）已随那一层拆除。
  */
 async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<void> {
   // /wanx 的每个端点都能改状态（写 MCP 组合会热加载执行 stdio 命令、改模型
-  // 后端能被 SSRF）。DSH 给自己的 /api 挂了浏览器信任栅栏，我们这套是单独
-  // 注册的、绕过了它——所以在这儿自己挡：非回环 Host / 跨站 origin 一律 403。
+  // 后端能被 SSRF）。这里是全部流量的唯一信任栅栏：非回环 Host / 跨站
+  // origin 一律 403。
   if (!isTrustedWanxRequest(req)) {
     return json(res, 403, { ok: false, error: "跨源请求被拒绝" });
   }
@@ -967,7 +1159,7 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     return handlePrd(res, path.slice("/api/apps/".length, -"/prd.md".length));
   }
   const appPath =
-    /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials|schedule)(?:\/([\w-]+))?$/u.exec(path);
+    /^\/api\/apps\/([a-z0-9-]+)\/(run|runs|materials|schedule|chats)(?:\/([\w-]+))?$/u.exec(path);
   if (appPath) {
     const [, slug, kind, id] = appPath;
     if (req.method === "POST" && kind === "run") return handleRun(req, res, slug);
@@ -977,13 +1169,22 @@ async function dispatchWanx(req: IncomingMessage, res: ServerResponse): Promise<
     if (req.method === "POST" && kind === "materials") return handleSaveMaterial(req, res, slug);
     if (req.method === "GET" && kind === "schedule") return handleGetSchedule(res, slug);
     if (req.method === "POST" && kind === "schedule") return handleSaveSchedule(req, res, slug);
+    if (req.method === "POST" && kind === "chats" && !id) return handleCreateChat(res, slug);
+    if (req.method === "GET" && kind === "chats" && !id) return handleListChats(res, slug);
+  }
+  const chatOp = /^\/api\/chats\/([\w-]+)(?:\/(events|say|stop))?$/u.exec(path);
+  if (chatOp) {
+    const [, sid, op] = chatOp;
+    if (req.method === "GET" && op === "events") return handleChatStream(req, res, sid);
+    if (req.method === "POST" && op === "say") return handleChatSay(req, res, sid);
+    if (req.method === "POST" && op === "stop") return handleChatStop(res, sid);
+    if (req.method === "DELETE" && !op) return handleChatDelete(res, sid);
   }
   if (req.method === "GET" && path === "/api/mcp") return handleListMcp(res);
   if (req.method === "POST" && path === "/api/mcp") return handleMutateMcp(req, res);
   if (req.method === "GET" && path === "/api/opening") {
     return json(res, 200, { ok: true, opening: OPENING });
   }
-  if (req.method === "POST" && path === "/api/activate") return handleActivate(req, res);
   json(res, 404, { ok: false, error: "not found" });
 }
 
@@ -1075,4 +1276,17 @@ export function registerWanxiangRoutes(ctx: any): void {
     const timer = setInterval(() => void scheduleTick(), 60_000);
     return () => clearInterval(timer);
   }, "wanxiang: schedule tick");
+
+  // 对话池与它的清扫器同样挂在插件生命周期上：热重组时先收干净所有
+  // 长活 agent（dispose 是 async，closeAll 会逐个 await），不留孤儿。
+  ctx.effect(() => {
+    chatPool = new ChatPool(ctx, { appsDir: APPS_DIR });
+    const sweeper = setInterval(() => void chatPool?.sweep(), 60_000);
+    return () => {
+      clearInterval(sweeper);
+      const pool = chatPool;
+      chatPool = null;
+      void pool?.closeAll();
+    };
+  }, "wanxiang: chat pool");
 }

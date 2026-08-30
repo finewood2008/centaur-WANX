@@ -55,10 +55,11 @@ export function compile(appspec: AppSpec, options: CompileOptions = {}): AppPack
   // 技能插件的挂载条件是「生成了工作流程」，不是过去那张挂名的 DOMAIN_SKILLS 表。
   // 挂载条件写错，SKILL.md 会被生成出来却从不加载——整个「自动开发」静默失效。
   //
-  // 不带 config：实测 DSH 会**整个忽略** preset 里给 skill-filesystem 写的 config
+  // 不带 config：实测内核会**整个忽略** preset 里给 skill-filesystem 写的 config
   // （`includeDefaultRoots: false` 写了也不生效，`customSkillDirs` 从不被扫描）。
-  // 内置的 standard preset 同样是空配置。技能靠装进 $DSH_HOME/skills 被发现，
-  // 由 server 的 installApp 负责——见那里的注释。
+  // 内置的 standard preset 同样是空配置。技能靠装进**应用自己 workspace 的
+  // `.dsh/skills/`** 被发现（findProjectRoot(cwd) 那条根），由 server 的
+  // installApp 负责——见那里的注释；共享根 $DSH_HOME/skills 刻意保持空。
   const skill = compileSkill(appspec);
   const skillPlugins: PluginEntry[] = skill
     ? [

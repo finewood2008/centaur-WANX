@@ -1,220 +1,29 @@
 /**
- * 万象的启动入口：boot 一条 `wanxiang` profile —— dsh-base + dsh-web-app +
- * @centaur/wanxiang —— 一个进程、一个端口。
- *
- * 以前是两个进程：万象自己起 node:http 服务，再 spawn 一个 `dsh web` 子进程，
- * 中间隔着约 300 行 HTTP/WebSocket 反向代理和一个满页替换文本节点的换牌脚本。
- * 现在 DSH 的 webserver 就是唯一的服务器：万象 bundle 把界面挂在 exact `/`、
- * API 挂在 prefix `/wanx`，DSH 的 SPA 留在 fallback（「细聊」开在 /chat——
- * SPA 对无扩展名路径回退 index.html）。「跑一次」和细聊共享同一个 ctx，
- * 同一个 agent 平面——两边工具集不一致的 bug 从结构上消失。
+ * 万象的启动入口。boot 逻辑在 src/boot.ts（探针与生产共用同一条路径），
+ * 这里只负责入口该管的事：key 同步、遗留设置清理、启动自愈、打印地址、
+ * 信号处理。
  */
-import { createRequire } from "node:module";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { syncKeyEnv, resolveKey } from "./config";
-import { acknowledgeDshOnboarding, APPS_DIR, healInstalledPresets } from "./server";
-
-const require = createRequire(import.meta.url);
-const PROJECT = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-const PORT_RAW = Number(process.env.WANXIANG_PORT ?? 8788);
-// 非法端口回落到默认，别把 NaN 塞进假 argv 变成一句用户看不懂的 "--port NaN" 报错。
-const PORT = Number.isInteger(PORT_RAW) && PORT_RAW >= 0 && PORT_RAW <= 65535 ? PORT_RAW : 8788;
-const DSH_HOME = process.env.WANXIANG_DSH_HOME ?? join(PROJECT, ".dsh-home");
-
-/** 万象 profile 的三层组合。顺序即层叠顺序，后面的盖前面的。 */
-const BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@centaur/wanxiang"];
-
-/**
- * 备好 `$DSH_HOME/profiles/wanxiang/`。
- *
- * package.json 声明 bundles（loadProfile 从这里读组合层；已存在的文件它不碰，
- * 所以要在 loadProfile 之前写）。profile 本地的 node_modules 里软链上
- * @centaur/wanxiang——DSH_HOME 在仓库里时向上就能解析到 repo 的 node_modules，
- * 但 DSH_HOME 指到别处时（WANXIANG_DSH_HOME），这条软链是唯一的解析路径。
- */
-function ensureProfile(): void {
-  const profileDir = join(DSH_HOME, "profiles", "wanxiang");
-  mkdirSync(profileDir, { recursive: true });
-
-  // 每次对齐 bundles，而不是仅在缺失时创建：万象升级增删了一个 bundle 时，
-  // 老用户的 profile 里那份 package.json 早就存在，只创建的话他永远拿不到
-  // 新组合。只在真的不一致时写盘（避免每次启动都 no-op 改文件时间戳）。
-  const manifest = join(profileDir, "package.json");
-  let current: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(manifest, "utf-8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) current = parsed;
-  } catch {
-    /* 没有或坏了，从空开始 */
-  }
-  const currentBundles = (current.dsh as { profile?: { bundles?: unknown } } | undefined)?.profile
-    ?.bundles;
-  if (JSON.stringify(currentBundles) !== JSON.stringify(BUNDLES)) {
-    // 合并而不是覆写：升级只该改 bundles，用户/pnpm 在这份 manifest 里加的
-    // dependencies 或别的键不能被抹掉（老用户装过 out-of-tree 插件就在这里）。
-    const next = {
-      name: "dsh-profile-wanxiang",
-      private: true,
-      dependencies: {},
-      ...current,
-      dsh: {
-        ...(current.dsh as Record<string, unknown> | undefined),
-        profile: {
-          ...((current.dsh as { profile?: Record<string, unknown> } | undefined)?.profile),
-          bundles: BUNDLES,
-        },
-      },
-    };
-    writeFileSync(manifest, JSON.stringify(next, null, 2) + "\n", "utf-8");
-  }
-
-  const linkDir = join(profileDir, "node_modules", "@centaur");
-  const link = join(linkDir, "wanxiang");
-  const wantTarget = join(PROJECT, "packages", "wanxiang-bundle");
-  mkdirSync(linkDir, { recursive: true });
-  // 用 lstat 看**链接本身**（existsSync 跟随软链看目标，断链会误判成不存在，
-  // 随后 symlinkSync 对仍在的链接文件抛 EEXIST，启动直接崩，且旧链指向另一份
-  // checkout 时会静默加载别人的代码）。目标不符就删掉重建——仓库改名/搬动后
-  // 也能自愈，不用用户手动去删软链。
-  let linkOk = false;
-  try {
-    const st = lstatSync(link);
-    if (st.isSymbolicLink() && readlinkSync(link) === wantTarget) linkOk = true;
-    else rmSync(link, { force: true });
-  } catch {
-    /* 不存在，直接建 */
-  }
-  if (!linkOk) symlinkSync(wantTarget, link, "dir");
-}
+import { APPS_DIR, healInstalledPresets, pruneLegacyDshSettings } from "./server";
+import { bootWanxiang, PORT } from "./boot";
 
 async function main(): Promise<void> {
-  process.env.DSH_HOME = DSH_HOME;
-
-  // key 可能存在万象的配置文件里；DSH 的 llm 适配器按 env 名解析，先同步。
+  // key 可能存在万象的配置文件里；运行内核的 llm 适配器按 env 名解析，先同步。
   syncKeyEnv();
 
-  // 首启动的欢迎页确认 + 中文 locale，写进 DSH 的 settings.yaml。
-  await acknowledgeDshOnboarding();
+  // 一次性：抹掉旧版万象写进内核 settings.yaml 的遗留键（全局默认 preset、
+  // onboarding 确认、locale）。它们的消费者都已不在组合里；其中
+  // agent-presets.default 尤其危险——那是「内核还持有当前助手」的最后一处。
+  await pruneLegacyDshSettings();
 
-  const { boot, loadProfile, healProfilesModuleFallback, watchUserPatches, loadOptionalPatches } =
-    await import("@deepseek-ai/dsh-app-boot");
-  const { provideCmdline } = await import("@deepseek-ai/dsh-cmdline");
-  const INSTALL_ANCHOR = require.resolve("@deepseek-ai/dsh/package.json");
+  const ctx = await bootWanxiang();
 
-  // 插件解析的软链农场。从没跑过 dsh 的机器上不铺这个，boot 会炸在一条
-  // 看不出病因的 loader 错误上。幂等。
-  healProfilesModuleFallback(INSTALL_ANCHOR, DSH_HOME);
-  ensureProfile();
-
-  const profile = loadProfile("dsh", "wanxiang", INSTALL_ANCHOR, undefined, { userLayer: true });
-  const rootConfigPath = join(profile.dir, "cordis.yml");
-  writeFileSync(rootConfigPath, "# wanxiang profile root — composed as patches\n[]\n");
-
-  const shippedPresetRoot = join(dirname(INSTALL_ANCHOR), "config", "agent-presets");
-
-  // dsh CLI 在启动时给 agent-presets 补 shipped root（安装目录旁的只读 preset）。
-  // 我们自己 boot，得照抄这一笔；用户根 $DSH_HOME/.agent-presets 由插件默认带上。
-  const overlays = [
-    {
-      id: "agent-presets",
-      config: {
-        default: "standard",
-        roots: [{ path: shippedPresetRoot, trust: "system" }],
-      },
-    },
-    // web 组合把 HMR 禁了（生产姿态）。这里窄根重开：主 watcher 只盯 profile
-    // 目录（node_modules 默认忽略，几乎不动），真正要的是 registerConfig——
-    // 它独立盯 cordis.patch.yml，改文件即事务性重组整个 patch 栈。
-    // 「接外部能力（MCP）」的热生效靠的就是这条。
-    {
-      id: "hmr",
-      disabled: false,
-      config: {
-        base: profile.dir,
-        root: ["."],
-        ignored: ["**/node_modules", "**/.*", "cache", "data"],
-        debounce: 200,
-      },
-    },
-  ];
-  const bundlePatches = profile.layers.flatMap((l: any) => l.patches);
-  // 机器级用户补丁层（$DSH_HOME/cordis.patch.yml），层叠在 profile 补丁之后、
-  // overlays 之前——和 dsh CLI 一致。丢了它，用户在这份文件里写的东西静默失效。
-  const homePatchPath = join(DSH_HOME, "cordis.patch.yml");
-  const readHomePatches = (): unknown[] => {
-    try {
-      return (loadOptionalPatches("wanxiang", homePatchPath) as unknown[]) ?? [];
-    } catch {
-      return [];
-    }
-  };
-  const patches = [
-    ...bundlePatches,
-    ...(profile as any).patches,
-    ...readHomePatches(),
-    ...overlays,
-  ];
-
-  const ctx = await boot("wanxiang", rootConfigPath, patches, (bootCtx: any) => {
-    // web-startup（shipped 的 CLI 参数解析器）等 cmdlineArgs；webserver 与
-    // web-runtime 再从它懒读 host/port/openBrowser。喂一份我们自己的 argv，
-    // 整条 shipped 链原样可用——不用去覆写那几行带 !!js 的 config。
-    provideCmdline(bootCtx, {
-      args: ["--no-open", "--host", "127.0.0.1", "--port", String(PORT)],
-      exit: (code?: number) => process.exit(typeof code === "number" ? code : 0),
-    });
-
-    // cordis 的默认 logger exporter 只写内存 buffer——不接一个 console sink，
-    // 运行时的一切（插件激活失败、热重组报错、MCP 断连）都是哑的。
-    bootCtx.logger.exporter({
-      colors: 0,
-      export: (m: any) => {
-        if (m?.type === "debug") return;
-        const args = Array.isArray(m?.args) ? m.args : [m];
-        console.log(`[${m?.name ?? "dsh"}]`, ...args);
-      },
-    });
-  });
-
-  // 旧编译器装出来的 preset 在 web profile 下没有文件工具——启动时自愈一遍。
+  // 旧编译器装出来的 preset 可能缺当前基线的工具行——启动时自愈一遍。
   await healInstalledPresets();
-
-  // 盯住 profile 的用户补丁层：MCP 接入写的就是这份文件，改完热生效。
-  // compose 负责重建完整的 patch 栈——watcher 会用它整个替换根 Include 的 patches。
-  try {
-    await watchUserPatches(ctx, {
-      binName: "wanxiang",
-      filename: (profile as any).patchPath ?? join(profile.dir, "cordis.patch.yml"),
-      compose: (userPatches: unknown[]) => [
-        ...bundlePatches,
-        ...userPatches,
-        ...readHomePatches(),
-        ...overlays,
-      ],
-    });
-  } catch (e) {
-    console.warn(
-      "补丁层热重载没挂上（改 MCP 配置后需要重启才生效）:",
-      e instanceof Error ? e.message : e,
-    );
-  }
 
   const port = ctx.get("webServer")?.port ?? PORT;
   console.log(`万象已启动: http://127.0.0.1:${port}`);
   console.log(`应用落盘目录: ${APPS_DIR}`);
-  console.log(`细聊（DSH 完整界面）: http://127.0.0.1:${port}/chat`);
   if (!resolveKey()) {
     console.warn("提示: 还没配置模型 key，打开页面后第一屏就能填");
   }

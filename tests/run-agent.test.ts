@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lastTurnError, lastAssistantText, toRunEvents } from "../src/runtime/run-agent";
+import { lastTurnError, lastAssistantText } from "../src/runtime/run-agent";
 
 /** 假 agent：只需要 session.events。 */
 const fakeAgent = (events: Array<{ seq: number; type: string; data?: unknown }>) => ({
@@ -72,9 +72,5 @@ describe("配合 lastAssistantText —— 空产出 + error turn = 真失败", (
   });
 });
 
-describe("toRunEvents 白话进度（回归）", () => {
-  it("工具调用翻成白话，不漏工具名", () => {
-    const ev = { type: "assistant/message", data: { message: { content: [{ type: "tool_use", name: "bash" }] } } };
-    expect(toRunEvents(ev)).toEqual([{ kind: "step", text: "正在执行操作" }]);
-  });
-});
+// 白话进度的翻译（原 toRunEvents/STEP_LABEL）已并入对话链路的同一份投影：
+// 见 tests/chat-events.test.ts 与 tests/tool-view.test.ts。

@@ -18,7 +18,6 @@ const { homedir } = require("node:os");
 
 const ROOT = join(__dirname, "..");
 const PORT = Number(process.env.WANXIANG_PORT ?? 8788);
-const DSH_PORT = Number(process.env.WANXIANG_DSH_PORT ?? 8891);
 const URL = `http://127.0.0.1:${PORT}`;
 
 let serverProcess = null;
@@ -45,7 +44,7 @@ function log(...parts) {
 }
 
 /** 这个外壳要求的界面契约版本。服务端 /health 的 ui 低于它就是老实例。 */
-const REQUIRED_UI = 3;
+const REQUIRED_UI = 4;
 
 /**
  * 端口上是什么。用 node:http 直连回环，绕开代理环境变量。
@@ -162,9 +161,8 @@ function startServer() {
     env: {
       ...process.env,
       WANXIANG_PORT: String(PORT),
-      WANXIANG_DSH_PORT: String(DSH_PORT),
       // Node 内置 fetch 默认不认 HTTP(S)_PROXY，配了代理的机器上调不通 DeepSeek。
-      // NO_PROXY 必须带上，否则连回环也被塞进代理，DSH 永远探不到。
+      // NO_PROXY 必须带上，否则连回环也被塞进代理，外壳永远探不到服务。
       NODE_USE_ENV_PROXY: "1",
       NO_PROXY: "localhost,127.0.0.1,::1",
       no_proxy: "localhost,127.0.0.1,::1",

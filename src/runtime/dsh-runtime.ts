@@ -29,7 +29,7 @@ export interface RuntimeConfig {
  */
 export class WanxiangRuntime {
   private ctx: any = null;
-  private agentMap = new Map<string, { agent: any; dispose: () => void }>();
+  private agentMap = new Map<string, { agent: any; dispose: () => Promise<void> }>();
 
   /** boot 过了没有。 */
   get booted(): boolean {

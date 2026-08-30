@@ -3,26 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "万象作为 DSH bundle：把产品界面与 API 挂进 DSH 的 web 组合，与「细聊」共享同一个运行时",
+  "description": "万象的组合层 bundle：把产品界面、API 与对话链路挂进运行内核的 web 载体",
   "main": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json",
-    "./client": "./client.js"
+    "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-theme",
-        "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-sidebar"
-      ]
     }
   }
 }

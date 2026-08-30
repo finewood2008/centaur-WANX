@@ -256,7 +256,64 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .step.was .dot { background: var(--ok); }
 @keyframes pulse { 50% { transform: scale(1.55); opacity: .55; } }
 
-.runtime { width: 100%; height: 100%; border: 0; display: block; background: var(--paper); }
+/* ===== 对话视图 =====
+ * 全站唯一增量渲染的视图：.talk-log 是自己的滚动容器（粘底但可上翻），
+ * 外层 #scroll 在 body.talking 时交出滚动权。 */
+body.talking .scroll { overflow: hidden; }
+.talk { display: flex; flex-direction: column; height: 100%; }
+.talk-bar { display: flex; align-items: center; gap: 10px; padding: 14px 22px;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.talk-bar select { font: inherit; padding: 5px 8px; border: 1px solid var(--line-strong);
+  border-radius: var(--r-chip); background: var(--surface); max-width: 260px; }
+.talk-log { flex: 1 1 auto; overflow-y: auto; padding: 20px 22px;
+  display: flex; flex-direction: column; gap: 12px; }
+.t-msg { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14.5px; }
+.t-msg .t-body { white-space: pre-wrap; word-break: break-word; }
+.t-msg.it .t-body { white-space: normal; }
+.t-msg.me { align-self: flex-end; background: var(--accent-wash);
+  border: 1px solid var(--line); border-bottom-right-radius: 4px; }
+.t-msg.me.pending { opacity: .6; }
+.t-msg.me.bad { border-color: var(--danger); }
+.t-msg.it { align-self: flex-start; background: var(--surface);
+  border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.t-msg.it.live .t-body::after { content: "▍"; color: var(--accent); animation: pulse 1.1s infinite; }
+.t-msg.it p { margin: 0 0 10px; }
+.t-msg.it > .t-body > :last-child { margin-bottom: 0; }
+.t-msg.it pre { background: var(--paper-deep); padding: 10px 12px; border-radius: 8px;
+  overflow-x: auto; font-size: 13px; }
+.t-msg.it code { background: var(--paper-deep); padding: 1px 5px; border-radius: 5px; font-size: 13.5px; }
+.t-msg.it pre code { padding: 0; background: none; }
+.md-table { overflow-x: auto; }
+.md-table table { border-collapse: collapse; font-size: 13.5px; }
+.md-table th, .md-table td { border: 1px solid var(--line); padding: 5px 10px; text-align: left; }
+.md-table th { background: var(--paper-deep); }
+.t-tool { align-self: flex-start; max-width: 78%; border: 1px dashed var(--line-strong);
+  border-radius: 10px; padding: 6px 12px; background: var(--paper); font-size: 13.5px; }
+.t-tool summary { display: flex; align-items: center; gap: 8px; cursor: pointer;
+  list-style: none; color: var(--ink-2); }
+.t-tool summary::-webkit-details-marker { display: none; }
+.t-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--line-strong); }
+.t-dot.run { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+.t-dot.ok { background: var(--ok); }
+.t-dot.bad { background: var(--danger); }
+.t-in, .t-out { margin: 8px 0 4px; white-space: pre-wrap; word-break: break-word;
+  font-size: 12.5px; color: var(--ink-2); max-height: 300px; overflow-y: auto; }
+.t-in { font-family: ui-monospace, monospace; }
+.t-note { align-self: center; font-size: 12.5px; color: var(--ink-3); }
+.t-note.bad { color: var(--danger); }
+.t-todo { align-self: flex-start; max-width: 78%; border-left: 3px solid var(--accent);
+  padding: 4px 12px; font-size: 13px; color: var(--ink-2); }
+.t-todo-row.completed { text-decoration: line-through; color: var(--ink-3); }
+.t-todo-row.in_progress { color: var(--ink); }
+.t-run { align-self: stretch; border: 1px solid var(--line); border-radius: var(--r-card);
+  background: var(--surface); padding: 14px 18px; }
+.t-run-h { font-weight: 600; margin-bottom: 10px; }
+.t-run-steps { margin-bottom: 10px; }
+.t-run-meta { font-size: 12.5px; color: var(--ink-3); margin-bottom: 10px; }
+.t-run-out .paper { border: 1px solid var(--line); }
+.talk-dock { border-top: 1px solid var(--line); padding: 12px 22px 16px; }
+.talk-status { min-height: 18px; font-size: 12.5px; color: var(--ink-3); margin-bottom: 6px; }
+.talk-dock .stop { margin-top: 8px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
@@ -368,9 +425,6 @@ body.no-prd .prd { display: none; }
 .paper li::marker { color: var(--accent); }
 .paper code { padding: 1px 5px; border-radius: 5px; background: var(--paper-deep); font-size: 13.5px; }
 .paper > :last-child { margin-bottom: 0; }
-
-.chat-bar { display: flex; align-items: center; gap: 14px; padding: 0 0 12px; flex-wrap: wrap; }
-.chat-note { font-size: 12.5px; color: var(--ink-3); }
 
 @media print {
   .sidebar, .center, .prd-bar, .prd-foot, .overlay-bar { display: none !important; }

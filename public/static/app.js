@@ -1,9 +1,10 @@
+import { esc, md, sseFrames } from "./lib.js";
+
+const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const el = (id) => document.getElementById(id);
+
 (() => {
   "use strict";
-  const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const el = (id) => document.getElementById(id);
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   // 与 src/prd/sections.ts 一一对应。改那边记得改这边。
   const SECTIONS = [
@@ -228,54 +229,27 @@
     toTop();
   }
 
-  function streamTurn(onDelta) {
-    return new Promise((resolve, reject) => {
-      fetch("/wanx/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: state.messages,
-          draft: state.draft,
-          turn: state.turn,
-          answered: state.pending,
-        }),
-      })
-        .then(async (response) => {
-          if (!response.ok || !response.body) throw new Error(`请求失败（${response.status}）`);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-          let settled = false;
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let sep;
-            while ((sep = buffer.indexOf("\n\n")) >= 0) {
-              const frame = buffer.slice(0, sep);
-              buffer = buffer.slice(sep + 2);
-              let event = "message", data = "";
-              for (const line of frame.split("\n")) {
-                if (line.startsWith("event:")) event = line.slice(6).trim();
-                else if (line.startsWith("data:")) data += line.slice(5).trim();
-              }
-              if (!data) continue;
-              const payload = JSON.parse(data);
-              if (event === "delta") onDelta(payload.text);
-              else if (event === "error") {
-                settled = true;
-                const err = new Error(payload.error);
-                err.needsKey = payload.needsKey === true;
-                reject(err);
-                return;
-              }
-              else if (event === "done") { settled = true; resolve(payload); return; }
-            }
-          }
-          if (!settled) reject(new Error("连接中断了"));
-        })
-        .catch(reject);
+  async function streamTurn(onDelta) {
+    const response = await fetch("/wanx/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: state.messages,
+        draft: state.draft,
+        turn: state.turn,
+        answered: state.pending,
+      }),
     });
+    if (!response.ok || !response.body) throw new Error(`请求失败（${response.status}）`);
+    for await (const { event, data } of sseFrames(response)) {
+      if (event === "delta") onDelta(data.text);
+      else if (event === "error") {
+        const err = new Error(data.error);
+        err.needsKey = data.needsKey === true;
+        throw err;
+      } else if (event === "done") return data;
+    }
+    throw new Error("连接中断了");
   }
 
   /* ================= 选项 ================= */
@@ -466,36 +440,13 @@
     }
   }
 
-  /* ================= 助手主页（原生，不再 iframe 嵌 DSH） =========
+  /* ================= 助手主页 ====================================
    *
    * 用户在访谈里描述的是「定期跑一次、给我一份东西」，那是个活儿，不是聊天。
    * 所以助手的主界面是：它会做什么 → 让它跑一次 → 看产出。
-   * DSH 的完整聊天界面退居「跟它细聊」，需要的时候才打开。
+   * 多轮对话是万象自己的界面（goTalk），跑一次也能从对话里发起。
+   * Markdown 渲染与 SSE 解析都在 ./lib.js 里，三条流共用一份。
    */
-
-  /** 极简 Markdown：交付物是助手写的，只会用到标题、列表、粗体这几样。 */
-  function md(src) {
-    const inline = (t) =>
-      esc(t)
-        .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-        .replace(/`([^`]+)`/g, "<code>$1</code>");
-    const out = [];
-    let list = null;
-    const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-    for (const raw of String(src).split("\n")) {
-      const line = raw.trimEnd();
-      const h = /^(#{1,4})\s+(.*)$/.exec(line);
-      const ul = /^[-*]\s+(.*)$/.exec(line);
-      const ol = /^\d+[.)]\s+(.*)$/.exec(line);
-      if (h) { closeList(); out.push(`<h${h[1].length + 2}>${inline(h[2])}</h${h[1].length + 2}>`); }
-      else if (ul) { if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(ul[1])}</li>`); }
-      else if (ol) { if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(ol[1])}</li>`); }
-      else if (line === "") closeList();
-      else { closeList(); out.push(`<p>${inline(line)}</p>`); }
-    }
-    closeList();
-    return out.join("");
-  }
 
   function when(iso) {
     const d = new Date(iso);
@@ -697,6 +648,7 @@
 
   /** 助手主页。 */
   async function goApp(slug) {
+    leaveTalk();
     state.phase = "app";
     setPrdVisible(false);
     el("meters").hidden = true;
@@ -760,11 +712,12 @@
       "</section></div>" +
       '<div class="multi-foot run-bar">' +
       '<button class="btn-solid" id="do-run" type="button">让它跑一次</button>' +
+      '<button class="btn-quiet" id="deep-chat" type="button">跟它聊聊</button>' +
       (app.hasPrd ? '<button class="btn-quiet" id="see-prd" type="button">看需求文档</button>' : "") +
-      '<button class="btn-quiet" id="deep-chat" type="button">跟它细聊</button>' +
       "</div>" +
       '<div class="runs-h">最近的产出</div>' +
       runsHtml(runs) +
+      '<div class="runs-h">聊过的</div><div id="chat-list" class="runs"><div class="runs-empty">正在看…</div></div>' +
       "</div>";
 
     paintMaterials(slug, mats);
@@ -775,14 +728,69 @@
         window.open(`/wanx/api/apps/${encodeURIComponent(slug)}/prd.md`, "_blank");
       });
     }
-    el("deep-chat").addEventListener("click", () => goDeepChat(slug));
+    el("deep-chat").addEventListener("click", () => goTalk(slug));
     for (const b of el("stage").querySelectorAll(".run-item")) {
       b.addEventListener("click", () => openRun(slug, b.dataset.run));
     }
+    void paintChatList(slug);
+  }
+
+  /** 助手主页的「聊过的」：历史对话列表，点一条接着聊。 */
+  async function paintChatList(slug) {
+    const box = el("chat-list");
+    if (!box) return;
+    try {
+      const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/chats`);
+      const d = await r.json();
+      const chats = Array.isArray(d.chats) ? d.chats : [];
+      if (chats.length === 0) {
+        box.innerHTML = '<div class="runs-empty">还没聊过。点「跟它聊聊」就能开始。</div>';
+        return;
+      }
+      box.innerHTML = "";
+      for (const c of chats) {
+        const b = document.createElement("button");
+        b.className = "run-item";
+        b.type = "button";
+        b.innerHTML = '<span class="run-when"></span><span class="run-preview"></span>';
+        b.querySelector(".run-when").textContent = when(c.createdAt);
+        b.querySelector(".run-preview").textContent = c.title || "新对话";
+        b.addEventListener("click", () => goTalk(slug, c.sessionId));
+        box.appendChild(b);
+      }
+    } catch {
+      box.innerHTML = "";
+    }
+  }
+
+  /**
+   * 跑一次的 SSE 消费——助手主页的整屏视图和对话里的运行卡片共用。
+   * step 是白话进度，text 是助手的话；跑完返回 done 载荷，失败抛错
+   * （needsKey 标在错误对象上）。
+   */
+  async function streamRun(slug, hooks) {
+    const response = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/run`, { method: "POST" });
+    if (!response.ok || !response.body) throw new Error(`跑不起来（${response.status}）`);
+    let finished = null;
+    let failed = null;
+    for await (const { event, data } of sseFrames(response)) {
+      if (event === "step") hooks.onStep(data.text);
+      else if (event === "text") hooks.onText(data.text);
+      else if (event === "done") finished = data;
+      else if (event === "error") failed = data;
+    }
+    if (failed) {
+      const err = new Error(failed.error || "没跑成");
+      err.needsKey = failed.needsKey === true;
+      throw err;
+    }
+    if (!finished) throw new Error("连接中断了");
+    return finished;
   }
 
   /** 跑一次。SSE：白话进度 + 助手的话，结束落到结果页。 */
   async function runApp(slug) {
+    leaveTalk();
     state.phase = "run";
     setPrdVisible(false);
     el("stage").className = "stage";
@@ -809,44 +817,15 @@
     };
 
     try {
-      const response = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/run`, { method: "POST" });
-      if (!response.ok || !response.body) throw new Error(`跑不起来（${response.status}）`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let finished = null;
-      let failed = null;
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sep;
-        while ((sep = buffer.indexOf("\n\n")) >= 0) {
-          const frame = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          let event = "message", data = "";
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("event:")) event = line.slice(6).trim();
-            else if (line.startsWith("data:")) data += line.slice(5).trim();
-          }
-          if (!data) continue;
-          const payload = JSON.parse(data);
-          if (event === "step") addStep(payload.text);
-          else if (event === "text") liveText.textContent = payload.text;
-          else if (event === "done") finished = payload;
-          else if (event === "error") failed = payload;
-        }
-      }
-
+      const finished = await streamRun(slug, {
+        onStep: addStep,
+        onText: (t) => { liveText.textContent = t; },
+      });
       if (lastStep) lastStep.className = "step was";
-      if (failed) {
-        if (failed.needsKey) { await loadSettings(); renderSettings({ reason: "还没设置模型 key，先把它配上。" }); return; }
-        throw new Error(failed.error || "没跑成");
-      }
-      if (!finished) throw new Error("连接中断了");
       renderResult(slug, finished.run, finished.output);
     } catch (e) {
+      if (lastStep) lastStep.className = "step was";
+      if (e.needsKey) { await loadSettings(); renderSettings({ reason: "还没设置模型 key，先把它配上。" }); return; }
       const box = el("run-err");
       if (box) { box.className = "err"; box.textContent = `没跑成：${e.message}`; }
       const back = document.createElement("button");
@@ -913,40 +892,421 @@
     toTop();
   }
 
-  /** 跟它细聊 —— 打开 DSH 的完整界面。次要入口，不再是主路径。 */
-  async function goDeepChat(slug) {
-    state.phase = "chatting";
-    setPrdVisible(false);
-    el("top-title").textContent = (state.app && state.app.name) || "细聊";
-    el("top-en").textContent = "Talk it through";
-    el("stage").className = "stage wide";
-    el("stage").innerHTML = '<div class="build"><h2>正在打开对话</h2><span class="build-en">Starting</span></div>';
+  /* ================= 对话 ==========================================
+   *
+   * 万象自己的多轮对话界面。会话属于某个助手（建会话时 preset 与 cwd 就
+   * 钉死在 header 上），切换助手 = 到那个助手名下新建或打开另一条会话——
+   * 不存在任何全局「当前助手」。
+   *
+   * 这是全站唯一「不整屏重绘」的视图：骨架只画一次，之后全部增量追加，
+   * 滚动粘底但用户往上翻就自动松手。
+   */
+  const talk = {
+    slug: null,
+    sessionId: null,
+    alive: false,
+    abort: null,
+    nodes: null,
+    liveBubble: null,
+    liveRaw: "",
+    optimistic: [],
+    stick: true,
+    lastSeq: 0,
+    running: false,
+  };
+  // 视图代际：goTalk 的每次进入拿一个新号。await 回来发现号变了就退出——
+  // 双击「新对话」、快速切会话都不会让两份接线抢同一个 DOM。
+  let talkGen = 0;
+
+  /** 离开对话视图：断流、去掉布局类。侧栏随时可能把人带去别的视图。 */
+  function leaveTalk() {
+    talk.alive = false;
+    talk.sessionId = null;
+    try { talk.abort && talk.abort.abort(); } catch { /* 已断 */ }
+    talk.abort = null;
+    document.body.classList.remove("talking");
+  }
+
+  function talkLog() { return el("talk-log"); }
+
+  function talkSettle() {
+    const log = talkLog();
+    if (log && talk.stick) log.scrollTop = log.scrollHeight;
+  }
+
+  function talkAppend(node, key) {
+    const log = talkLog();
+    if (!log) return node;
+    if (key && talk.nodes.has(key)) return talk.nodes.get(key);
+    log.appendChild(node);
+    if (key) talk.nodes.set(key, node);
+    talkSettle();
+    return node;
+  }
+
+  function talkBubble(cls, text) {
+    const div = document.createElement("div");
+    div.className = `t-msg ${cls}`;
+    const body = document.createElement("div");
+    body.className = "t-body";
+    body.textContent = text;
+    div.appendChild(body);
+    return div;
+  }
+
+  function talkNote(text, cls) {
+    const div = document.createElement("div");
+    div.className = cls || "t-note";
+    div.textContent = text;
+    return div;
+  }
+
+  function setTalkRunning(v) {
+    talk.running = v;
+    const status = el("talk-status");
+    if (status) status.textContent = v ? "它正在想…（这时候发消息就是插话）" : "";
+    const stop = el("talk-stop");
+    if (stop) stop.hidden = !v;
+  }
+
+  function onChatEvent(e) {
+    if (typeof e.seq === "number" && e.seq > talk.lastSeq) talk.lastSeq = e.seq;
+    switch (e.t) {
+      case "user": {
+        if (e.synthetic) return; // 注入的上下文不是人说的话，不画
+        const key = `seq:${e.seq}`;
+        if (talk.nodes.has(key)) return;
+        // 乐观气泡认领：回声到了就把队列里第一条同文本的转正，别画第二遍。
+        // 连发两句也各归各——这是个队列，不是单槽。
+        const idx = talk.optimistic.findIndex((o) => o.text === e.text);
+        if (idx >= 0) {
+          const node = talk.optimistic[idx].node;
+          node.classList.remove("pending");
+          talk.nodes.set(key, node);
+          talk.optimistic.splice(idx, 1);
+          return;
+        }
+        talkAppend(talkBubble("me", e.text), key);
+        return;
+      }
+      case "delta": {
+        if (!talk.liveBubble) {
+          talk.liveRaw = "";
+          talk.liveBubble = talkAppend(talkBubble("it live", ""), null);
+        }
+        talk.liveRaw += e.text;
+        talk.liveBubble.querySelector(".t-body").textContent = talk.liveRaw;
+        talkSettle();
+        return;
+      }
+      case "assistant": {
+        const key = `seq:${e.seq}`;
+        if (talk.nodes.has(key)) { talk.liveBubble = null; talk.liveRaw = ""; return; }
+        const node = talk.liveBubble || talkAppend(talkBubble("it", ""), null);
+        node.classList.remove("live");
+        // 打字机阶段是纯文本；权威全文到了才渲染 Markdown。
+        node.querySelector(".t-body").innerHTML = md(e.text);
+        if (e.interrupted) node.appendChild(talkNote("（说到一半被停下了）"));
+        talk.nodes.set(key, node);
+        talk.liveBubble = null;
+        talk.liveRaw = "";
+        talkSettle();
+        return;
+      }
+      case "tool.call": {
+        const key = `call:${e.callId}`;
+        if (talk.nodes.has(key)) return;
+        const card = document.createElement("details");
+        card.className = "t-tool";
+        const sum = document.createElement("summary");
+        const dot = document.createElement("span");
+        dot.className = "t-dot run";
+        const label = document.createElement("span");
+        label.className = "t-label";
+        label.textContent = e.label;
+        sum.append(dot, label);
+        card.appendChild(sum);
+        if (e.input) {
+          const pre = document.createElement("pre");
+          pre.className = "t-in";
+          pre.textContent = e.input;
+          card.appendChild(pre);
+        }
+        const out = document.createElement("div");
+        out.className = "t-out";
+        card.appendChild(out);
+        talkAppend(card, key);
+        return;
+      }
+      case "tool.result": {
+        const card = talk.nodes.get(`call:${e.callId}`);
+        if (!card) return;
+        const dot = card.querySelector(".t-dot");
+        if (dot) dot.className = `t-dot ${e.ok ? "ok" : "bad"}`;
+        const out = card.querySelector(".t-out");
+        if (out && e.text) out.textContent = e.text;
+        talkSettle();
+        return;
+      }
+      case "todo": {
+        let box = talk.nodes.get("todo");
+        if (!box) {
+          box = document.createElement("div");
+          box.className = "t-todo";
+          talkAppend(box, "todo");
+        }
+        box.innerHTML = "";
+        for (const item of e.items) {
+          const row = document.createElement("div");
+          row.className = `t-todo-row ${esc(item.status)}`;
+          row.textContent = item.content;
+          box.appendChild(row);
+        }
+        talkSettle();
+        return;
+      }
+      case "turn.start":
+        setTalkRunning(true);
+        return;
+      case "turn.end": {
+        setTalkRunning(false);
+        if (talk.liveBubble) { talk.liveBubble.classList.remove("live"); talk.liveBubble = null; talk.liveRaw = ""; }
+        if (e.reason === "error") talkAppend(talkNote(`出错了：${e.error || "运行时错误"}`, "t-note bad"), `seq:${e.seq}`);
+        else if (e.reason === "aborted") talkAppend(talkNote("已停下。想继续就再说一句。"), `seq:${e.seq}`);
+        return;
+      }
+      default:
+    }
+  }
+
+  /** 长连接（带退避重连）。回放从 lastSeq+1 起，接直播。
+   *  404 是永久性失败（会话打不开了），停下并如实告诉用户；
+   *  其余按指数退避重试，重试状态在状态栏可见，不无声空转。 */
+  async function connectTalk() {
+    const sid = talk.sessionId;
+    let delay = 1500;
+    while (talk.alive && talk.sessionId === sid) {
+      try {
+        const ctrl = new AbortController();
+        talk.abort = ctrl;
+        const res = await fetch(
+          `/wanx/api/chats/${encodeURIComponent(sid)}/events?from=${talk.lastSeq + 1}`,
+          { signal: ctrl.signal },
+        );
+        if (res.status === 404) {
+          talkAppend(talkNote("这条对话打不开了（记录缺失或已损坏）。回到助手另开一条吧。", "t-note bad"), null);
+          setTalkRunning(false);
+          return;
+        }
+        if (!res.ok || !res.body) throw new Error(`连接失败（${res.status}）`);
+        delay = 1500; // 连上了，退避归零
+        for await (const { event, data } of sseFrames(res)) {
+          if (!talk.alive || talk.sessionId !== sid) return;
+          if (event === "hello") {
+            setTalkRunning(data.running === true);
+            // 断线期间的打字机增量已永久丢失，半截直播气泡不能再续写
+            // ——中段会缺字。丢弃它，权威全文（assistant 事件）会带来完整版。
+            if (talk.liveBubble) {
+              talk.liveBubble.remove();
+              talk.liveBubble = null;
+              talk.liveRaw = "";
+            }
+          } else if (event === "chat") onChatEvent(data);
+        }
+      } catch {
+        /* 断了，走退避 */
+      }
+      if (!talk.alive || talk.sessionId !== sid) return;
+      const status = el("talk-status");
+      if (status) status.textContent = "连接断了，正在重试…";
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 10_000);
+    }
+  }
+
+  async function talkSay() {
+    const ta = el("talk-input");
+    if (!ta) return;
+    // 会话还没建好（goTalk 的 POST 在途）就别发——否则请求会打到
+    // /api/chats/null/say，这句话就丢了。输入保留，建好再发。
+    if (!talk.sessionId) return;
+    const v = ta.value.trim();
+    if (!v) return;
+    ta.value = "";
+    ta.style.height = "auto";
+    const node = talkAppend(talkBubble("me pending", v), null);
+    talk.optimistic.push({ text: v, node });
     try {
-      // 激活 = 把 DSH 的默认 preset 设成这个助手；SPA 新建会话时就会用它。
-      const actRes = await fetch("/wanx/api/activate", {
+      const r = await fetch(`/wanx/api/chats/${encodeURIComponent(talk.sessionId)}/say`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app: slug }),
+        body: JSON.stringify({ text: v }),
       });
-      const actData = await actRes.json().catch(() => ({ ok: false }));
-      // 激活失败别静默打开——那样细聊到的会是上一个默认助手，用户还以为是这个。
-      if (!actRes.ok || actData.ok === false) {
-        throw new Error(actData.error || "没能切到这个助手");
+      const d = await r.json().catch(() => ({ ok: false }));
+      if (!r.ok || d.ok === false) {
+        if (d.needsKey) { leaveTalk(); await loadSettings(); renderSettings({ reason: "还没设置模型 key，先把它配上。" }); return; }
+        throw new Error(d.error || "没发出去");
       }
-      el("dsh-state").textContent = "运行中";
-      el("stage").innerHTML =
-        '<div class="chat-bar"><button class="btn-quiet" id="chat-back" type="button">← 回到助手</button>' +
-        '<span class="chat-note">这是完整的对话界面，适合来回商量。跑固定活儿用「让它跑一次」更省事。</span></div>' +
-        // 同一进程同一端口：/chat 不是路由，是 SPA 的 fallback——DSH 前端对
-        // 无扩展名路径返回 index.html，整个完整界面就开在这儿。
-        `<iframe class="runtime" title="对话" src="/chat"></iframe>`;
-      el("chat-back").addEventListener("click", () => goApp(slug));
+      setTalkRunning(true);
     } catch (e) {
+      node.classList.add("bad");
+      node.appendChild(talkNote(`没发出去：${e.message}`, "t-note bad"));
+      talk.optimistic = talk.optimistic.filter((o) => o.node !== node);
+    }
+  }
+
+  /** 对话里的「让它跑一次」：run 在自己的一次性会话里执行（确定性、进台账），
+   *  结果以一张卡片落进对话流——入口统一，底下两类会话仍分家。 */
+  async function talkRun() {
+    const btn = el("talk-run");
+    if (btn) btn.disabled = true;
+    const card = document.createElement("div");
+    card.className = "t-run";
+    card.innerHTML =
+      '<div class="t-run-h">▶ 让它跑一次</div>' +
+      '<div class="steps live t-run-steps"></div><div class="t-run-out"></div>';
+    talkAppend(card, null);
+    const stepsBox = card.querySelector(".t-run-steps");
+    let last = null;
+    try {
+      const finished = await streamRun(talk.slug, {
+        onStep: (text) => {
+          if (last) last.className = "step was";
+          const d = document.createElement("div");
+          d.className = "step now";
+          d.innerHTML = '<span class="dot" aria-hidden="true"></span><span></span>';
+          d.querySelector("span:last-child").textContent = text;
+          stepsBox.appendChild(d);
+          last = d;
+          talkSettle();
+        },
+        onText: () => {},
+      });
+      if (last) last.className = "step was";
+      card.querySelector(".t-run-out").innerHTML =
+        `<div class="t-run-meta">用时 ${(finished.run.ms / 1000).toFixed(1)} 秒，已存进「最近的产出」</div>` +
+        `<article class="paper">${md(finished.output)}</article>`;
+    } catch (e) {
+      if (last) last.className = "step was";
+      if (e.needsKey) {
+        leaveTalk();
+        await loadSettings();
+        renderSettings({ reason: "还没设置模型 key，先把它配上。" });
+        return;
+      }
+      card.querySelector(".t-run-out").innerHTML = `<div class="err">没跑成：${esc(e.message)}</div>`;
+    } finally {
+      if (btn) btn.disabled = false;
+      talkSettle();
+    }
+  }
+
+  async function loadTalkHistory(slug, current) {
+    const sel = el("talk-history");
+    if (!sel) return;
+    try {
+      const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/chats`);
+      const d = await r.json();
+      const chats = Array.isArray(d.chats) ? d.chats : [];
+      sel.innerHTML = "";
+      for (const c of chats) {
+        const opt = document.createElement("option");
+        opt.value = c.sessionId;
+        opt.textContent = c.title || "新对话";
+        if (c.sessionId === current) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.hidden = chats.length < 2;
+    } catch {
+      sel.hidden = true;
+    }
+  }
+
+  /** 跟它聊聊。sessionId 缺省 = 新开一条。 */
+  async function goTalk(slug, sessionId) {
+    const gen = ++talkGen;
+    leaveTalk();
+    state.phase = "talk";
+    setPrdVisible(false);
+    el("meters").hidden = true;
+    const app = (state.apps || []).find((a) => a.slug === slug);
+    el("top-title").textContent = (app && app.name) || "对话";
+    el("top-en").textContent = "Talk it through";
+    el("stage").className = "stage wide";
+    document.body.classList.add("talking");
+    el("stage").innerHTML =
+      '<div class="talk">' +
+      '<div class="talk-bar">' +
+      '<button class="btn-quiet" id="talk-back" type="button">← 回到助手</button>' +
+      '<select id="talk-history" hidden></select>' +
+      '<button class="btn-quiet" id="talk-new" type="button">新对话</button>' +
+      '<button class="btn-quiet" id="talk-run" type="button">让它跑一次</button>' +
+      "</div>" +
+      '<div class="talk-log" id="talk-log" aria-live="polite"></div>' +
+      '<div class="talk-dock">' +
+      '<div class="talk-status" id="talk-status"></div>' +
+      '<div class="composer-box">' +
+      '<textarea id="talk-input" rows="1" placeholder="跟它说点什么…" aria-label="你的话"></textarea>' +
+      '<button class="send" id="talk-send" type="button" aria-label="发送">→</button></div>' +
+      '<button class="stop" id="talk-stop" type="button" hidden>停下</button>' +
+      "</div></div>";
+
+    el("talk-back").addEventListener("click", () => { leaveTalk(); goApp(slug); });
+    el("talk-new").addEventListener("click", () => goTalk(slug));
+    el("talk-run").addEventListener("click", () => { void talkRun(); });
+    el("talk-send").addEventListener("click", () => { void talkSay(); });
+    el("talk-stop").addEventListener("click", () => {
+      void fetch(`/wanx/api/chats/${encodeURIComponent(talk.sessionId)}/stop`, { method: "POST" });
+    });
+    const ta = el("talk-input");
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void talkSay(); }
+    });
+    ta.addEventListener("input", () => {
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
+    });
+    const log = el("talk-log");
+    log.addEventListener("scroll", () => {
+      talk.stick = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+    });
+
+    talk.slug = slug;
+    talk.nodes = new Map();
+    talk.liveBubble = null;
+    talk.liveRaw = "";
+    talk.optimistic = [];
+    talk.stick = true;
+    talk.lastSeq = 0;
+    setTalkRunning(false);
+    // 会话就绪之前不许发（sessionId 还是 null，请求会打到 /chats/null/say）。
+    el("talk-send").disabled = true;
+
+    try {
+      if (!sessionId) {
+        const r = await fetch(`/wanx/api/apps/${encodeURIComponent(slug)}/chats`, { method: "POST" });
+        const d = await r.json();
+        if (gen !== talkGen) return; // 用户已经去了别处/开了另一条——这份接线作废
+        if (!r.ok || d.ok === false) throw new Error(d.error || "没能开起对话");
+        sessionId = d.sessionId;
+      }
+      if (gen !== talkGen) return;
+      talk.sessionId = sessionId;
+      talk.alive = true;
+      el("talk-send").disabled = false;
+      void loadTalkHistory(slug, sessionId);
+      const sel = el("talk-history");
+      sel.addEventListener("change", () => { if (sel.value && sel.value !== talk.sessionId) goTalk(slug, sel.value); });
+      void connectTalk();
+      ta.focus();
+    } catch (e) {
+      if (gen !== talkGen) return;
+      leaveTalk();
       el("stage").className = "stage";
       el("stage").innerHTML =
-        `<div class="err">对话界面没起来：${esc(e.message)}</div>` +
-        '<div class="multi-foot"><button class="btn-quiet" id="chat-back2" type="button">← 回到助手</button></div>';
-      el("chat-back2").addEventListener("click", () => goApp(slug));
+        `<div class="err">对话没开起来：${esc(e.message)}</div>` +
+        '<div class="multi-foot"><button class="btn-quiet" id="talk-back2" type="button">← 回到助手</button></div>';
+      el("talk-back2").addEventListener("click", () => goApp(slug));
     }
   }
 
@@ -979,8 +1339,8 @@
   }
 
   /* ================= 外部能力（MCP） =================
-   * 给助手接现成的外部工具——DSH 的 MCP 通道，一行配置一个 server。
-   * 接上之后所有助手（含细聊）都能用；改动热生效，不用重启。
+   * 给助手接现成的外部工具——MCP 通道，一行配置一个 server。
+   * 接上之后所有助手都能用（跑一次和对话里都一样）；改动热生效，不用重启。
    */
   function mcpItemHtml(s) {
     const what = s.transport === "stdio"
@@ -1016,6 +1376,7 @@
   }
 
   async function renderMcp() {
+    leaveTalk();
     state.phase = "mcp";
     setPrdVisible(false);
     el("meters").hidden = true;
@@ -1024,8 +1385,8 @@
     el("stage").className = "stage";
     el("stage").innerHTML =
       '<h2 class="lede">给助手接外部能力</h2>' +
-      '<p class="sub">MCP 是接现成工具的标准口子：接上一个 server，所有助手（包括细聊）都会多一批工具，' +
-      "改动即时生效。工具名会长成 mcp__名称__xxx 的样子。</p>" +
+      '<p class="sub">MCP 是接现成工具的标准口子：接上一个 server，所有助手都会多一批工具，' +
+      "跑活和对话里都能用，改动即时生效。</p>" +
       '<div id="mcp-list"></div><div id="mcp-err"></div>' +
       '<div class="mat-form" style="margin-top:18px">' +
       '<input id="mcp-name" type="text" placeholder="给它起个名，比如 github（小写字母数字连字符）" spellcheck="false">' +
@@ -1105,6 +1466,7 @@
    * 不该等到聊了半天才被「缺少 key」拦住。
    */
   function renderSettings(options) {
+    leaveTalk();
     const opts = options || {};
     setPrdVisible(false);
     const cfg = state.settings || {};
@@ -1185,6 +1547,7 @@
 
   /* ================= 空状态 ================= */
   async function restart() {
+    leaveTalk();
     Object.assign(state, {
       phase: "empty", messages: [], draft: { slots: {}, derived: {} },
       turn: 0, answered: 0, busy: false, app: null, pending: null, ask: null,
