@@ -9,15 +9,24 @@
     "WANXIANG_DSH_PORT": "8891"
   },
 
-  "postCreateCommand": "npm install",
+  // 装依赖，然后铺一个跑过一次的示例助手。
+  // 没有示例的话，没配 key 的访客打开只看得到一张设置表——看不到助手主页、
+  // 看不到资料夹、更看不到交付物长什么样。
+  "postCreateCommand": "npm install && npm run seed-demo",
 
-  // 8788 是万象自己的界面；8891 是它按需拉起的 DSH 子进程，
-  // 走万象的反向代理，不需要单独打开。
+  // 附加时自动把服务起起来，端口随即转发。放在对象里 VS Code 会开一个可见的
+  // 终端跑它，出错看得见。
+  "postAttachCommand": {
+    "万象": "npm start"
+  },
+
+  // 8788 是万象自己的界面；8891 是它按需拉起的 DSH 子进程，走万象的反向代理，
+  // 不需要单独打开。
   "forwardPorts": [8788],
   "portsAttributes": {
     "8788": {
       "label": "万象",
-      "onAutoForward": "openBrowser"
+      "onAutoForward": "openPreview"
     }
   },
 

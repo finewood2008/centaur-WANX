@@ -277,9 +277,16 @@ function toAsk(raw: unknown): Ask | null {
   // 选项为空视为不合格——「每轮都有选择项」这条由代码把关，不靠模型自觉。
   if (options.length === 0) return null;
 
+  // 天生多选的槽位由**代码**说了算，不看模型这一轮写了什么。
+  //
+  // 模型偶尔把 workflow 写成 single，用户就只能选一条——而 runFinalize 会用草稿
+  // 覆盖回 AppSpec，于是定义器本来生成的 3-6 步被压成 1 步，「工作手册」这个
+  // 产品的核心产物就退化成一句话。这条跟「每轮都得有选项」是同一类兜底。
+  const forcedMulti = MULTI_SLOTS.has(slot as SlotKey);
+
   return {
     slot: slot as SlotKey,
-    type: obj.type === "multi" ? "multi" : "single",
+    type: forcedMulti || obj.type === "multi" ? "multi" : "single",
     options,
     allowCustom: obj.allowCustom !== false,
   };

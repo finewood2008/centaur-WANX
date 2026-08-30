@@ -17,7 +17,15 @@ import {
   visiblePart,
   type ChatMessage,
 } from "./definer/interviewer";
-import { emptyDraft, applyPatch, missingSlots, SLOT_KEYS, type PRDDraft, type SlotKey } from "./definer/draft";
+import {
+  emptyDraft,
+  applyPatch,
+  applyAnswered,
+  missingSlots,
+  SLOT_KEYS,
+  type PRDDraft,
+  type SlotKey,
+} from "./definer/draft";
 import { slugFromName } from "./appspec/slug";
 import type { AppSpec } from "./appspec/schema";
 import { WanxiangRuntime } from "./runtime/dsh-runtime";
@@ -362,14 +370,12 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     const parsed = parsePmOutput(raw);
     let { draft: nextDraft, touched } = applyPatch(draft, parsed.patch, parsed.derive);
 
-    // 用户刚答过的那个槽位必须落地。模型偶尔会忘了写 patch，
-    // 那时草稿就永远填不满、进度条一直是 0 —— 这条由代码兜底，不靠模型自觉。
+    // 用户刚答过的那个槽位由**用户的原始选择**说了算，盖在模型的改写之上。
+    // 见 applyAnswered 的注释：模型把三条步骤揉成一句，工作手册就只剩一行。
     const answered = parseAnswered(body.answered);
-    if (answered && nextDraft.slots[answered.slot] === undefined) {
-      const patched = applyPatch(nextDraft, { [answered.slot]: { value: answered.value } }, null);
-      nextDraft = patched.draft;
-      touched = [...patched.touched, ...touched];
-    }
+    const settled = applyAnswered(nextDraft, answered);
+    nextDraft = settled.draft;
+    touched = [...settled.touched, ...touched];
 
     const missing = missingSlots(nextDraft);
     const nextTurn = turn + 1;

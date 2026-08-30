@@ -10,6 +10,43 @@
 
 造出来的助手不是个聊天机器人，是**一个替你干活的工人**：你把资料交给它，按一下「让它跑一次」，它照着工作手册走一遍，交回一份东西。跑过的每一次都存下来，随时能回头看。
 
+## 在线试一下
+
+[![在 Codespaces 里打开](https://github.com/codespaces/badge.svg)](https://codespaces.new/finewood2008/centaur-WANX?ref=test%2Fjob-mode-ui&quickstart=1)
+
+> 徽章现在指向 `test/job-mode-ui` 分支（demo 就在这个分支上）。合进 `main` 之后
+> 把链接里的 `?ref=…` 去掉即可。
+
+点上面那个按钮，GitHub 会给你开一个自己的容器，装好依赖、铺好一个**跑过一次的示例助手**、
+把服务起起来，端口自动转发。等一两分钟，浏览器里就能看到界面。
+
+**不用配 key 就能看的**：
+
+- 侧边栏里的「会议待办整理助手」——点进去是它的主页
+- **它会做的事**：5 步工作流程，那是访谈里一句句问出来的
+- **它的资料夹**：一份会议记录，加上它自己跑完写下的东西
+- **最近的产出**：点开是一份真的待办清单，带负责人、截止时间、⚠️ 待确认项
+- **看需求文档**：11 节的 `prd.md`，那 10 轮对话的投影
+
+**想自己造一个助手、或者按「让它跑一次」**，需要填一把 DeepSeek 的 key
+（[platform.deepseek.com](https://platform.deepseek.com) 申请，形如 `sk-…`）。
+填在界面第一屏，存在容器里的 `~/.config/wanxiang/config.json`，权限 `0600`，
+容器销毁就没了。也可以走 `export DEEPSEEK_API_KEY=sk-…` 再 `npm start`。
+
+示例助手是怎么来的、为什么它不是手写的样板，见 [`examples/README.md`](examples/README.md)。
+
+### 为什么没有一个公开的共享 demo
+
+不是嫌麻烦，是两条硬的：
+
+1. **助手在自己的工作目录里有 shell 权限。** 一个人人可访问的公开实例，
+   等于把任意代码执行开放给匿名访客。
+2. **服务端没有任何认证**，而每次「让它跑一次」都在烧真金白银的 token；
+   DSH 的 default preset 还是个全局设置，多人并发会互相覆盖。
+
+Codespaces 恰好把这两条都解掉了：一人一个容器，用自己的 key，跑完就销毁。
+这不是退而求其次，对这个产品来说它就是对的形态。
+
 ## 四层架构
 
 ```
@@ -91,7 +128,8 @@ src/
 public/       # 前端：index.html + static/app.css + static/app.js（含打印样式）
 electron/     # 桌面外壳（main.cjs / launch.sh / icon.svg）
 tests/        # 151 测试
-scripts/      # 图标生成、DSH runtime spike
+scripts/      # 图标生成、架构验证探针（probe-*.ts）、示例助手生成
+examples/     # 示例助手，npm run seed-demo 装进本机
 ```
 
 ## 模型 key 怎么配

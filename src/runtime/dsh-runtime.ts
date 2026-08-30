@@ -81,8 +81,21 @@ export class WanxiangRuntime {
   async boot(config: RuntimeConfig): Promise<void> {
     process.env.DSH_HOME = config.dshHome;
 
-    const { boot, loadProfile } = await import("@deepseek-ai/dsh-app-boot");
+    const { boot, loadProfile, healProfilesModuleFallback } = await import(
+      "@deepseek-ai/dsh-app-boot"
+    );
     const INSTALL_ANCHOR = require.resolve("@deepseek-ai/dsh/package.json");
+
+    // 先备料，再 boot。
+    //
+    // DSH 的插件要从 `$DSH_HOME/profiles/node_modules` 解析，那是一堆指向安装目录的
+    // 软链，平时由 `dsh` 自己在首次启动时铺好。万象的 job 模式直接进程内 boot，
+    // 从没跑过 `dsh web` 的机器上那个目录是空的，boot 会炸在
+    // 「plugin tree failed to load: failed to apply loader entry include」——
+    // 一条完全看不出病因的错。每个新用户第一次点「让它跑一次」都会中。
+    // healProfilesModuleFallback 是幂等的，铺好了再调也没有代价。
+    healProfilesModuleFallback(INSTALL_ANCHOR, config.dshHome);
+
     const profile = loadProfile("dsh", "headless", INSTALL_ANCHOR, undefined, {
       userLayer: true,
     });

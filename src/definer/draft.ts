@@ -116,6 +116,28 @@ function toSlotValue(raw: unknown): SlotValue | null {
   return null;
 }
 
+/**
+ * 把用户这一轮真实的选择盖回草稿——**盖在模型的改写之上**。
+ *
+ * 客户端知道用户点了哪几个选项（`answered`），模型只是事后描述这件事。
+ * 之前这里只在模型忘了写 patch 时兜底，于是模型写了 patch 就赢：实测用户在
+ * workflow 槽位勾了三条步骤，模型把它们揉成一句「提取行动项→推断负责人→…」，
+ * 三步变一步，编译出来的工作手册就只剩一行。
+ *
+ * `draftToIntent` 里写着「用户的选择是权威的，不要改写、不要发挥」——那句话
+ * 得在这里就成立，不能只写给定义器看。
+ *
+ * 模型归纳的 `why` 留着：那是它真正的增量（用户为什么这么选），不是对选择的改写。
+ */
+export function applyAnswered(
+  draft: PRDDraft,
+  answered: { slot: SlotKey; value: SlotValue } | null,
+): { draft: PRDDraft; touched: string[] } {
+  if (!answered) return { draft, touched: [] };
+  const why = draft.slots[answered.slot]?.why;
+  return applyPatch(draft, { [answered.slot]: { value: answered.value, why } }, null);
+}
+
 /** 还没聊到的槽位。`done` 只有在这里为空时才被接受——完整性由代码把关，不交给模型。 */
 export function missingSlots(draft: PRDDraft): SlotKey[] {
   return SLOT_KEYS.filter((k) => draft.slots[k] === undefined);

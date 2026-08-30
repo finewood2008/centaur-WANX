@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { buildPmPrompt, parsePmOutput, fallbackAsk, visiblePart, SEPARATOR } from "../src/definer/interviewer";
-import { emptyDraft, applyPatch, missingSlots, fillGuesses, SLOT_KEYS } from "../src/definer/draft";
+import {
+  emptyDraft,
+  applyPatch,
+  applyAnswered,
+  missingSlots,
+  fillGuesses,
+  SLOT_KEYS,
+} from "../src/definer/draft";
 
 const SPEC = (obj: unknown) => `${SEPARATOR}\n${JSON.stringify(obj)}`;
 
@@ -47,6 +54,22 @@ describe("parsePmOutput", () => {
   it("槽位名不认识就丢掉 ask，不让模型自创字段", () => {
     const r = parsePmOutput(`问\n${SPEC({ ask: { slot: "不存在的槽", options: [{ label: "x" }] } })}`);
     expect(r.ask).toBeNull();
+  });
+
+  it("天生多选的槽位不看模型脸色 —— 它写 single 也按 multi 走", () => {
+    // workflow 被压成单选时，用户只能选一条步骤，runFinalize 又用草稿覆盖回
+    // AppSpec，工作手册就退化成一句话。这条由代码把关。
+    for (const slot of ["sources", "actions", "deliverable", "workflow", "boundaries"]) {
+      const r = parsePmOutput(
+        `问\n${SPEC({ ask: { slot, type: "single", options: [{ label: "甲" }, { label: "乙" }] } })}`,
+      );
+      expect(r.ask?.type).toBe("multi");
+    }
+  });
+
+  it("单选槽位不受影响", () => {
+    const r = parsePmOutput(`问\n${SPEC({ ask: { slot: "goal", type: "single", options: [{ label: "甲" }] } })}`);
+    expect(r.ask?.type).toBe("single");
   });
 
   it("裸字符串选项也接受，degrade 成只有 label", () => {
@@ -165,6 +188,47 @@ describe("draft", () => {
     const filled = fillGuesses(draft);
     expect(filled.slots.goal?.value).toBe("我自己说的");
     expect(filled.slots.goal?.guessed).toBeUndefined();
+  });
+
+  it("applyAnswered：用户的选择盖过模型的改写", () => {
+    // 模型把用户勾的三条步骤揉成了一句
+    const { draft: afterModel } = applyPatch(
+      emptyDraft(),
+      { workflow: { value: "提取行动项→推断负责人→生成清单", why: "他要一步到位" } },
+      null,
+    );
+    const { draft } = applyAnswered(afterModel, {
+      slot: "workflow",
+      value: ["提取行动项", "推断负责人与截止时间", "生成待办清单"],
+    });
+    expect(draft.slots.workflow?.value).toEqual([
+      "提取行动项",
+      "推断负责人与截止时间",
+      "生成待办清单",
+    ]);
+  });
+
+  it("applyAnswered：模型归纳的 why 留着 —— 那是它的增量，不是对选择的改写", () => {
+    const { draft: afterModel } = applyPatch(
+      emptyDraft(),
+      { goal: { value: "模型改写过的", why: "他怕漏事" } },
+      null,
+    );
+    const { draft } = applyAnswered(afterModel, { slot: "goal", value: "用户原话" });
+    expect(draft.slots.goal?.value).toBe("用户原话");
+    expect(draft.slots.goal?.why).toBe("他怕漏事");
+  });
+
+  it("applyAnswered：模型忘了写 patch 时照样落地（原本的兜底不能丢）", () => {
+    const { draft } = applyAnswered(emptyDraft(), { slot: "goal", value: "别漏事" });
+    expect(draft.slots.goal?.value).toBe("别漏事");
+  });
+
+  it("applyAnswered：没有 answered 就原样返回", () => {
+    const base = emptyDraft();
+    const { draft, touched } = applyAnswered(base, null);
+    expect(draft).toBe(base);
+    expect(touched).toEqual([]);
   });
 
   it("原草稿不被就地改写", () => {
