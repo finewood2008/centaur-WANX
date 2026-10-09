@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-challenge",
+  "label": {
+    "zh": "质疑参谋",
+    "en": "Critical advisor"
+  },
+  "description": {
+    "zh": "寻找反例、遗漏与证据缺口。",
+    "en": "Counterexamples, omissions and evidence gaps."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从质疑参谋的角度，提出一个值得讨论的假设。",
+      "请从质疑参谋的角度，回应前一位参谋的具体观点。",
+      "请从质疑参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Critical advisor, offer one hypothesis to discuss.",
+      "As the Critical advisor, respond to the preceding advisor's specific claim.",
+      "As the Critical advisor, suggest one small validation step."
+    ]
+  }
+}

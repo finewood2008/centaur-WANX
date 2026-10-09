@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-creative",
+  "label": {
+    "zh": "创意参谋",
+    "en": "Creative advisor"
+  },
+  "description": {
+    "zh": "寻找跨领域联系，提出不同的新可能。",
+    "en": "Cross-domain connections and fresh possibilities."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从创意参谋的角度，提出一个值得讨论的假设。",
+      "请从创意参谋的角度，回应前一位参谋的具体观点。",
+      "请从创意参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Creative advisor, offer one hypothesis to discuss.",
+      "As the Creative advisor, respond to the preceding advisor's specific claim.",
+      "As the Creative advisor, suggest one small validation step."
+    ]
+  }
+}

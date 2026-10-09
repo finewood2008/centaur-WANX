@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-product",
+  "label": {
+    "zh": "产品参谋",
+    "en": "Product advisor"
+  },
+  "description": {
+    "zh": "讨论真实需求、产品价值和最小方案。",
+    "en": "Real needs, product value and minimal solutions."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从产品参谋的角度，提出一个值得讨论的假设。",
+      "请从产品参谋的角度，回应前一位参谋的具体观点。",
+      "请从产品参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Product advisor, offer one hypothesis to discuss.",
+      "As the Product advisor, respond to the preceding advisor's specific claim.",
+      "As the Product advisor, suggest one small validation step."
+    ]
+  }
+}

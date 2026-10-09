@@ -1,0 +1,114 @@
+{
+  "model": "DeepSeek/deepseek-v4-flash",
+  "data": "Independent synthetic QA data only",
+  "steps": [
+    "Generated subjective impression in actual UI",
+    "Sent explicit emotion correction in actual UI",
+    "Read before/after proposal",
+    "Accepted proposal explicitly",
+    "Observed corrected radar node, original source and owner statement",
+    "Observed old summary invalidation and disabled old proposal",
+    "Selected alignment 0 and observed stopped use"
+  ],
+  "reflections": [
+    {
+      "cited_ids": [
+        "01M3Q4PYT200H0KRN7AV5Q975A",
+        "01M3Q4PYT4EHNR706APG5ZRRK9",
+        "01M3Q4PYT6RDN2G1ZR0JC8XMSA",
+        "01M3Q4PYT5ZA1BNBP51NAQEV8W",
+        "01M3Q4PYTBH3VCR5TVPGFC3QVT",
+        "01M3Q4PYT35EJ5D22J5429ZNXK",
+        "memory:qa-native-fact",
+        "memory:qa-native-task",
+        "entity:qa-project",
+        "episode:qa-emotion",
+        "01M3Q4PYTDTEYDHZGMVD73JRZD"
+      ],
+      "created_at": "2026-09-29T18:24:38.935881+00:00",
+      "fingerprint": "6bfe0a34a927750901812944c29d8068b6f6aa7bb66e74981526258cbba6c25c",
+      "id": "01M3Q6JRGQVZDZ6CFH90ED5JCY",
+      "message": "",
+      "proposals": [],
+      "text": "目前我对你的理解大致是这样：你把自己看作产品设计师，正在做一款社区阅读工具；做事上偏向先小范围验证再决定是否扩大，也在意用户对自己个人资料的决定权，而每周留一天学习更像愿望。搭档林舟负责技术实现这条还只是候选，未经你确认。另有几条来自会话、尚未核实的记录：你说在阅读项目里负责用户访谈、这周要完成两场访谈，我只当作那个语境下的说法；还有一条限定在阅读项目、当时想先别冒险的记录，也只按那段时间理解。情绪上有一条特定时刻的记录，一次临时汇报前你有些紧张，我不据此推断你的性格。哪里读偏了，直接告诉我。"
+    },
+    {
+      "cited_ids": [
+        "episode:qa-emotion",
+        "01M3Q4PYT200H0KRN7AV5Q975A",
+        "01M3Q4PYT4EHNR706APG5ZRRK9",
+        "memory:qa-native-fact",
+        "memory:qa-native-task",
+        "01M3Q4PYT6RDN2G1ZR0JC8XMSA",
+        "01M3Q4PYTDTEYDHZGMVD73JRZD",
+        "01M3Q4PYT35EJ5D22J5429ZNXK"
+      ],
+      "created_at": "2026-09-29T18:26:19.730903+00:00",
+      "fingerprint": "6bfe0a34a927750901812944c29d8068b6f6aa7bb66e74981526258cbba6c25c",
+      "id": "01M3Q6NTYJRBSDX3ESQMJQ1QGT",
+      "message": "关于那次阅读项目的临时汇报，我其实是期待和兴奋，不是紧张。请只修正这一次的情绪记录，不要推断成我的长期性格。",
+      "proposals": [
+        {
+          "conditions": "2026-09-29T18:19:37.721216+00:00",
+          "content": "在阅读项目的临时汇报前，我感到期待和兴奋，而不是紧张。",
+          "exceptions": "",
+          "framing": "context_only",
+          "target_id": "episode:qa-emotion"
+        }
+      ],
+      "text": "谢谢你的纠正，我按你说的只改这一次，不往性格上推。关于阅读项目的临时汇报，我把记录改成：那次汇报前你感到期待和兴奋；它仍然只是 2026-09-29 那个具体场合下的感受，不代表你平时面对汇报的状态，也不代表别的情绪倾向。其余部分维持原样但保持可改：你把自己看作产品设计师、在做一款社区阅读工具，这两条是你确认过的；负责用户访谈、这周要完成两场访谈，仍只当作来源会话里的说法；先小范围验证的偏好，以及阅读项目那段时间想先别冒险的记录，都按各自的条件理解，不扩大。搭档林舟负责技术实现仍是候选，未经你确认。如果替换措辞想更贴近你当时的原话，或者「期待」「兴奋」的分量需要调整，告诉我具体感受，我再给出精确改法。"
+    }
+  ],
+  "accepted_correction": [
+    {
+      "calibrated_at": "2026-09-29T18:28:06.232862+00:00",
+      "calibrated_version": 3,
+      "conditions": "2026-09-29T18:19:37.721216+00:00",
+      "content": "在阅读项目的临时汇报前，我感到期待和兴奋，而不是紧张。",
+      "created_at": "2026-09-29T18:27:15.702073+00:00",
+      "deferred": false,
+      "evidence": [
+        {
+          "content_hash": "43b4011abb7205024210b2056c9baada0b088f904c38e415f33e5b34453120a6",
+          "end": 54,
+          "event_id": "self-review:01M3Q6NTYJRBSDX3ESQMJQ1QGT",
+          "quote": "关于那次阅读项目的临时汇报，我其实是期待和兴奋，不是紧张。请只修正这一次的情绪记录，不要推断成我的长期性格。",
+          "start": 0,
+          "thread_id": null,
+          "timestamp": "2026-09-29T18:26:19.730903+00:00"
+        }
+      ],
+      "exceptions": "",
+      "framing": "context_only",
+      "id": "01M3Q6QHKPVQWW8MY8YAAQZYMK",
+      "rating": 0,
+      "reviewed_by": 1,
+      "section": "emotions",
+      "source_hash": "46e59a8a69452fff2c7caaa28e885ddf94b9325d2cb17d7c12ac73c20fa02013",
+      "source_id": "episode:qa-emotion",
+      "source_nature": "owner_correction",
+      "source_ref": "episode:qa-emotion",
+      "source_snapshot": {
+        "action": null,
+        "content": "我在阅读项目的临时汇报前有些紧张。",
+        "emotion": "anxious",
+        "entity_id": null,
+        "id": "episode:qa-emotion",
+        "intensity": 3,
+        "node_kind": "episode",
+        "people": [],
+        "quote": "这次临时汇报让我有些紧张。",
+        "section": "emotions",
+        "source_id": "qa-emotion",
+        "status": null,
+        "timestamp": "2026-09-29T18:19:37.721216+00:00",
+        "topics": [
+          "阅读项目"
+        ]
+      },
+      "state": "confirmed",
+      "updated_at": "2026-09-29T18:28:06.232866+00:00",
+      "version": 3
+    }
+  ]
+}

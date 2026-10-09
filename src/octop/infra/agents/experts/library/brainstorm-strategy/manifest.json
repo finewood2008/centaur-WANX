@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-strategy",
+  "label": {
+    "zh": "战略参谋",
+    "en": "Strategy advisor"
+  },
+  "description": {
+    "zh": "比较机会、取舍与长期影响。",
+    "en": "Opportunities, tradeoffs and long-term consequences."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从战略参谋的角度，提出一个值得讨论的假设。",
+      "请从战略参谋的角度，回应前一位参谋的具体观点。",
+      "请从战略参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Strategy advisor, offer one hypothesis to discuss.",
+      "As the Strategy advisor, respond to the preceding advisor's specific claim.",
+      "As the Strategy advisor, suggest one small validation step."
+    ]
+  }
+}

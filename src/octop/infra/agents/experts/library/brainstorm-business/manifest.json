@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-business",
+  "label": {
+    "zh": "商业参谋",
+    "en": "Business advisor"
+  },
+  "description": {
+    "zh": "检验付费意愿、成本结构和可持续性。",
+    "en": "Willingness to pay, costs and sustainability."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从商业参谋的角度，提出一个值得讨论的假设。",
+      "请从商业参谋的角度，回应前一位参谋的具体观点。",
+      "请从商业参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Business advisor, offer one hypothesis to discuss.",
+      "As the Business advisor, respond to the preceding advisor's specific claim.",
+      "As the Business advisor, suggest one small validation step."
+    ]
+  }
+}

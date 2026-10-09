@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-practice",
+  "label": {
+    "zh": "实践参谋",
+    "en": "Experiment advisor"
+  },
+  "description": {
+    "zh": "用最小行动检验想法，关注资源和反馈。",
+    "en": "Small experiments, resources and feedback."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从实践参谋的角度，提出一个值得讨论的假设。",
+      "请从实践参谋的角度，回应前一位参谋的具体观点。",
+      "请从实践参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Experiment advisor, offer one hypothesis to discuss.",
+      "As the Experiment advisor, respond to the preceding advisor's specific claim.",
+      "As the Experiment advisor, suggest one small validation step."
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "name": "centaurai-wanx-desktop",
+  "productName": "万象电脑端",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "shell/main.mjs",
+  "scripts": {
+    "build": "npm --prefix ../dashboard run build:desktop && node tools/license-notices.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "start": "electron .",
+    "package:mac": "electron-builder --mac --dir",
+    "package:windows": "electron-builder --win nsis"
+  },
+  "dependencies": {
+    "centaurai-wanx": "file:../dashboard/vendor/centaurai-wanx-0.1.0-alpha.3.tgz",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "electron": "37.10.3",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ai.centaurai.wanx.desktop",
+    "productName": "万象电脑端",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "shell/**",
+      "dist-ui/**",
+      "deployment.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/centaurai-wanx/native/bin/**"
+    ],
+    "mac": {
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "万象电脑端在你使用语音输入时访问麦克风。"
+      },
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    }
+  }
+}

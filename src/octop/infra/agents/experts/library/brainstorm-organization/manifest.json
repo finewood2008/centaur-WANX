@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-organization",
+  "label": {
+    "zh": "组织参谋",
+    "en": "Organization advisor"
+  },
+  "description": {
+    "zh": "讨论分工、协作、激励与人机边界。",
+    "en": "Roles, collaboration, incentives and human-AI boundaries."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从组织参谋的角度，提出一个值得讨论的假设。",
+      "请从组织参谋的角度，回应前一位参谋的具体观点。",
+      "请从组织参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the Organization advisor, offer one hypothesis to discuss.",
+      "As the Organization advisor, respond to the preceding advisor's specific claim.",
+      "As the Organization advisor, suggest one small validation step."
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "wanx-box-management-host",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0"
+  }
+}

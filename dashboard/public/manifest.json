@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "半人马AI-万象 · CentaurAI-WANX",
+  "short_name": "CentaurAI-WANX",
+  "description": "半人马AI-万象 CentaurAI-WANX 行业应用共创平台",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FAF7F2",
+  "theme_color": "#FAF7F2",
+  "prefer_related_applications": false,
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/centaurai-mark.png",
+      "sizes": "800x800",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "categories": ["productivity", "utilities"]
+}

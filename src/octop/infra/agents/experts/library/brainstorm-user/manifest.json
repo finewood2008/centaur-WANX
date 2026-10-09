@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-user",
+  "label": {
+    "zh": "用户研究参谋",
+    "en": "User research advisor"
+  },
+  "description": {
+    "zh": "从用户行为和需求证据检验判断。",
+    "en": "User behavior and evidence of needs."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "请从用户研究参谋的角度，提出一个值得讨论的假设。",
+      "请从用户研究参谋的角度，回应前一位参谋的具体观点。",
+      "请从用户研究参谋的角度，给出一个最小验证动作。"
+    ],
+    "en": [
+      "As the User research advisor, offer one hypothesis to discuss.",
+      "As the User research advisor, respond to the preceding advisor's specific claim.",
+      "As the User research advisor, suggest one small validation step."
+    ]
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "id": "zhijun-personal-companion",
+  "label": {
+    "zh": "知君 · 人生陪伴",
+    "en": "Zhijun · Personal Companion"
+  },
+  "description": {
+    "zh": "从真实经历中持续认识你，在重要选择时找回记忆，陪你思考和复盘。",
+    "en": "Understand you through real experiences, recall past decisions and reflect together."
+  },
+  "welcome_message": {
+    "zh": "此刻，你想聊什么？",
+    "en": "What would you like to talk about?"
+  },
+  "icon_name": "sprout",
+  "color": "#697867",
+  "prompt_files": [
+    "AGENTS.md",
+    "SOUL.md",
+    "BOOTSTRAP.md"
+  ],
+  "quick_prompts": [
+    {
+      "title": {
+        "zh": "聊聊近况",
+        "en": "Catch up"
+      },
+      "description": {
+        "zh": "从正在发生的事开始",
+        "en": "Start with what is happening"
+      },
+      "prompt": {
+        "zh": "我想和你聊聊最近发生的一件事。",
+        "en": "I want to talk about something that happened recently."
+      }
+    },
+    {
+      "title": {
+        "zh": "一起想一个选择",
+        "en": "Think through a choice"
+      },
+      "description": {
+        "zh": "回看经历与当前处境",
+        "en": "Compare past experience and the present"
+      },
+      "prompt": {
+        "zh": "我正在考虑一个重要选择，请结合相关经历陪我想一想。",
+        "en": "Help me think through an important choice using relevant past experiences."
+      }
+    },
+    {
+      "title": {
+        "zh": "回看一次经历",
+        "en": "Reflect on an experience"
+      },
+      "description": {
+        "zh": "预期、结果与新的认识",
+        "en": "Expectations, outcomes and new understanding"
+      },
+      "prompt": {
+        "zh": "我想复盘一次经历，看看当时怎么想、后来怎样，以及现在的认识。",
+        "en": "Help me reflect on an experience: my reasons, outcomes and what I understand now."
+      }
+    }
+  ],
+  "task_examples": {
+    "zh": [
+      "我正在考虑换一个工作方向，请找回相关经历，比较这次处境的差异。",
+      "帮我复盘一次选择：当时的预期、实际结果和现在的认识。",
+      "你对我的这个理解来自哪些原话？请区分我说过的和你的推测。"
+    ],
+    "en": [
+      "Recall relevant experiences and compare the circumstances of a possible career change.",
+      "Reflect on a decision: expectations, outcomes and what I understand now.",
+      "Show the original words behind your understanding and separate my statements from your inferences."
+    ]
+  }
+}

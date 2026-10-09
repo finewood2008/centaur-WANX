@@ -1,0 +1,79 @@
+{
+  "name": "centaurai-wanx-admin",
+  "productName": "万象管理员",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist-shell/main.cjs",
+  "description": "独立 WANX 盒子维护与产品管理桌面应用",
+  "scripts": {
+    "build": "tsc --noEmit && vite build && node tools/build-shell.mjs",
+    "test": "node tools/build-test-session.mjs && node --test tests/*.test.mjs",
+    "start": "electron .",
+    "package:mac": "npm run build && electron-builder --mac --dir",
+    "package:windows": "npm run build && electron-builder --win nsis",
+    "package:mac:cached": "npm run build && node tools/package-mac-cache.mjs"
+  },
+  "dependencies": {
+    "centaurai-wanx": "file:../output/codeup-centaurai-wanx-sdk/sdks/centaurai-wanx",
+    "antd": "^5.29.1",
+    "react": "^18",
+    "react-dom": "^18",
+    "lucide-react": "^0.562.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@vitejs/plugin-react": "^4.4.1",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "esbuild": "^0.25.0",
+    "electron": "37.10.3",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ai.centaurai.wanx.admin",
+    "productName": "万象管理员",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-shell/**",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "wanxSdkVersion": "0.1.0-alpha.2"
+}
