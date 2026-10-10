@@ -150,6 +150,10 @@ def build_app(server: OctopServer) -> FastAPI:
             peer_browser_runner=run_browser_stream_session,
         )
 
+    from octop.api.lan_discovery import mount_lan_discovery
+
+    mount_lan_discovery(app, server)
+
     from octop.infra.setup.tls.challenge import challenge_store
 
     @app.get("/.well-known/acme-challenge/{token}", include_in_schema=False)

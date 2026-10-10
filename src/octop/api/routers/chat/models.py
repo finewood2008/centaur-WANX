@@ -39,6 +39,9 @@ class ChatTurnBody(BaseModel):
         default=None,
         description="Connector MCP server names to attach for this request only.",
     )
+    extract_references: bool = Field(
+        default=False, description="Extract owned uploaded references locally for this turn."
+    )
     knowledge_base_ids: list[str] | None = Field(
         default=None,
         description="Knowledge base ids to retrieve for this request (empty disables defaults).",
@@ -86,6 +89,7 @@ class ChatTurnBody(BaseModel):
         model = payload.get("model") or payload.get("default_model")
         return cls(
             messages=messages,
+            extract_references=payload.get("extract_references") is True,
             thread_id=str(payload["thread_id"]) if payload.get("thread_id") else None,
             session_key=str(payload["session_key"]) if payload.get("session_key") else None,
             mcp_servers=payload.get("mcp_servers")
@@ -138,6 +142,7 @@ class UserTurnWsFrame(BaseModel):
     hitl_policy: HitlSessionPolicyBody | None = None
     mcp_servers: list[str] | None = None
     knowledge_base_ids: list[str] | None = None
+    extract_references: bool = False
     invitation_id: str | None = Field(default=None, max_length=128)
     skills: list[str] | None = None
     messages: list[dict[str, Any]] | None = None

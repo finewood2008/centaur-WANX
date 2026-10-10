@@ -107,6 +107,7 @@ async def test_automatic_extraction_keeps_source_and_native_review_state(
     try:
         run = await wait_for_run(runtime.memory)
         assert run["failure_reason"] is None and run["candidates"] == 1
+        runtime.middleware.shutdown()
         response = await client.post(
             f"/api/agents/{aid}/memory/candidates/list", headers=auth, json={}
         )
@@ -123,7 +124,10 @@ async def test_automatic_extraction_keeps_source_and_native_review_state(
         atoms = runtime.memory.list_atoms()
         assert len(atoms) == 1 and atoms[0].assertion == QUOTE
         counts = await client.get(f"/api/agents/{aid}/memory/stats/counts", headers=auth)
-        assert counts.json()["last_extract_run"]["candidates"] == 1
+        # A sweep already queued by the accelerated interval timer can finish
+        # without new candidates. The successful first extraction is checked
+        # above; the stats endpoint reports the latest sweep, not that snapshot.
+        assert counts.json()["last_extract_run"]["candidates"] in {0, 1}
         assert counts.json()["last_extract_run"]["failure_reason"] is None
     finally:
         runtime.close()

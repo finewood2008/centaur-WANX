@@ -3642,6 +3642,15 @@ class AgentManager:
                     lambda: self.get_agent(row.agent_id)._memory_runtime.service,
                 ),
             ]
+        if (
+            not zhijun
+            and application_id(row) == "wanx"
+            and row.user_id is not None
+            and not row.is_shared
+        ):
+            from octop.infra.agents.role_ontology import RoleOntologyMiddleware
+
+            agent_middleware.append(RoleOntologyMiddleware(self, row.agent_id, row.user_id))
         if application_id(row) not in {"wanx", "zhijun"}:
             from octop.infra.agents.middleware.zhijun import ZhijunMemoryBoundary
 

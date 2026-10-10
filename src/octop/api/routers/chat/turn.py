@@ -289,10 +289,10 @@ async def prepare_dashboard_turn(
     for target_id in turn.target_agent_ids or []:
         require_agent_row(target_id, user=user, as_user=None, server=server)
     inbound_content = content_parts_from_dashboard_turn(
-        turn, strict_upload_paths=application_id != "wanx"
+        turn, strict_upload_paths=application_id != "wanx" or turn.extract_references
     )
     inbound_attachments = inbound_attachments_from_parts(inbound_content)
-    if application_id == "zhijun" and inbound_attachments:
+    if (application_id == "zhijun" or turn.extract_references) and inbound_attachments:
         workspace = await require_running_workspace(
             agent_id, user=user, as_user=None, server=server, owner_only=True
         )

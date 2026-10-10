@@ -10,6 +10,7 @@ Mounted routes:
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from pydantic import BaseModel, Field
 from octop.api.common.agent import require_agent_owner_row
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.content_disposition import content_disposition
-from octop.api.common.memory_client import memory_db_path_for_cfg, memory_namespace
+from octop.api.common.memory_client import memory_db_path_for_cfg
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.memory.backend import open_memory_kwargs
 from octop.infra.errors import ErrorCode, OctopError
@@ -42,6 +43,24 @@ def _agent_config_dict(server: Any, agent_id: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _portable_store(server: Any, agent_id: str) -> tuple[Path, str]:
+    """Use the owning agent's actual SQLite path and normalized table namespace."""
+    workspace = resolve_agent_workspace_dir(server, agent_id)
+    cfg = _agent_config_dict(server, agent_id)
+    namespace, backend, backend_config = open_memory_kwargs(
+        agent_id=agent_id,
+        cfg=cfg,
+        octop_config=server.services.config,
+        workspace_dir=workspace,
+    )
+    if backend != "sqlite":
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, "portable migration requires SQLite")
+    db_path = Path((backend_config or {}).get("db_path") or memory_db_path_for_cfg(workspace, cfg))
+    # Exactly the normalization used by SqliteMemoryBackend.
+    namespace = re.sub(r"[^a-z0-9_]", "_", namespace.lower())
+    return db_path, namespace
 
 
 def _refuse_postgres_portable(server: Any, agent_id: str) -> None:
@@ -137,9 +156,7 @@ async def pack_agent_memory(
         from octop_memory.operations.migration.portable.sources import _probe_db
 
         # Resolve the agent's db path and namespace
-        workspace = resolve_agent_workspace_dir(server, agent_id)
-        db_path = memory_db_path_for_cfg(workspace, _agent_config_dict(server, agent_id))
-        ns = memory_namespace(agent_id)
+        db_path, ns = _portable_store(server, agent_id)
 
         # Build SourceInfo
         sources = _probe_db(db_path, "agent")
@@ -223,10 +240,13 @@ async def adopt_agent_memory(
             tmp_path = Path(tmp.name)
 
         try:
+            # Per-agent HTTP routes must never import into caller-selected stores.
+            db_path, namespace = _portable_store(server, agent_id)
             summary = adopt(
                 tmp_path,
-                target_host,
-                target_namespace=target_namespace,
+                "agent",
+                target_namespace=namespace,
+                target_db_path=db_path,
                 on_conflict=on_conflict,
                 host_rewrite=host_rewrite,
                 dry_run=dry_run,
@@ -267,8 +287,7 @@ async def doctor_agent_memory(
         from octop_memory.operations.migration.portable import doctor
 
         # Resolve the agent's db path
-        workspace = resolve_agent_workspace_dir(server, agent_id)
-        db_path = memory_db_path_for_cfg(workspace, _agent_config_dict(server, agent_id))
+        db_path, namespace = _portable_store(server, agent_id)
 
         # Handle the optional comparison package
         compare_path: Path | None = None
@@ -283,7 +302,7 @@ async def doctor_agent_memory(
 
         try:
             report = doctor(
-                host_spec,
+                f"agent:{namespace}",
                 db_path=str(db_path),
                 compare_with=compare_path,
             )

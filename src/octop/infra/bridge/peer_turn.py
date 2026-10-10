@@ -9,6 +9,7 @@ from typing import Any, Protocol
 USER_TURN_WS_KEYS = frozenset(
     {
         "text",
+        "extract_references",
         "session_key",
         "thread_id",
         "model",

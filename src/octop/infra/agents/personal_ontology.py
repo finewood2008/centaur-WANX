@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -47,6 +48,9 @@ from octop.infra.utils.browser_media import parse_octop_user_id
 from octop.infra.utils.llm_text import ainvoke_text
 from octop.infra.utils.ulid import new_ulid
 
+# Per-request scope, never a process-global selected role.
+ontology_agent_scope: ContextVar[str | None] = ContextVar("ontology_agent_scope", default=None)
+
 _PATH = "zhijun/personal-ontology.json"
 
 
@@ -57,6 +61,17 @@ def _digest(value: Any) -> str:
 
 
 def _owned(registry: Any, uid: int) -> Any:
+    scoped = ontology_agent_scope.get()
+    if scoped:
+        row = registry.get_row(scoped)
+        if (
+            row is None
+            or row.user_id != uid
+            or getattr(row, "is_shared", False)
+            or application_id(row) != "wanx"
+        ):
+            raise OctopError.localized(ErrorCode.NOT_FOUND)
+        return row
     row = get_profile(registry, uid)
     if row is None or row.user_id != uid or application_id(row) != "zhijun":
         raise OctopError.localized(ErrorCode.NOT_FOUND)
@@ -722,6 +737,14 @@ async def _owned_sources(
         }
 
     selected = await asyncio.to_thread(eligible)
+    if ontology_agent_scope.get():
+        selected = {
+            k: s
+            for k, s in selected.items()
+            if graph.fact_confirmations.get(k, {}).get("atom_hash") == s["atom_hash"]
+        }
+        for item in selected.values():
+            item["owner_confirmed_fact"] = True
     coverage.eligible_sources = len(selected)
     coverage.independent_events = len({s["experience_id"] for s in selected.values()})
     return (

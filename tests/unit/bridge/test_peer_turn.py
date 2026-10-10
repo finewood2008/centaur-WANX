@@ -17,6 +17,7 @@ def test_bridge_turn_ws_payload_keeps_composer_fields() -> None:
             "request_id": "r1",
             "agent_id": "main",
             "text": "hi",
+            "extract_references": True,
             "thread_id": "thr_1",
             "knowledge_base_ids": ["kb1"],
             "hitl_policy": {"mode": "allow_all"},
@@ -29,6 +30,7 @@ def test_bridge_turn_ws_payload_keeps_composer_fields() -> None:
     )
     assert out["type"] == "user_turn"
     assert out["text"] == "hi"
+    assert out["extract_references"] is True
     assert out["thread_id"] == "thr_1"
     assert out["knowledge_base_ids"] == ["kb1"]
     assert out["hitl_policy"] == {"mode": "allow_all"}
