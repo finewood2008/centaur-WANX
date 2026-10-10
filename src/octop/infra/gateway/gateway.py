@@ -24,6 +24,7 @@ from octop.infra.gateway.channels.zhijun_weixin import (
     accepts_private_weixin,
     assert_private_weixin_recipient,
     assert_weixin_channel,
+    owner_only_agent,
     private_weixin_processor,
 )
 from octop.infra.gateway.cli import CLI_CHANNEL_ID, CliChannel, CliHub
@@ -531,11 +532,8 @@ class Gateway:
         if not isinstance(agent_id, str) or not agent_id.strip():
             return
 
-        from octop.infra.agents.application import application_id
-
-        if (
-            message.channel_type == "weixin"
-            and application_id(self._agent_manager.get_row(agent_id)) == "zhijun"
+        if message.channel_type == "weixin" and owner_only_agent(
+            self._agent_manager.get_row(agent_id)
         ):
             row = self.get_channel(_channel_id)
             if (
@@ -547,6 +545,19 @@ class Gateway:
                     owner_id=str(self._config_from_row(row).get("owner_weixin_user_id") or ""),
                 )
             ):
+                return
+            if row.agent_id != agent_id or not row.enabled:
+                return
+            try:
+                assert_private_weixin_recipient(
+                    self._config_from_row(row),
+                    ChannelSubject(
+                        subject_id=message.channel_subject.subject_id,
+                        chat_type=message.channel_subject.chat_type,
+                        metadata=dict(message.metadata or {}),
+                    ),
+                )
+            except OctopError:
                 return
         session_key = session_key_from_message(message, agent_id=agent_id.strip())
         thread_id = self._thread_registry.get_bound_thread_id(session_key)
@@ -574,13 +585,13 @@ class Gateway:
         ``<think>`` / ``<thinking>`` tags never leak past the display switch
         (team wrap-up and other push paths bypass the inbound event loop).
         """
-        from octop.infra.agents.application import application_id
         from octop.infra.utils.llm_text import prepare_channel_text
 
         row = self.get_channel(channel_id)
         if (
             row is not None
-            and application_id(self._agent_manager.get_row(row.agent_id)) == "zhijun"
+            and row.kind == "weixin"
+            and owner_only_agent(self._agent_manager.get_row(row.agent_id))
         ):
             assert_weixin_channel(row)
             if not row.enabled:
@@ -739,7 +750,9 @@ class Gateway:
         from octop.infra.agents.application import application_id
 
         agent_row = self._agent_manager.get_row(row.agent_id)
-        if application_id(agent_row) == "zhijun":
+        if owner_only_agent(agent_row) and (
+            row.kind == "weixin" or application_id(agent_row) == "zhijun"
+        ):
             if row.kind != "weixin":
                 raise OctopError.localized(ErrorCode.CHANNEL_INVALID_CREDENTIALS)
 

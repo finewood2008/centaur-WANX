@@ -41,7 +41,8 @@ def _login(**overrides: object) -> SimpleNamespace:
 
 async def test_private_login_is_scoped_idempotent_and_keeps_credentials_server_side() -> None:
     gateway = SimpleNamespace(
-        create_channel=AsyncMock(return_value=SimpleNamespace(channel_id="saved"))
+        _repos=SimpleNamespace(channel_repo=SimpleNamespace(list_all=lambda: [])),
+        create_channel=AsyncMock(return_value=SimpleNamespace(channel_id="saved")),
     )
     broker = ZhijunWeixinBindings(gateway)  # type: ignore[arg-type]
     login = _login()
@@ -83,9 +84,10 @@ async def test_incomplete_confirmation_never_binds(overrides: dict[str, object])
 
 async def test_save_failure_can_retry_confirmed_credentials_without_another_scan() -> None:
     gateway = SimpleNamespace(
+        _repos=SimpleNamespace(channel_repo=SimpleNamespace(list_all=lambda: [])),
         create_channel=AsyncMock(
             side_effect=[RuntimeError("write failed"), SimpleNamespace(channel_id="saved")]
-        )
+        ),
     )
     broker = ZhijunWeixinBindings(gateway)  # type: ignore[arg-type]
     login = _login()

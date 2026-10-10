@@ -16,7 +16,8 @@ class OntologyProposal(BaseModel):
     statement: str = Field(min_length=1, max_length=400)
     conditions: str = Field(min_length=1, max_length=300)
     exceptions: str = Field(min_length=1, max_length=300)
-    evidence_ids: list[str] = Field(min_length=2, max_length=6)
+    evidence_ids: list[str] = Field(min_length=1, max_length=6)
+    basis: Literal["inference", "owner_statement"] = "inference"
     context_ids: list[str] = Field(default_factory=list, max_length=12)
     equivalent_to: str = ""
 
@@ -59,6 +60,7 @@ class OntologyClaim(BaseModel):
     evidence_valid: bool = True
     reviewed_at: str | None = None
     source_kind: Literal["inference", "self_report"] = "inference"
+    basis: Literal["inference", "owner_statement"] = "inference"
     owner_edited: bool = False
     core: bool = False
     version: str = "legacy"
@@ -166,6 +168,14 @@ class OntologyProgress(BaseModel):
     processed: dict[str, str] = Field(default_factory=dict)
 
 
+class RolePreparation(BaseModel):
+    enabled: bool = False
+    fingerprint: str = ""
+    outcome: str = "idle"
+    checked_at: str = ""
+    new_candidates: int = 0
+
+
 class PersonalOntology(BaseModel):
     schema_version: int = 4
     revision: str = "empty"
@@ -185,9 +195,12 @@ class PersonalOntology(BaseModel):
     graph_retired_sources: list[str] = Field(default_factory=list)
     core_operations: dict[str, dict[str, str]] = Field(default_factory=dict)
     fact_confirmations: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    preparation: RolePreparation = Field(default_factory=RolePreparation)
+    flow: dict[str, Any] = Field(default_factory=dict)
 
 
 class OntologyResult(BaseModel):
+    reason: str = ""
     status: Literal["ready", "insufficient", "unavailable", "stale"]
     ontology: PersonalOntology
     changed_id: str | None = None

@@ -186,6 +186,12 @@ class Tests(unittest.IsolatedAsyncioTestCase):
 
         c = (await self.cmd("add"))["ontology"].claims[0]
         await self.cmd("admit", c.id)
+        from octop.infra.agents.personal_ontology import _save
+
+        workspace = self.registry.agents["personal"].workspace
+        doc = await _read(workspace)
+        doc.preparation.enabled = True
+        await _save(workspace, doc)
         supplied = []
 
         class Request:

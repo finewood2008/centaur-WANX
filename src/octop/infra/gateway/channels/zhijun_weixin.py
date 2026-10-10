@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable
@@ -17,6 +19,20 @@ from octop.infra.utils.ulid import new_ulid
 
 if TYPE_CHECKING:
     from octop.infra.gateway.gateway import Gateway
+
+
+def owner_only_agent(row: Any) -> bool:
+    """Private Zhijun role IDs are provisioned server-side, never inferred from a name."""
+    from octop.infra.agents.application import application_id
+
+    if row is None:
+        return False
+    return application_id(row) == "zhijun" or bool(
+        re.fullmatch(
+            rf"(?:zhijun-lan-user-{row.user_id}(?:-[a-f0-9]+)?|zhijun-role-{row.user_id}-[\w-]+)",
+            str(row.agent_id),
+        )
+    )
 
 
 @dataclass
@@ -37,6 +53,7 @@ class ZhijunWeixinBindings:
     def __init__(self, gateway: Gateway) -> None:
         self.gateway = gateway
         self.sessions: dict[str, _Login] = {}
+        self.binding_lock = asyncio.Lock()
 
     async def generate(self, agent_id: str, user_id: int, login: Any) -> dict[str, Any]:
         result = await login.fetch_qr_code()
@@ -61,7 +78,7 @@ class ZhijunWeixinBindings:
 
     async def poll(self, nonce: str, agent_id: str, user_id: int) -> dict[str, Any]:
         state = self._session(nonce, agent_id, user_id)
-        async with state.lock:
+        async with state.lock, self.binding_lock:
             self._session(nonce, agent_id, user_id)
             if state.channel_id is not None:
                 return {"status": "success", "channel_id": state.channel_id}
@@ -90,6 +107,15 @@ class ZhijunWeixinBindings:
             result = state.credentials
             from octop.infra.gateway.gateway import ChannelCreateSpec
 
+            # A bot account must not be polled by two role instances.
+            for other in self.gateway._repos.channel_repo.list_all():
+                if other.kind != "weixin" or other.agent_id == agent_id:
+                    continue
+                cfg = json.loads(other.config_json or "{}")
+                if any(a.get("account_id") == result.account_id for a in cfg.get("accounts", [])):
+                    raise OctopError(
+                        ErrorCode.FORBIDDEN, "此微信连接已绑定其他角色，请先解除原连接。"
+                    )
             row = await self.gateway.create_channel(
                 ChannelCreateSpec(
                     channel_id=new_ulid(),

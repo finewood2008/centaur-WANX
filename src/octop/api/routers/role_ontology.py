@@ -27,6 +27,11 @@ class Generate(BaseModel):
     revision: str = Field(min_length=1, max_length=100)
 
 
+class Prepare(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    retry: bool = False
+
+
 class Preferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
     excluded: list[str] = Field(default_factory=list, max_length=100)
@@ -52,6 +57,23 @@ async def get_ontology(
     agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
 ) -> PersonalOntology:
     registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await read_role_ontology(registry, user.id)
+
+
+@router.post(
+    "/{agent_id}/ontology/prepare", summary="Schedule role-scoped ontology candidate preparation"
+)
+async def prepare(
+    agent_id: str,
+    body: Prepare,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> PersonalOntology:
+    registry = registry_for(server, user, agent_id)
+    from octop.infra.agents.role_ontology_flow import request_preparation
+
+    await request_preparation(registry, user.id, agent_id, retry=body.retry)
     with agent_scope(registry, user.id, agent_id):
         return await read_role_ontology(registry, user.id)
 
@@ -85,7 +107,9 @@ async def edit(
         return await command(registry, user.id, node_id, body)
 
 
-@router.get("/{agent_id}/ontology/facts", summary="List memory facts for owner confirmation")
+@router.get(
+    "/{agent_id}/ontology/facts", summary="List memory facts and their ontology eligibility"
+)
 async def get_facts(
     agent_id: str,
     offset: int = Query(0, ge=0),
@@ -100,7 +124,7 @@ async def get_facts(
 
 @router.get(
     "/{agent_id}/ontology/context/{thread_id}",
-    summary="Read or configure ontology context for a conversation",
+    summary="Read conversation ontology context and confirmation receipt",
 )
 async def context(
     agent_id: str,
@@ -113,12 +137,29 @@ async def context(
     raw = await registry.get_agent(agent_id).workspace.aread_text(
         "zhijun/role-context/" + _digest(thread_id) + ".json"
     )
-    return dict(json.loads(raw)) if raw else {"claims": [], "supplied_at": ""}
+    data: dict[str, Any] = json.loads(raw) if raw else {"claims": [], "supplied_at": ""}
+    from octop.infra.agents.ontology_admission import admitted, pending
+
+    with agent_scope(registry, user.id, agent_id):
+        doc = await read_role_ontology(registry, user.id)
+    data["pending"] = [c for c in doc.claims if pending(c)][:4]
+    data["flow"] = doc.flow
+    # An old success receipt must not claim a withdrawn/edited item is still current.
+    update = data.get("update") or {}
+    if update.get("status") == "admitted" and not any(
+        c.id == update.get("id") and admitted(c) and c.statement == update.get("statement")
+        for c in doc.claims
+    ):
+        data["update"] = {
+            "status": "changed",
+            "message": "这次保存的理解后来已修改或停用，以本体中的当前状态为准。",
+        }
+    return data
 
 
 @router.put(
     "/{agent_id}/ontology/context/{thread_id}",
-    summary="Read or configure ontology context for a conversation",
+    summary="Configure ontology context for a conversation",
 )
 async def preferences(
     agent_id: str,

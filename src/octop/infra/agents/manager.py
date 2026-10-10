@@ -398,9 +398,9 @@ class AgentManager:
         )
         self._harness_manager: HarnessAgentManager | None = None
         self.memory_slim = MemorySlimCoordinator(self)
-        from octop.infra.agents.ontology_runtime import OntologyCoordinator
+        from octop.infra.agents.role_ontology_flow import RoleOntologyCoordinator
 
-        self.ontology = OntologyCoordinator(self)
+        self.ontology = RoleOntologyCoordinator(self)
         self._lock = asyncio.Lock()
         # Serialize start/reload per agent so parallel provider reloads cannot
         # double-register the same harness id ("already exists in the registry").

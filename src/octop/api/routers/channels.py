@@ -25,7 +25,7 @@ from octop.infra.agents.application import application_id
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.bot_creators.feishu_runner import extract_feishu_credentials
 from octop.infra.gateway.channels import dingtalk_registration, qr_bind
-from octop.infra.gateway.channels.zhijun_weixin import assert_weixin_channel
+from octop.infra.gateway.channels.zhijun_weixin import assert_weixin_channel, owner_only_agent
 from octop.infra.gateway.gateway import ChannelKind
 from octop.infra.users.identity import User
 from octop.infra.users.permissions import user_has_permission
@@ -108,6 +108,12 @@ def _row_to_dict(
         "name": r.name,
         "enabled": bool(r.enabled),
     }
+    if r.kind == "weixin":
+        try:
+            cfg = json.loads(r.config_json or "{}")
+        except (ValueError, TypeError):
+            cfg = {}
+        out["owner_verified"] = bool(cfg.get("owner_weixin_user_id"))
     if gateway is not None:
         runtime = gateway.runtime_status_to_dict(r.channel_id, locale=locale)
         if runtime is not None:
@@ -166,7 +172,9 @@ async def create_channel(
     user: Any = Depends(require_permission("channels")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    agent_row = _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    if body.kind == "weixin" and owner_only_agent(agent_row):
+        raise OctopError(ErrorCode.FORBIDDEN, "私人微信连接必须由本人扫码创建。")
     from octop.infra.gateway.gateway import ChannelCreateSpec  # noqa: PLC0415
     from octop.infra.utils.ulid import new_ulid as _new_ulid  # noqa: PLC0415
 
@@ -221,7 +229,10 @@ async def patch_channel(
     existing = server.app_runtime.gateway.get_channel(channel_id)
     if existing is None or existing.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "channel not found")
-    if application_id(user) == "zhijun":
+    if application_id(user) == "zhijun" or (
+        (existing.kind == "weixin" or body.kind == "weixin")
+        and owner_only_agent(server.app_runtime.agent_registry.get_row(agent_id))
+    ):
         assert_weixin_channel(existing, body.model_fields_set)
     row = await server.app_runtime.gateway.update_channel(
         channel_id,
@@ -746,9 +757,11 @@ async def weixin_qrcode_generate(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Generate WeChat iLink Bot QR code."""
-    _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    agent_row = _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
     cls = _get_weixin_qr_login()
-    if application_id(user) == "zhijun":
+    if owner_only_agent(agent_row):
+        if agent_row.user_id != user.id or agent_row.is_shared:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
         return cast(
             dict[str, Any],
             await server.app_runtime.gateway.zhijun_weixin.generate(agent_id, user.id, cls()),
@@ -784,9 +797,11 @@ async def weixin_qrcode_poll(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll WeChat QR scan result (single long-poll, ~40s)."""
-    _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    agent_row = _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
     qrcode_token = _sanitize_token(qrcode_token, "qrcode_token")
-    if application_id(user) == "zhijun":
+    if owner_only_agent(agent_row):
+        if agent_row.user_id != user.id or agent_row.is_shared:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
         return cast(
             dict[str, Any],
             await server.app_runtime.gateway.zhijun_weixin.poll(qrcode_token, agent_id, user.id),
