@@ -12,8 +12,9 @@ from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 
 
-def test_applied_v21_upgrade_preserves_private_profile_and_child_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("previous_schema", [21, 23])
+def test_upgrade_preserves_private_profile_and_child_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous_schema: int
 ) -> None:
     pool = SqlitePool(tmp_path / "product-upgrade.db")
     discover = migrate._discover
@@ -22,7 +23,7 @@ def test_applied_v21_upgrade_preserves_private_profile_and_child_rows(
             migrate,
             "_discover",
             lambda dialect="sqlite": [
-                (number, path) for number, path in discover(dialect) if number <= 21
+                (number, path) for number, path in discover(dialect) if number <= previous_schema
             ],
         )
         run_migrations(pool)
@@ -59,7 +60,16 @@ def test_applied_v21_upgrade_preserves_private_profile_and_child_rows(
         )
         assert conn.execute("SELECT document_id FROM knowledge_documents").fetchone()[0] == "doc"
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 23
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 25
+        assert (
+            conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'bridge_connections'"
+            ).fetchone()
+            is not None
+        )
+        assert "copy_policy" in {
+            row["name"] for row in conn.execute("PRAGMA table_info(skill_packages)").fetchall()
+        }
         conn.execute(
             "INSERT INTO agents(agent_id,user_id,name,application_id,is_application_profile,created_at,updated_at) VALUES ('future',?,'Future','future.product',1,1,1)",
             (user_id,),

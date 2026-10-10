@@ -10,7 +10,11 @@ import {
   setAuthToken,
   setRememberLoginPreference,
 } from "../../api";
-import { authApi, type OauthProviderStatus } from "../../api/modules/auth";
+import {
+  authApi,
+  type LdapStatus,
+  type OauthProviderStatus,
+} from "../../api/modules/auth";
 import { apiErrorMessage } from "../../utils/apiError";
 import { refreshServerLabels } from "../../i18n";
 import { applyUserLocale, applyGuestLocale } from "../../utils/locale";
@@ -76,6 +80,7 @@ export default function LoginPage() {
   const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [providers, setProviders] = useState<OauthProviderStatus[]>([]);
+  const [ldap, setLdap] = useState<LdapStatus | null>(null);
   const [ssoLoadingKind, setSsoLoadingKind] = useState<string | null>(null);
   const [captchaReady, setCaptchaReady] = useState(false);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
@@ -107,6 +112,12 @@ export default function LoginPage() {
             if (!cancelled) {
               setProviders(next.providers.filter((item) => item.enabled));
             }
+          })
+          .catch(() => {});
+        authApi
+          .getLdapStatus()
+          .then((next) => {
+            if (!cancelled) setLdap(next);
           })
           .catch(() => {});
         authApi
@@ -289,17 +300,31 @@ export default function LoginPage() {
           {t("login.title")}
         </h2>
 
-        <Input
-          prefix={
-            <User size={16} style={{ color: "var(--fn-text-quaternary)" }} />
-          }
-          placeholder={t("login.username")}
-          size="large"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          autoFocus
-          style={{ borderRadius: 10 }}
-        />
+        <div style={{ width: "100%" }}>
+          <Input
+            prefix={
+              <User size={16} style={{ color: "var(--fn-text-quaternary)" }} />
+            }
+            placeholder={t("login.username")}
+            size="large"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            aria-describedby="login-username-hint"
+            style={{ borderRadius: 10 }}
+          />
+          <div
+            id="login-username-hint"
+            style={{
+              marginTop: 6,
+              fontSize: 12,
+              color: "var(--fn-text-tertiary)",
+              lineHeight: 1.4,
+            }}
+          >
+            {t("login.usernameHint")}
+          </div>
+        </div>
 
         <Input.Password
           prefix={
@@ -312,6 +337,24 @@ export default function LoginPage() {
           onPressEnter={handleLogin}
           style={{ borderRadius: 10 }}
         />
+
+        {ldap?.enabled && (
+          <p
+            style={{
+              margin: 0,
+              marginTop: -8,
+              width: "100%",
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--fn-text-tertiary)",
+              textAlign: "center",
+            }}
+          >
+            {t("login.ldapHint", {
+              name: ldap.display_name.trim() || t("adminSso.ldap.kind"),
+            })}
+          </p>
+        )}
 
         <CaptchaField
           ref={captchaRef}

@@ -75,6 +75,9 @@ class OntologyClaim(BaseModel):
     admitted_at: str = ""
     admitted_by: int | None = None
     importance: Literal[1, 2, 3] = 1
+    affinity: Literal[1, 2, 3, 4, 5] = 3
+    valid_from: str = ""
+    valid_until: str = ""
     snoozed_until: str = ""
     merged_into: str = ""
     discussion_thread_id: str = ""
@@ -181,6 +184,7 @@ class PersonalOntology(BaseModel):
     graph_retired: list[str] = Field(default_factory=list)
     graph_retired_sources: list[str] = Field(default_factory=list)
     core_operations: dict[str, dict[str, str]] = Field(default_factory=dict)
+    fact_confirmations: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class OntologyResult(BaseModel):

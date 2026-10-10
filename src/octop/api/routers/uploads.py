@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import require_agent_owner_row, require_agent_row
@@ -130,12 +130,13 @@ def _attachment_payload(agent_id: str, stored: StoredAttachment) -> dict[str, st
 async def upload_attachment(
     agent_id: str,
     file: UploadFile = File(...),  # noqa: B008
+    extract_text: Annotated[bool, Form()] = False,
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
-    if application_id(row) != "wanx":
+    if application_id(row) != "wanx" or extract_text:
         require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
     ws = await require_running_workspace(agent_id, user=user, as_user=as_user, server=server)
     max_bytes = (
@@ -154,7 +155,7 @@ async def upload_attachment(
         max_bytes=max_bytes,
     )
     payload: dict[str, Any] = _attachment_payload(agent_id, stored)
-    if application_id(row) == "zhijun":
+    if application_id(row) == "zhijun" or extract_text:
         source = await initialize_attachment_source(
             ws,
             path=stored.data_path,

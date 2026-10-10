@@ -98,6 +98,11 @@ async def run_foreground(
         reload = False
 
     app = build_app(srv)
+    app.state.wanx_lan_endpoint = (
+        plan.bind_host,
+        plan.https_port or plan.http_port or bind_port,
+        bool(plan.ssl_certfile),
+    )
     servers: list[uvicorn.Server] = []
 
     if plan.dual_listeners:

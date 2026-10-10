@@ -39,7 +39,10 @@ jobs:
         run: make typecheck
 
       - name: Test
-        run: make test
+        timeout-minutes: 30
+        env:
+          PYTEST_ADDOPTS: "-vv --tb=short --maxfail=1 -o faulthandler_timeout=120"
+        run: make test PYTEST_JOBS=4
 
   test-windows:
     name: Windows / Python 3.12
@@ -63,7 +66,10 @@ jobs:
         run: make typecheck
 
       - name: Test
-        run: make test
+        timeout-minutes: 30
+        env:
+          PYTEST_ADDOPTS: "-vv --tb=short --maxfail=1 -o faulthandler_timeout=120"
+        run: make test PYTEST_JOBS=4
 
   live-tests:
     name: "Live tests (real credentials)"
