@@ -1,0 +1,4 @@
+package main
+import "testing"
+func TestOnlyOnePrivateService(t *testing.T){c:=config{ControlURL:"https://connect.example.com",Hostname:"zhijun-test",StateDir:"/tmp/test",Mode:"client",Target:"100.64.0.1"};if validate(c,false)!=nil{t.Fatal("valid profile rejected")};for _,target:=range []string{"127.0.0.1","example.com","192.168.0.1","100.64.0.1:22"}{bad:=c;bad.Target=target;if validate(bad,false)==nil{t.Fatal("open proxy target accepted",target)}}}
+func TestNoUnencryptedPublicControl(t *testing.T){c:=config{ControlURL:"http://connect.example.com",Hostname:"client",StateDir:"/tmp/test",Mode:"server"};if validate(c,false)==nil||validate(c,true)==nil{t.Fatal("public HTTP accepted")};c.ControlURL="http://127.0.0.1:18080";if validate(c,false)==nil||validate(c,true)!=nil{t.Fatal("loopback exception scope wrong")}}

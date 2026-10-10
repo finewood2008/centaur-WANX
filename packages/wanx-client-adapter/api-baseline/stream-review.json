@@ -1,0 +1,182 @@
+[
+  {
+    "path": "/api/agents/{agent_id}/chat/hitl/resume",
+    "methods": [
+      "POST"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.chat.routes",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory/stream",
+    "methods": [
+      "GET"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.chat.trajectory",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory/export",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.chat.trajectory",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/file",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.knowledge_bases",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/voice/tts",
+    "methods": [
+      "POST"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.voice",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/admin/backup/files/{filename}",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.backup",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/admin/backup/export",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.backup",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/agents/{agent_id}/workspace/download",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.workspace",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/agents/{agent_id}/media/preview",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.workspace",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/agents/{agent_id}/workspace/archive",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.workspace",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/agents/{agent_id}/memory/portable/pack",
+    "methods": [
+      "POST"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.memory_portable",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/usage/export.xlsx",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.usage",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/admin/usage/export.xlsx",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.usage",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/browser/install",
+    "methods": [
+      "POST"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.browser.env",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/browser/uninstall",
+    "methods": [
+      "POST"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.browser.uninstall",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/desktop/install",
+    "methods": [
+      "POST"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.desktop.install",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/desktop/uninstall",
+    "methods": [
+      "POST"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.desktop.uninstall",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/plugins/market/{plugin_id}/ui/{file_path}",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.plugins",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/plugins/{plugin_id}/ui/{file_path}",
+    "methods": [
+      "GET"
+    ],
+    "hint": "stream-or-binary",
+    "source": "octop.api.routers.plugins",
+    "status": "manual_contract_required"
+  },
+  {
+    "path": "/api/mobile/install",
+    "methods": [
+      "POST"
+    ],
+    "hint": "sse",
+    "source": "octop.api.routers.mobile.install",
+    "status": "manual_contract_required"
+  }
+]

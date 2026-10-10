@@ -1,0 +1,59 @@
+/* CentaurAI / WANX visual layer over the existing Octop controls. */
+html[data-palette="centaur"] body {
+  font-family: Inter, "PingFang SC", "Noto Sans SC", sans-serif;
+}
+
+html[data-palette="centaur"] :is(h1, h2, [class*="welcomeTitle_"]) {
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  letter-spacing: -0.025em;
+}
+
+html[data-palette="centaur"] [class*="assistantText_"] {
+  background: transparent;
+  padding: 5px 0 8px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-palette="centaur"] [class*="userText_"] {
+  background: var(--fn-color-brand-bg);
+  color: var(--fn-text-primary);
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 14px 14px 4px 14px;
+}
+
+html[data-palette="centaur"] [class*="inputWrapper_"] {
+  background: var(--fn-bg-elevated);
+  border: 1px solid var(--fn-border-input);
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(49, 35, 24, 0.045);
+}
+
+html[data-palette="centaur"] [class*="inputWrapper_"]:focus-within {
+  border-color: var(--fn-color-brand);
+  box-shadow: 0 0 0 3px var(--fn-color-brand-glow);
+}
+
+html[data-palette="centaur"] [class*="welcomeMascot_"] {
+  cursor: default;
+}
+
+html[data-palette="centaur"] [class*="welcomeMascot_"]:hover {
+  transform: none;
+}
+
+html[data-palette="centaur"]
+  [class*="navItemRow_"][style*="var(--fn-sidebar-item-active-bg)"] {
+  box-shadow: inset 2px 0 0 var(--fn-color-brand);
+}
+
+html[data-palette="centaur"]
+  :is(button, input, textarea, select):focus-visible {
+  outline-color: var(--fn-border-focus);
+}
+
+@media (max-width: 767px) {
+  html[data-palette="centaur"] [class*="assistantText_"] {
+    padding-block: 4px 7px;
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "created": "2026-10-08",
+  "standardSDK": {
+    "repository": "https://codeup.aliyun.com/667637d76d5f7b05cc5d9ed7/nexusaos/nexusaos-centuarai-conn-sdks.git",
+    "branch": "master",
+    "commit": "6ff9bfa02f4df9df650a25e7378891d74dbd0b8b",
+    "goSDK": "0.2.0",
+    "core": "0.1.1",
+    "sourceModified": false
+  },
+  "ui": {
+    "directory": "/Users/finewood/Documents/ChatGPT/octop项目/dashboard",
+    "baseCommit": "7d84a9973a2e18b7083d4b21d68fe6332123765c",
+    "includesExistingUncommittedFiles": true
+  },
+  "adapter": {
+    "directory": "/Users/finewood/Documents/ChatGPT/octop项目/output/codeup-centaurai-wanx-sdk/sdks/centaurai-wanx",
+    "role": "private client adapter, not a standard SDK publication",
+    "changes": [
+      "public OpenHTTPStream / OpenMessageStream instead of patched omniaauth methods"
+    ]
+  },
+  "liveBoxTest": "not_performed"
+}

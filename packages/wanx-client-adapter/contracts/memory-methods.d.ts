@@ -1,0 +1,36 @@
+/** Candidate method aliases only. No implementation or permission grants. */
+export interface AgentMemoryMethods {
+  readonly createAtom: "create_atom_api_agents__agent_id__memory_atoms_post";
+  readonly listAtoms: "list_atoms_api_agents__agent_id__memory_atoms_list_post";
+  readonly getAtom: "get_atom_api_agents__agent_id__memory_atoms__atom_id__get";
+  readonly deprecateAtom: "deprecate_atom_api_agents__agent_id__memory_atoms__atom_id__deprecate_post";
+  readonly replaceAtom: "replace_atom_api_agents__agent_id__memory_atoms__atom_id__replace_post";
+  readonly listCandidates: "list_candidates_api_agents__agent_id__memory_candidates_list_post";
+  readonly getCandidate: "get_candidate_api_agents__agent_id__memory_candidates__candidate_id__get";
+  readonly promoteCandidate: "promote_candidate_api_agents__agent_id__memory_candidates__candidate_id__promote_post";
+  readonly rejectCandidate: "reject_candidate_api_agents__agent_id__memory_candidates__candidate_id__reject_post";
+  readonly listEntities: "list_entities_api_agents__agent_id__memory_entities_list_post";
+  readonly getEntity: "get_entity_api_agents__agent_id__memory_entities__entity_id__get";
+  readonly listEpisodes: "list_episodes_api_agents__agent_id__memory_episodes_list_post";
+  readonly getEpisode: "get_episode_api_agents__agent_id__memory_episodes__episode_id__get";
+  readonly getExtractConfig: "get_extract_config_api_agents__agent_id__memory_extract_config_get";
+  readonly updateExtractConfig: "put_extract_config_api_agents__agent_id__memory_extract_config_put";
+  readonly listJournal: "list_journal_api_agents__agent_id__memory_journal_list_post";
+  readonly recentJournal: "recent_journal_api_agents__agent_id__memory_journal_recent_get";
+  readonly adoptPortable: "adopt_agent_memory_api_agents__agent_id__memory_portable_adopt_post";
+  readonly doctorPortable: "doctor_agent_memory_api_agents__agent_id__memory_portable_doctor_post";
+  readonly packPortable: "pack_agent_memory_api_agents__agent_id__memory_portable_pack_post";
+  readonly listRawEvents: "list_raw_events_api_agents__agent_id__memory_raw_events_list_post";
+  readonly getRawEvent: "get_raw_event_api_agents__agent_id__memory_raw_events__event_id__get";
+  readonly statsAtomKinds: "stats_atom_kinds_api_agents__agent_id__memory_stats_atom_kinds_get";
+  readonly statsCounts: "stats_counts_api_agents__agent_id__memory_stats_counts_get";
+  readonly statsGrowth: "stats_growth_api_agents__agent_id__memory_stats_growth_get";
+  readonly terminalAboutMe: "terminal_about_me_api_agents__agent_id__memory_terminal_about_me_get";
+  readonly terminalCurrentFocus: "terminal_current_focus_api_agents__agent_id__memory_terminal_current_focus_get";
+  readonly terminalEntities: "terminal_entities_api_agents__agent_id__memory_terminal_entities_get";
+  readonly terminalRecentStories: "terminal_recent_stories_api_agents__agent_id__memory_terminal_recent_stories_get";
+  readonly terminalThingsYouToldMe: "terminal_things_you_told_me_api_agents__agent_id__memory_terminal_things_you_told_me_get";
+}
+export interface GlobalMemoryMethods {
+  readonly listPortableSources: "list_portable_sources_api_memory_portable_sources_get";
+}

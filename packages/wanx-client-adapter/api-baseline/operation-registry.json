@@ -1,0 +1,3658 @@
+[
+  {
+    "operationId": "get_global_acp_runners_api_acp_get",
+    "method": "GET",
+    "path": "/api/acp",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "put_global_acp_runners_api_acp_put",
+    "method": "PUT",
+    "path": "/api/acp",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "delete_global_acp_runner_api_acp__runner_name__delete",
+    "method": "DELETE",
+    "path": "/api/acp/{runner_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "get_global_acp_runner_api_acp__runner_name__get",
+    "method": "GET",
+    "path": "/api/acp/{runner_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "put_global_acp_runner_api_acp__runner_name__put",
+    "method": "PUT",
+    "path": "/api/acp/{runner_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "audit_log_api_admin_audit_log_get",
+    "method": "GET",
+    "path": "/api/admin/audit-log",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "get_auto_backup_settings_api_admin_backup_auto_get",
+    "method": "GET",
+    "path": "/api/admin/backup/auto",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "put_auto_backup_settings_api_admin_backup_auto_put",
+    "method": "PUT",
+    "path": "/api/admin/backup/auto",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "run_auto_backup_now_api_admin_backup_auto_run_post",
+    "method": "POST",
+    "path": "/api/admin/backup/auto/run",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "create_backup_api_admin_backup_create_post",
+    "method": "POST",
+    "path": "/api/admin/backup/create",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "export_backup_api_admin_backup_export_get",
+    "method": "GET",
+    "path": "/api/admin/backup/export",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "remove_backup_file_api_admin_backup_files__filename__delete",
+    "method": "DELETE",
+    "path": "/api/admin/backup/files/{filename}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "download_backup_file_api_admin_backup_files__filename__get",
+    "method": "GET",
+    "path": "/api/admin/backup/files/{filename}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "restore_backup_file_api_admin_backup_files__filename__restore_post",
+    "method": "POST",
+    "path": "/api/admin/backup/files/{filename}/restore",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "import_backup_api_admin_backup_import_post",
+    "method": "POST",
+    "path": "/api/admin/backup/import",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "list_backups_api_admin_backup_list_get",
+    "method": "GET",
+    "path": "/api/admin/backup/list",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "get_backup_status_api_admin_backup_status_get",
+    "method": "GET",
+    "path": "/api/admin/backup/status",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "get_media_generation_settings_api_admin_media_generation_get",
+    "method": "GET",
+    "path": "/api/admin/media-generation",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "put_media_generation_settings_api_admin_media_generation_put",
+    "method": "PUT",
+    "path": "/api/admin/media-generation",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "list_media_provider_presets_api_admin_media_generation_presets_get",
+    "method": "GET",
+    "path": "/api/admin/media-generation/presets",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "test_media_generation_provider_api_admin_media_generation_test_post",
+    "method": "POST",
+    "path": "/api/admin/media-generation/test",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "metrics_api_admin_metrics_get",
+    "method": "GET",
+    "path": "/api/admin/metrics",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "get_langfuse_config_api_admin_observability_langfuse_get",
+    "method": "GET",
+    "path": "/api/admin/observability/langfuse",
+    "tags": [
+      "observability"
+    ]
+  },
+  {
+    "operationId": "put_langfuse_config_api_admin_observability_langfuse_put",
+    "method": "PUT",
+    "path": "/api/admin/observability/langfuse",
+    "tags": [
+      "observability"
+    ]
+  },
+  {
+    "operationId": "test_langfuse_connection_api_admin_observability_langfuse_test_post",
+    "method": "POST",
+    "path": "/api/admin/observability/langfuse/test",
+    "tags": [
+      "observability"
+    ]
+  },
+  {
+    "operationId": "overview_api_admin_overview_get",
+    "method": "GET",
+    "path": "/api/admin/overview",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_list_providers_api_admin_providers_get",
+    "method": "GET",
+    "path": "/api/admin/providers",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_create_provider_api_admin_providers_post",
+    "method": "POST",
+    "path": "/api/admin/providers",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "codex_oauth_logout_api_admin_providers_codex_oauth_delete",
+    "method": "DELETE",
+    "path": "/api/admin/providers/codex-oauth",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "codex_oauth_pending_api_admin_providers_codex_oauth_pending__state_id__get",
+    "method": "GET",
+    "path": "/api/admin/providers/codex-oauth/pending/{state_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "codex_oauth_start_api_admin_providers_codex_oauth_start_post",
+    "method": "POST",
+    "path": "/api/admin/providers/codex-oauth/start",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_fetch_provider_models_api_admin_providers_fetch_models_post",
+    "method": "POST",
+    "path": "/api/admin/providers/fetch-models",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_test_provider_draft_api_admin_providers_test_draft_post",
+    "method": "POST",
+    "path": "/api/admin/providers/test-draft",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_delete_provider_api_admin_providers__provider_id__delete",
+    "method": "DELETE",
+    "path": "/api/admin/providers/{provider_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_patch_provider_api_admin_providers__provider_id__patch",
+    "method": "PATCH",
+    "path": "/api/admin/providers/{provider_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_test_provider_api_admin_providers__provider_id__test_post",
+    "method": "POST",
+    "path": "/api/admin/providers/{provider_id}/test",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "get_security_policy_api_admin_security_get",
+    "method": "GET",
+    "path": "/api/admin/security",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "put_security_policy_api_admin_security_put",
+    "method": "PUT",
+    "path": "/api/admin/security",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "get_security_defaults_api_admin_security_defaults_get",
+    "method": "GET",
+    "path": "/api/admin/security/defaults",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "get_tool_guard_rules_api_admin_security_tool_guard_rules_get",
+    "method": "GET",
+    "path": "/api/admin/security/tool-guard/rules",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "get_tool_guard_rules_raw_api_admin_security_tool_guard_rules_raw_get",
+    "method": "GET",
+    "path": "/api/admin/security/tool-guard/rules/raw",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "put_tool_guard_rules_raw_api_admin_security_tool_guard_rules_raw_put",
+    "method": "PUT",
+    "path": "/api/admin/security/tool-guard/rules/raw",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "post_tool_guard_rules_reset_api_admin_security_tool_guard_rules_reset_post",
+    "method": "POST",
+    "path": "/api/admin/security/tool-guard/rules/reset",
+    "tags": [
+      "security"
+    ]
+  },
+  {
+    "operationId": "list_storage_backends_api_admin_storage_backends_get",
+    "method": "GET",
+    "path": "/api/admin/storage-backends",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "create_storage_backend_api_admin_storage_backends_post",
+    "method": "POST",
+    "path": "/api/admin/storage-backends",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "probe_storage_backend_config_api_admin_storage_backends_probe_post",
+    "method": "POST",
+    "path": "/api/admin/storage-backends/probe",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "delete_storage_backend_api_admin_storage_backends__backend_id__delete",
+    "method": "DELETE",
+    "path": "/api/admin/storage-backends/{backend_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "patch_storage_backend_api_admin_storage_backends__backend_id__patch",
+    "method": "PATCH",
+    "path": "/api/admin/storage-backends/{backend_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "test_storage_backend_api_admin_storage_backends__backend_id__test_post",
+    "method": "POST",
+    "path": "/api/admin/storage-backends/{backend_id}/test",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "list_storage_backend_tree_api_admin_storage_backends__backend_id__tree_get",
+    "method": "GET",
+    "path": "/api/admin/storage-backends/{backend_id}/tree",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "tls_issue_api_admin_tls_issue_post",
+    "method": "POST",
+    "path": "/api/admin/tls/issue",
+    "tags": [
+      "tls"
+    ]
+  },
+  {
+    "operationId": "tls_preflight_api_admin_tls_preflight_post",
+    "method": "POST",
+    "path": "/api/admin/tls/preflight",
+    "tags": [
+      "tls"
+    ]
+  },
+  {
+    "operationId": "tls_status_api_admin_tls_status_get",
+    "method": "GET",
+    "path": "/api/admin/tls/status",
+    "tags": [
+      "tls"
+    ]
+  },
+  {
+    "operationId": "admin_export_api_admin_usage_export_xlsx_get",
+    "method": "GET",
+    "path": "/api/admin/usage/export.xlsx",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_summary_api_admin_usage_summary_get",
+    "method": "GET",
+    "path": "/api/admin/usage/summary",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_list_voice_providers_api_admin_voice_providers_get",
+    "method": "GET",
+    "path": "/api/admin/voice/providers",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_create_voice_provider_api_admin_voice_providers_post",
+    "method": "POST",
+    "path": "/api/admin/voice/providers",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_test_voice_configuration_api_admin_voice_providers_test_configuration_post",
+    "method": "POST",
+    "path": "/api/admin/voice/providers/test-configuration",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_delete_voice_provider_api_admin_voice_providers__provider_id__delete",
+    "method": "DELETE",
+    "path": "/api/admin/voice/providers/{provider_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_patch_voice_provider_api_admin_voice_providers__provider_id__patch",
+    "method": "PATCH",
+    "path": "/api/admin/voice/providers/{provider_id}",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "admin_test_voice_provider_api_admin_voice_providers__provider_id__test_post",
+    "method": "POST",
+    "path": "/api/admin/voice/providers/{provider_id}/test",
+    "tags": [
+      "admin"
+    ]
+  },
+  {
+    "operationId": "list_agents_api_agents_get",
+    "method": "GET",
+    "path": "/api/agents",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "create_agent_api_agents_post",
+    "method": "POST",
+    "path": "/api/agents",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "create_agent_from_expert_api_agents_from_expert__expert_id__post",
+    "method": "POST",
+    "path": "/api/agents/from-expert/{expert_id}",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "delete_agent_api_agents__agent_id__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "get_agent_api_agents__agent_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "patch_agent_api_agents__agent_id__patch",
+    "method": "PATCH",
+    "path": "/api/agents/{agent_id}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "get_acp_config_api_agents__agent_id__acp_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/acp",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "put_acp_config_api_agents__agent_id__acp_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/acp",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "put_acp_tool_toggle_api_agents__agent_id__acp_tool_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/acp/tool",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "delete_acp_runner_api_agents__agent_id__acp__runner_name__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/acp/{runner_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "get_acp_runner_api_agents__agent_id__acp__runner_name__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/acp/{runner_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "put_acp_runner_api_agents__agent_id__acp__runner_name__put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/acp/{runner_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "delete_agent_avatar_api_agents__agent_id__avatar_delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/avatar",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "get_agent_avatar_api_agents__agent_id__avatar_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/avatar",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "upload_agent_avatar_api_agents__agent_id__avatar_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/avatar",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "list_channels_api_agents__agent_id__channels_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/channels",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "create_channel_api_agents__agent_id__channels_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "dingtalk_qrcode_generate_api_agents__agent_id__channels_dingtalk_qrcode_generate_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/dingtalk/qrcode/generate",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "dingtalk_qrcode_poll_api_agents__agent_id__channels_dingtalk_qrcode_poll_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/dingtalk/qrcode/poll",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "feishu_bot_creator_poll_api_agents__agent_id__channels_feishu_bot_creator_poll_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/feishu/bot-creator/poll",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "feishu_bot_creator_start_api_agents__agent_id__channels_feishu_bot_creator_start_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/feishu/bot-creator/start",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "feishu_bot_creator_stop_api_agents__agent_id__channels_feishu_bot_creator_stop_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/feishu/bot-creator/stop",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "probe_channel_config_api_agents__agent_id__channels_probe_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/probe",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "qq_qrcode_generate_api_agents__agent_id__channels_qq_qrcode_generate_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/qq/qrcode/generate",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "qq_qrcode_poll_api_agents__agent_id__channels_qq_qrcode_poll_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/qq/qrcode/poll",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "wecom_qrcode_generate_api_agents__agent_id__channels_wecom_qrcode_generate_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/wecom/qrcode/generate",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "wecom_qrcode_poll_api_agents__agent_id__channels_wecom_qrcode_poll_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/wecom/qrcode/poll",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "weixin_qrcode_generate_api_agents__agent_id__channels_weixin_qrcode_generate_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/weixin/qrcode/generate",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "weixin_qrcode_poll_api_agents__agent_id__channels_weixin_qrcode_poll_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/weixin/qrcode/poll",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "yuanbao_bot_creator_poll_api_agents__agent_id__channels_yuanbao_bot_creator_poll_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/yuanbao/bot-creator/poll",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "yuanbao_bot_creator_start_api_agents__agent_id__channels_yuanbao_bot_creator_start_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/yuanbao/bot-creator/start",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "yuanbao_bot_creator_stop_api_agents__agent_id__channels_yuanbao_bot_creator_stop_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/yuanbao/bot-creator/stop",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "delete_channel_api_agents__agent_id__channels__channel_id__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/channels/{channel_id}",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "get_channel_api_agents__agent_id__channels__channel_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/channels/{channel_id}",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "patch_channel_api_agents__agent_id__channels__channel_id__patch",
+    "method": "PATCH",
+    "path": "/api/agents/{agent_id}/channels/{channel_id}",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "test_channel_api_agents__agent_id__channels__channel_id__test_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/channels/{channel_id}/test",
+    "tags": [
+      "channels"
+    ]
+  },
+  {
+    "operationId": "resume_hitl_api_agents__agent_id__chat_hitl_resume_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/chat/hitl/resume",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "polish_prompt_api_agents__agent_id__chat_polish_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/chat/polish",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_chat_welcome_api_agents__agent_id__chat_welcome_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/chat/welcome",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "list_cron_api_agents__agent_id__cron_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/cron",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "create_cron_api_agents__agent_id__cron_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/cron",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "cron_examples_api_agents__agent_id__cron_examples_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/cron/examples",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "delete_cron_api_agents__agent_id__cron__cron_id__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/cron/{cron_id}",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "get_cron_api_agents__agent_id__cron__cron_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/cron/{cron_id}",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "patch_cron_api_agents__agent_id__cron__cron_id__patch",
+    "method": "PATCH",
+    "path": "/api/agents/{agent_id}/cron/{cron_id}",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "run_now_api_agents__agent_id__cron__cron_id__run_now_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/cron/{cron_id}/run-now",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "get_heartbeat_config_api_agents__agent_id__heartbeat_config_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/heartbeat-config",
+    "tags": [
+      "agent_files"
+    ]
+  },
+  {
+    "operationId": "put_heartbeat_config_api_agents__agent_id__heartbeat_config_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/heartbeat-config",
+    "tags": [
+      "agent_files"
+    ]
+  },
+  {
+    "operationId": "start_history_migration_api_agents__agent_id__history_migration_start_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/history-migration/start",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_history_migration_status_api_agents__agent_id__history_migration_status_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/history-migration/status",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "preview_media_api_agents__agent_id__media_preview_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/media/preview",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "create_atom_api_agents__agent_id__memory_atoms_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/atoms",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "list_atoms_api_agents__agent_id__memory_atoms_list_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/atoms/list",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_atom_api_agents__agent_id__memory_atoms__atom_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/atoms/{atom_id}",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "deprecate_atom_api_agents__agent_id__memory_atoms__atom_id__deprecate_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/atoms/{atom_id}:deprecate",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "replace_atom_api_agents__agent_id__memory_atoms__atom_id__replace_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/atoms/{atom_id}:replace",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "list_candidates_api_agents__agent_id__memory_candidates_list_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/candidates/list",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_candidate_api_agents__agent_id__memory_candidates__candidate_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/candidates/{candidate_id}",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "promote_candidate_api_agents__agent_id__memory_candidates__candidate_id__promote_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/candidates/{candidate_id}:promote",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "reject_candidate_api_agents__agent_id__memory_candidates__candidate_id__reject_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/candidates/{candidate_id}:reject",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "list_daily_memory_api_agents__agent_id__memory_daily_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/daily",
+    "tags": [
+      "agent_files"
+    ]
+  },
+  {
+    "operationId": "delete_daily_memory_api_agents__agent_id__memory_daily__filename__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/memory/daily/{filename}",
+    "tags": [
+      "agent_files"
+    ]
+  },
+  {
+    "operationId": "read_daily_memory_api_agents__agent_id__memory_daily__filename__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/daily/{filename}",
+    "tags": [
+      "agent_files"
+    ]
+  },
+  {
+    "operationId": "list_entities_api_agents__agent_id__memory_entities_list_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/entities/list",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_entity_api_agents__agent_id__memory_entities__entity_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/entities/{entity_id}",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "list_episodes_api_agents__agent_id__memory_episodes_list_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/episodes/list",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_episode_api_agents__agent_id__memory_episodes__episode_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/episodes/{episode_id}",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_extract_config_api_agents__agent_id__memory_extract_config_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/extract-config",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "put_extract_config_api_agents__agent_id__memory_extract_config_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/memory/extract-config",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "list_journal_api_agents__agent_id__memory_journal_list_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/journal/list",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "recent_journal_api_agents__agent_id__memory_journal_recent_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/journal/recent",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "adopt_agent_memory_api_agents__agent_id__memory_portable_adopt_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/portable/adopt",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "doctor_agent_memory_api_agents__agent_id__memory_portable_doctor_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/portable/doctor",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "pack_agent_memory_api_agents__agent_id__memory_portable_pack_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/portable/pack",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "list_raw_events_api_agents__agent_id__memory_raw_events_list_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/memory/raw_events/list",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_raw_event_api_agents__agent_id__memory_raw_events__event_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/raw_events/{event_id}",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "stats_atom_kinds_api_agents__agent_id__memory_stats_atom_kinds_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/stats/atom_kinds",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "stats_counts_api_agents__agent_id__memory_stats_counts_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/stats/counts",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "stats_growth_api_agents__agent_id__memory_stats_growth_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/stats/growth",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "terminal_about_me_api_agents__agent_id__memory_terminal_about_me_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/terminal/about_me",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "terminal_current_focus_api_agents__agent_id__memory_terminal_current_focus_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/terminal/current_focus",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "terminal_entities_api_agents__agent_id__memory_terminal_entities_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/terminal/entities",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "terminal_recent_stories_api_agents__agent_id__memory_terminal_recent_stories_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/terminal/recent_stories",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "terminal_things_you_told_me_api_agents__agent_id__memory_terminal_things_you_told_me_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/memory/terminal/things_you_told_me",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_proactive_care_config_api_agents__agent_id__proactive_care_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/proactive-care",
+    "tags": [
+      "proactive-care"
+    ]
+  },
+  {
+    "operationId": "put_proactive_care_config_api_agents__agent_id__proactive_care_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/proactive-care",
+    "tags": [
+      "proactive-care"
+    ]
+  },
+  {
+    "operationId": "publish_agent_expert_api_agents__agent_id__publish_expert_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/publish-expert",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "mark_agent_read_api_agents__agent_id__read_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/read",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "reload_agent_api_agents__agent_id__reload_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/reload",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "rebind_session_api_agents__agent_id__session_patch",
+    "method": "PATCH",
+    "path": "/api/agents/{agent_id}/session",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "list_skill_package_mounts_api_agents__agent_id__skill_packages_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/skill-packages",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "replace_skill_package_mounts_api_agents__agent_id__skill_packages_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/skill-packages",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "copy_skill_package_to_workspace_api_agents__agent_id__skill_packages__package_id__copy_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skill-packages/{package_id}/copy",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "list_skills_api_agents__agent_id__skills_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/skills",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "create_skill_api_agents__agent_id__skills_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "copy_skill_from_agent_api_agents__agent_id__skills_copy_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills/copy",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "hub_install_skill_api_agents__agent_id__skills_hub_install_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills/hub/install",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "hub_rankings_api_agents__agent_id__skills_hub_rankings_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/skills/hub/rankings",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "hub_search_skills_api_agents__agent_id__skills_hub_search_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/skills/hub/search",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "import_skill_from_url_api_agents__agent_id__skills_import_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills/import",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "delete_skill_api_agents__agent_id__skills__name__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/skills/{name}",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "get_skill_api_agents__agent_id__skills__name__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/skills/{name}",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "update_skill_api_agents__agent_id__skills__name__put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/skills/{name}",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "disable_skill_api_agents__agent_id__skills__name__disable_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills/{name}/disable",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "enable_skill_api_agents__agent_id__skills__name__enable_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills/{name}/enable",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "push_workspace_skill_to_package_api_agents__agent_id__skills__name__push_to_package_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/skills/{name}/push-to-package",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "start_agent_api_agents__agent_id__start_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/start",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "agent_status_api_agents__agent_id__status_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/status",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "stop_agent_api_agents__agent_id__stop_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/stop",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "list_subagents_api_agents__agent_id__subagents_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/subagents",
+    "tags": [
+      "subagents"
+    ]
+  },
+  {
+    "operationId": "install_subagent_api_agents__agent_id__subagents_install_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/subagents/install",
+    "tags": [
+      "subagents"
+    ]
+  },
+  {
+    "operationId": "terminal_context_api_agents__agent_id__terminal_context_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/terminal/context",
+    "tags": [
+      "terminal"
+    ]
+  },
+  {
+    "operationId": "list_threads_api_agents__agent_id__threads_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "create_thread_api_agents__agent_id__threads_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/threads",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "delete_thread_api_agents__agent_id__threads__thread_id__delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "patch_thread_api_agents__agent_id__threads__thread_id__patch",
+    "method": "PATCH",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_thread_context_usage_api_agents__agent_id__threads__thread_id__context_usage_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/context-usage",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "fork_thread_api_agents__agent_id__threads__thread_id__fork_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/fork",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_thread_history_api_agents__agent_id__threads__thread_id__history_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/history",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "export_history_api_agents__agent_id__threads__thread_id__history_export_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/history/export",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "mark_thread_read_api_agents__agent_id__threads__thread_id__read_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/read",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_thread_trajectory_api_agents__agent_id__threads__thread_id__trajectory_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_trajectory_event_api_agents__agent_id__threads__thread_id__trajectory_events__event_id__get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory/events/{event_id}",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "export_thread_trajectory_api_agents__agent_id__threads__thread_id__trajectory_export_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory/export",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_trajectory_metrics_api_agents__agent_id__threads__thread_id__trajectory_metrics_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory/metrics",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "stream_thread_trajectory_api_agents__agent_id__threads__thread_id__trajectory_stream_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/threads/{thread_id}/trajectory/stream",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "get_tool_settings_api_agents__agent_id__tool_settings_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/tool-settings",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "put_tool_settings_api_agents__agent_id__tool_settings_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/tool-settings",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "patch_tool_setting_api_agents__agent_id__tool_settings__tool_name__patch",
+    "method": "PATCH",
+    "path": "/api/agents/{agent_id}/tool-settings/{tool_name}",
+    "tags": [
+      "agents"
+    ]
+  },
+  {
+    "operationId": "upload_attachment_api_agents__agent_id__upload_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/upload",
+    "tags": [
+      "chat"
+    ]
+  },
+  {
+    "operationId": "export_workspace_archive_api_agents__agent_id__workspace_archive_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/archive",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "import_workspace_archive_api_agents__agent_id__workspace_archive_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/workspace/archive",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "read_doc_api_agents__agent_id__workspace_doc_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/doc",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "write_doc_api_agents__agent_id__workspace_doc_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/workspace/doc",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "download_file_api_agents__agent_id__workspace_download_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/download",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "delete_workspace_file_api_agents__agent_id__workspace_file_delete",
+    "method": "DELETE",
+    "path": "/api/agents/{agent_id}/workspace/file",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "read_file_api_agents__agent_id__workspace_file_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/file",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "write_file_api_agents__agent_id__workspace_file_put",
+    "method": "PUT",
+    "path": "/api/agents/{agent_id}/workspace/file",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "glob_files_api_agents__agent_id__workspace_glob_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/glob",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "grep_files_api_agents__agent_id__workspace_grep_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/grep",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "mkdir_workspace_dir_api_agents__agent_id__workspace_mkdir_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/workspace/mkdir",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "move_workspace_file_api_agents__agent_id__workspace_move_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/workspace/move",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "list_tree_api_agents__agent_id__workspace_tree_get",
+    "method": "GET",
+    "path": "/api/agents/{agent_id}/workspace/tree",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "upload_file_api_agents__agent_id__workspace_upload_post",
+    "method": "POST",
+    "path": "/api/agents/{agent_id}/workspace/upload",
+    "tags": [
+      "workspace"
+    ]
+  },
+  {
+    "operationId": "get_captcha_api_auth_captcha_get",
+    "method": "GET",
+    "path": "/api/auth/captcha",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "change_password_api_auth_change_password_post",
+    "method": "POST",
+    "path": "/api/auth/change-password",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "redeem_invite_api_auth_invite_redeem_post",
+    "method": "POST",
+    "path": "/api/auth/invite/redeem",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "validate_invite_api_auth_invite_validate_post",
+    "method": "POST",
+    "path": "/api/auth/invite/validate",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "login_api_auth_login_post",
+    "method": "POST",
+    "path": "/api/auth/login",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "logout_api_auth_logout_post",
+    "method": "POST",
+    "path": "/api/auth/logout",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "me_api_auth_me_get",
+    "method": "GET",
+    "path": "/api/auth/me",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "update_me_api_auth_me_patch",
+    "method": "PATCH",
+    "path": "/api/auth/me",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "delete_my_avatar_api_auth_me_avatar_delete",
+    "method": "DELETE",
+    "path": "/api/auth/me/avatar",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "upload_my_avatar_api_auth_me_avatar_post",
+    "method": "POST",
+    "path": "/api/auth/me/avatar",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oauth_bind_start_api_auth_oauth_bind_start_post",
+    "method": "POST",
+    "path": "/api/auth/oauth/bind/start",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oauth_callback_api_auth_oauth_callback_get",
+    "method": "GET",
+    "path": "/api/auth/oauth/callback",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oauth_exchange_api_auth_oauth_exchange_post",
+    "method": "POST",
+    "path": "/api/auth/oauth/exchange",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "get_oauth_provider_api_auth_oauth_providers__kind__get",
+    "method": "GET",
+    "path": "/api/auth/oauth/providers/{kind}",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "put_oauth_provider_api_auth_oauth_providers__kind__put",
+    "method": "PUT",
+    "path": "/api/auth/oauth/providers/{kind}",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "test_oauth_provider_api_auth_oauth_providers__kind__test_post",
+    "method": "POST",
+    "path": "/api/auth/oauth/providers/{kind}/test",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oauth_start_api_auth_oauth_start_post",
+    "method": "POST",
+    "path": "/api/auth/oauth/start",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oauth_status_api_auth_oauth_status_get",
+    "method": "GET",
+    "path": "/api/auth/oauth/status",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oauth_unbind_api_auth_oauth_unbind_post",
+    "method": "POST",
+    "path": "/api/auth/oauth/unbind",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oidc_callback_api_auth_oidc_callback_get",
+    "method": "GET",
+    "path": "/api/auth/oidc/callback",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oidc_config_api_auth_oidc_config_get",
+    "method": "GET",
+    "path": "/api/auth/oidc/config",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "put_oidc_config_api_auth_oidc_config_put",
+    "method": "PUT",
+    "path": "/api/auth/oidc/config",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "test_oidc_config_api_auth_oidc_config_test_post",
+    "method": "POST",
+    "path": "/api/auth/oidc/config/test",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oidc_exchange_api_auth_oidc_exchange_post",
+    "method": "POST",
+    "path": "/api/auth/oidc/exchange",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oidc_start_api_auth_oidc_start_post",
+    "method": "POST",
+    "path": "/api/auth/oidc/start",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "oidc_status_api_auth_oidc_status_get",
+    "method": "GET",
+    "path": "/api/auth/oidc/status",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "env_status_api_browser_env_status_get",
+    "method": "GET",
+    "path": "/api/browser/env-status",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "list_harness_sessions_api_browser_harness_sessions_get",
+    "method": "GET",
+    "path": "/api/browser/harness-sessions",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "install_api_browser_install_post",
+    "method": "POST",
+    "path": "/api/browser/install",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "replay_recording_api_browser_record_replay_replay_post",
+    "method": "POST",
+    "path": "/api/browser/record-replay/replay",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "get_skill_content_api_browser_record_replay_skill_content_post",
+    "method": "POST",
+    "path": "/api/browser/record-replay/skill-content",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "record_start_api_browser_record_replay_start_post",
+    "method": "POST",
+    "path": "/api/browser/record-replay/start",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "record_status_api_browser_record_replay_status_get",
+    "method": "GET",
+    "path": "/api/browser/record-replay/status",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "record_stop_api_browser_record_replay_stop_post",
+    "method": "POST",
+    "path": "/api/browser/record-replay/stop",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "record_stop_and_generate_skill_api_browser_record_replay_stop_and_generate_skill_post",
+    "method": "POST",
+    "path": "/api/browser/record-replay/stop-and-generate-skill",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "handoff_api_browser_sessions__session_id__handoff_post",
+    "method": "POST",
+    "path": "/api/browser/sessions/{session_id}/handoff",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "shutdown_browser_api_browser_shutdown_post",
+    "method": "POST",
+    "path": "/api/browser/shutdown",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "uninstall_browser_api_browser_uninstall_post",
+    "method": "POST",
+    "path": "/api/browser/uninstall",
+    "tags": [
+      "browser"
+    ]
+  },
+  {
+    "operationId": "list_instances_api_connector_instances_get",
+    "method": "GET",
+    "path": "/api/connector-instances",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "create_instance_api_connector_instances_post",
+    "method": "POST",
+    "path": "/api/connector-instances",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "delete_instance_api_connector_instances__instance_id__delete",
+    "method": "DELETE",
+    "path": "/api/connector-instances/{instance_id}",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "get_instance_api_connector_instances__instance_id__get",
+    "method": "GET",
+    "path": "/api/connector-instances/{instance_id}",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "patch_instance_api_connector_instances__instance_id__patch",
+    "method": "PATCH",
+    "path": "/api/connector-instances/{instance_id}",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "feishu_cli_user_auth_complete_instance_api_connector_instances__instance_id__feishu_user_auth_complete_post",
+    "method": "POST",
+    "path": "/api/connector-instances/{instance_id}/feishu-user-auth/complete",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "feishu_cli_user_auth_start_instance_api_connector_instances__instance_id__feishu_user_auth_start_post",
+    "method": "POST",
+    "path": "/api/connector-instances/{instance_id}/feishu-user-auth/start",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "refresh_instance_api_connector_instances__instance_id__refresh_post",
+    "method": "POST",
+    "path": "/api/connector-instances/{instance_id}/refresh",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "test_instance_api_connector_instances__instance_id__test_post",
+    "method": "POST",
+    "path": "/api/connector-instances/{instance_id}/test",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "auth_authorize_url_api_connectors_auth__kind__authorize_url_get",
+    "method": "GET",
+    "path": "/api/connectors/auth/{kind}/authorize-url",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "auth_exchange_code_api_connectors_auth__kind__exchange_code_post",
+    "method": "POST",
+    "path": "/api/connectors/auth/{kind}/exchange-code",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "auth_info_api_connectors_auth__kind__info_get",
+    "method": "GET",
+    "path": "/api/connectors/auth/{kind}/info",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "get_catalog_api_connectors_catalog_get",
+    "method": "GET",
+    "path": "/api/connectors/catalog",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "get_custom_mcp_api_connectors_custom_mcp_get",
+    "method": "GET",
+    "path": "/api/connectors/custom-mcp",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "put_custom_mcp_api_connectors_custom_mcp_put",
+    "method": "PUT",
+    "path": "/api/connectors/custom-mcp",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "patch_custom_mcp_server_api_connectors_custom_mcp_servers__server_name__patch",
+    "method": "PATCH",
+    "path": "/api/connectors/custom-mcp/servers/{server_name}",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "test_custom_mcp_api_connectors_custom_mcp_test_post",
+    "method": "POST",
+    "path": "/api/connectors/custom-mcp/test",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "feishu_cli_user_auth_complete_api_connectors_feishu_cli_user_auth_complete_post",
+    "method": "POST",
+    "path": "/api/connectors/feishu-cli/user-auth/complete",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "feishu_cli_user_auth_start_api_connectors_feishu_cli_user_auth_start_post",
+    "method": "POST",
+    "path": "/api/connectors/feishu-cli/user-auth/start",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "oauth_callback_api_connectors_oauth_callback_get",
+    "method": "GET",
+    "path": "/api/connectors/oauth/callback",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "oauth_pending_api_connectors_oauth_pending__state_id__get",
+    "method": "GET",
+    "path": "/api/connectors/oauth/pending/{state_id}",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "oauth_start_unified_api_connectors_oauth_start_post",
+    "method": "POST",
+    "path": "/api/connectors/oauth/start",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "oauth_start_legacy_api_connectors_oauth__kind__start_post",
+    "method": "POST",
+    "path": "/api/connectors/oauth/{kind}/start",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "test_credentials_api_connectors_test_credentials_post",
+    "method": "POST",
+    "path": "/api/connectors/test-credentials",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "detect_weknora_on_octop_host_api_connectors_weknora_detect_local_get",
+    "method": "GET",
+    "path": "/api/connectors/weknora/detect-local",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "connector_cli_status_api_connectors__kind__cli_status_get",
+    "method": "GET",
+    "path": "/api/connectors/{kind}/cli-status",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "connector_install_cli_api_connectors__kind__install_cli_post",
+    "method": "POST",
+    "path": "/api/connectors/{kind}/install-cli",
+    "tags": [
+      "connectors"
+    ]
+  },
+  {
+    "operationId": "cron_settings_api_cron_settings_get",
+    "method": "GET",
+    "path": "/api/cron/settings",
+    "tags": [
+      "cron"
+    ]
+  },
+  {
+    "operationId": "get_desktop_geometry_api_desktop_geometry_get",
+    "method": "GET",
+    "path": "/api/desktop/geometry",
+    "tags": [
+      "desktop"
+    ]
+  },
+  {
+    "operationId": "set_desktop_geometry_api_desktop_geometry_post",
+    "method": "POST",
+    "path": "/api/desktop/geometry",
+    "tags": [
+      "desktop"
+    ]
+  },
+  {
+    "operationId": "install_desktop_api_desktop_install_post",
+    "method": "POST",
+    "path": "/api/desktop/install",
+    "tags": [
+      "desktop"
+    ]
+  },
+  {
+    "operationId": "get_desktop_status_api_desktop_status_get",
+    "method": "GET",
+    "path": "/api/desktop/status",
+    "tags": [
+      "desktop"
+    ]
+  },
+  {
+    "operationId": "uninstall_desktop_api_desktop_uninstall_post",
+    "method": "POST",
+    "path": "/api/desktop/uninstall",
+    "tags": [
+      "desktop"
+    ]
+  },
+  {
+    "operationId": "list_envs_api_envs_get",
+    "method": "GET",
+    "path": "/api/envs",
+    "tags": [
+      "envs"
+    ]
+  },
+  {
+    "operationId": "batch_save_envs_api_envs_put",
+    "method": "PUT",
+    "path": "/api/envs",
+    "tags": [
+      "envs"
+    ]
+  },
+  {
+    "operationId": "delete_env_api_envs__key__delete",
+    "method": "DELETE",
+    "path": "/api/envs/{key}",
+    "tags": [
+      "envs"
+    ]
+  },
+  {
+    "operationId": "list_experts_api_experts_get",
+    "method": "GET",
+    "path": "/api/experts",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "list_expert_hub_api_experts_hub_get",
+    "method": "GET",
+    "path": "/api/experts/hub",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "get_expert_hub_item_api_experts_hub__slug__get",
+    "method": "GET",
+    "path": "/api/experts/hub/{slug}",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "install_expert_hub_item_api_experts_hub__slug__install_post",
+    "method": "POST",
+    "path": "/api/experts/hub/{slug}/install",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "list_published_experts_api_experts_published_get",
+    "method": "GET",
+    "path": "/api/experts/published",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "unpublish_expert_api_experts_published__expert_id__delete",
+    "method": "DELETE",
+    "path": "/api/experts/published/{expert_id}",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "get_published_expert_api_experts_published__expert_id__get",
+    "method": "GET",
+    "path": "/api/experts/published/{expert_id}",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "get_published_expert_avatar_api_experts_published__expert_id__avatar_get",
+    "method": "GET",
+    "path": "/api/experts/published/{expert_id}/avatar",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "install_published_expert_api_experts_published__expert_id__install_post",
+    "method": "POST",
+    "path": "/api/experts/published/{expert_id}/install",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "refresh_published_expert_api_experts_published__expert_id__refresh_post",
+    "method": "POST",
+    "path": "/api/experts/published/{expert_id}/refresh",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "get_expert_api_experts__expert_id__get",
+    "method": "GET",
+    "path": "/api/experts/{expert_id}",
+    "tags": [
+      "experts"
+    ]
+  },
+  {
+    "operationId": "filesystem_defaults_api_filesystem_defaults_get",
+    "method": "GET",
+    "path": "/api/filesystem/defaults",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "list_host_dirs_api_filesystem_dirs_get",
+    "method": "GET",
+    "path": "/api/filesystem/dirs",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "get_docker_status_api_filesystem_docker_status_get",
+    "method": "GET",
+    "path": "/api/filesystem/docker-status",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "ensure_bwrap_api_filesystem_ensure_bwrap_post",
+    "method": "POST",
+    "path": "/api/filesystem/ensure-bwrap",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "post_ensure_docker_api_filesystem_ensure_docker_post",
+    "method": "POST",
+    "path": "/api/filesystem/ensure-docker",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "mkdir_host_dir_api_filesystem_mkdir_post",
+    "method": "POST",
+    "path": "/api/filesystem/mkdir",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "probe_host_dir_api_filesystem_probe_post",
+    "method": "POST",
+    "path": "/api/filesystem/probe",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "rename_host_directory_api_filesystem_rename_post",
+    "method": "POST",
+    "path": "/api/filesystem/rename",
+    "tags": [
+      "filesystem"
+    ]
+  },
+  {
+    "operationId": "health_api_health_get",
+    "method": "GET",
+    "path": "/api/health",
+    "tags": [
+      "health"
+    ]
+  },
+  {
+    "operationId": "get_skill_labels_api_i18n_skills_get",
+    "method": "GET",
+    "path": "/api/i18n/skills",
+    "tags": [
+      "i18n"
+    ]
+  },
+  {
+    "operationId": "get_tool_labels_api_i18n_tools_get",
+    "method": "GET",
+    "path": "/api/i18n/tools",
+    "tags": [
+      "i18n"
+    ]
+  },
+  {
+    "operationId": "list_bases_api_knowledge_bases_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "create_base_api_knowledge_bases_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "capability_api_knowledge_bases_capability_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/capability",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "default_open_bases_api_knowledge_bases_default_open_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/default-open",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "embedding_options_api_knowledge_bases_embedding_options_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/embedding-options",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "put_feature_api_knowledge_bases_feature_put",
+    "method": "PUT",
+    "path": "/api/knowledge-bases/feature",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "ocr_options_api_knowledge_bases_ocr_options_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/ocr-options",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "activate_onnx_service_api_knowledge_bases_onnx_activate_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/onnx-activate",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "start_onnx_download_api_knowledge_bases_onnx_download_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/onnx-download",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "onnx_download_status_api_knowledge_bases_onnx_download_status_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/onnx-download-status",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "test_onnx_model_api_knowledge_bases_onnx_test_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/onnx-test",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "delete_base_api_knowledge_bases__kb_id__delete",
+    "method": "DELETE",
+    "path": "/api/knowledge-bases/{kb_id}",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "get_base_api_knowledge_bases__kb_id__get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/{kb_id}",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "update_base_api_knowledge_bases__kb_id__patch",
+    "method": "PATCH",
+    "path": "/api/knowledge-bases/{kb_id}",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "list_documents_api_knowledge_bases__kb_id__documents_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/{kb_id}/documents",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "upload_document_api_knowledge_bases__kb_id__documents_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/{kb_id}/documents",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "create_text_document_api_knowledge_bases__kb_id__documents_text_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/{kb_id}/documents/text",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "delete_document_api_knowledge_bases__kb_id__documents__doc_id__delete",
+    "method": "DELETE",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "get_text_document_api_knowledge_bases__kb_id__documents__doc_id__content_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/content",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "update_text_document_api_knowledge_bases__kb_id__documents__doc_id__content_put",
+    "method": "PUT",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/content",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "download_document_file_api_knowledge_bases__kb_id__documents__doc_id__file_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/file",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "preview_document_api_knowledge_bases__kb_id__documents__doc_id__preview_get",
+    "method": "GET",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/preview",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "reindex_document_api_knowledge_bases__kb_id__documents__doc_id__reindex_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/reindex",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "rename_document_api_knowledge_bases__kb_id__documents__doc_id__rename_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/{kb_id}/documents/{doc_id}/rename",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "create_folder_api_knowledge_bases__kb_id__folders_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/{kb_id}/folders",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "reindex_base_api_knowledge_bases__kb_id__reindex_post",
+    "method": "POST",
+    "path": "/api/knowledge-bases/{kb_id}/reindex",
+    "tags": [
+      "knowledge"
+    ]
+  },
+  {
+    "operationId": "apply_type_api_mbti_apply_post",
+    "method": "POST",
+    "path": "/api/mbti/apply",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "get_current_mbti_api_mbti_current_get",
+    "method": "GET",
+    "path": "/api/mbti/current",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "get_persona_preview_api_mbti_preview__code__get",
+    "method": "GET",
+    "path": "/api/mbti/preview/{code}",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "get_test_questions_api_mbti_test_questions_get",
+    "method": "GET",
+    "path": "/api/mbti/test/questions",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "submit_test_api_mbti_test_submit_post",
+    "method": "POST",
+    "path": "/api/mbti/test/submit",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "list_types_api_mbti_types_get",
+    "method": "GET",
+    "path": "/api/mbti/types",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "get_type_api_mbti_types__code__get",
+    "method": "GET",
+    "path": "/api/mbti/types/{code}",
+    "tags": [
+      "mbti"
+    ]
+  },
+  {
+    "operationId": "list_portable_sources_api_memory_portable_sources_get",
+    "method": "GET",
+    "path": "/api/memory/portable/sources",
+    "tags": [
+      "memory"
+    ]
+  },
+  {
+    "operationId": "get_agent_control_api_mobile_agent_control_get",
+    "method": "GET",
+    "path": "/api/mobile/agent-control",
+    "tags": [
+      "mobile"
+    ]
+  },
+  {
+    "operationId": "put_agent_control_api_mobile_agent_control_put",
+    "method": "PUT",
+    "path": "/api/mobile/agent-control",
+    "tags": [
+      "mobile"
+    ]
+  },
+  {
+    "operationId": "get_mobile_device_info_api_mobile_devices__device__info_get",
+    "method": "GET",
+    "path": "/api/mobile/devices/{device}/info",
+    "tags": [
+      "mobile"
+    ]
+  },
+  {
+    "operationId": "install_mobile_api_mobile_install_post",
+    "method": "POST",
+    "path": "/api/mobile/install",
+    "tags": [
+      "mobile"
+    ]
+  },
+  {
+    "operationId": "get_mobile_status_api_mobile_status_get",
+    "method": "GET",
+    "path": "/api/mobile/status",
+    "tags": [
+      "mobile"
+    ]
+  },
+  {
+    "operationId": "list_ollama_models_api_ollama_models_get",
+    "method": "GET",
+    "path": "/api/ollama-models",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "download_ollama_model_api_ollama_models_download_post",
+    "method": "POST",
+    "path": "/api/ollama-models/download",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "get_ollama_download_status_api_ollama_models_download_status_get",
+    "method": "GET",
+    "path": "/api/ollama-models/download-status",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "cancel_ollama_download_api_ollama_models_download__task_id__delete",
+    "method": "DELETE",
+    "path": "/api/ollama-models/download/{task_id}",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "get_ollama_service_api_ollama_models_service_get",
+    "method": "GET",
+    "path": "/api/ollama-models/service",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "put_ollama_service_api_ollama_models_service_put",
+    "method": "PUT",
+    "path": "/api/ollama-models/service",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "delete_ollama_model_api_ollama_models__name__delete",
+    "method": "DELETE",
+    "path": "/api/ollama-models/{name}",
+    "tags": [
+      "ollama"
+    ]
+  },
+  {
+    "operationId": "get_catalog_api_onnx_models_catalog_get",
+    "method": "GET",
+    "path": "/api/onnx-models/catalog",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "put_config_api_onnx_models_config_put",
+    "method": "PUT",
+    "path": "/api/onnx-models/config",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "post_download_api_onnx_models_download_post",
+    "method": "POST",
+    "path": "/api/onnx-models/download",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "get_download_status_api_onnx_models_download_status_get",
+    "method": "GET",
+    "path": "/api/onnx-models/download-status",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "delete_local_model_api_onnx_models_local__model_name__delete",
+    "method": "DELETE",
+    "path": "/api/onnx-models/local/{model_name}",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "get_model_meta_api_onnx_models_models__model_name__meta_get",
+    "method": "GET",
+    "path": "/api/onnx-models/models/{model_name}/meta",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "get_status_api_onnx_models_status_get",
+    "method": "GET",
+    "path": "/api/onnx-models/status",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "post_test_api_onnx_models_test_post",
+    "method": "POST",
+    "path": "/api/onnx-models/test",
+    "tags": [
+      "onnx"
+    ]
+  },
+  {
+    "operationId": "list_plugins_api_plugins_get",
+    "method": "GET",
+    "path": "/api/plugins",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "list_agent_plugins_api_plugins_agents__agent_id__get",
+    "method": "GET",
+    "path": "/api/plugins/agents/{agent_id}",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "patch_agent_plugins_api_plugins_agents__agent_id__patch",
+    "method": "PATCH",
+    "path": "/api/plugins/agents/{agent_id}",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "list_agent_plugin_tools_api_plugins_agents__agent_id__tools_get",
+    "method": "GET",
+    "path": "/api/plugins/agents/{agent_id}/tools",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "patch_agent_plugin_tools_api_plugins_agents__agent_id__tools_patch",
+    "method": "PATCH",
+    "path": "/api/plugins/agents/{agent_id}/tools",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "install_plugin_api_plugins_install_post",
+    "method": "POST",
+    "path": "/api/plugins/install",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "list_market_plugins_api_plugins_market_get",
+    "method": "GET",
+    "path": "/api/plugins/market",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "install_market_plugin_api_plugins_market__plugin_id__install_post",
+    "method": "POST",
+    "path": "/api/plugins/market/{plugin_id}/install",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "get_market_plugin_ui_asset_api_plugins_market__plugin_id__ui__file_path__get",
+    "method": "GET",
+    "path": "/api/plugins/market/{plugin_id}/ui/{file_path}",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "reload_plugins_api_plugins_reload_post",
+    "method": "POST",
+    "path": "/api/plugins/reload",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "upload_plugin_api_plugins_upload_post",
+    "method": "POST",
+    "path": "/api/plugins/upload",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "uninstall_plugin_api_plugins__plugin_id__delete",
+    "method": "DELETE",
+    "path": "/api/plugins/{plugin_id}",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "patch_plugin_api_plugins__plugin_id__patch",
+    "method": "PATCH",
+    "path": "/api/plugins/{plugin_id}",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "get_plugin_ui_asset_api_plugins__plugin_id__ui__file_path__get",
+    "method": "GET",
+    "path": "/api/plugins/{plugin_id}/ui/{file_path}",
+    "tags": [
+      "plugins"
+    ]
+  },
+  {
+    "operationId": "get_preferences_api_preferences_get",
+    "method": "GET",
+    "path": "/api/preferences",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "patch_preferences_api_preferences_patch",
+    "method": "PATCH",
+    "path": "/api/preferences",
+    "tags": [
+      "auth"
+    ]
+  },
+  {
+    "operationId": "list_providers_api_providers_get",
+    "method": "GET",
+    "path": "/api/providers",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "get_active_model_api_providers_active_model_get",
+    "method": "GET",
+    "path": "/api/providers/active-model",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "set_active_model_api_providers_active_model_put",
+    "method": "PUT",
+    "path": "/api/providers/active-model",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "list_provider_presets_api_providers_presets_get",
+    "method": "GET",
+    "path": "/api/providers/presets",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "list_resolved_models_api_providers_resolved_get",
+    "method": "GET",
+    "path": "/api/providers/resolved",
+    "tags": [
+      "providers"
+    ]
+  },
+  {
+    "operationId": "test_search_provider_api_search__provider_id__test_post",
+    "method": "POST",
+    "path": "/api/search/{provider_id}/test",
+    "tags": [
+      "search"
+    ]
+  },
+  {
+    "operationId": "get_capabilities_api_settings_capabilities_get",
+    "method": "GET",
+    "path": "/api/settings/capabilities",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "operationId": "get_captcha_settings_api_settings_captcha_get",
+    "method": "GET",
+    "path": "/api/settings/captcha",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "operationId": "put_captcha_settings_api_settings_captcha_put",
+    "method": "PUT",
+    "path": "/api/settings/captcha",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "operationId": "get_timezone_settings_api_settings_timezone_get",
+    "method": "GET",
+    "path": "/api/settings/timezone",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "operationId": "get_upload_settings_api_settings_upload_get",
+    "method": "GET",
+    "path": "/api/settings/upload",
+    "tags": [
+      "settings"
+    ]
+  },
+  {
+    "operationId": "begin_setup_api_setup_begin_post",
+    "method": "POST",
+    "path": "/api/setup/begin",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "apply_database_api_setup_database_post",
+    "method": "POST",
+    "path": "/api/setup/database",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "finish_api_setup_finish_post",
+    "method": "POST",
+    "path": "/api/setup/finish",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "initial_admin_api_setup_initial_admin_post",
+    "method": "POST",
+    "path": "/api/setup/initial-admin",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "setup_presets_api_setup_presets_get",
+    "method": "GET",
+    "path": "/api/setup/presets",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "resume_wizard_api_setup_resume_wizard_post",
+    "method": "POST",
+    "path": "/api/setup/resume-wizard",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "status_api_setup_status_get",
+    "method": "GET",
+    "path": "/api/setup/status",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "test_database_api_setup_test_database_post",
+    "method": "POST",
+    "path": "/api/setup/test-database",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "test_provider_draft_api_setup_test_provider_post",
+    "method": "POST",
+    "path": "/api/setup/test-provider",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "validate_wizard_token_api_setup_validate_token_get",
+    "method": "GET",
+    "path": "/api/setup/validate-token",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "verify_password_api_setup_verify_password_post",
+    "method": "POST",
+    "path": "/api/setup/verify-password",
+    "tags": [
+      "setup"
+    ]
+  },
+  {
+    "operationId": "list_skill_packages_api_skill_packages_get",
+    "method": "GET",
+    "path": "/api/skill-packages",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "create_skill_package_api_skill_packages_post",
+    "method": "POST",
+    "path": "/api/skill-packages",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "create_from_skillhub_api_skill_packages_from_skillhub_post",
+    "method": "POST",
+    "path": "/api/skill-packages/from-skillhub",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "package_hub_rankings_api_skill_packages_hub_rankings_get",
+    "method": "GET",
+    "path": "/api/skill-packages/hub/rankings",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "package_hub_search_api_skill_packages_hub_search_get",
+    "method": "GET",
+    "path": "/api/skill-packages/hub/search",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "delete_skill_package_api_skill_packages__package_id__delete",
+    "method": "DELETE",
+    "path": "/api/skill-packages/{package_id}",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "get_skill_package_api_skill_packages__package_id__get",
+    "method": "GET",
+    "path": "/api/skill-packages/{package_id}",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "update_skill_package_api_skill_packages__package_id__patch",
+    "method": "PATCH",
+    "path": "/api/skill-packages/{package_id}",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "list_package_skills_api_skill_packages__package_id__skills_get",
+    "method": "GET",
+    "path": "/api/skill-packages/{package_id}/skills",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "create_package_skill_api_skill_packages__package_id__skills_post",
+    "method": "POST",
+    "path": "/api/skill-packages/{package_id}/skills",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "hub_install_package_skill_api_skill_packages__package_id__skills_hub_install_post",
+    "method": "POST",
+    "path": "/api/skill-packages/{package_id}/skills/hub/install",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "import_package_skill_api_skill_packages__package_id__skills_import_post",
+    "method": "POST",
+    "path": "/api/skill-packages/{package_id}/skills/import",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "delete_package_skill_api_skill_packages__package_id__skills__slug__delete",
+    "method": "DELETE",
+    "path": "/api/skill-packages/{package_id}/skills/{slug}",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "get_package_skill_api_skill_packages__package_id__skills__slug__get",
+    "method": "GET",
+    "path": "/api/skill-packages/{package_id}/skills/{slug}",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "update_package_skill_api_skill_packages__package_id__skills__slug__put",
+    "method": "PUT",
+    "path": "/api/skill-packages/{package_id}/skills/{slug}",
+    "tags": [
+      "skill-packages"
+    ]
+  },
+  {
+    "operationId": "hub_rankings_global_api_skills_hub_rankings_get",
+    "method": "GET",
+    "path": "/api/skills/hub/rankings",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "hub_search_skills_global_api_skills_hub_search_get",
+    "method": "GET",
+    "path": "/api/skills/hub/search",
+    "tags": [
+      "skills"
+    ]
+  },
+  {
+    "operationId": "list_slash_commands_api_slash_commands_get",
+    "method": "GET",
+    "path": "/api/slash/commands",
+    "tags": [
+      "slash"
+    ]
+  },
+  {
+    "operationId": "list_storage_backends_for_user_api_storage_backends_get",
+    "method": "GET",
+    "path": "/api/storage-backends",
+    "tags": [
+      "storage-backends"
+    ]
+  },
+  {
+    "operationId": "list_subagent_catalog_api_subagent_catalog_get",
+    "method": "GET",
+    "path": "/api/subagent-catalog",
+    "tags": [
+      "subagents"
+    ]
+  },
+  {
+    "operationId": "list_subagent_divisions_api_subagent_catalog_divisions_get",
+    "method": "GET",
+    "path": "/api/subagent-catalog/divisions",
+    "tags": [
+      "subagents"
+    ]
+  },
+  {
+    "operationId": "get_subagent_catalog_item_api_subagent_catalog__slug__get",
+    "method": "GET",
+    "path": "/api/subagent-catalog/{slug}",
+    "tags": [
+      "subagents"
+    ]
+  },
+  {
+    "operationId": "list_teams_api_teams_get",
+    "method": "GET",
+    "path": "/api/teams",
+    "tags": [
+      "teams"
+    ]
+  },
+  {
+    "operationId": "create_team_api_teams_post",
+    "method": "POST",
+    "path": "/api/teams",
+    "tags": [
+      "teams"
+    ]
+  },
+  {
+    "operationId": "team_template_files_api_teams_template_get",
+    "method": "GET",
+    "path": "/api/teams/template",
+    "tags": [
+      "teams"
+    ]
+  },
+  {
+    "operationId": "delete_team_api_teams__team_id__delete",
+    "method": "DELETE",
+    "path": "/api/teams/{team_id}",
+    "tags": [
+      "teams"
+    ]
+  },
+  {
+    "operationId": "get_team_api_teams__team_id__get",
+    "method": "GET",
+    "path": "/api/teams/{team_id}",
+    "tags": [
+      "teams"
+    ]
+  },
+  {
+    "operationId": "patch_team_api_teams__team_id__patch",
+    "method": "PATCH",
+    "path": "/api/teams/{team_id}",
+    "tags": [
+      "teams"
+    ]
+  },
+  {
+    "operationId": "check_for_updates_api_update_check_post",
+    "method": "POST",
+    "path": "/api/update/check",
+    "tags": [
+      "update"
+    ]
+  },
+  {
+    "operationId": "upgrade_progress_api_update_progress_get",
+    "method": "GET",
+    "path": "/api/update/progress",
+    "tags": [
+      "update"
+    ]
+  },
+  {
+    "operationId": "restart_service_endpoint_api_update_restart_post",
+    "method": "POST",
+    "path": "/api/update/restart",
+    "tags": [
+      "update"
+    ]
+  },
+  {
+    "operationId": "update_settings_api_update_settings_patch",
+    "method": "PATCH",
+    "path": "/api/update/settings",
+    "tags": [
+      "update"
+    ]
+  },
+  {
+    "operationId": "update_status_api_update_status_get",
+    "method": "GET",
+    "path": "/api/update/status",
+    "tags": [
+      "update"
+    ]
+  },
+  {
+    "operationId": "trigger_upgrade_api_update_upgrade_post",
+    "method": "POST",
+    "path": "/api/update/upgrade",
+    "tags": [
+      "update"
+    ]
+  },
+  {
+    "operationId": "user_export_api_usage_export_xlsx_get",
+    "method": "GET",
+    "path": "/api/usage/export.xlsx",
+    "tags": [
+      "usage"
+    ]
+  },
+  {
+    "operationId": "user_summary_api_usage_summary_get",
+    "method": "GET",
+    "path": "/api/usage/summary",
+    "tags": [
+      "usage"
+    ]
+  },
+  {
+    "operationId": "list_users_api_users_get",
+    "method": "GET",
+    "path": "/api/users",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "create_user_api_users_post",
+    "method": "POST",
+    "path": "/api/users",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "batch_users_api_users_batch_post",
+    "method": "POST",
+    "path": "/api/users/batch",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "list_invites_api_users_invites_get",
+    "method": "GET",
+    "path": "/api/users/invites",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "create_invite_api_users_invites_post",
+    "method": "POST",
+    "path": "/api/users/invites",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "revoke_invite_api_users_invites__invite_id__revoke_post",
+    "method": "POST",
+    "path": "/api/users/invites/{invite_id}/revoke",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "list_permission_catalog_api_users_permissions_get",
+    "method": "GET",
+    "path": "/api/users/permissions",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "list_user_roles_api_users_roles_get",
+    "method": "GET",
+    "path": "/api/users/roles",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "create_user_role_api_users_roles_post",
+    "method": "POST",
+    "path": "/api/users/roles",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "delete_user_role_api_users_roles__user_role_id__delete",
+    "method": "DELETE",
+    "path": "/api/users/roles/{user_role_id}",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "patch_user_role_api_users_roles__user_role_id__patch",
+    "method": "PATCH",
+    "path": "/api/users/roles/{user_role_id}",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "delete_role_avatar_api_users_roles__user_role_id__avatar_delete",
+    "method": "DELETE",
+    "path": "/api/users/roles/{user_role_id}/avatar",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "get_role_avatar_api_users_roles__user_role_id__avatar_get",
+    "method": "GET",
+    "path": "/api/users/roles/{user_role_id}/avatar",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "upload_role_avatar_api_users_roles__user_role_id__avatar_post",
+    "method": "POST",
+    "path": "/api/users/roles/{user_role_id}/avatar",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "delete_user_api_users__user_id__delete",
+    "method": "DELETE",
+    "path": "/api/users/{user_id}",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "get_user_api_users__user_id__get",
+    "method": "GET",
+    "path": "/api/users/{user_id}",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "patch_user_api_users__user_id__patch",
+    "method": "PATCH",
+    "path": "/api/users/{user_id}",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "delete_user_avatar_api_users__user_id__avatar_delete",
+    "method": "DELETE",
+    "path": "/api/users/{user_id}/avatar",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "get_user_avatar_api_users__user_id__avatar_get",
+    "method": "GET",
+    "path": "/api/users/{user_id}/avatar",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "upload_user_avatar_api_users__user_id__avatar_post",
+    "method": "POST",
+    "path": "/api/users/{user_id}/avatar",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "reset_password_api_users__user_id__reset_password_post",
+    "method": "POST",
+    "path": "/api/users/{user_id}/reset-password",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "unlock_user_login_api_users__user_id__unlock_login_post",
+    "method": "POST",
+    "path": "/api/users/{user_id}/unlock-login",
+    "tags": [
+      "users"
+    ]
+  },
+  {
+    "operationId": "get_active_voice_api_voice_active_get",
+    "method": "GET",
+    "path": "/api/voice/active",
+    "tags": [
+      "voice"
+    ]
+  },
+  {
+    "operationId": "set_active_voice_api_voice_active_put",
+    "method": "PUT",
+    "path": "/api/voice/active",
+    "tags": [
+      "voice"
+    ]
+  },
+  {
+    "operationId": "list_voice_presets_api_voice_presets_get",
+    "method": "GET",
+    "path": "/api/voice/presets",
+    "tags": [
+      "voice"
+    ]
+  },
+  {
+    "operationId": "list_voice_providers_api_voice_providers_get",
+    "method": "GET",
+    "path": "/api/voice/providers",
+    "tags": [
+      "voice"
+    ]
+  },
+  {
+    "operationId": "transcribe_audio_api_voice_stt_post",
+    "method": "POST",
+    "path": "/api/voice/stt",
+    "tags": [
+      "voice"
+    ]
+  },
+  {
+    "operationId": "synthesize_speech_api_voice_tts_post",
+    "method": "POST",
+    "path": "/api/voice/tts",
+    "tags": [
+      "voice"
+    ]
+  }
+]

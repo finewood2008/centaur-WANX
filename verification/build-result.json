@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-08",
+  "platform": "macOS Apple Silicon (arm64)",
+  "version": "0.1.0",
+  "archive": "/Users/finewood/Library/CloudStorage/OneDrive-个人/AI/centaurAI/万象app/wanx-desktop/release/万象电脑端-mac-arm64-0.1.0.zip",
+  "archiveSHA256": "0f98475bc5646ae07d7527bd989254c11718c00eed5a464cdf01209a73886a23",
+  "app": "/Users/finewood/Library/CloudStorage/OneDrive-个人/AI/centaurAI/万象app/wanx-desktop/release/mac-arm64/万象电脑端.app",
+  "signature": "ad-hoc development signature; not notarized",
+  "stagedSignatureVerified": true,
+  "workspaceSignatureVerified": true,
+  "buildPassed": true,
+  "adapterTestsPassed": 12,
+  "desktopTestsPassed": 9,
+  "nativeAdapterAndStandardSDKRaceTestsPassed": true,
+  "packagedUISyntheticAcceptancePassed": true,
+  "standardSDKContentUnmodified": true,
+  "configurationSource": "SDK docs: Go Octop integration and product handoff",
+  "livePlatformOrBoxAcceptance": false,
+  "windowsPackageCreated": false,
+  "archiveCRCVerified": true
+}

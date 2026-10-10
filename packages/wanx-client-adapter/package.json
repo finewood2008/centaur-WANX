@@ -1,0 +1,70 @@
+{
+  "name": "centaurai-wanx",
+  "version": "0.1.0-wanx.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "Private WANX client API adapter over the unmodified public NexusAOS standard Go SDK",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "native/bin",
+    "api-baseline",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "third-party",
+    "README.md",
+    "verification.json",
+    "docs/api-reference.md",
+    "docs/electron.md",
+    "docs/go.md",
+    "docs/backend-contract.md",
+    "docs/applications.md",
+    "docs/brainstorm.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./electron-main": {
+      "types": "./dist/electron-main.d.ts",
+      "import": "./dist/electron-main.js"
+    },
+    "./electron-preload": {
+      "types": "./dist/electron-preload.d.ts",
+      "import": "./dist/electron-preload.js",
+      "require": "./dist/electron-preload.cjs"
+    },
+    "./renderer": {
+      "types": "./dist/renderer.d.ts",
+      "import": "./dist/renderer.js"
+    },
+    "./project-generator": {
+      "types": "./dist/project-generator.d.ts",
+      "import": "./dist/project-generator.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node tools/build_preload.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.examples.json",
+    "test": "node --test --test-reporter=tap test/*.test.mjs",
+    "verify": "python3 tools/verify_spec.py",
+    "check": "python3 tools/run_js_checks.py && python3 tools/verify_spec.py",
+    "check:native": "python3 tools/run_native_checks.py"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "@types/ws": "8.18.2",
+    "typescript": "5.8.3"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  }
+}
