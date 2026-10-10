@@ -1,0 +1,159 @@
+[
+  {
+    "module": "github.com/coder/websocket",
+    "version": "v1.8.13",
+    "notices": [
+      "third-party/go/github.com_coder_websocket@v1.8.13/LICENSE.txt"
+    ]
+  },
+  {
+    "module": "github.com/google/uuid",
+    "version": "v1.6.0",
+    "notices": [
+      "third-party/go/github.com_google_uuid@v1.6.0/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/datachannel",
+    "version": "v1.5.10",
+    "notices": [
+      "third-party/go/github.com_pion_datachannel@v1.5.10/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/dtls/v3",
+    "version": "v3.0.7",
+    "notices": [
+      "third-party/go/github.com_pion_dtls_v3@v3.0.7/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/ice/v4",
+    "version": "v4.0.10",
+    "notices": [
+      "third-party/go/github.com_pion_ice_v4@v4.0.10/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/interceptor",
+    "version": "v0.1.41",
+    "notices": [
+      "third-party/go/github.com_pion_interceptor@v0.1.41/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/logging",
+    "version": "v0.2.4",
+    "notices": [
+      "third-party/go/github.com_pion_logging@v0.2.4/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/mdns/v2",
+    "version": "v2.0.7",
+    "notices": [
+      "third-party/go/github.com_pion_mdns_v2@v2.0.7/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/randutil",
+    "version": "v0.1.0",
+    "notices": [
+      "third-party/go/github.com_pion_randutil@v0.1.0/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/rtcp",
+    "version": "v1.2.15",
+    "notices": [
+      "third-party/go/github.com_pion_rtcp@v1.2.15/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/rtp",
+    "version": "v1.8.23",
+    "notices": [
+      "third-party/go/github.com_pion_rtp@v1.8.23/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/sctp",
+    "version": "v1.8.40",
+    "notices": [
+      "third-party/go/github.com_pion_sctp@v1.8.40/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/sdp/v3",
+    "version": "v3.0.16",
+    "notices": [
+      "third-party/go/github.com_pion_sdp_v3@v3.0.16/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/srtp/v3",
+    "version": "v3.0.8",
+    "notices": [
+      "third-party/go/github.com_pion_srtp_v3@v3.0.8/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/stun/v3",
+    "version": "v3.0.0",
+    "notices": [
+      "third-party/go/github.com_pion_stun_v3@v3.0.0/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/transport/v3",
+    "version": "v3.0.8",
+    "notices": [
+      "third-party/go/github.com_pion_transport_v3@v3.0.8/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/turn/v4",
+    "version": "v4.1.1",
+    "notices": [
+      "third-party/go/github.com_pion_turn_v4@v4.1.1/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/pion/webrtc/v4",
+    "version": "v4.1.6",
+    "notices": [
+      "third-party/go/github.com_pion_webrtc_v4@v4.1.6/LICENSE"
+    ]
+  },
+  {
+    "module": "github.com/wlynxg/anet",
+    "version": "v0.0.5",
+    "notices": [
+      "third-party/go/github.com_wlynxg_anet@v0.0.5/LICENSE"
+    ]
+  },
+  {
+    "module": "golang.org/x/crypto",
+    "version": "v0.33.0",
+    "notices": [
+      "third-party/go/golang.org_x_crypto@v0.33.0/LICENSE",
+      "third-party/go/golang.org_x_crypto@v0.33.0/PATENTS"
+    ]
+  },
+  {
+    "module": "golang.org/x/net",
+    "version": "v0.35.0",
+    "notices": [
+      "third-party/go/golang.org_x_net@v0.35.0/LICENSE",
+      "third-party/go/golang.org_x_net@v0.35.0/PATENTS"
+    ]
+  },
+  {
+    "module": "golang.org/x/sys",
+    "version": "v0.30.0",
+    "notices": [
+      "third-party/go/golang.org_x_sys@v0.30.0/LICENSE",
+      "third-party/go/golang.org_x_sys@v0.30.0/PATENTS"
+    ]
+  }
+]

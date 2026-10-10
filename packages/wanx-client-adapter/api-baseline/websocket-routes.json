@@ -1,0 +1,44 @@
+[
+  {
+    "path": "/api/agents/{agent_id}/chat/ws",
+    "source": "octop.api.routers.chat.ws",
+    "condition": "default",
+    "sdk_status": "design_only"
+  },
+  {
+    "path": "/api/agents/{agent_id}/terminal/ws",
+    "source": "octop.api.routers.terminal",
+    "condition": "default",
+    "sdk_status": "design_only"
+  },
+  {
+    "path": "/api/browser-stream/ws",
+    "source": "octop.api.routers.browser.stream",
+    "condition": "default",
+    "sdk_status": "design_only"
+  },
+  {
+    "path": "/api/desktop-stream/ws",
+    "source": "octop.api.routers.desktop.stream",
+    "condition": "default",
+    "sdk_status": "design_only"
+  },
+  {
+    "path": "/api/mobile-stream/ws",
+    "source": "octop.api.routers.mobile.stream",
+    "condition": "mobile.enabled",
+    "sdk_status": "design_only"
+  },
+  {
+    "path": "/api/mobile/adb/shell/ws",
+    "source": "octop.api.routers.mobile.shell_ws",
+    "condition": "mobile.enabled",
+    "sdk_status": "design_only"
+  },
+  {
+    "path": "/api/notifications/ws",
+    "source": "octop.api.routers.chat.notify_ws",
+    "condition": "default",
+    "sdk_status": "design_only"
+  }
+]

@@ -1,6 +1,6 @@
 # 万象电脑端
 
-当前客户端是 `wanx-desktop/` 中独立运行的 Electron 应用。它复用原 Dashboard 的组件和功能页面，加载自己随安装包交付的界面，通过 SDK 连接盒子里的 WANX 服务端。盒子连接与应用中心是电脑端导航中的两个同级入口；盒子服务端导航不增加这两个客户端入口。
+当前客户端是 `wanx-desktop/` 中独立运行的 Electron 应用。它复用原 Dashboard 的组件和功能页面，加载自己随安装包交付的界面，通过 SDK 连接盒子里的 WANX 服务端。盒子连接与应用中心是电脑端导航中的两个同级入口；服务端 Web 控制台保留盒子管理入口，通过平台管理与已有地址连接两个页签管理盒子；桌面模式仍显示独立客户端连接页。
 
 ## 账号与盒子连接
 
@@ -41,11 +41,13 @@
 
 当前新建私人实例会应用模板及模型绑定。存储、技能、插件等其他资源绑定完成存在性校验并保存为部署记录，尚未自动装配到每个用户实例；这些资源继续通过原 WANX 设置维护。
 
-SDK 包：[centaurai-wanx-0.1.0-alpha.3.tgz](../dashboard/vendor/centaurai-wanx-0.1.0-alpha.3.tgz)。SHA-256：`c7f0bf3a2a2ab3b466a10fc56097fa2bbac44d44dc7aa35736554d206a6249ed`。
+当前客户端固定适配层包：[centaurai-wanx-0.1.0-wanx.1-585a760033fa.tgz](../vendor/centaurai-wanx-0.1.0-wanx.1-585a760033fa.tgz)。SHA-256：`585a760033fafc8838553b3b1945e8e3949b53fbdedbf3580a477d900462026b`。源码位于 `packages/wanx-client-adapter/`，使用标准 Go SDK；旧 `dashboard/vendor/centaurai-wanx-0.1.0-alpha.3.tgz` 仅保留作历史参考。
 
 ## 构建与检查
 
 ```sh
+npm ci --prefix sdk-box-management
+npm run build --prefix sdk-box-management
 cd dashboard
 npm ci
 cd ../wanx-desktop
@@ -53,6 +55,7 @@ npm ci
 npm run build
 npm test
 npm start
+# Mac 打包前按 SNAPSHOT.md 构建 remote-connect 网络进程
 npm run package:mac
 # Windows 发布主机：npm run package:windows
 ```

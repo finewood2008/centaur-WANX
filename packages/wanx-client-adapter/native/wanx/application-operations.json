@@ -1,0 +1,381 @@
+[
+  {
+    "operationId": "wanxApplicationsList",
+    "method": "GET",
+    "path": "/api/admin/applications",
+    "tags": [
+      "applications"
+    ],
+    "alias": "list",
+    "parameters": [],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: list"
+  },
+  {
+    "operationId": "wanxApplicationsCreate",
+    "method": "POST",
+    "path": "/api/admin/applications",
+    "tags": [
+      "applications"
+    ],
+    "alias": "create",
+    "parameters": [],
+    "bodyRequired": true,
+    "contentTypes": [
+      "application/json"
+    ],
+    "stream": "",
+    "summary": "WANX management protocol v1: create"
+  },
+  {
+    "operationId": "wanxApplicationsGet",
+    "method": "GET",
+    "path": "/api/admin/applications/{application_id}",
+    "tags": [
+      "applications"
+    ],
+    "alias": "get",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: get"
+  },
+  {
+    "operationId": "wanxApplicationsUpdate",
+    "method": "PATCH",
+    "path": "/api/admin/applications/{application_id}",
+    "tags": [
+      "applications"
+    ],
+    "alias": "update",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": true,
+    "contentTypes": [
+      "application/json"
+    ],
+    "stream": "",
+    "summary": "WANX management protocol v1: update"
+  },
+  {
+    "operationId": "wanxApplicationsDeploymentGet",
+    "method": "GET",
+    "path": "/api/admin/applications/{application_id}/deployment",
+    "tags": [
+      "applications"
+    ],
+    "alias": "getDeployment",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: getDeployment"
+  },
+  {
+    "operationId": "wanxApplicationsDeploymentPut",
+    "method": "PUT",
+    "path": "/api/admin/applications/{application_id}/deployment",
+    "tags": [
+      "applications"
+    ],
+    "alias": "putDeployment",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": true,
+    "contentTypes": [
+      "application/json"
+    ],
+    "stream": "",
+    "summary": "WANX management protocol v1: putDeployment"
+  },
+  {
+    "operationId": "wanxApplicationsReleasesList",
+    "method": "GET",
+    "path": "/api/admin/applications/{application_id}/releases",
+    "tags": [
+      "applications"
+    ],
+    "alias": "listReleases",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: listReleases"
+  },
+  {
+    "operationId": "wanxApplicationsReleasesCreate",
+    "method": "POST",
+    "path": "/api/admin/applications/{application_id}/releases",
+    "tags": [
+      "applications"
+    ],
+    "alias": "createRelease",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": true,
+    "contentTypes": [
+      "application/json"
+    ],
+    "stream": "",
+    "summary": "WANX management protocol v1: createRelease"
+  },
+  {
+    "operationId": "wanxApplicationsReleaseRecommend",
+    "method": "POST",
+    "path": "/api/admin/applications/{application_id}/releases/{version}/recommend",
+    "tags": [
+      "applications"
+    ],
+    "alias": "recommendRelease",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "version",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": true,
+    "contentTypes": [
+      "application/json"
+    ],
+    "stream": "",
+    "summary": "WANX management protocol v1: recommendRelease"
+  },
+  {
+    "operationId": "wanxApplicationsAccessList",
+    "method": "GET",
+    "path": "/api/admin/applications/{application_id}/access",
+    "tags": [
+      "applications"
+    ],
+    "alias": "listAccess",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: listAccess"
+  },
+  {
+    "operationId": "wanxApplicationsAccessPut",
+    "method": "PUT",
+    "path": "/api/admin/applications/{application_id}/access",
+    "tags": [
+      "applications"
+    ],
+    "alias": "putAccess",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": true,
+    "contentTypes": [
+      "application/json"
+    ],
+    "stream": "",
+    "summary": "WANX management protocol v1: putAccess"
+  },
+  {
+    "operationId": "wanxApplicationsManifestGet",
+    "method": "GET",
+    "path": "/api/admin/applications/{application_id}/manifest",
+    "tags": [
+      "applications"
+    ],
+    "alias": "getManifest",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: getManifest"
+  },
+  {
+    "operationId": "wanxApplicationsCompatibleRelease",
+    "method": "GET",
+    "path": "/api/applications/{application_id}/release",
+    "tags": [
+      "applications"
+    ],
+    "alias": "compatibleRelease",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "platform",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "arch",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "current_version",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "sdk_version",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "WANX management protocol v1: compatibleRelease"
+  },
+  {
+    "operationId": "wanxApplicationsGetProfile",
+    "method": "GET",
+    "path": "/api/applications/{application_id}/profile",
+    "tags": [
+      "applications"
+    ],
+    "alias": "getProfile",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "Application-scoped personal profile"
+  },
+  {
+    "operationId": "wanxApplicationsCreateProfile",
+    "method": "POST",
+    "path": "/api/applications/{application_id}/profile",
+    "tags": [
+      "applications"
+    ],
+    "alias": "createProfile",
+    "parameters": [
+      {
+        "name": "application_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "bodyRequired": false,
+    "contentTypes": [],
+    "stream": "",
+    "summary": "Application-scoped personal profile"
+  }
+]

@@ -37,6 +37,8 @@ uv run octop run --host 127.0.0.1 --port 8088
 独立电脑端：
 
 ```sh
+npm ci --prefix sdk-box-management
+npm run build --prefix sdk-box-management
 cd dashboard && npm ci
 cd ../wanx-desktop
 npm ci
@@ -46,7 +48,15 @@ npm start
 # 安装包：npm run package:mac / npm run package:windows
 ```
 
-盒子后端保留现有 Python 包名与 CLI，使用 `uv run octop run` 启动。`make build-frontend` 构建服务端 Web 控制台；`wanx-desktop` 的构建生成独立电脑端资源。SDK 固定依赖位于 `dashboard/vendor/`。发行方必须配置批准的 Consumer、Gateway、ICE 主机，见 [电脑端说明](docs/wanx-client.md)。
+盒子后端保留现有 Python 包名与 CLI，使用 `uv run octop run` 启动。`make build-frontend` 构建服务端 Web 控制台；`wanx-desktop` 的构建生成独立电脑端资源。当前客户端 SDK 适配层源码位于 `packages/wanx-client-adapter/`，Dashboard 和 Electron 共用 `vendor/centaurai-wanx-0.1.0-wanx.1-585a760033fa.tgz`；`dashboard/vendor/` 保留旧版依赖供历史参考。发行方必须配置批准的 Consumer、Gateway、ICE 主机，见 [电脑端说明](docs/wanx-client.md)。
+
+## 独立客户端源码与远程连接
+
+已整合 `codex/wanx-local-20261010` 的桌面客户端快照，同时保留本仓库的 Python 服务端、Web 盒子管理和两种 Dashboard 构建模式。普通构建输出到 `src/octop/dashboard/`，`build:desktop` 输出到 `wanx-desktop/dist-ui/`。
+
+客户端范围和当前差距见 [CLIENT_SCOPE.md](CLIENT_SCOPE.md) 与 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)。使用已提交的 vendor 包时可直接执行上面的独立电脑端构建命令。需要从适配层源码重建原生宿主时，先按 [快照恢复说明](SNAPSHOT.md) 检出固定版本的 `standard-sdk/`，再在根目录执行 `npm run build`；该命令会重新生成 SDK 包并更新两个消费者的依赖。根目录 `npm test` 检查适配层和桌面会话。
+
+`remote-connect/` 提供可选远程网络进程与管理入口，独立于 SDK Direct P2P。Mac 打包前需按快照说明生成远程组件；当前资源面向 macOS arm64，其他架构仍需适配与验收。相关历史构建记录保留在 `verification/`，不代表本次合并的验证结果。
 
 ## 已验证与交付边界
 

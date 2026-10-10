@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from "electron";
+import {openRemoteAccess} from './remote.mjs';
+import { app, BrowserWindow, ipcMain, safeStorage, shell, Menu } from "electron";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +25,7 @@ else {
   app
     .whenReady()
     .then(async () => {
+      if(process.argv.includes('--remote-access')){await openRemoteAccess();return;}
       let deployment;
       try {
         deployment = JSON.parse(
@@ -106,6 +108,7 @@ else {
           }
         },
       );
+      Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'万象',submenu:[{label:'远程访问',click:()=>void openRemoteAccess()},{type:'separator'},{role:'quit'}]},{label:'编辑',submenu:[{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'显示',submenu:[{role:'reload'},{role:'togglefullscreen'}]}]));
       await window.loadURL(gateway.origin + "/boxes");
       heartbeat = setInterval(() => {
         void service.refresh();

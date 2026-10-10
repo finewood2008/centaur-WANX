@@ -10,7 +10,7 @@ const { _electron } = require(process.env.WANX_TEST_PLAYWRIGHT ||
   "/Users/finewood/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright");
 const { WebSocketServer } = require("ws");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const artifacts = resolve(root, "../docs/verification/wanx-computer-client");
+const artifacts = resolve(root, "../verification/electron-ui");
 const user = {
   id: 1,
   username: "synthetic-ui-admin",
@@ -107,6 +107,10 @@ try {
   page = await electron.firstWindow();
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => consoleMessages.push(message.text()));
+  await page.waitForLoadState("domcontentloaded");
+  // Keep the synthetic user's Chinese UI stable across system locale settings.
+  await page.evaluate(() => localStorage.setItem("octop:ui-locale", "zh"));
+  await page.reload();
   await page.waitForLoadState("domcontentloaded");
   console.log(
     "Initial",
@@ -205,6 +209,7 @@ try {
     JSON.stringify(
       {
         result: "passed",
+        packagedApp: await electron.evaluate(({ app }) => app.isPackaged),
         syntheticOnly: true,
         independentUIOrigin: true,
         clientTabsVisibleBeforeConnecting: true,

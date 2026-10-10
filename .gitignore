@@ -113,3 +113,22 @@ artifacts/
 *.tsbuildinfo
 :memory:*
 deployment.json
+
+# Standalone desktop workspace and optional remote-connect runtime
+.tooling/
+standard-sdk/
+**/dist-ui/
+**/native/bin/
+remote-connect/.runtime/
+remote-connect/bin/
+remote-connect/verification/
+**/headscale.json
+**/remote-manager.json
+zhijun-lan-test/
+*.sqlite3
+verification/*
+!verification/构建结果.md
+!verification/SDK-接入核对.md
+!verification/build-result.json
+!verification/sdk-review.json
+!verification/source-baseline.json
