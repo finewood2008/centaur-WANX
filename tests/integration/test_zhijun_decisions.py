@@ -103,9 +103,10 @@ async def test_decision_and_channel_policy_http_workflow(isolated, monkeypatch):
             assert operation["summary"] and operation["description"]
             assert operation["responses"]["200"]["content"]["application/json"]["schema"]
     docs_server = SimpleNamespace(
+        app_runtime=None,
         services=replace(
             server.services, config=replace(server.services.config, enable_api_docs=True)
-        )
+        ),
     )
     docs_app = build_app(docs_server)
     async with httpx.AsyncClient(

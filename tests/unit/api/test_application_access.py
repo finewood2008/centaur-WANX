@@ -95,6 +95,9 @@ def test_zhijun_admin_cannot_read_another_owners_profile() -> None:
         ("GET", "/api/knowledge-bases/embedding-options"),
         ("GET", "/api/agents/profile/workspace/download"),
         ("WEBSOCKET", "/api/browser-stream/ws"),
+        ("GET", "/api/bridge/connections"),
+        ("WEBSOCKET", "/api/bridge/ws"),
+        ("WEBSOCKET", "/api/bridge/connections/remote/browser-stream/ws"),
     ],
 )
 def test_zhijun_token_denies_global_and_configuration_surfaces(method: str, path: str) -> None:
@@ -223,3 +226,32 @@ def test_legacy_mock_identity_uses_same_default_as_application_helper() -> None:
     with pytest.raises(OctopError) as error:
         assert_agent_owner(SimpleNamespace(user_id=1, application_id="zhijun"), user)
     assert error.value.status == 404
+
+
+@pytest.mark.parametrize("method", ["GET", "WEBSOCKET"])
+@pytest.mark.parametrize("application", ["wanx", "zhijun"])
+def test_bridge_shadow_agents_respect_product_scope_and_connection_owner(
+    method: str, application: str
+) -> None:
+    from unittest.mock import Mock
+
+    manager = Mock()
+    registry = Mock()
+    srv = SimpleNamespace(
+        app_runtime=SimpleNamespace(agent_registry=registry, bridge_manager=manager)
+    )
+    user = User(1, "owner", "admin", None, application_id=application)
+    path = "/api/agents/bridge:remote:expert/chat/ws"
+    if application == "zhijun":
+        with pytest.raises(OctopError):
+            assert_application_request(srv, user, path=path, method=method)
+        manager.get_owned.assert_not_called()
+    else:
+        assert_application_request(srv, user, path=path, method=method)
+        manager.get_owned.assert_called_once_with("remote", 1)
+        from octop.infra.errors import ErrorCode
+
+        manager.get_owned.side_effect = OctopError.localized(ErrorCode.BRIDGE_NOT_FOUND)
+        with pytest.raises(OctopError):
+            assert_application_request(srv, user, path=path, method=method)
+    registry.get_row.assert_not_called()

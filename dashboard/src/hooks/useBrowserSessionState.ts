@@ -1,6 +1,7 @@
 import { openBoxSocket } from "../utils/boxConnection";
 import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../api";
+import { bridgeApi } from "../api/modules/bridge";
 import { getWsUrl } from "../api/config";
 import { getAuthToken } from "../api/request";
 import type { BrowserSession, DisplayEnvironment } from "../api/types/browser";
@@ -43,8 +44,8 @@ export interface BrowserSessionState {
  * Unified hook for tracking browser session state.
  *
  * - On mount, makes a single HTTP GET to seed state.
- * - Opens a lightweight WebSocket to `/browser-stream/ws` to receive
- *   `session_update` events in real-time.
+ * - Opens a lightweight WebSocket to `/browser-stream/ws` (or the Bridge
+ *   relay when ``bridgeConnectionId`` is set) to receive ``session_update``.
  * - When `conversationId` changes, re-fetches via HTTP.
  * - Auto-reconnects on WS disconnect with exponential backoff.
  *
@@ -58,10 +59,15 @@ export interface BrowserSessionState {
 export function useBrowserSessionState(
   conversationId?: string,
   enabled = true,
+  bridgeConnectionId?: string | null,
 ): BrowserSessionState {
   const currentUser = useCurrentUser();
-  const browserProfile = resolveBrowserProfile(currentUser?.id);
-  const active = enabled && browserProfile != null;
+  const localProfile = resolveBrowserProfile(currentUser?.id);
+  // Peer harness uses the connection-owner profile on the remote instance;
+  // local user-{id} must not filter peer session_update events.
+  const browserProfile = bridgeConnectionId ? null : localProfile;
+  const active =
+    enabled && (bridgeConnectionId != null || browserProfile != null);
   const [session, setSession] = useState<BrowserSession | null>(null);
   const [environment, setEnvironment] =
     useState<DisplayEnvironment>("headless-server");
@@ -73,12 +79,17 @@ export function useBrowserSessionState(
   const unmountedRef = useRef(false);
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
+  const bridgeIdRef = useRef(bridgeConnectionId);
+  bridgeIdRef.current = bridgeConnectionId;
 
   // ── HTTP fetch (initial + fallback) ──────────────────────────────────
 
   const fetchSessions = useCallback(async () => {
     try {
-      const resp = await api.getSessions();
+      const bridgeId = bridgeIdRef.current;
+      const resp = bridgeId
+        ? await bridgeApi.getBrowserSessions(bridgeId)
+        : await api.getSessions();
       if (unmountedRef.current) return;
       if (resp.ok) {
         setEnvironment(resp.environment);
@@ -92,7 +103,7 @@ export function useBrowserSessionState(
         }
       }
     } catch {
-      // octop-browser may be unavailable — ignore
+      // octop-browser / bridge tunnel may be unavailable — ignore
     }
   }, []);
 
@@ -109,7 +120,9 @@ export function useBrowserSessionState(
   }, []);
 
   const connectWs = useCallback(() => {
-    if (unmountedRef.current || !browserProfile) return;
+    if (unmountedRef.current) return;
+    const bridgeId = bridgeIdRef.current;
+    if (!bridgeId && !browserProfile) return;
 
     // Clean up any previous connection
     if (wsRef.current) {
@@ -128,7 +141,10 @@ export function useBrowserSessionState(
       listen_only: "1",
     });
     if (token) params.set("token", token);
-    const wsUrl = `${getWsUrl("/browser-stream/ws")}?${params.toString()}`;
+    const wsPath = bridgeId
+      ? `/bridge/connections/${encodeURIComponent(bridgeId)}/browser-stream/ws`
+      : "/browser-stream/ws";
+    const wsUrl = `${getWsUrl(wsPath)}?${params.toString()}`;
 
     let ws: WebSocket;
     try {
@@ -154,7 +170,7 @@ export function useBrowserSessionState(
             width: 1,
             height: 1,
             reuse_session: true,
-            session_id: browserProfile,
+            ...(browserProfile ? { session_id: browserProfile } : {}),
           }),
         );
       } catch {
@@ -173,20 +189,19 @@ export function useBrowserSessionState(
           type: string;
         };
         if (msg.type === "session_update") {
-          // Browser state is scoped to the authenticated user's profile.
+          // Local: scoped to the authenticated user's profile.
+          // Bridge: accept peer session_update as-is (profile ids differ).
           const cid = conversationIdRef.current;
           const shared =
+            bridgeId != null ||
             msg.session_id === browserProfile ||
             msg.conversation_id === browserProfile;
           if (!cid || shared || msg.conversation_id === cid) {
             setSession((prev) => {
               if (!prev) {
-                // No session yet — bootstrap one from the WS event so the
-                // browser icon lights up immediately without waiting for the
-                // HTTP fetch to complete.
                 return {
                   session_id: msg.session_id,
-                  profile_name: browserProfile,
+                  profile_name: browserProfile ?? msg.session_id,
                   conversation_id: msg.conversation_id,
                   channel_source: msg.channel_source,
                   state: msg.state,
@@ -264,7 +279,7 @@ export function useBrowserSessionState(
         wsRef.current = null;
       }
     };
-  }, [active, fetchSessions, connectWs]);
+  }, [active, fetchSessions, connectWs, bridgeConnectionId]);
 
   // Re-fetch when conversationId changes
   useEffect(() => {

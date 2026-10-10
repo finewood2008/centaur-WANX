@@ -1717,6 +1717,60 @@ def _ensure_thread_conversation_mode_schema(db: DatabasePool) -> None:
     _ensure_column(db, "threads", "hitl_policy", "TEXT")
 
 
+def _ensure_skill_copy_policy_schema(db: DatabasePool) -> None:
+    if not _table_exists(db, "skill_packages"):
+        return
+    _ensure_column(db, "skill_packages", "copy_policy", "TEXT NOT NULL DEFAULT 'snapshot'")
+
+
+def _ensure_bridge_connections_schema(db: DatabasePool) -> None:
+    """Repair Bridge metadata (upstream v19, WANX v24)."""
+    if not _table_exists(db, "bridge_connections"):
+        return
+    _ensure_column(db, "bridge_connections", "notes", "TEXT")
+    _ensure_column(db, "bridge_connections", "icon_name", "TEXT")
+    _ensure_column(db, "bridge_connections", "auto_reconnect", "INTEGER NOT NULL DEFAULT 1")
+    # Make every (owner, display_name) unique before creating the index.
+    # Empty names are filled from peer username / URL; colliding names get a suffix.
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, owner_user_id, peer_base_url, peer_username, display_name "
+            "FROM bridge_connections ORDER BY id ASC"
+        ).fetchall()
+    used: dict[int, set[str]] = {}
+    updates: list[tuple[str, int]] = []
+    for row in rows:
+        owner = int(row["owner_user_id"])
+        used.setdefault(owner, set())
+        current = str(row["display_name"] or "").strip()
+        base = (
+            current
+            or str(row["peer_username"] or "").strip()
+            or str(row["peer_base_url"] or "").strip()
+            or f"bridge-{row['id']}"
+        )
+        candidate = base
+        n = 2
+        while candidate in used[owner]:
+            candidate = f"{base} ({n})"
+            n += 1
+        used[owner].add(candidate)
+        if candidate != str(row["display_name"] or ""):
+            updates.append((candidate, int(row["id"])))
+    if updates:
+        with db.transaction() as conn:
+            for name, row_id in updates:
+                conn.execute(
+                    "UPDATE bridge_connections SET display_name = ? WHERE id = ?",
+                    (name, row_id),
+                )
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_connections_owner_display "
+            "ON bridge_connections(owner_user_id, display_name)"
+        )
+
+
 def _repair_legacy_schema(db: DatabasePool) -> None:
     """Idempotent compatibility repairs for local databases from old builds."""
     if _table_exists(db, "users"):
@@ -2003,6 +2057,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 25:
+        _ensure_skill_copy_policy_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2075,3 +2134,4 @@ def run_migrations(db: DatabasePool) -> None:
         if _max_discovered_version(db.dialect) >= 23:
             _ensure_application_profiles_schema(db)
         _ensure_registered_applications_schema(db)
+    _ensure_bridge_connections_schema(db)

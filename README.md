@@ -10,6 +10,12 @@ WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用�
 
 「盒子管理」已接入 SDK 的平台账号、设备目录、OTA、转移、支持会话及登录设备管理；具体能力和限制见 [SDK 盒子管理说明](sdk-box-management/README.md)。依据 SDK 的 bootstrap 就绪状态、Direct 连接、统一身份及 V2 清除流程重新设计的方案尚未全部实现，不代表真实盒子已经完成联调。
 
+## 当前 Octop 底座
+
+已合入 Octop **1.0.2b6** 及官方主分支提交 [`0c5a46ab`](https://github.com/TencentCloud/Octop/commit/0c5a46ab5f82e5ad9d1a56fa09b00e542f042fda)（2026-10-10 上传前核对）。新增远程专家 Bridge、LDAP、Agently CLI 连接器和技能复制策略，并保留 WANX 品牌、SDK 盒子管理、原生记忆及应用隔离。
+
+数据库迁移沿用 WANX 的既有编号：上游 Bridge / 技能策略分别映射到 024 / 025，避免覆盖已经部署的 019–023。完整来源、合并处理和验证边界见 [上游合并记录](docs/development/wanx-upstream-20261010.md)。源码更新不代表已有安装包或运行服务已升级。
+
 ## 当前客户端
 
 - **盒子连接**：平台账号登录 → SDK 授权设备目录 → 选择盒子 UUID → 签票与 P2P Direct → WANX 统一身份。提供已有 HTTPS 服务的兼容接入。切盒释放旧会话和数据流，重新核验权限。

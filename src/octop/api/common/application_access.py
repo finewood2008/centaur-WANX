@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from octop.infra.agents.application import application_id, assert_same_application
+from octop.infra.bridge.ids import parse_bridge_agent_id
 from octop.infra.errors import ErrorCode, OctopError
 
 _AGENT_PATH = re.compile(r"^/api/agents/([^/]+)(?:/(.*))?$")
@@ -109,6 +110,15 @@ def assert_application_request(
     if agent_ids:
         registry = server.app_runtime.agent_registry
         for agent_id in agent_ids:
+            bridge_ref = parse_bridge_agent_id(agent_id)
+            if bridge_ref is not None:
+                if app_id != "wanx":
+                    raise OctopError.localized(ErrorCode.AGENT_NOT_FOUND)
+                manager = getattr(server.app_runtime, "bridge_manager", None)
+                if manager is None:
+                    raise OctopError.localized(ErrorCode.BRIDGE_NOT_FOUND)
+                manager.get_owned(bridge_ref.connection_id, user.id)
+                continue
             row = registry.get_row(agent_id)
             if row is None and match and match.group(2) == "terminal/ws" and app_id == "wanx":
                 # The terminal route supports short ids and validates its resolved row.
