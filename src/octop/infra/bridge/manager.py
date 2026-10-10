@@ -140,6 +140,7 @@ class BridgeManager:
         self._token_signer = token_signer
         self._sessions: dict[str, BridgeSession] = {}
         self._client_tasks: dict[str, asyncio.Task[None]] = {}
+        self._peer_turn_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._turn_waiters: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         self._browser_waiters: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         self._browser_peer_clients: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
@@ -461,6 +462,7 @@ class BridgeManager:
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
+        await self._cancel_peer_turns(connection_id)
         sess = self._sessions.pop(connection_id, None)
         if sess is not None:
             await sess.close()
@@ -911,10 +913,12 @@ class BridgeManager:
     async def _register_session(self, connection_id: str, session: BridgeSession) -> None:
         old = self._sessions.get(connection_id)
         if old is not None and old is not session:
+            await self._cancel_peer_turns(connection_id)
             await old.close()
         self._sessions[connection_id] = session
 
     async def _unregister_session(self, connection_id: str) -> None:
+        await self._cancel_peer_turns(connection_id)
         sess = self._sessions.pop(connection_id, None)
         if sess is not None:
             await sess.close()
@@ -1241,7 +1245,29 @@ class BridgeManager:
                 await q.put(payload)
             return
         if msg_type == "turn.start":
-            await self._execute_peer_turn(connection_id, payload)
+            # Keep the receive loop free for replies and other concurrent turns.
+            tasks = self._peer_turn_tasks.setdefault(connection_id, set())
+            task = asyncio.create_task(
+                self._execute_peer_turn(connection_id, payload),
+                name=f"bridge-turn-{request_id}",
+            )
+            tasks.add(task)
+
+            def on_done(done: asyncio.Task[None]) -> None:
+                tasks.discard(done)
+                if not tasks and self._peer_turn_tasks.get(connection_id) is tasks:
+                    self._peer_turn_tasks.pop(connection_id, None)
+                if not done.cancelled() and (error := done.exception()) is not None:
+                    logger.error("bridge peer turn task failed: %s", error)
+
+            task.add_done_callback(on_done)
+
+    async def _cancel_peer_turns(self, connection_id: str) -> None:
+        tasks = self._peer_turn_tasks.pop(connection_id, set())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _execute_peer_turn(self, connection_id: str, payload: dict[str, Any]) -> None:
         """Peer asked us to run a turn on a local agent; stream chunks back."""

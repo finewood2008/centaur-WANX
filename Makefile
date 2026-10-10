@@ -94,6 +94,7 @@ build: build-frontend build-wheel
 
 .PHONY: build-frontend
 build-frontend:
+	cd $(REPO_ROOT)/sdk-box-management && npm ci
 	@echo "[build-frontend] Installing npm dependencies..."
 	cd $(DASHBOARD_DIR) && npm ci
 	@echo "[build-frontend] Building dashboard (output: $(DASHBOARD_DEST))..."

@@ -84,7 +84,7 @@ async def login_peer(
     root = normalize_peer_base_url(base_url)
     url = urljoin(root + "/", "api/auth/login")
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
             resp = await client.post(
                 url,
                 json={"username": username, "password": password},
@@ -95,6 +95,8 @@ async def login_peer(
             f"peer login failed: {exc}",
         ) from exc
 
+    if 300 <= resp.status_code < 400:
+        raise OctopError(ErrorCode.BRIDGE_AUTH_FAILED, "peer login redirects are not allowed")
     if resp.status_code == 401:
         raise OctopError(ErrorCode.BRIDGE_AUTH_FAILED, "peer rejected credentials")
     if resp.status_code >= 400:
