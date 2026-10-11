@@ -589,6 +589,10 @@ export function createPlatformClient({
       if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
       return activeLink.client.request(input);
     },
+    async applicationStream(input) {
+      if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
+      return activeLink.client.openWebSocket(input);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -9,6 +9,7 @@ export async function createApplicationManager({
   applicationId,
   context,
   request,
+  stream,
   spawn,
   electronPath,
 } = {}) {
@@ -18,6 +19,7 @@ export async function createApplicationManager({
     applicationId,
     context,
     request,
+    openStream: stream,
     isApplicationAllowed: (id, launchId) => sessions.get(launchId)?.applicationId === id,
     capabilitiesFor: (id, launchId) => {
       const record = sessions.get(launchId);

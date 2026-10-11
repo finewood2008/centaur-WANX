@@ -517,6 +517,50 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
         upstream.end();
       }).finally(() => requests.delete(upstream));
     },
+    async openWebSocket({ path, headers = {}, protocols = [] } = {}) {
+      if (closed) throw new Error("GATEWAY_CLOSED");
+      if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
+      const request = {
+        method: "GET",
+        url: path,
+        headers: {
+          host: localURL.host,
+          origin: localURL.origin,
+          ...headers,
+          ...(session ? { authorization: `Bearer ${marker}` } : {}),
+        },
+      };
+      const wasBootstrapped = bootstrapped;
+      if (session) bootstrapped = true;
+      const authorized = authorize(request, true);
+      bootstrapped = wasBootstrapped;
+      if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
+      const endpoint = new URL(target);
+      endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+      const upstreamPath = new URL(authorized.path, target);
+      if (authorized.token && !upstreamPath.searchParams.has("token") && !upstreamPath.searchParams.has("access_token"))
+        upstreamPath.searchParams.set("token", authorized.token);
+      const socket = new WebSocket(endpoint.origin + upstreamPath.pathname + upstreamPath.search, protocols, {
+        headers: authorized.headers,
+        origin: target.origin,
+        handshakeTimeout: 10_000,
+        maxPayload: MAX_SOCKET_BYTES,
+        perMessageDeflate: false,
+        followRedirects: false,
+        agent: agent ?? false,
+      });
+      track(socket);
+      await new Promise((resolve, rejectSocket) => {
+        const failSocket = (error) => {
+          socket.terminate();
+          rejectSocket(error);
+        };
+        socket.once("open", resolve);
+        socket.once("error", failSocket);
+        socket.once("close", () => rejectSocket(new Error("BOX_STREAM_CLOSED")));
+      });
+      return socket;
+    },
     close() {
       if (closing) return closing;
       closed = true;

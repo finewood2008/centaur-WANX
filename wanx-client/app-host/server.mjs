@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 
 const fail = (code) => Object.assign(new Error(code), { code });
-const MAX_LINE = 256 * 1024;
+const MAX_LINE = 48 * 1024 * 1024;
 
 function safeMethod(method) {
   return typeof method === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(method);
@@ -15,6 +15,7 @@ export async function createApplicationHost({
   capabilitiesFor,
   context,
   request,
+  openStream,
   closeSession,
   socketPath,
   token = randomBytes(32).toString("hex"),
@@ -27,7 +28,7 @@ export async function createApplicationHost({
   const server = net.createServer();
   let closed = false;
 
-  async function dispatch(message) {
+  async function dispatch(message, state) {
     const hostRequest = message?.applicationId === applicationId;
     const applicationRequest = message?.applicationId && isApplicationAllowed?.(message.applicationId, message.launchId);
     if (!message || message.token !== token || (!hostRequest && !applicationRequest))
@@ -63,7 +64,59 @@ export async function createApplicationHost({
         ...(Buffer.isBuffer(response?.body) ? { body: response.body.toString("base64") } : {}),
       };
     }
+    if (message.method === "stream.open") {
+      if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
+      if (typeof openStream !== "function") throw fail("APPLICATION_STREAM_UNAVAILABLE");
+      const path = message.params?.path;
+      if (typeof path !== "string" || !path.startsWith("/api/") || path.includes("\\") || path.includes("//"))
+        throw fail("APPLICATION_PATH_NOT_ALLOWED");
+      const upstream = await openStream({
+        path,
+        headers: message.params?.headers,
+        protocols: message.params?.protocols,
+      });
+      const streamId = randomUUID();
+      state.streams.set(streamId, upstream);
+      upstream.on("message", (data, binary) => {
+        state.send({
+          type: "stream.message",
+          streamId,
+          data: Buffer.from(data).toString("base64"),
+          binary: Boolean(binary),
+        });
+      });
+      upstream.on("error", () => state.send({ type: "stream.error", streamId }));
+      upstream.on("close", (code, reason) => {
+        state.streams.delete(streamId);
+        state.send({
+          type: "stream.close",
+          streamId,
+          code: Number.isInteger(code) ? code : 1000,
+          reason: Buffer.from(reason || "").toString("base64"),
+        });
+      });
+      return { streamId };
+    }
+    if (message.method === "stream.send") {
+      if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
+      const stream = state.streams.get(message.params?.streamId);
+      const data = message.params?.data;
+      if (!stream || typeof data !== "string") throw fail("APPLICATION_STREAM_INVALID");
+      stream.send(Buffer.from(data, "base64"), { binary: Boolean(message.params?.binary) });
+      return { sent: true };
+    }
+    if (message.method === "stream.close") {
+      if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
+      const stream = state.streams.get(message.params?.streamId);
+      if (stream) {
+        state.streams.delete(message.params.streamId);
+        stream.close();
+      }
+      return { closed: true };
+    }
     if (message.method === "session.close") {
+      for (const stream of state.streams.values()) stream.close();
+      state.streams.clear();
       await closeSession?.(message.applicationId, message.launchId);
       return { closed: true };
     }
@@ -72,7 +125,17 @@ export async function createApplicationHost({
 
   server.on("connection", (socket) => {
     let buffer = "";
+    const state = {
+      streams: new Map(),
+      send(value) {
+        if (!socket.destroyed) socket.write(JSON.stringify(value) + "\n");
+      },
+    };
     socket.setEncoding("utf8");
+    socket.once("close", () => {
+      for (const stream of state.streams.values()) stream.close();
+      state.streams.clear();
+    });
     socket.on("data", (chunk) => {
       buffer += chunk;
       if (buffer.length > MAX_LINE) { socket.destroy(); return; }
@@ -82,7 +145,7 @@ export async function createApplicationHost({
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
         let message;
         try { message = JSON.parse(line); } catch { socket.write(JSON.stringify({ error: "APPLICATION_IPC_INVALID_JSON" }) + "\n"); continue; }
-        void dispatch(message).then(
+        void dispatch(message, state).then(
           (value) => socket.write(JSON.stringify({ id: message.id, ok: true, value }) + "\n"),
           (error) => socket.write(JSON.stringify({ id: message.id, ok: false, error: error.code || "APPLICATION_IPC_FAILED" }) + "\n"),
         );

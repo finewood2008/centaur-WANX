@@ -155,6 +155,7 @@ if (claimSingleInstance(app, () => control))
         applicationId: "wanx-host",
         context: () => client.applicationContext(),
         request: (input) => client.applicationRequest(input),
+        stream: (input) => client.applicationStream(input),
       });
       dashboards = createDashboardWindows({
         BrowserWindow,

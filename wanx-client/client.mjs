@@ -170,6 +170,10 @@ export function createClient({
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
       return gateway.request(input);
     },
+    async openWebSocket(input) {
+      if (closed || !gateway) throw new Error("SESSION_CLOSED");
+      return gateway.openWebSocket(input);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
