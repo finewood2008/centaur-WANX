@@ -1,0 +1,101 @@
+{
+  "name": "centuarai-wanx-client",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "shell/main.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:network": "node tools/build-network.mjs",
+    "build:network:all": "node tools/build-network.mjs --all",
+    "prestart": "node tools/ensure-network.mjs",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "test:native": "cd native && go test ./...",
+    "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && electron-builder --mac --dir",
+    "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "electron": "37.10.3",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ai.centuarai.wanx.client",
+    "productName": "万象连接",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "client.mjs",
+      "platform.mjs",
+      "account/**",
+      "shell/**",
+      "fleet/**",
+      "network/**",
+      "octop/**",
+      "package.json",
+      "README.md"
+    ],
+    "extraResources": [
+      {
+        "from": "native/bin",
+        "to": "network",
+        "filter": [
+          "*-LICENSE",
+          "go-modules.txt",
+          "licenses/**"
+        ]
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "native/bin",
+          "to": "network",
+          "filter": [
+            "wanx-netbird-darwin-${arch}*"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "native/bin",
+          "to": "network",
+          "filter": [
+            "wanx-netbird-win32-${arch}*"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

@@ -4,6 +4,10 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "dev:web": "npm --prefix dashboard run dev",
+    "start:client": "npm --prefix wanx-client start",
+    "test:client": "npm --prefix wanx-client test",
+    "test:bridge": "uv run pytest -c wanx-bridge/pyproject.toml wanx-bridge/tests -q",
     "build": "node tools/build.mjs",
     "test": "npm --prefix packages/wanx-client-adapter test && npm --prefix wanx-desktop test",
     "start": "npm --prefix wanx-desktop start",

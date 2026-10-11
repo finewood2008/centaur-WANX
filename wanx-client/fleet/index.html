@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+    />
+    <title>万象 · 连接</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark" aria-hidden="true">万</span>
+        <div>
+          <h1>连接你的万象</h1>
+          <p>登录万象，打开你的盒子，继续工作。</p>
+        </div>
+      </header>
+      <section class="panel" aria-labelledby="account-title">
+        <div class="row">
+          <h2 id="account-title">万象账号</h2>
+          <button id="logout" class="secondary" type="button" hidden>
+            退出登录
+          </button>
+        </div>
+        <p id="account-state" class="status" role="status">尚未登录</p>
+        <form id="login-form">
+          <label for="login-method">登录方式</label
+          ><select id="login-method">
+            <option value="password">密码登录</option>
+            <option value="sms">短信登录</option>
+          </select>
+          <label for="phone">手机号</label
+          ><input
+            id="phone"
+            type="tel"
+            autocomplete="username"
+            maxlength="11"
+            pattern="1[0-9]{10}"
+            required
+          />
+          <div id="password-section">
+            <label for="password">密码</label
+            ><input
+              id="password"
+              type="password"
+              autocomplete="current-password"
+              maxlength="72"
+              required
+            />
+          </div>
+          <div id="sms-section" hidden>
+            <label for="sms-code">短信验证码</label>
+            <div class="row">
+              <input
+                id="sms-code"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                maxlength="6"
+                pattern="[0-9]{6}"
+              /><button id="send-sms" class="secondary" type="button">
+                获取验证码
+              </button>
+            </div>
+            <p id="sms-state" class="hint" role="status"></p>
+          </div>
+          <div class="actions">
+            <button id="login" type="submit">登录万象</button>
+          </div>
+        </form>
+      </section>
+      <section class="panel" aria-labelledby="network-title">
+        <div class="row">
+          <div>
+            <h2 id="network-title">P2P 网络</h2>
+            <p>登录万象后自动连接你的盒子</p>
+          </div>
+          <label class="switch"
+            ><input
+              id="network-enabled"
+              type="checkbox"
+              role="switch"
+              aria-label="启用 P2P 网络" /><span aria-hidden="true"></span
+          ></label>
+        </div>
+        <p id="network-state" class="status" role="status">P2P 已关闭</p>
+        <p class="hint">开启后自动连接；关闭不影响账号登录和本机开发。</p>
+      </section>
+      <section class="panel" aria-labelledby="devices-title">
+        <div class="row">
+          <h2 id="devices-title">我的盒子</h2>
+          <button id="refresh-devices" class="secondary" type="button">
+            刷新
+          </button>
+        </div>
+        <p id="devices-empty" class="hint">登录后查看已绑定或获授权的盒子。</p>
+        <ul id="devices" class="devices"></ul>
+      </section>
+      <section class="panel" aria-labelledby="endpoint-title">
+        <details id="local-development">
+          <summary id="endpoint-title">本机 / 开发连接</summary>
+          <p class="hint">
+            无需登录或开启 P2P。本机可使用 HTTP，远端直接连接请使用 HTTPS。
+          </p>
+          <form id="connect-form">
+            <div class="fields">
+              <div>
+                <label for="device-id">设备标识</label
+                ><input
+                  id="device-id"
+                  value="local-wanx"
+                  required
+                  maxlength="128"
+                  autocomplete="off"
+                />
+              </div>
+              <div>
+                <label for="name">显示名称</label
+                ><input
+                  id="name"
+                  value="本地万象"
+                  required
+                  maxlength="128"
+                  autocomplete="off"
+                />
+              </div>
+            </div>
+            <label for="url">服务地址</label
+            ><input
+              id="url"
+              type="url"
+              value="http://127.0.0.1:8088"
+              required
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <div class="actions">
+              <button id="connect" type="submit">打开本地万象</button>
+            </div>
+          </form>
+        </details>
+        <p id="connection-state" class="status" role="status">尚未连接</p>
+        <button id="disconnect" type="button" class="secondary" hidden>
+          断开连接
+        </button>
+      </section>
+      <p id="error" class="error" role="alert" hidden></p>
+      <footer>
+        Web 开发无需开启 P2P。在工程目录运行
+        <code>npm run dev:web</code>，即可使用浏览器联调。
+      </footer>
+    </main>
+  </body>
+</html>

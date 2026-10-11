@@ -1,0 +1,494 @@
+import http from "node:http";
+import https from "node:https";
+import { randomBytes } from "node:crypto";
+import { WebSocket, WebSocketServer } from "ws";
+
+const HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+const MAX_SOCKET_BYTES = 16 * 1024 * 1024;
+const TOKEN_QUERY_FIELDS = ["token", "access_token"];
+
+function headersWithoutHop(headers) {
+  const blocked = new Set(HOP_HEADERS);
+  for (const name of String(headers.connection ?? "").split(",")) {
+    blocked.add(name.trim().toLowerCase());
+  }
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !blocked.has(name)),
+  );
+}
+
+function reject(response, status, message) {
+  if (response.headersSent) return response.destroy();
+  response.writeHead(status, {
+    "content-type": "text/plain; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(message);
+}
+
+/**
+ * One selected box, one temporary loopback origin. Callers validate target trust
+ * and give each box an isolated browser session (cookies ignore TCP ports).
+ * Platform mode holds a box-session provider in main and gives the renderer only
+ * an opaque per-gateway marker; direct mode forwards existing box credentials.
+ */
+export async function createDashboardGateway({ targetURL, agent, session }) {
+  const target = new URL(targetURL);
+  if (
+    !["http:", "https:"].includes(target.protocol) ||
+    target.username ||
+    target.password ||
+    target.pathname !== "/" ||
+    target.search ||
+    target.hash
+  ) {
+    throw new Error("INVALID_TARGET_URL");
+  }
+  const marker = session ? randomBytes(32).toString("hex") : null;
+  const bootstrapPath = session
+    ? `/__wanx_session/${randomBytes(32).toString("hex")}`
+    : null;
+  let bootstrapped = false;
+  if (session && !session.getToken())
+    throw new Error("PLATFORM_SESSION_EXPIRED");
+  const transport = target.protocol === "https:" ? https : http;
+  const connections = new Set();
+  const requests = new Set();
+  const sockets = new Set();
+  let closed = false;
+  let localURL;
+  const webSockets = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_SOCKET_BYTES,
+    perMessageDeflate: false,
+    handleProtocols: (_protocols, request) => request.selectedProtocol || false,
+  });
+
+  function allowed(request) {
+    if (closed || request.headers.host !== localURL.host) return false;
+    if (request.headers.origin && request.headers.origin !== localURL.origin)
+      return false;
+    if (["cross-site", "same-site"].includes(request.headers["sec-fetch-site"]))
+      return false;
+    if (
+      !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
+      request.headers.origin !== localURL.origin
+    )
+      return false;
+    // Always origin-form: never let a request choose a different upstream.
+    return /^\/(?!\/)/.test(request.url) && !request.url.includes("\\");
+  }
+
+  function upstreamHeaders(request) {
+    const headers = headersWithoutHop(request.headers);
+    headers.host = target.host;
+    delete headers.forwarded;
+    for (const name of Object.keys(headers)) {
+      if (name.startsWith("x-forwarded-") || name.startsWith("sec-websocket-"))
+        delete headers[name];
+    }
+    if (headers.origin) headers.origin = target.origin;
+    if (headers.referer?.startsWith(`${localURL.origin}/`)) {
+      headers.referer =
+        target.origin + headers.referer.slice(localURL.origin.length);
+    }
+    return headers;
+  }
+
+  function authorize(request, websocket = false) {
+    if (!session)
+      return { path: request.url, headers: upstreamHeaders(request) };
+    const endpoint = new URL(request.url, localURL);
+    let pathname;
+    try {
+      pathname = decodeURIComponent(endpoint.pathname);
+    } catch {
+      return null;
+    }
+    // Reject alternate encodings and slash spellings before the backend router.
+    if (pathname.includes("\\") || pathname.includes("//")) return null;
+    if (
+      (pathname === "/api/auth" || pathname.startsWith("/api/auth/")) &&
+      pathname !== "/api/auth/me"
+    )
+      return null;
+    const headerToken = request.headers.authorization;
+    const queryTokens = TOKEN_QUERY_FIELDS.flatMap((field) =>
+      endpoint.searchParams.getAll(field),
+    );
+    if (
+      (headerToken && headerToken !== `Bearer ${marker}`) ||
+      queryTokens.some((value) => value !== marker)
+    )
+      return null;
+    const needsToken =
+      websocket || (pathname.startsWith("/api/") && pathname !== "/api/health");
+    if (needsToken && (!bootstrapped || (!headerToken && !queryTokens.length)))
+      return null;
+    const token = session.getToken();
+    if (!token) return null;
+    const headers = upstreamHeaders(request);
+    // Cookie auth belongs to direct mode; platform mode uses only its current lease.
+    delete headers.cookie;
+    if (headerToken || queryTokens.length)
+      headers.authorization = `Bearer ${token}`;
+    for (const field of TOKEN_QUERY_FIELDS) {
+      if (endpoint.searchParams.has(field))
+        endpoint.searchParams.set(field, token);
+    }
+    return { path: endpoint.pathname + endpoint.search, headers, token };
+  }
+
+  const server = http.createServer((request, response) => {
+    if (!allowed(request))
+      return reject(response, 403, "Gateway request rejected");
+    if (session && request.url.startsWith("/__wanx_session/")) {
+      if (
+        request.url !== bootstrapPath ||
+        request.method !== "GET" ||
+        !session.getToken()
+      )
+        return reject(response, 404, "Not found");
+      const nonce = randomBytes(24).toString("base64");
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
+        "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; frame-ancestors 'none'; base-uri 'none'`,
+        "x-content-type-options": "nosniff",
+      });
+      bootstrapped = true;
+      response.end(
+        `<!doctype html><meta charset="utf-8"><script nonce="${nonce}">localStorage.removeItem("auth_token");sessionStorage.setItem("auth_token",${JSON.stringify(
+          marker,
+        )});location.replace("/");</script>`,
+      );
+      return;
+    }
+    const authorized = authorize(request);
+    if (!authorized) return reject(response, 401, "Platform session required");
+    const upstream = transport.request(target, {
+      method: request.method,
+      path: authorized.path,
+      headers: authorized.headers,
+      agent: agent ?? false,
+    });
+    requests.add(upstream);
+    upstream.once("close", () => requests.delete(upstream));
+    // Bound connection establishment, not upload/download or idle SSE duration.
+    const connectTimer = setTimeout(
+      () => upstream.destroy(new Error("CONNECT_TIMEOUT")),
+      10_000,
+    );
+    connectTimer.unref();
+    upstream.on("socket", (socket) => {
+      const connected = () => clearTimeout(connectTimer);
+      if (!socket.connecting) connected();
+      else
+        socket.once(
+          target.protocol === "https:" ? "secureConnect" : "connect",
+          connected,
+        );
+    });
+    upstream.once("close", () => clearTimeout(connectTimer));
+    upstream.on("error", () =>
+      reject(response, 502, "Box connection unavailable"),
+    );
+    request.on("aborted", () => upstream.destroy());
+    request.on("error", () => upstream.destroy());
+    response.on("close", () => upstream.destroy());
+    upstream.on("response", (incoming) => {
+      const headers = headersWithoutHop(incoming.headers);
+      if (session) {
+        // Backend sliding JWT renewal must never overwrite the opaque renderer marker.
+        delete headers["x-octop-access-token"];
+        delete headers["set-cookie"];
+      }
+      if (headers.location) {
+        let location;
+        try {
+          location = new URL(headers.location, new URL(request.url, target));
+        } catch {
+          /* reject below */
+        }
+        if (
+          !location ||
+          location.origin !== target.origin ||
+          location.username ||
+          location.password
+        ) {
+          incoming.destroy();
+          return reject(
+            response,
+            502,
+            "External box redirect is not supported",
+          );
+        }
+        if (session) {
+          const token = session.getToken();
+          for (const field of TOKEN_QUERY_FIELDS) {
+            if (location.searchParams.has(field))
+              location.searchParams.set(field, marker);
+          }
+          if (token && location.href.includes(token)) {
+            incoming.destroy();
+            return reject(response, 502, "Invalid box redirect");
+          }
+        }
+        headers.location =
+          localURL.origin + location.pathname + location.search + location.hash;
+      }
+      if (headers["set-cookie"]) {
+        headers["set-cookie"] = headers["set-cookie"].map((cookie) =>
+          cookie.replace(/;\s*Domain=[^;]*/gi, ""),
+        );
+      }
+      // A box cannot install a worker that outlives its connection in the client.
+      if (request.headers["service-worker"] === "script") {
+        incoming.destroy();
+        return reject(
+          response,
+          403,
+          "Service workers are disabled in the client",
+        );
+      }
+      response.writeHead(incoming.statusCode, headers);
+      response.flushHeaders();
+      incoming.on("error", () => response.destroy());
+      incoming.pipe(response);
+    });
+    request.pipe(upstream);
+  });
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+  });
+  server.on("clientError", (_error, socket) => socket.destroy());
+
+  function track(socket) {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  }
+
+  function bridge(source, destination, rewriteToken) {
+    source.on("message", (data, binary) => {
+      if (rewriteToken && !binary) {
+        try {
+          const message = JSON.parse(data.toString());
+          if (message?.type === "start" && Object.hasOwn(message, "token")) {
+            if (message.token !== marker)
+              throw new Error("INVALID_FRAME_TOKEN");
+            message.token = rewriteToken;
+            data = Buffer.from(JSON.stringify(message));
+          }
+        } catch (error) {
+          if (error.message === "INVALID_FRAME_TOKEN") {
+            source.close(1008, "Invalid credentials");
+            destination.terminate();
+            return;
+          }
+        }
+      }
+      if (
+        destination.readyState !== WebSocket.OPEN ||
+        destination.bufferedAmount + data.length > MAX_SOCKET_BYTES
+      ) {
+        source.terminate();
+        destination.terminate();
+        return;
+      }
+      source.pause();
+      destination.send(data, { binary }, (error) => {
+        if (error) {
+          source.terminate();
+          destination.terminate();
+        } else if (source.readyState === WebSocket.OPEN) source.resume();
+      });
+    });
+    source.on("error", () => destination.terminate());
+    source.on("close", (code, reason) => {
+      if (destination.readyState === WebSocket.OPEN) {
+        if (code === 1005 || code === 1006 || code === 1015)
+          destination.terminate();
+        else destination.close(code, reason);
+      } else if (destination.readyState === WebSocket.CONNECTING)
+        destination.terminate();
+    });
+  }
+
+  server.on("upgrade", (request, socket, head) => {
+    if (!allowed(request) || request.headers.origin !== localURL.origin) {
+      socket.end(
+        "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      );
+      return;
+    }
+    // Desktop/mobile streaming authenticates in its first start frame, not its URL.
+    // Wait for the renderer marker before contacting the selected box.
+    if (
+      session &&
+      ["/api/desktop-stream/ws", "/api/mobile-stream/ws"].includes(
+        request.url,
+      ) &&
+      !request.headers.authorization &&
+      bootstrapped
+    ) {
+      try {
+        webSockets.handleUpgrade(request, socket, head, (client) => {
+          track(client);
+          const timeout = setTimeout(
+            () => client.close(1008, "Authentication required"),
+            5000,
+          );
+          timeout.unref();
+          client.once("close", () => clearTimeout(timeout));
+          client.once("error", () => clearTimeout(timeout));
+          client.once("message", (data, binary) => {
+            clearTimeout(timeout);
+            let message;
+            try {
+              message = !binary && JSON.parse(data.toString());
+            } catch {}
+            if (message?.type !== "start" || message.token !== marker) {
+              client.close(1008, "Invalid credentials");
+              return;
+            }
+            client.pause();
+            request.headers.authorization = `Bearer ${marker}`;
+            const authorized = authorize(request, true);
+            if (!authorized) return client.close(1008, "Session expired");
+            const endpoint = new URL(target);
+            endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+            let upstream;
+            try {
+              upstream = new WebSocket(endpoint.origin + authorized.path, {
+                headers: authorized.headers,
+                origin: target.origin,
+                handshakeTimeout: 10000,
+                maxPayload: MAX_SOCKET_BYTES,
+                perMessageDeflate: false,
+                followRedirects: false,
+                agent: agent ?? false,
+              });
+            } catch {
+              client.terminate();
+              return;
+            }
+            track(upstream);
+            client.once("close", () => upstream.terminate());
+            client.once("error", () => upstream.terminate());
+            upstream.on("error", () => client.terminate());
+            const abortBeforeOpen = () => client.terminate();
+            upstream.once("close", abortBeforeOpen);
+            upstream.once("open", () => {
+              upstream.removeListener("close", abortBeforeOpen);
+              if (closed || client.readyState !== WebSocket.OPEN)
+                return upstream.terminate();
+              bridge(client, upstream, authorized.token);
+              bridge(upstream, client);
+              upstream.send(
+                JSON.stringify({ ...message, token: authorized.token }),
+                (error) => {
+                  if (error) client.terminate();
+                  else if (client.readyState === WebSocket.OPEN)
+                    client.resume();
+                },
+              );
+            });
+          });
+        });
+      } catch {
+        socket.destroy();
+      }
+      return;
+    }
+    const authorized = authorize(request, true);
+    if (!authorized) {
+      socket.end(
+        "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      );
+      return;
+    }
+    const protocols = String(request.headers["sec-websocket-protocol"] ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const endpoint = new URL(target);
+    endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+    let upstream;
+    try {
+      upstream = new WebSocket(endpoint.origin + authorized.path, protocols, {
+        headers: authorized.headers,
+        origin: target.origin,
+        handshakeTimeout: 10_000,
+        maxPayload: MAX_SOCKET_BYTES,
+        perMessageDeflate: false,
+        followRedirects: false,
+        agent: agent ?? false,
+      });
+    } catch {
+      socket.destroy();
+      return;
+    }
+    track(upstream);
+    const abort = () => upstream.terminate();
+    socket.once("close", abort);
+    upstream.on("error", () => socket.destroy());
+    upstream.once("open", () => {
+      if (closed || socket.destroyed) return upstream.terminate();
+      request.selectedProtocol = upstream.protocol;
+      try {
+        webSockets.handleUpgrade(request, socket, head, (client) => {
+          track(client);
+          socket.removeListener("close", abort);
+          bridge(client, upstream, authorized.token);
+          bridge(upstream, client);
+        });
+      } catch {
+        upstream.terminate();
+        socket.destroy();
+      }
+    });
+  });
+
+  await new Promise((resolve, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", rejectListen);
+      resolve();
+    });
+  });
+  localURL = new URL(`http://127.0.0.1:${server.address().port}`);
+  let closing;
+  const gateway = {
+    url: localURL.origin + (bootstrapPath ?? ""),
+    origin: localURL.origin,
+    close() {
+      if (closing) return closing;
+      closed = true;
+      unsubscribeExpiry?.();
+      session?.close();
+      closing = new Promise((resolve) => {
+        server.close(resolve);
+        for (const upstream of requests) upstream.destroy();
+        for (const socket of sockets) socket.terminate();
+        for (const connection of connections) connection.destroy();
+        webSockets.close();
+      });
+      return closing;
+    },
+  };
+  const unsubscribeExpiry = session?.onExpired?.(() => {
+    void gateway.close();
+  });
+  return gateway;
+}
