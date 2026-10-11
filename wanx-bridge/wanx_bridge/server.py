@@ -90,6 +90,10 @@ def _allowed(path: str, method: str) -> bool:
         return False
     if path.startswith("/api/auth"):
         return (method, path) in _PROFILE
+    # Dashboard boot probes setup before /auth/me. This read-only exception
+    # still requires the current platform session in proxy(), unlike /api/health.
+    if path == "/api/setup/status" and method == "GET":
+        return True
     if path.startswith(("/api/setup", "/api/config", "/api/internal")):
         return False
     # The platform owns identities and role authority. Even a current Owner

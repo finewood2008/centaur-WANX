@@ -95,6 +95,16 @@ async def environment():
     async def index():
         return "dashboard"
 
+    @upstream.get("/api/setup/status")
+    async def setup_status(request: Request):
+        seen.append({"path": request.url.path, "headers": dict(request.headers)})
+        return {"setup_required": False, "database_bound": True}
+
+    @upstream.get("/api/auth/me")
+    async def me(request: Request):
+        seen.append({"path": request.url.path, "headers": dict(request.headers)})
+        return {"id": "mapped-user", "locale": "zh"}
+
     @upstream.api_route("/api/echo", methods=["GET", "POST"])
     async def echo(request: Request):
         body = await request.body()
@@ -219,6 +229,56 @@ async def test_exchange_public_health_and_protected_http(environment):
     assert (await client.get("/api/echo", headers=headers)).status_code == 200
     assert "cookie" not in seen[-1]["headers"]
     assert (await client.get("/api/echo?token=other", headers=headers)).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_dashboard_boot_requires_live_session_for_setup_status_and_me(environment):
+    auth, client, _, seen, _ = environment
+    headers = {"Authorization": "Bearer opaque-marker"}
+    paths = ["/api/setup/status", "/api/auth/me"]
+    for path in paths:
+        assert (await client.get(path)).status_code == 401
+    assert seen == []
+
+    status = await client.get(paths[0], headers=headers)
+    assert status.status_code == 200
+    assert status.json() == {"setup_required": False, "database_bound": True}
+    me = await client.get(paths[1], headers=headers)
+    assert me.status_code == 200
+    assert me.json()["id"] == "mapped-user"
+    assert [request["path"] for request in seen] == paths
+    assert all(
+        request["headers"]["authorization"] == "Bearer private.upstream.jwt" for request in seen
+    )
+
+    auth.deadline = 0
+    for path in paths:
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 401
+        assert response.json()["code"] == "LEASE_EXPIRED"
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_setup_status_exception_does_not_allow_writes_or_other_setup_paths(environment):
+    _, client, _, seen, _ = environment
+    headers = {"Authorization": "Bearer opaque-marker"}
+    for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]:
+        response = await client.request(method, "/api/setup/status", headers=headers)
+        assert response.status_code == 403, method
+    for path in [
+        "/api/setup",
+        "/api/setup/",
+        "/api/setup/status/",
+        "/api/setup/status/extra",
+        "/api/setup//status",
+        "/api/setup/%2Fstatus",
+        "/api/setup/begin",
+        "/api/setup/initial-admin",
+        "/api/setup/database",
+    ]:
+        assert (await client.get(path, headers=headers)).status_code == 403, path
+    assert seen == []
 
 
 @pytest.mark.asyncio
