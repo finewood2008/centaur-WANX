@@ -77,6 +77,14 @@ function harness(t, options = {}) {
         const replacement = await override(input);
         if (replacement !== undefined) return replacement;
       }
+      if (
+        ["/app-api/network/boxes", "/app-api/network/boxes/prepare"].includes(
+          input.path,
+        )
+      )
+        return {
+          boxes: catalog.map((item) => ({ ...item, accessState: "ready" })),
+        };
       if (input.path === "/app-api/network/restore") {
         if (!serverSession) throw fail("NETWORK_ENROLLMENT_REQUIRED", 404);
         return result();
@@ -227,7 +235,10 @@ test("P2P-off login preserves local development and never requests enrollment", 
   await h.client.initialize();
   await h.client.loginSMS({ phone: "13800000001", code: "123456" });
   assert.equal(h.client.snapshot().network.phase, "disabled");
-  assert.equal(h.calls.length, 0);
+  assert.deepEqual(
+    h.calls.map((call) => call.path),
+    ["/app-api/network/boxes"],
+  );
   await h.client.connect({
     mode: "direct",
     deviceId: "local",
@@ -326,6 +337,117 @@ test("deployment or untrusted management responses cannot fall back to manual ne
   assert.equal(h.transports.length, 0);
   assert.equal(h.client.loginNetwork, undefined);
   assert.equal(h.client.enrollNetwork, undefined);
+});
+
+test("confirmed revoked restore creates exactly one replacement enrollment", async (t) => {
+  const h = harness(t);
+  h.override((input) =>
+    input.path === "/app-api/network/restore"
+      ? {
+          enrollmentId: "old-session",
+          networkSessionId: "old-session",
+          phase: "revoked",
+          managementUrl: "https://p2p.qeeshu.com",
+        }
+      : undefined,
+  );
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  assert.equal(
+    h.calls.filter((input) => input.path === "/app-api/network/enrollments")
+      .length,
+    1,
+  );
+  assert.equal(h.transports.length, 1);
+  assert.notEqual(h.transports[0].identity.networkSessionId, "old-session");
+});
+
+test("pending revocation restore preserves the directory without starting or replacing a network", async (t) => {
+  const h = harness(t);
+  h.override((input) =>
+    input.path === "/app-api/network/restore"
+      ? {
+          enrollmentId: "old-session",
+          networkSessionId: "old-session",
+          phase: "revocation_pending",
+          managementUrl: "https://p2p.qeeshu.com",
+        }
+      : undefined,
+  );
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(
+    h.client.snapshot().platform.reason,
+    "NETWORK_REVOCATION_PENDING",
+  );
+  assert.equal(h.transports.length, 0);
+  assert.equal(
+    h.calls.some((input) => input.path === "/app-api/network/enrollments"),
+    false,
+  );
+  assert.equal(h.client.snapshot().devices[0].deviceId, "box-1");
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+});
+
+for (const [phase, reason] of [
+  ["revoked", "NETWORK_ENROLLMENT_REQUIRED"],
+  ["revocation_pending", "NETWORK_REVOCATION_PENDING"],
+]) {
+  test(`terminal ${phase} during enrollment polling closes transport and never loops registration`, async (t) => {
+    const h = harness(t);
+    h.override((input) =>
+      input.path.startsWith("/app-api/network/enrollments/")
+        ? {
+            enrollmentId: "enrollment-1",
+            networkSessionId: "enrollment-1",
+            phase,
+            managementUrl: "https://p2p.qeeshu.com",
+          }
+        : undefined,
+    );
+    await h.client.loginPassword({ phone: "13800000001", password: "test" });
+    assert.equal(h.client.snapshot().platform.reason, reason);
+    assert.equal(h.transports.length, 1);
+    assert.equal(h.transports[0].closed, true);
+    assert.equal(h.client.snapshot().devices[0].canOpen, false);
+    assert.equal(
+      h.calls.filter((input) => input.path === "/app-api/network/enrollments")
+        .length,
+      1,
+    );
+    assert.equal(
+      h.calls.some((input) => input.path === "/app-api/network/devices"),
+      false,
+    );
+  });
+}
+
+test("unknown phases and untrusted terminal responses cannot trigger replacement enrollment", async (t) => {
+  for (const response of [
+    { phase: "unexpected", managementUrl: "https://p2p.qeeshu.com" },
+    { phase: "revoked", managementUrl: "https://untrusted.invalid" },
+    { phase: "revocation_pending", managementUrl: "https://untrusted.invalid" },
+  ]) {
+    const h = harness(t);
+    h.override((input) =>
+      input.path === "/app-api/network/restore"
+        ? {
+            enrollmentId: "old-session",
+            networkSessionId: "old-session",
+            ...response,
+          }
+        : undefined,
+    );
+    await h.client.loginPassword({ phone: "13800000001", password: "test" });
+    assert.equal(
+      h.client.snapshot().platform.reason,
+      "NETWORK_INVALID_RESPONSE",
+    );
+    assert.equal(h.transports.length, 0);
+    assert.equal(
+      h.calls.some((input) => input.path === "/app-api/network/enrollments"),
+      false,
+    );
+  }
 });
 
 test("lost one-time enrollment response is revoked and replaced even while enrolling", async (t) => {
@@ -540,4 +662,336 @@ test("a failed preference write cannot remove an existing hard lease deadline", 
   assert.equal(h.sessions[0].closed, true);
   waiting.resolve({});
   await tick();
+});
+
+test("associated boxes appear before slow enrollment completes", async (t) => {
+  const h = harness(t),
+    waiting = deferred();
+  h.override((input) =>
+    input.path === "/app-api/network/restore" ? waiting.promise : undefined,
+  );
+  const login = h.client.loginPassword({
+    phone: "13800000001",
+    password: "test",
+  });
+  await tick();
+  assert.equal(h.client.snapshot().directory.phase, "ready");
+  assert.equal(h.client.snapshot().devices[0].deviceId, "box-1");
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  await h.client.setNetworkEnabled(false);
+  waiting.resolve({});
+  await login;
+});
+
+test("directory GET can display boxes while preparation is slow; preparation then wins", async (t) => {
+  const h = harness(t),
+    waiting = deferred();
+  h.override((input) =>
+    input.path === "/app-api/network/boxes/prepare"
+      ? waiting.promise
+      : input.path === "/app-api/network/boxes"
+      ? { boxes: [{ ...device, accessState: "authorization_pending" }] }
+      : undefined,
+  );
+  const login = h.client.loginPassword({
+    phone: "13800000001",
+    password: "test",
+  });
+  await tick();
+  assert.equal(
+    h.client.snapshot().devices[0].accessState,
+    "authorization_pending",
+  );
+  waiting.resolve({ boxes: [{ ...device, accessState: "ready" }] });
+  await login;
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+});
+
+test("renewals do not repeat preparation and refresh turns pending into ready", async (t) => {
+  const h = harness(t, { renewIntervalMs: 15 });
+  h.override((input) =>
+    input.path.startsWith("/app-api/network/boxes")
+      ? { boxes: [{ ...device, accessState: "network_unconfigured" }] }
+      : undefined,
+  );
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  await assert.rejects(h.client.connectBox("box-1"), {
+    code: "NETWORK_DEVICE_ACCESS_DENIED",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    h.calls.filter((call) => call.path.endsWith("boxes/prepare")).length,
+    1,
+  );
+  h.override(undefined);
+  await h.client.refreshDevices();
+  assert.equal(
+    h.calls.filter((call) => call.path.endsWith("boxes/prepare")).length,
+    2,
+  );
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+});
+
+test("failed network renewal retains directory but disables stale endpoints", async (t) => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  h.override((input) => {
+    if (input.path === "/app-api/network/restore")
+      throw fail("ACCOUNT_NETWORK_ERROR");
+  });
+  await h.client.refreshDevices();
+  assert.equal(h.client.snapshot().devices.length, 1);
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  assert.equal(h.client.snapshot().directory.phase, "ready");
+});
+
+test("undeployed directory shows account boxes read-only while P2P is disabled", async (t) => {
+  const h = harness(t, { enabled: false });
+  await h.client.initialize();
+  h.override((input) => {
+    if (input.path === "/app-api/network/boxes")
+      throw fail("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+  });
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().directory.phase, "unavailable");
+  assert.equal(
+    h.client.snapshot().directory.reason,
+    "NETWORK_SERVICE_NOT_DEPLOYED",
+  );
+  assert.deepEqual(h.client.snapshot().devices, [
+    {
+      deviceId: "box-1",
+      displayName: "我的盒子",
+      deviceRole: undefined,
+      accessState: "service_unavailable",
+      canOpen: false,
+    },
+  ]);
+  assert.equal(h.transports.length, 0);
+  assert.deepEqual(
+    h.calls.map((call) => call.path),
+    ["/app-api/network/boxes"],
+  );
+});
+
+for (const first of ["directory", "prepare"]) {
+  test(`undeployed account service retains read-only boxes when ${first} finishes first`, async (t) => {
+    const h = harness(t),
+      listing = deferred(),
+      preparation = deferred();
+    h.account.listDevices = () => listing.promise;
+    h.override(async (input) => {
+      if (input.path === "/app-api/network/boxes/prepare") {
+        await preparation.promise;
+        throw fail("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+      }
+      if (input.path === "/app-api/network/boxes")
+        throw fail("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+    });
+    const login = h.client.loginPassword({
+      phone: "13800000001",
+      password: "test",
+    });
+    await tick();
+    const rows = [
+      { deviceId: "owned-box", deviceName: "已关联盒子", role: "owner" },
+    ];
+    if (first === "directory") listing.resolve(rows);
+    else preparation.resolve();
+    await tick();
+    listing.resolve(rows);
+    preparation.resolve();
+    await login;
+    assert.deepEqual(h.client.snapshot().devices, [
+      {
+        deviceId: "owned-box",
+        displayName: "已关联盒子",
+        deviceRole: "owner",
+        accessState: "service_unavailable",
+        canOpen: false,
+      },
+    ]);
+    assert.deepEqual(h.client.snapshot().directory, {
+      phase: "unavailable",
+      reason: "NETWORK_SERVICE_NOT_DEPLOYED",
+    });
+    assert.equal(
+      h.client.snapshot().platform.reason,
+      "NETWORK_SERVICE_NOT_DEPLOYED",
+    );
+    await assert.rejects(h.client.connectBox("owned-box"), {
+      code: "NETWORK_NOT_READY",
+    });
+    assert.equal(h.transports.length, 0);
+    assert.equal(
+      h.calls.some((call) => call.path === "/app-api/network/restore"),
+      false,
+    );
+  });
+}
+
+test("authentication failures never query the compatibility account directory", async (t) => {
+  const h = harness(t, { enabled: false });
+  await h.client.initialize();
+  let fallbackCalls = 0;
+  h.account.listDevices = async () => {
+    fallbackCalls++;
+    return [];
+  };
+  h.override((input) => {
+    if (input.path === "/app-api/network/boxes")
+      throw fail("ACCOUNT_SESSION_EXPIRED", 401);
+  });
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(fallbackCalls, 0);
+  assert.equal(h.client.snapshot().directory.reason, "ACCOUNT_SESSION_EXPIRED");
+  assert.deepEqual(h.client.snapshot().devices, []);
+});
+
+test("late compatibility directory cannot cross logout and account switch", async (t) => {
+  const h = harness(t, { enabled: false }),
+    waiting = deferred();
+  await h.client.initialize();
+  h.account.listDevices = () => waiting.promise;
+  h.override((input) => {
+    if (input.path === "/app-api/network/boxes")
+      throw fail("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+  });
+  const login = h.client.loginPassword({
+    phone: "13800000001",
+    password: "test",
+  });
+  await tick();
+  await h.client.logout();
+  h.override(undefined);
+  h.catalog([{ ...device, deviceId: "new-account-box" }]);
+  await h.client.loginPassword({ phone: "13800000002", password: "test" });
+  waiting.resolve([{ deviceId: "old-account-box", deviceName: "旧账号盒子" }]);
+  await login;
+  assert.deepEqual(
+    h.client.snapshot().devices.map((box) => box.deviceId),
+    ["new-account-box"],
+  );
+  assert.equal(h.client.snapshot().directory.phase, "ready");
+});
+
+test("late prior-account directory cannot leak after logout and a new login", async (t) => {
+  const h = harness(t, { enabled: false }),
+    waiting = deferred();
+  await h.client.initialize();
+  h.override((input) =>
+    input.path === "/app-api/network/boxes" ? waiting.promise : undefined,
+  );
+  const login = h.client.loginPassword({
+    phone: "13800000001",
+    password: "test",
+  });
+  await tick();
+  await h.client.logout();
+  h.override(undefined);
+  h.catalog([{ ...device, deviceId: "box-new" }]);
+  await h.client.loginPassword({ phone: "13800000002", password: "test" });
+  waiting.resolve({ boxes: [{ ...device, accessState: "ready" }] });
+  await login;
+  assert.deepEqual(
+    h.client.snapshot().devices.map((box) => box.deviceId),
+    ["box-new"],
+  );
+});
+
+test("P2P cancellation ignores late preparation and retains the refreshed read-only directory", async (t) => {
+  const h = harness(t),
+    waiting = deferred();
+  h.override((input) =>
+    input.path === "/app-api/network/boxes/prepare"
+      ? waiting.promise
+      : undefined,
+  );
+  const login = h.client.loginPassword({
+    phone: "13800000001",
+    password: "test",
+  });
+  await tick();
+  await h.client.setNetworkEnabled(false);
+  waiting.resolve({
+    boxes: [{ ...device, deviceId: "old-box", accessState: "ready" }],
+  });
+  await login;
+  assert.deepEqual(
+    h.client.snapshot().devices.map((box) => box.deviceId),
+    ["box-1"],
+  );
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  assert.equal(h.transports.length, 0);
+});
+
+test("background renewal observes authorization ACK without repeating preparation", async (t) => {
+  const h = harness(t, { renewIntervalMs: 15 });
+  h.override((input) =>
+    input.path.startsWith("/app-api/network/boxes")
+      ? { boxes: [{ ...device, accessState: "authorization_pending" }] }
+      : undefined,
+  );
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  h.override(undefined);
+  const deadline = Date.now() + 1000;
+  while (!h.client.snapshot().devices[0].canOpen && Date.now() < deadline)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  assert.equal(
+    h.calls.filter((call) => call.path.endsWith("boxes/prepare")).length,
+    1,
+  );
+  assert.ok(h.calls.filter((call) => call.path.endsWith("/boxes")).length >= 2);
+});
+
+test("revoked access leaves linked box visible but closes its session and blocks reopening", async (t) => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  await h.client.connectBox("box-1");
+  h.override((input) =>
+    input.path.startsWith("/app-api/network/boxes")
+      ? { boxes: [{ ...device, accessState: "access_denied" }] }
+      : undefined,
+  );
+  await h.client.refreshDevices();
+  assert.equal(h.client.snapshot().devices[0].accessState, "access_denied");
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  assert.equal(h.sessions[0].closed, true);
+  await assert.rejects(h.client.connectBox("box-1"), {
+    code: "NETWORK_DEVICE_ACCESS_DENIED",
+  });
+});
+
+test("a linked box needing an authorization upgrade does not block other ready boxes", async (t) => {
+  const h = harness(t);
+  h.override((input) =>
+    input.path.startsWith("/app-api/network/boxes")
+      ? {
+          boxes: [
+            { ...device, accessState: "ready" },
+            {
+              ...device,
+              deviceId: "legacy-box",
+              accessState: "authorization_unavailable",
+            },
+          ],
+        }
+      : undefined,
+  );
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().directory.phase, "ready");
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  assert.equal(
+    h.client.snapshot().devices[1].accessState,
+    "authorization_unavailable",
+  );
+  assert.equal(h.client.snapshot().devices[1].canOpen, false);
+  await assert.rejects(h.client.connectBox("legacy-box"), {
+    code: "NETWORK_DEVICE_ACCESS_DENIED",
+  });
+  await h.client.connectBox("box-1");
+  assert.equal(h.client.snapshot().phase, "ready");
 });

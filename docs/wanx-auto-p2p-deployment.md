@@ -1,16 +1,17 @@
 # 万象账号自动入网与盒端免登录：部署和联调
 
-更新日期：2026-10-11。本文按独立 `wanx-bridge` 盒端实现更新。此前已记录 Admin 发布和客户端自动入网成功；这不代表本轮重构后的 bridge 镜像已经发布或盒端免登录已经真实验收。本轮未执行远程部署。
+更新日期：2026-10-11。102 已通过 `box.sh` 部署独立授权同步组件并启用 `wanx-bridge`，制品沿用 101 构建并上传 MinIO 的版本。实际客户端已完成自动入网、真实设备授权 ACK、免二次登录打开首页、刷新及自动续期验证。聊天、文件和长期流式业务仍需专项验收。版本、密钥轮换和数据保留记录见 [102 联调记录](wanx-linked-box-p2p.md)。
 
 ## 1. 部署范围与依赖
 
-整条链路需要同时发布三个部分：
+整条链路依赖以下部分：
 
 | 位置           | 实现                                                                                   | 必需条件                                                                          |
 | -------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | 万象连接桌面端 | `wanx-client/account`、`platform.mjs`、内置 P2P 引擎                                   | 公网 Consumer 服务、系统安全存储、已打包的对应平台网络引擎                        |
 | Admin 平台     | `network_access_service.py`、`network_access_controller.py`、`wanx_p2p_sso_service.py` | Consumer 身份与请求签名、SQL 迁移、网络管理 Token、平台签名私钥、当前设备证书账本 |
 | 盒端 WANX      | 根目录 `wanx-bridge/`，通过公共 HTTP/OIDC 接口连接原始 Octop                           | 盒子身份、盒子 Ed25519 签名私钥、平台公钥、bridge 持久状态、原生管理账号凭据      |
+| 盒端授权同步   | OS `deployment/consumer_authorization.py`，随 `base` 制品可选启用                    | 已有 DeviceKey 与设备身份，真实 Consumer v2 快照校验、持久化及 ACK               |
 
 默认公网地址：
 
@@ -36,9 +37,9 @@
 - 当前 Owner/成员、设备客户端 Grant 有效，Owner 投影 `access_status=ready`，版本与 `ownership_epoch` 一致。
 - 设备 Grant 包含 `remote.p2p`，`omnia-desktop` 应用授权包含 `omnia.use`。
 
-新客户端登录只自动建立 Consumer Grant，尚不会建立 `omnia.use` 应用授权。现有系统需要可信内部操作通过 `PUT /internal/remoteops/application-relay/scope-grants` 为当前 `accountId/clientId/deviceId` 设置 `applicationId=omnia-desktop`、`scopes=["omnia.use"]`、`status=active`，并等待设备 ACK。旧电脑的应用许可不能直接复制给新客户端；所有者默认开通规则需另行明确。
+最新版客户端在开启 P2P 或显式刷新时调用 `POST /app-api/network/boxes/prepare`。对于本人已有 Owner 绑定、可信节点映射和有效身份的盒子，服务端仅为当前客户端补齐尚不存在的 `remote.p2p` 与 `omnia-desktop / omnia.use` 授权，复用原授权投影并等待设备 ACK。已撤销、过期或受限的现有授权不自动恢复，分享成员范围不扩大；需要显式变更时仍使用原授权流程。旧盒子不支持授权确认时显示 `authorization_unavailable`，不影响其他支持的盒子。
 
-自动入网不会制造 Owner/Grant，也不会把未绑定盒子自动变成当前用户的设备。若上述记录尚不存在，需要先完成现有绑定和授权流程。
+本轮不创建 Owner 绑定，不涉及发现、家庭网络配置或认领。仅在已有有效 Owner 关系范围内补当前客户端缺失授权。详细操作见 [已关联盒子接入](wanx-linked-box-p2p.md)。
 
 ## 3. 平台环境配置与密钥
 
@@ -74,11 +75,10 @@ REMOTEOPS_APPROVED_CA_SPKI_SHA256=<已批准且与 issuer ledger 相符的 SPKI 
 .venv/bin/python scripts/register_wanx_network_box.py \
   --device-id '<Consumer registry device ID>' \
   --peer-id '<确认属于该物理盒子的 peer ID>' \
-  --group-id '<只包含该 peer 的组 ID>' \
   --display-name '我的万象盒子'
 ```
 
-此工具检查物理设备、peer 及组成员，写入 `nexus_network_boxes`，不改变 Owner/Grant。已有不同身份或 peer 映射会被拒绝覆盖。
+此工具检查物理设备、peer 及组成员，写入 `nexus_network_boxes`，不改变 Owner/Grant。不传 `--group-id` 时自动创建或复用只含指定 peer 的专属组；原显式组参数仍可用。已有不同身份或 peer 映射会被拒绝覆盖。
 
 必须区分两个设备标识：API 路径和 `--device-id` 使用 **Consumer registry ID**；盒端 `WANX_PLATFORM_DEVICE_ID` 和签名票据使用设备证书的不可变 **identity device ID**。二者不可互换。
 

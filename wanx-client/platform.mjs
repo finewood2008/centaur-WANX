@@ -35,7 +35,11 @@ export function createPlatformClient({
   let directTransport = null,
     unsubscribeDirect,
     activeLink = null;
-  let devices = [];
+  let devices = [],
+    boxes = [];
+  let directory = { phase: "idle", reason: null };
+  let directoryRevision = 0,
+    prepareNeeded = true;
   let platform = { phase: "idle", reason: null };
   let epoch = 0,
     closed = false,
@@ -68,7 +72,20 @@ export function createPlatformClient({
     return structuredClone({
       ...connection,
       account: account.snapshot(),
-      devices,
+      devices: boxes.map((box) => {
+        const endpoint = devices.find((item) => item.deviceId === box.deviceId);
+        return {
+          ...box,
+          canOpen: Boolean(
+            enabled &&
+              platform.phase === "ready" &&
+              directory.phase === "ready" &&
+              box.accessState === "ready" &&
+              endpoint,
+          ),
+        };
+      }),
+      directory,
       platform,
       network: { ...network, enabled, peers: [] },
     });
@@ -84,6 +101,7 @@ export function createPlatformClient({
   };
   function cancel() {
     epoch++;
+    directoryRevision++;
     clearTimeout(timer);
     clearTimeout(leaseTimer);
     timer = null;
@@ -152,9 +170,14 @@ export function createPlatformClient({
       !validID(value.enrollmentId) ||
       !validID(value.networkSessionId) ||
       value.managementUrl !== managementURL ||
-      !["enrolling", "ready"].includes(value.phase)
+      !["enrolling", "ready", "revoked", "revocation_pending"].includes(
+        value.phase,
+      )
     )
       throw fail("NETWORK_INVALID_RESPONSE");
+    if (value.phase === "revoked") throw fail("NETWORK_ENROLLMENT_REQUIRED");
+    if (value.phase === "revocation_pending")
+      throw fail("NETWORK_REVOCATION_PENDING");
     if (
       value.phase === "ready" &&
       (!Number.isFinite(value.leaseExpiresAt) ||
@@ -196,6 +219,108 @@ export function createPlatformClient({
       Math.max(1, Math.min(interval, remaining / 2)),
     );
     timer.unref?.();
+  }
+  async function loadDirectory(generation, { prepare = false, signal } = {}) {
+    const revision = prepare ? directoryRevision : ++directoryRevision;
+    directory = { phase: "loading", reason: null };
+    emit();
+    try {
+      const result = await request(
+        {
+          path: prepare
+            ? "/app-api/network/boxes/prepare"
+            : "/app-api/network/boxes",
+          ...(prepare ? { method: "POST", body: {} } : {}),
+        },
+        generation,
+        signal,
+      );
+      if (revision !== directoryRevision) return false;
+      if (!Array.isArray(result?.boxes)) throw fail("NETWORK_INVALID_RESPONSE");
+      const seen = new Set();
+      const entries = result.boxes.map((box) => {
+        if (
+          !validDeviceID(box.deviceId) ||
+          seen.has(box.deviceId) ||
+          typeof box.displayName !== "string" ||
+          box.displayName.length > 256 ||
+          ![
+            "ready",
+            "authorization_pending",
+            "authorization_unavailable",
+            "access_denied",
+            "network_unconfigured",
+            "identity_unavailable",
+          ].includes(box.accessState)
+        )
+          throw fail("NETWORK_INVALID_RESPONSE");
+        seen.add(box.deviceId);
+        return {
+          deviceId: box.deviceId,
+          displayName: box.displayName,
+          deviceRole: box.deviceRole,
+          accessState: box.accessState,
+        };
+      });
+      if (prepare) directoryRevision++;
+      boxes = entries;
+      devices = devices.filter((device) =>
+        boxes.some(
+          (box) =>
+            box.deviceId === device.deviceId && box.accessState === "ready",
+        ),
+      );
+      directory = { phase: "ready", reason: null };
+      const selected = transport?.client.snapshot().connection;
+      if (
+        selected?.mode === "netbird" &&
+        !boxes.some(
+          (box) =>
+            box.deviceId === selected.deviceId && box.accessState === "ready",
+        )
+      )
+        await transport.client.disconnect();
+      if (current(generation)) emit();
+      return true;
+    } catch (error) {
+      if (!current(generation) || revision !== directoryRevision) return false;
+      devices = [];
+      if (!prepare && error.code === "NETWORK_SERVICE_NOT_DEPLOYED") {
+        // The existing account directory is display-only until network APIs ship.
+        // It never supplies endpoints, permissions or a ready network state.
+        try {
+          const linked = await account.listDevices();
+          if (!current(generation) || revision !== directoryRevision)
+            return false;
+          const seen = new Set();
+          if (!Array.isArray(linked)) throw fail("ACCOUNT_INVALID_RESPONSE");
+          boxes = linked.map((box) => {
+            if (
+              !validDeviceID(box.deviceId) ||
+              seen.has(box.deviceId) ||
+              typeof box.deviceName !== "string" ||
+              box.deviceName.length > 256
+            )
+              throw fail("ACCOUNT_INVALID_RESPONSE");
+            seen.add(box.deviceId);
+            return {
+              deviceId: box.deviceId,
+              displayName: box.deviceName,
+              deviceRole: box.role,
+              accessState: "service_unavailable",
+            };
+          });
+        } catch (fallbackError) {
+          if (!current(generation) || revision !== directoryRevision)
+            return false;
+          error = fallbackError;
+        }
+      }
+      directory = { phase: "unavailable", reason: safeReason(error) };
+      emit();
+      if (prepare) throw error;
+      return false;
+    }
   }
   async function loadNetworkDevices(generation, signal) {
     const result = await request(
@@ -254,6 +379,17 @@ export function createPlatformClient({
     if (platform.phase !== "ready")
       platform = { phase: "enrolling", reason: null };
     emit();
+    if (prepareNeeded) {
+      const prepared = await loadDirectory(generation, {
+        prepare: true,
+        signal,
+      });
+      assertCurrent(generation);
+      prepareNeeded = !prepared;
+    } else {
+      await loadDirectory(generation, { signal });
+      assertCurrent(generation);
+    }
     let enrollment;
     try {
       enrollment = validateSession(
@@ -360,6 +496,7 @@ export function createPlatformClient({
             networkSession?.leaseExpiresAt * 1000 > Date.now() &&
             transport?.network.snapshot().phase === "ready"
           ) {
+            devices = [];
             // Existing authorization remains bounded by the independent deadline.
             schedule(generation, 5000);
             return emit();
@@ -382,18 +519,25 @@ export function createPlatformClient({
     activeWork = work;
     return work;
   }
+  let accountKey = account.getIdentity()?.accountId || null;
   const unsubscribeAccount = account.subscribe((state) => {
     if (closed) return;
+    const nextAccountKey =
+      state.phase === "authenticated" ? state.accountId : null;
     if (
-      state.phase === "signed_out" &&
-      (networkSession || (transportKey && transportKey !== "direct"))
+      state.phase === "signed_out" ||
+      (accountKey && nextAccountKey && accountKey !== nextAccountKey)
     ) {
       cancel();
       networkSession = null;
       devices = [];
+      boxes = [];
+      directory = { phase: "idle", reason: null };
+      prepareNeeded = true;
       platform = { phase: "idle", reason: null };
       void retireTransport().catch(() => {});
     }
+    accountKey = nextAccountKey;
     emit();
   });
   async function afterLogin(action) {
@@ -404,20 +548,24 @@ export function createPlatformClient({
     const generation = epoch;
     await action();
     if (!current(generation)) return snapshot();
-    if (enabled) return activate();
     return refreshDevices();
   }
   async function refreshDevices() {
     authenticated();
-    if (enabled) return activate();
     const generation = epoch;
-    const entries = await account.listDevices();
-    assertCurrent(generation);
-    devices = entries.map((device) => ({
-      deviceId: device.deviceId,
-      displayName: device.deviceName || device.deviceId,
-    }));
-    return emit();
+    const listing = loadDirectory(generation);
+    if (enabled) {
+      prepareNeeded = true;
+      await Promise.all([listing, activate()]);
+      if (
+        current(generation) &&
+        enabled &&
+        prepareNeeded &&
+        platform.phase === "ready"
+      )
+        await activate();
+    } else await listing;
+    return snapshot();
   }
   return {
     snapshot,
@@ -437,8 +585,7 @@ export function createPlatformClient({
           platform = { phase: "unavailable", reason: safeReason(error) };
       }
       if (!current(generation)) return snapshot();
-      if (account.snapshot().phase === "authenticated")
-        return enabled ? activate() : refreshDevices();
+      if (account.snapshot().phase === "authenticated") return refreshDevices();
       return emit();
     },
     loginPassword: (input) => afterLogin(() => account.loginPassword(input)),
@@ -453,6 +600,7 @@ export function createPlatformClient({
       const generation = epoch;
       if (!enabled) {
         networkSession = null;
+        devices = [];
         platform = { phase: "idle", reason: null };
         const stopping = transport?.network.setEnabled(false);
         emit();
@@ -469,7 +617,8 @@ export function createPlatformClient({
         throw error;
       }
       if (!current(generation)) return snapshot();
-      return value && account.getIdentity() ? activate() : emit();
+      if (account.getIdentity()) return refreshDevices();
+      return emit();
     },
     async connect(input) {
       if (input?.mode !== "direct") throw fail("NETWORK_USE_AUTHORIZED_DEVICE");
@@ -494,6 +643,7 @@ export function createPlatformClient({
         !enabled ||
         platform.phase !== "ready" ||
         !networkSession ||
+        directory.phase !== "ready" ||
         !transport
       )
         throw fail("NETWORK_NOT_READY");
@@ -508,12 +658,20 @@ export function createPlatformClient({
       } catch (error) {
         if (selection !== connectionEpoch || !current(generation))
           return snapshot();
+        devices = [];
+        emit();
         throw error;
       }
       if (selection !== connectionEpoch || !current(generation))
         return snapshot();
       const device = devices.find((item) => item.deviceId === deviceId);
-      if (!device) throw fail("NETWORK_DEVICE_ACCESS_DENIED");
+      if (
+        !device ||
+        !boxes.some(
+          (box) => box.deviceId === deviceId && box.accessState === "ready",
+        )
+      )
+        throw fail("NETWORK_DEVICE_ACCESS_DENIED");
       const target = transport;
       activeLink = target;
       const sessionId = networkSession.networkSessionId;
@@ -555,6 +713,9 @@ export function createPlatformClient({
       cancel();
       networkSession = null;
       devices = [];
+      boxes = [];
+      directory = { phase: "idle", reason: null };
+      prepareNeeded = true;
       platform = { phase: "idle", reason: null };
       const stopping = Promise.all([retireTransport(), retireDirect()]);
       emit();

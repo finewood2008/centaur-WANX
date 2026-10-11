@@ -51,6 +51,7 @@ async function harness() {
     phase: "disconnected",
     account: { phase: "signed_out" },
     platform: { phase: "idle" },
+    directory: { phase: "idle" },
     devices: [],
     network: { enabled: true, phase: "auth_required", peers: [] },
   };
@@ -58,10 +59,13 @@ async function harness() {
     ...initial,
     account: { phase: "authenticated", accountId: "a" },
     platform: { phase: "ready" },
+    directory: { phase: "ready" },
     network: { enabled: true, phase: "ready" },
     devices: [
       {
         deviceId: "box-1",
+        accessState: "ready",
+        canOpen: true,
         displayName: "我的盒子",
         serviceUrl: "http://100.64.0.8:8088",
       },
@@ -239,6 +243,8 @@ test("actual account, enrollment and box SSO errors give actionable Chinese expl
     ["SMS_CODE_INVALID", /验证码.*重新获取/],
     ["SECURE_STORAGE_UNAVAILABLE", /安全存储/],
     ["NETWORK_ENROLLMENT_TIMEOUT", /自动入网超时/],
+    ["NETWORK_ENROLLMENT_REQUIRED", /重新入网/],
+    ["NETWORK_REVOCATION_PENDING", /清理上次网络连接.*刷新重试/],
     ["NETWORK_DEVICE_ACCESS_DENIED", /没有访问该盒子/],
     ["NETWORK_UNSAFE_EXISTING_POLICY", /账号隔离/],
     ["BOX_PLATFORM_TIMEOUT", /登录盒子超时/],
@@ -267,6 +273,10 @@ test("undeployed automatic enrollment explains the missing service inline and ne
       ...h.signed,
       account: { ...h.signed.account, reason: "ACCOUNT_REQUEST_FAILED" },
       devices: [],
+      directory: {
+        phase: "unavailable",
+        reason: "NETWORK_SERVICE_NOT_DEPLOYED",
+      },
       platform: {
         phase: "unavailable",
         reason: source === "platform" ? "NETWORK_SERVICE_NOT_DEPLOYED" : null,
@@ -283,7 +293,7 @@ test("undeployed automatic enrollment explains the missing service inline and ne
     );
     assert.equal(
       h.ui["devices-empty"].textContent,
-      "暂时无法获取盒子列表，请恢复网络服务后刷新。",
+      "自动入网服务尚未部署，请联系管理员完成服务更新。",
     );
     assert.equal(h.ui["devices-empty"].hidden, false);
     assert.equal(h.ui.connect.disabled, false);
@@ -298,4 +308,52 @@ test("undeployed automatic enrollment explains the missing service inline and ne
     platform: { phase: "unavailable", reason: "private-server-message" },
   });
   assert.equal(h.ui["network-state"].textContent, "P2P 网络暂时不可用");
+});
+
+test("linked boxes remain visible with individual readiness; stale ready button cannot open pending box", async () => {
+  const h = await harness();
+  h.notify(h.signed);
+  const oldButton = h.ui.devices.children[0].children[1];
+  for (const [accessState, label] of [
+    ["service_unavailable", "账号服务待更新"],
+    ["authorization_pending", "访问权限待就绪"],
+    ["authorization_unavailable", "盒子授权组件待更新"],
+    ["access_denied", "未获访问权限"],
+    ["network_unconfigured", "盒子尚未接入网络"],
+    ["identity_unavailable", "盒子身份待就绪"],
+  ]) {
+    h.notify({
+      ...h.signed,
+      devices: [{ ...h.signed.devices[0], accessState, canOpen: false }],
+    });
+    const button = h.ui.devices.children[0].children[1];
+    assert.equal(button.textContent, label);
+    assert.equal(button.disabled, true);
+    oldButton.listeners.click();
+    assert.equal(h.calls.length, 0);
+  }
+});
+
+test("directory loading and failed directory never appear as a genuinely empty account", async () => {
+  const h = await harness();
+  h.notify({
+    ...h.signed,
+    devices: [],
+    directory: { phase: "loading" },
+    platform: { phase: "enrolling" },
+  });
+  assert.match(h.ui["devices-empty"].textContent, /正在加载/);
+  h.notify({
+    ...h.signed,
+    devices: [],
+    directory: { phase: "unavailable", reason: "NETWORK_SERVICE_NOT_DEPLOYED" },
+  });
+  assert.match(h.ui["devices-empty"].textContent, /尚未部署/);
+  h.notify({
+    ...h.signed,
+    devices: [],
+    directory: { phase: "ready" },
+    platform: { phase: "enrolling" },
+  });
+  assert.equal(h.ui["devices-empty"].textContent, "暂无已绑定或获授权的盒子。");
 });

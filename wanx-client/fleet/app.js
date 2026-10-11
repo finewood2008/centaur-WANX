@@ -55,10 +55,12 @@ const reasons = {
   NETWORK_PEER_IDENTITY_AMBIGUOUS: "网络设备身份存在冲突，请联系管理员。",
   NETWORK_DEVICE_IDENTITY_INVALID: "盒子的网络身份关联异常，请联系管理员。",
   NETWORK_POLICY_NOT_CONFIRMED: "盒子访问权限尚未生效，请稍后刷新重试。",
+  NETWORK_AUTHORIZATION_SYNC_UNAVAILABLE:
+    "盒子的授权同步组件需要更新，请联系管理员。",
   NETWORK_PROJECTION_FAILED: "无法同步盒子访问权限，请稍后重试。",
   NETWORK_RECONCILE_FAILED: "网络权限同步失败，请稍后重试。",
   NETWORK_RESOURCE_CONFLICT: "网络注册状态存在冲突，请稍后重试。",
-  NETWORK_REVOCATION_PENDING: "正在撤销网络访问权限，请稍候。",
+  NETWORK_REVOCATION_PENDING: "正在清理上次网络连接，请稍后刷新重试。",
   NETWORK_SESSION_INVALID: "网络登录信息已失效，请重新登录万象。",
   NETWORK_SESSION_REVOKED: "网络访问授权已撤销，请重新登录万象。",
   NETWORK_UNSAFE_EXISTING_POLICY:
@@ -139,8 +141,9 @@ function showError(error) {
     : "";
   ui.error.hidden = !code;
 }
-function canOpenBox() {
+function canOpenBox(device) {
   return (
+    device?.canOpen === true &&
     state.account?.phase === "authenticated" &&
     state.network.enabled &&
     state.network.phase === "ready" &&
@@ -160,6 +163,7 @@ function render(next) {
   const reason =
     state.reason ||
     account.reason ||
+    state.directory?.reason ||
     state.platform?.reason ||
     (network.phase === "unavailable" ? network.reason : null) ||
     null;
@@ -211,8 +215,10 @@ function render(next) {
   ui["devices-empty"].hidden = devices.length > 0;
   ui["devices-empty"].textContent = !signedIn
     ? "登录后查看已绑定或获授权的盒子。"
-    : state.platform?.phase === "unavailable"
-    ? "暂时无法获取盒子列表，请恢复网络服务后刷新。"
+    : state.directory?.phase === "unavailable"
+    ? reasons[state.directory.reason] || "暂时无法获取盒子列表，请稍后刷新。"
+    : state.directory?.phase !== "ready"
+    ? "正在加载已关联的盒子…"
     : "暂无已绑定或获授权的盒子。";
   ui.devices.replaceChildren(
     ...devices.map((device) => {
@@ -225,13 +231,32 @@ function render(next) {
       button.textContent =
         ready && state.connection?.deviceId === device.deviceId
           ? "已打开"
-          : "打开盒子";
-      button.disabled = !canOpenBox();
+          : device.accessState === "service_unavailable"
+          ? "账号服务待更新"
+          : device.accessState === "access_denied"
+          ? "未获访问权限"
+          : device.accessState === "authorization_unavailable"
+          ? "盒子授权组件待更新"
+          : device.accessState === "authorization_pending"
+          ? "访问权限待就绪"
+          : device.accessState === "network_unconfigured"
+          ? "盒子尚未接入网络"
+          : device.accessState === "identity_unavailable"
+          ? "盒子身份待就绪"
+          : !network.enabled
+          ? "开启 P2P 后打开"
+          : canOpenBox(device)
+          ? "打开盒子"
+          : network.phase === "ready" && state.platform?.phase === "ready"
+          ? "正在同步访问权限"
+          : "等待网络连接";
+      button.disabled = !canOpenBox(device);
       button.addEventListener("click", () => {
         if (
-          !canOpenBox() ||
-          !(state.devices || []).some(
-            (item) => item.deviceId === device.deviceId,
+          !canOpenBox(
+            (state.devices || []).find(
+              (item) => item.deviceId === device.deviceId,
+            ),
           )
         )
           return;
