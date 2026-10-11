@@ -1,0 +1,103 @@
+import net from "node:net";
+import { randomBytes, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+
+const fail = (code) => Object.assign(new Error(code), { code });
+const MAX_LINE = 256 * 1024;
+
+function safeMethod(method) {
+  return typeof method === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(method);
+}
+
+export async function createApplicationHost({
+  applicationId,
+  isApplicationAllowed,
+  capabilitiesFor,
+  context,
+  request,
+  closeSession,
+  socketPath,
+  token = randomBytes(32).toString("hex"),
+} = {}) {
+  if (typeof applicationId !== "string" || !applicationId) throw new TypeError("applicationId is required");
+  if (typeof context !== "function") throw new TypeError("context is required");
+  const endpoint = socketPath || (process.platform === "win32"
+    ? `\\\\.\\pipe\\wanx-app-${randomUUID()}`
+    : `/tmp/wanx-app-${randomUUID()}.sock`);
+  const server = net.createServer();
+  let closed = false;
+
+  async function dispatch(message) {
+    const hostRequest = message?.applicationId === applicationId;
+    const applicationRequest = message?.applicationId && isApplicationAllowed?.(message.applicationId, message.launchId);
+    if (!message || message.token !== token || (!hostRequest && !applicationRequest))
+      throw fail("APPLICATION_IPC_UNAUTHORIZED");
+    if (!safeMethod(message.method)) throw fail("APPLICATION_IPC_METHOD_INVALID");
+    const capabilities = capabilitiesFor?.(message.applicationId, message.launchId) || [];
+    if (message.method === "context.get") return context();
+    if (message.method === "identity.get") {
+      if (!capabilities.includes("identity.read")) throw fail("APPLICATION_CAPABILITY_DENIED");
+      return { ...(await context()), identityOnly: true };
+    }
+    if (message.method === "http.request") {
+      if (!capabilities.includes("http.request")) throw fail("APPLICATION_CAPABILITY_DENIED");
+      if (typeof request !== "function") throw fail("APPLICATION_REQUEST_UNAVAILABLE");
+      const path = message.params?.path;
+      if (typeof path !== "string" || !path.startsWith("/api/") || path.includes("\\") || path.includes("//"))
+        throw fail("APPLICATION_PATH_NOT_ALLOWED");
+      let body = message.params?.body;
+      if (message.params?.bodyEncoding === "base64") {
+        if (typeof body !== "string") throw fail("APPLICATION_BODY_INVALID");
+        try { body = Buffer.from(body, "base64"); } catch { throw fail("APPLICATION_BODY_INVALID"); }
+      } else if (body !== undefined && body !== null && typeof body !== "string" && !Buffer.isBuffer(body)) {
+        body = JSON.stringify(body);
+      }
+      const response = await request({
+        path,
+        method: message.params?.method || "GET",
+        body,
+        headers: message.params?.headers,
+      });
+      return {
+        ...response,
+        ...(Buffer.isBuffer(response?.body) ? { body: response.body.toString("base64") } : {}),
+      };
+    }
+    if (message.method === "session.close") {
+      await closeSession?.(message.applicationId, message.launchId);
+      return { closed: true };
+    }
+    throw fail("APPLICATION_IPC_METHOD_NOT_ALLOWED");
+  }
+
+  server.on("connection", (socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      if (buffer.length > MAX_LINE) { socket.destroy(); return; }
+      while (true) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) break;
+        const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+        let message;
+        try { message = JSON.parse(line); } catch { socket.write(JSON.stringify({ error: "APPLICATION_IPC_INVALID_JSON" }) + "\n"); continue; }
+        void dispatch(message).then(
+          (value) => socket.write(JSON.stringify({ id: message.id, ok: true, value }) + "\n"),
+          (error) => socket.write(JSON.stringify({ id: message.id, ok: false, error: error.code || "APPLICATION_IPC_FAILED" }) + "\n"),
+        );
+      }
+    });
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(endpoint, resolve); });
+  return Object.freeze({
+    endpoint,
+    token,
+    async close() {
+      if (closed) return;
+      closed = true;
+      await new Promise((resolve) => server.close(resolve));
+      if (process.platform !== "win32") await rm(endpoint, { force: true });
+    },
+  });
+}

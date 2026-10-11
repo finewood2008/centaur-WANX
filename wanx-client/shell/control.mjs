@@ -18,6 +18,7 @@ export function registerControlActions({
   control,
   controlURL,
   client,
+  applications,
 }) {
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
@@ -26,7 +27,10 @@ export function registerControlActions({
       return action(argument);
     });
   };
-  register("get-state", () => client.snapshot());
+  register("get-state", async () => ({
+    ...client.snapshot(),
+    applications: applications ? await applications.listInstalled() : [],
+  }));
   register("set-network-enabled", (enabled) => {
     if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
     return client.setNetworkEnabled(enabled);
@@ -63,4 +67,17 @@ export function registerControlActions({
     });
   });
   register("disconnect", () => client.disconnect());
+  register("applications-list", () => applications?.listInstalled() || []);
+  register("applications-install", (input) => {
+    if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return applications.install({ sourceDir: text(input?.sourceDir, 4096, "invalid_application_source") });
+  });
+  register("applications-launch", (input) => {
+    if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return applications.launch(text(input?.applicationId, 64, "invalid_application_id"), input?.version);
+  });
+  register("applications-stop", (input) => {
+    if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return applications.stop(text(input?.applicationId, 64, "invalid_application_id"));
+  });
 }

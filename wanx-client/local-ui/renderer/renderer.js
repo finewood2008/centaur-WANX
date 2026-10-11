@@ -122,6 +122,7 @@ function devicesView() {
       </section>
       ${pending.length ? `<section class="content-section pending-section"><div class="section-heading"><div><p class="eyebrow">SETUP REQUIRED</p><h2 class="small-heading">待处理设备 <span class="count">${pending.length}</span></h2></div></div><div class="device-list">${pending.map((device) => deviceCard(device, false)).join("")}</div></section>` : ""}
       <details class="diagnostics"><summary>开发诊断入口</summary><div class="diagnostic-row"><input id="base-url" value="${escapeHTML(currentState.diagnostics?.baseURL || "http://localhost:8088")}" spellcheck="false" /><button class="button small" data-action="health">检查盒端服务</button></div><p>${escapeHTML(currentState.diagnostics?.message || "仅用于本机开发诊断，不替代设备发现与初始化。")}</p></details>
+      <section class="content-section"><div class="section-heading"><div><p class="eyebrow">WANX APPLICATIONS</p><h2 class="small-heading">我的应用</h2></div></div><p class="muted">应用通过万象 Host 复用当前已连接盒子；安装目录仅用于开发联调。</p><div class="diagnostic-row"><input id="application-source" placeholder="知君源码目录" spellcheck="false" /><button class="button small" data-action="applications-install">安装目录</button></div>${(currentState.applications || []).map((item) => `<div class="device-meta"><span>${escapeHTML(item.name)} ${escapeHTML(item.version)}</span><button class="button small" data-action="applications-launch" data-application-id="${escapeHTML(item.applicationId)}">启动</button></div>`).join("") || "<p class=muted>尚未安装应用。</p>"}</section>
     </div>`;
 }
 
@@ -305,6 +306,15 @@ app.addEventListener("click", async (event) => {
     const response = await window.wanxClient.checkHealth(input?.value.trim() || "");
     if (!response.ok) notice = response.code;
     render(response.state);
+  }
+  if (action === "applications-install") {
+    const input = document.querySelector("#application-source");
+    await run("applications.install", { sourceDir: input?.value.trim() || "" });
+    return;
+  }
+  if (action === "applications-launch") {
+    await run("applications.launch", { applicationId: target.dataset.applicationId });
+    return;
   }
 });
 

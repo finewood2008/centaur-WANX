@@ -472,6 +472,51 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
   const gateway = {
     url: localURL.origin + (bootstrapPath ?? ""),
     origin: localURL.origin,
+    async request({ path, method = "GET", headers = {}, body, signal } = {}) {
+      if (closed) throw new Error("GATEWAY_CLOSED");
+      if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
+      const request = {
+        method,
+        url: path,
+        headers: {
+          host: localURL.host,
+          origin: localURL.origin,
+          ...headers,
+          ...(session ? { authorization: `Bearer ${marker}` } : {}),
+        },
+      };
+      const wasBootstrapped = bootstrapped;
+      if (session) bootstrapped = true;
+      const authorized = authorize(request);
+      bootstrapped = wasBootstrapped;
+      if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
+      const upstream = transport.request(target, {
+        method,
+        path: authorized.path,
+        headers: authorized.headers,
+        agent: agent ?? false,
+        signal,
+      });
+      requests.add(upstream);
+      return await new Promise((resolve, rejectRequest) => {
+        const chunks = [];
+        upstream.on("response", (response) => {
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("error", rejectRequest);
+          response.on("end", () => resolve({
+            status: response.statusCode || 502,
+            headers: Object.fromEntries(Object.entries(response.headers).filter(([name]) => name.toLowerCase() !== "set-cookie")),
+            body: Buffer.concat(chunks),
+          }));
+        });
+        upstream.on("error", rejectRequest);
+        if (signal) signal.addEventListener("abort", () => upstream.destroy(), { once: true });
+        if (body !== undefined) upstream.write(
+          Buffer.isBuffer(body) || typeof body === "string" ? body : JSON.stringify(body),
+        );
+        upstream.end();
+      }).finally(() => requests.delete(upstream));
+    },
     close() {
       if (closing) return closing;
       closed = true;

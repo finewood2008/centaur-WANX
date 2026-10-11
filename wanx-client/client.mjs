@@ -166,6 +166,10 @@ export function createClient({
 
   return {
     snapshot,
+    async request(input) {
+      if (closed || !gateway) throw new Error("SESSION_CLOSED");
+      return gateway.request(input);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

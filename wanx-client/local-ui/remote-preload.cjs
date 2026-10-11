@@ -63,6 +63,10 @@ const actions = {
   "devices.connect": (input) =>
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
+  "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
+  "applications.install": (input) => ipcRenderer.invoke("wanx-client:applications-install", input),
+  "applications.launch": (input) => ipcRenderer.invoke("wanx-client:applications-launch", input),
+  "applications.stop": (input) => ipcRenderer.invoke("wanx-client:applications-stop", input),
 };
 
 async function action(name, input = {}) {
@@ -74,7 +78,7 @@ async function action(name, input = {}) {
     return { ok: false, code: "UNKNOWN_CLIENT_ACTION", state: await getLocalState() };
   try {
     const value = await handler(input);
-    return { ok: true, value, state: projectState(value) };
+    return { ok: true, value, state: await getLocalState() };
   } catch (error) {
     return { ok: false, code: errorCode(error), state: await getLocalState() };
   }

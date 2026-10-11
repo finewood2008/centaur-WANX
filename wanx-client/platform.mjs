@@ -569,6 +569,26 @@ export function createPlatformClient({
   }
   return {
     snapshot,
+    async applicationContext() {
+      const state = snapshot();
+      if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
+      const response = await activeLink.client.request({ path: "/api/auth/me" });
+      if (response.status < 200 || response.status >= 300) throw fail("BOX_IDENTITY_UNAVAILABLE");
+      let user;
+      try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
+      return {
+        protocolVersion: 1,
+        accountId: state.account.accountId,
+        clientId: state.account.clientId,
+        boxId: state.connection.deviceId,
+        user,
+        connection: "ready",
+      };
+    },
+    async applicationRequest(input) {
+      if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
+      return activeLink.client.request(input);
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

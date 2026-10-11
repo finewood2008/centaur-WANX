@@ -22,6 +22,7 @@ import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createPlatformClient } from "../platform.mjs";
+import { createApplicationManager } from "../applications/manager.mjs";
 
 const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 let control;
@@ -29,6 +30,7 @@ let client;
 let dashboards;
 let unsubscribe;
 let setupRuntime;
+let applications;
 let quitting = false;
 
 // Opt-in timings contain fixed step names only, never requests or credentials.
@@ -148,6 +150,12 @@ if (claimSingleInstance(app, () => control))
           return { network, client: createClient({ network }) };
         },
       });
+      applications = await createApplicationManager({
+        applicationRoot: path.join(userData, "applications"),
+        applicationId: "wanx-host",
+        context: () => client.applicationContext(),
+        request: (input) => client.applicationRequest(input),
+      });
       dashboards = createDashboardWindows({
         BrowserWindow,
         session,
@@ -199,6 +207,7 @@ if (claimSingleInstance(app, () => control))
         controlURL,
         client,
         openExternal: (url) => shell.openExternal(url),
+        applications,
       });
       unsubscribe = client.subscribe((state) => {
         dashboards.sync(state);
@@ -213,7 +222,7 @@ if (claimSingleInstance(app, () => control))
         unsubscribe();
         Promise.resolve(setupRuntime?.dispose())
           .catch(() => {})
-          .then(() => Promise.allSettled([dashboards.close(), client.close()]))
+          .then(() => Promise.allSettled([applications?.close(), dashboards.close(), client.close()]))
           .then(() => app.quit());
       });
       control.on("closed", () => app.quit());
