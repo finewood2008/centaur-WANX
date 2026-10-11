@@ -96,7 +96,9 @@ export function createNetwork({
   managementURL = "https://p2p.qeeshu.com",
   deviceName = "wanx-client",
   createSidecar = defaultCreateSidecar,
-  pollIntervalMs = 15_000,
+  // Local IPC reads the engine's cached state; this does not poll the platform.
+  // Keep interface changes from adding up to 15 seconds of stale UI state.
+  pollIntervalMs = 1_000,
 } = {}) {
   if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0)
     throw new TypeError("pollIntervalMs must be positive");
@@ -120,6 +122,8 @@ export function createNetwork({
       : {}),
   });
   const publish = (next) => {
+    // Fast status reads must not rebuild the fleet UI when nothing changed.
+    if (JSON.stringify(state) === JSON.stringify(next)) return;
     state = next;
     for (const listener of listeners) listener(snapshot());
   };

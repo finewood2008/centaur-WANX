@@ -100,10 +100,15 @@ def _allowed(path: str, method: str) -> bool:
     # must not persistently promote a different platform member in upstream DB.
     if path.startswith("/api/users") and method not in {"GET", "HEAD"}:
         return False
-    # Full-system archives include the upstream JWT secret and OIDC secret.
-    # Backups and restores remain local-administration operations.
+    # Metadata is safe to inspect with a live session and upstream backup
+    # permission. Archives contain JWT/OIDC secrets; transfer and restoration
+    # remain local-administration operations.
     if path.startswith("/api/admin/backup"):
-        return False
+        return method == "GET" and path in {
+            "/api/admin/backup/list",
+            "/api/admin/backup/status",
+            "/api/admin/backup/auto",
+        }
     return True
 
 

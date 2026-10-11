@@ -426,6 +426,74 @@ test("a running engine keeps polling through temporary management disconnects", 
   ]);
 });
 
+test("default polling observes a recovered network within one second without restarting", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let status = connected();
+  const { network, calls, instances } = harness(t, (method) =>
+    method === "start" ? started(status) : status,
+  );
+  const events = [];
+  network.subscribe((state) => events.push(state.phase));
+  await network.setEnabled(true);
+  const startedEvents = events.length;
+  t.mock.timers.tick(1000);
+  await tick();
+  assert.equal(
+    events.length,
+    startedEvents,
+    "unchanged polls must not repaint UI",
+  );
+
+  status = { phase: "error", reason: "network_unavailable", peers: [] };
+  t.mock.timers.tick(1000);
+  await tick();
+  assert.equal(network.snapshot().phase, "unavailable");
+  status = connected();
+  t.mock.timers.tick(1000);
+  await tick();
+  assert.equal(network.snapshot().phase, "ready");
+  assert.equal(instances.length, 1);
+  assert.equal(calls.filter((call) => call.method === "start").length, 1);
+
+  const recoveredEvents = events.length;
+  status = connected([{ ip: "100.80.1.2", connected: false }]);
+  t.mock.timers.tick(1000);
+  await tick();
+  assert.equal(events.length, recoveredEvents + 1);
+  assert.equal(network.snapshot().peers[0].connected, false);
+  await rejectsCode(
+    network.resolveEndpoint({ url: "http://100.80.1.2:8088", mode: "netbird" }),
+    "netbird_peer_disconnected",
+  );
+
+  await network.setEnabled(false);
+  const stoppedCalls = calls.length;
+  t.mock.timers.tick(15_000);
+  await tick();
+  assert.equal(calls.length, stoppedCalls, "disabled P2P must stop polling");
+});
+
+test("status polling remains single-flight when a local read is slow", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let finish;
+  const { network, calls } = harness(t, (method) =>
+    method === "start"
+      ? started()
+      : new Promise((resolve) => {
+          finish = resolve;
+        }),
+  );
+  await network.setEnabled(true);
+  t.mock.timers.tick(1000);
+  await tick();
+  t.mock.timers.tick(10_000);
+  await tick();
+  assert.equal(calls.filter((call) => call.method === "status").length, 1);
+  finish(connected());
+  await tick();
+  await network.setEnabled(false);
+});
+
 test("SSO rejects unsafe verification URLs before exposing authorization", async (t) => {
   const { network, calls } = harness(t, (method) => {
     if (method === "start") throw error("auth_required");

@@ -14,6 +14,7 @@ import path from "node:path";
 import os from "node:os";
 import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
+import { createSidecar } from "../network/sidecar.mjs";
 import { createDashboardWindows } from "./dashboard.mjs";
 import { registerControlActions } from "./control.mjs";
 import { claimSingleInstance } from "./instance.mjs";
@@ -27,6 +28,27 @@ let client;
 let dashboards;
 let unsubscribe;
 let quitting = false;
+
+// Opt-in timings contain fixed step names only, never requests or credentials.
+async function timed(step, operation) {
+  if (process.env.WANX_CONNECTION_TIMINGS !== "1") return operation();
+  const started = performance.now();
+  console.info("[wanx-timing]", step, "started");
+  let outcome = "failed";
+  try {
+    const result = await operation();
+    outcome = "completed";
+    return result;
+  } finally {
+    console.info(
+      "[wanx-timing]",
+      step,
+      outcome,
+      Math.round(performance.now() - started),
+      "ms",
+    );
+  }
+}
 
 function reportError(error) {
   console.error("[wanx-client]", error.message);
@@ -58,6 +80,19 @@ if (claimSingleInstance(app, () => control))
         deviceModel: os.hostname(),
       });
       const preferenceFile = path.join(userData, "p2p-preference.json");
+      const requestAccount = account.request;
+      account.request = (input) => {
+        const step = {
+          "/app-api/network/boxes": "boxes.read",
+          "/app-api/network/boxes/prepare": "boxes.prepare",
+          "/app-api/network/restore": "network.restore",
+          "/app-api/network/enrollments": "network.enroll",
+          "/app-api/network/devices": "network.devices",
+        }[input.path];
+        return step
+          ? timed(step, () => requestAccount(input))
+          : requestAccount(input);
+      };
       let preferenceWrites = Promise.resolve();
       client = createPlatformClient({
         account,
@@ -92,6 +127,19 @@ if (claimSingleInstance(app, () => control))
             .digest("hex");
           const network = createNetwork({
             binaryPath,
+            createSidecar(options) {
+              const sidecar = createSidecar(options);
+              return {
+                ...sidecar,
+                request(method, ...args) {
+                  return method === "start"
+                    ? timed("engine.start", () =>
+                        sidecar.request(method, ...args),
+                      )
+                    : sidecar.request(method, ...args);
+                },
+              };
+            },
             configDir: path.join(userData, "network", scope),
             deviceName: `wanx-${os.hostname()}`,
           });
@@ -166,7 +214,9 @@ if (claimSingleInstance(app, () => control))
       control.on("closed", () => app.quit());
       app.on("window-all-closed", () => app.quit());
       await control.loadURL(controlURL);
-      void client.initialize().catch(reportError);
+      void timed("client.initialize", () => client.initialize()).catch(
+        reportError,
+      );
     })
     .catch((error) => {
       reportError(error);

@@ -105,6 +105,15 @@ async def environment():
         seen.append({"path": request.url.path, "headers": dict(request.headers)})
         return {"id": "mapped-user", "locale": "zh"}
 
+    @upstream.get("/api/admin/backup/list")
+    @upstream.get("/api/admin/backup/status")
+    @upstream.get("/api/admin/backup/auto")
+    async def backup_metadata(request: Request):
+        seen.append({"path": request.url.path, "headers": dict(request.headers)})
+        if request.headers.get("authorization") != "Bearer private.upstream.jwt":
+            return JSONResponse({"code": "UPSTREAM_BACKUP_PERMISSION_DENIED"}, status_code=403)
+        return {"items": [], "busy": False, "auto_enabled": False}
+
     @upstream.api_route("/api/echo", methods=["GET", "POST"])
     async def echo(request: Request):
         body = await request.body()
@@ -278,6 +287,61 @@ async def test_setup_status_exception_does_not_allow_writes_or_other_setup_paths
         "/api/setup/database",
     ]:
         assert (await client.get(path, headers=headers)).status_code == 403, path
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_backup_metadata_requires_live_session_and_upstream_permission(environment):
+    auth, client, _, seen, _ = environment
+    headers = {"Authorization": "Bearer opaque-marker"}
+    paths = ["/api/admin/backup/list", "/api/admin/backup/status", "/api/admin/backup/auto"]
+    for path in paths:
+        assert (await client.get(path)).status_code == 401
+    assert seen == []
+
+    for path in paths:
+        result = await client.get(path, headers=headers)
+        assert result.status_code == 200
+        assert result.json() == {"items": [], "busy": False, "auto_enabled": False}
+    assert [request["path"] for request in seen] == paths
+    assert all(
+        request["headers"]["authorization"] == "Bearer private.upstream.jwt" for request in seen
+    )
+
+    auth.session.upstream_token = "member.without.backup.permission"
+    for path in paths:
+        result = await client.get(path, headers=headers)
+        assert result.status_code == 403
+        assert result.json()["code"] == "UPSTREAM_BACKUP_PERMISSION_DENIED"
+
+    auth.deadline = 0
+    for path in paths:
+        result = await client.get(path, headers=headers)
+        assert result.status_code == 401
+        assert result.json()["code"] == "LEASE_EXPIRED"
+    assert len(seen) == 6
+
+
+@pytest.mark.asyncio
+async def test_backup_metadata_exception_keeps_archives_and_mutations_blocked(environment):
+    _, client, _, seen, _ = environment
+    headers = {"Authorization": "Bearer opaque-marker"}
+    for endpoint in ["list", "status", "auto"]:
+        path = f"/api/admin/backup/{endpoint}"
+        for method in ["POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]:
+            assert (await client.request(method, path, headers=headers)).status_code == 403
+        for variant in [path + "/", path + "/extra", path.replace("/backup/", "/backup//")]:
+            assert (await client.get(variant, headers=headers)).status_code == 403
+    for path in [
+        "/api/admin/backup/export?include_config=false",
+        "/api/admin/backup/files/raw.tar.gz",
+        "/api/admin/backup/files/raw.tar.gz/restore?restore_config=false",
+        "/api/admin/backup/create",
+        "/api/admin/backup/import",
+        "/api/admin/backup/auto/run",
+    ]:
+        for method in ["GET", "POST", "DELETE"]:
+            assert (await client.request(method, path, headers=headers)).status_code == 403
     assert seen == []
 
 

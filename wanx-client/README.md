@@ -64,6 +64,8 @@ wanx-client/
 
 `createNetwork()` 提供 `snapshot / subscribe / setEnabled / refresh / resolveEndpoint / login / enroll / close`。默认 disabled，不启动子进程。内置引擎使用应用自己的配置目录、peer 私钥和随机网络端口，不读取或控制系统网络客户端 服务。
 
+启用后每 1 秒通过本地 IPC 读取引擎状态，状态不变时不通知界面，关闭后停止轮询。这会将原来最多约 15 秒的状态显示滞后缩短到约 1 秒，不增加平台接口请求频率。该时间不包含切换 Wi-Fi/手机热点后的隧道重建、网络检测和重试耗时，不能视为跨网络连接的总恢复时间。源码修改后须重新启动客户端；已安装版本需要更新客户端包，单独更新盒子不会生效。
+
 P2P 模式所有拨号都经内置引擎：包括 `/api/health`、普通请求、上传下载、SSE 和 WebSocket。JS 通过仅回环监听、随机令牌保护的 CONNECT 通道连接 Go 引擎；Go 核对目标当前 peer 后调用 `embed.DialContext`。失败不会回退系统 TCP。真实目标的 Host、Origin 和 HTTPS 证书校验保持不变，隧道令牌不发送给盒子或渲染页面。
 
 每次盒子连接使用独立临时 Electron session。盒子页面无 Node、preload 或控制 IPC；关闭/切换清理窗口和会话。Dashboard 继续来自盒子自身，原有业务页面与 API 不修改。
@@ -89,3 +91,7 @@ npm --prefix wanx-client run package:windows
 客户端测试覆盖账号签名和加密存储、自动入网恢复、目录授权、盒端会话兑换、取消与切换竞态、硬租约截止、HTTP/SSE/WS 代理及 UI/IPC 边界。平台和独立 bridge 另有真实签名、重放、权限版本、过期与长连接续租集成测试。`npm run test:bridge` 使用仓库根环境验证真实 Octop 公共接口，不代表 bridge 发布包依赖 Octop。执行记录见 [设计方案验收记录](../docs/wanx-account-auto-p2p-plan.md)，旧版内嵌认证的测试数字不能替代本轮 bridge 验收。
 
 本地测试使用隔离账号、模拟管理服务和本地盒端服务；尚需按部署文档使用实际账号和盒子验证跨公网直连/relay、绑定关系、策略撤销及完整登录流程。Windows 安装包运行、正式签名和公证另需发布环境验证。
+
+### 启动耗时诊断
+
+源码运行时可使用 `WANX_CONNECTION_TIMINGS=1 npm --prefix wanx-client start`（仓库根目录）记录入网各步骤耗时。日志只包含固定步骤名、完成/失败状态和毫秒数，不包含请求参数、令牌、设备标识或响应内容；默认关闭。`client.initialize` 包括账号恢复、权限准备、平台会话恢复及引擎启动，不代表点击盒子后的业务页面加载耗时。

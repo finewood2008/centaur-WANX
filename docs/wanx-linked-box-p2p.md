@@ -173,3 +173,40 @@ Owner 默认权限补齐仅针对当前账号本人拥有的盒子和当前客�
 用户随后反馈页面显示“无法连接半人马AI-万象服务”。实际抓取初始化请求发现：前端 AuthGuard 先读取 `GET /api/setup/status`，bridge 原来拒绝整个 `/api/setup` 路径，返回 403；AuthGuard 把这个失败显示成离线。`/api/auth/me` 为 200 与免登录认证成功，均不能证明页面完整启动。
 
 修复只在 `wanx-bridge/wanx_bridge/server.py` 精确允许已认证的 `GET /api/setup/status`，仍验证当前平台会话；匿名、过期会话、其他 setup 路径及初始化写操作保持拒绝。没有修改 dashboard 或 `src/octop`。新增回归覆盖启动读取顺序及拒绝分支，bridge 全部 98 项测试通过。
+
+修复已通过 `box.sh release` 完成 **101 构建 → MinIO → 102 部署**，版本 `wanx-102-boot-fix-20261011-01`。成功回执为 OS 工程 `.private/results/20261011T064439Z-5e9f6b.json`，`result=ok`、`runtime_ready=true`，WANX 镜像为 `sha256:381f1a47ff64fb4da4b38c92263b41a3c0a6c94584c2dfb8ad258584d078b6b6`。独立授权同步服务保持启用。
+
+部署后重新使用真实客户端打开 102，并刷新业务页面验证：
+
+- 客户端连接状态 `ready`，页面最终进入 `/chat`，离线错误消失，侧栏和聊天输入区实际渲染完成，无密码输入框。
+- `/api/setup/status` 首次请求 401 后自动重试为 200；`/api/auth/me`、`/api/settings/capabilities`、`/api/agents`、`/api/preferences`、`/api/providers/resolved` 等初始化接口均返回 200，没有再出现导致启动失败的 403。
+- 已实际查看页面截图（本地验证产物 `/tmp/wanx102-boot-fixed.png`）。页面显示“还没有专家”，对应当前独立数据目录的空专家列表；旧数据尚未迁移，不属于本次网络错误。
+- 根目录 `make all PYTEST_JOBS=4` 完成，格式检查、Ruff、mypy 通过，测试 **4421 passed、17 skipped**；另行执行的 bridge 测试 **98 passed**。
+
+本次验证范围是页面启动、免二次登录和刷新恢复；尚未扩展到模型生成、文件传输和长期流式连接的业务验收。
+
+## 切换手机热点后的状态同步优化（2026-10-11）
+
+用户反馈跨网络切换后“等待网络连接”持续十几秒。检查发现客户端默认每 15 秒读取一次本地引擎状态，底层恢复后可能仍有额外 0–15 秒的界面等待。本轮将 `wanx-client/network/index.mjs` 的默认间隔改为 1 秒，并对相同快照去重，避免频繁重绘列表。读取通过本地 IPC 完成，不增加 Admin 请求频率，也不更改底层重连参数、权限判断或引擎身份。
+
+客户端 144 项测试通过，新增回归覆盖默认间隔下的故障恢复、状态去重、peer 断开通知与拒绝访问、关闭后停止轮询，以及慢状态读取不重叠。使用真实计时器、模拟引擎从不可用变为可用，观测到状态同步耗时约 1003 毫秒，仅启动一次引擎；这不是手机热点的端到端测速结果。
+
+该修改需要重启源码客户端，安装包用户需要升级客户端；不需要重新部署 102 或 Admin。真实跨热点恢复还包含网络失活检测、信令重连、穿透或中继建立等耗时，尚待在新版客户端上对实际切网过程计时验收，不能承诺总恢复时间为 1 秒。
+
+本轮 `make all PYTEST_JOBS=4` 完成，格式、Ruff 与 mypy 检查通过，测试 4421 passed、17 skipped；`git diff --check` 通过。
+
+## 启动分段诊断与备份页只读修复（2026-10-11）
+
+用户反馈热点仍慢后，新增可选 `WANX_CONNECTION_TIMINGS=1` 诊断，默认关闭，只记录固定步骤名与耗时。一次真实客户端重启观测：盒子目录读取 428ms、权限准备 776ms、平台恢复 593ms、引擎启动 3225ms、网络设备读取 156ms，初始化总计 5157ms；随后通过客户端打开 102 为 777ms。该次未复现十几秒的等待，也未对实际手机热点切换进行受控计时，不能据此宣布热点问题彻底解决。
+
+同时检查 Admin→网络管理服务：只读 groups/policies/peers 分别约 73/11/11ms。后端存在重复投影写入的优化空间，但此轮证据不足以认定为当前主要瓶颈，因此没有改变后台授权与撤权流程。
+
+备份页载入 403 的原因是 bridge 拒绝了整个 `/api/admin/backup`。本轮精确开放有效平台会话的 `GET /api/admin/backup/list`、`status`、`auto`，仍保留上游原生备份权限检查。新增回归覆盖匿名、过期会话、上游权限拒绝和路径/方法边界，bridge 100 项测试通过；客户端 144 项通过。没有修改 `src/octop` 或 Dashboard。
+
+该修复只针对元数据读取。创建、上传、下载、导出及恢复仍受限制，不能把列表可访问描述为完整远程备份功能已启用；全量档案中的 JWT/OIDC 凭据、恢复后的上游用户身份与独立 bridge 映射仍需要专门适配。
+
+只读修复已通过 `box.sh release` 完成 101 构建 → MinIO → 102 部署，版本 `wanx-102-backup-read-20261011-01`。成功回执为 OS 工程 `.private/results/20261011T073346Z-c84a4c.json`，`result=ok`。构建期间的临时 Docker 下载代理已移除。部署后旧会话首次请求返回 401，重新连接盒子后恢复正常。
+
+实际客户端打开 `/admin/advanced?tab=backup`：list/status/auto 均为 HTTP 200，备份文件区域正常显示，无 `BOX_PLATFORM_ROUTE_FORBIDDEN` 或离线提示；页面截图 `/tmp/wanx102-backup-fixed.png` 已人工查看。没有执行创建、下载或恢复操作。
+
+根目录 `make all PYTEST_JOBS=4` 通过，测试 4421 passed、17 skipped；本轮 bridge 100 项、客户端 144 项通过，客户端入口语法检查与 `git diff --check` 通过。
