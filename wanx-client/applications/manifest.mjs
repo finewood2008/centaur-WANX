@@ -29,7 +29,7 @@ export function validateApplicationManifest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw fail("INVALID_APPLICATION_MANIFEST");
   const manifest = input;
-  if (!ID.test(manifest.applicationId)) throw fail("INVALID_APPLICATION_ID");
+  if (typeof manifest.applicationId !== "string" || !ID.test(manifest.applicationId)) throw fail("INVALID_APPLICATION_ID");
   if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 128)
     throw fail("INVALID_APPLICATION_NAME");
   if (!VERSION.test(manifest.version)) throw fail("INVALID_APPLICATION_VERSION");

@@ -13,16 +13,17 @@ export function createApplicationLauncher({
     if (!record?.applicationId || !record.installPath || !record.entrypoint)
       throw fail("APPLICATION_RECORD_INVALID");
     const previous = running.get(record.applicationId);
-    if (previous && previous.exitCode === null) return { applicationId: record.applicationId, launchId: previous.launchId, state: "running" };
+    if (previous && previous.child.exitCode === null) return { applicationId: record.applicationId, launchId: previous.launchId, state: "running" };
     const session = await host.createSession(record);
     const launchId = session.launchId;
-    const child = spawn(electronPath, [record.installPath], {
+    const child = spawn(electronPath, [`--app=${record.installPath}`], {
       cwd: record.installPath,
       env: { ...process.env, ...session.environment },
       stdio: "ignore",
       windowsHide: true,
       detached: false,
     });
+    child.once("error", () => { if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId); void session.close(); });
     child.once("exit", () => { if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId); void session.close(); });
     running.set(record.applicationId, { child, launchId, session });
     return { applicationId: record.applicationId, launchId, state: "running" };

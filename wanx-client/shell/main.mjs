@@ -156,6 +156,7 @@ if (claimSingleInstance(app, () => control))
         context: () => client.applicationContext(),
         request: (input) => client.applicationRequest(input),
         stream: (input) => client.applicationStream(input),
+        createConnection: () => client.applicationConnection(),
       });
       dashboards = createDashboardWindows({
         BrowserWindow,
@@ -210,10 +211,12 @@ if (claimSingleInstance(app, () => control))
         openExternal: (url) => shell.openExternal(url),
         applications,
       });
-      unsubscribe = client.subscribe((state) => {
+      unsubscribe = client.subscribe(async (state) => {
         dashboards.sync(state);
-        if (!control.isDestroyed())
-          control.webContents.send("wanx-client:state", state);
+        if (!control.isDestroyed()) {
+          const applicationsState = applications ? await applications.listInstalled() : [];
+          if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...state, applications: applicationsState });
+        }
       });
 
       app.on("before-quit", (event) => {

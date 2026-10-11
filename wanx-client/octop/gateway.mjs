@@ -472,7 +472,7 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
   const gateway = {
     url: localURL.origin + (bootstrapPath ?? ""),
     origin: localURL.origin,
-    async request({ path, method = "GET", headers = {}, body, signal } = {}) {
+    async request({ path, method = "GET", headers = {}, body, signal, stream = false } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
       const request = {
@@ -481,7 +481,7 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...headers,
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };
@@ -498,24 +498,39 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
         signal,
       });
       requests.add(upstream);
-      return await new Promise((resolve, rejectRequest) => {
-        const chunks = [];
+      upstream.once("close", () => requests.delete(upstream));
+      const timer = setTimeout(() => upstream.destroy(new Error("CONNECT_TIMEOUT")), 10_000);
+      timer.unref();
+      upstream.on("socket", (socket) => {
+        if (!socket.connecting) clearTimeout(timer);
+        else socket.once(target.protocol === "https:" ? "secureConnect" : "connect", () => clearTimeout(timer));
+      });
+      upstream.once("close", () => clearTimeout(timer));
+      return new Promise((resolve, rejectRequest) => {
         upstream.on("response", (response) => {
-          response.on("data", (chunk) => chunks.push(chunk));
+          const headers = headersWithoutHop(response.headers);
+          delete headers["set-cookie"];
+          delete headers["x-octop-access-token"];
+          // Redirects may carry credentials in their destination. Apps never follow them.
+          delete headers.location;
+          const result = { status: response.statusCode || 502, headers };
           response.on("error", rejectRequest);
-          response.on("end", () => resolve({
-            status: response.statusCode || 502,
-            headers: Object.fromEntries(Object.entries(response.headers).filter(([name]) => name.toLowerCase() !== "set-cookie")),
-            body: Buffer.concat(chunks),
-          }));
+          if (stream) return resolve({ ...result, body: response });
+          const chunks = [];
+          let size = 0;
+          response.on("data", (chunk) => {
+            size += chunk.length;
+            if (size > 32 * 1024 * 1024) return response.destroy(new Error("RESPONSE_TOO_LARGE"));
+            chunks.push(chunk);
+          });
+          response.on("end", () => resolve({ ...result, body: Buffer.concat(chunks) }));
         });
         upstream.on("error", rejectRequest);
-        if (signal) signal.addEventListener("abort", () => upstream.destroy(), { once: true });
         if (body !== undefined) upstream.write(
           Buffer.isBuffer(body) || typeof body === "string" ? body : JSON.stringify(body),
         );
         upstream.end();
-      }).finally(() => requests.delete(upstream));
+      });
     },
     async openWebSocket({ path, headers = {}, protocols = [] } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
@@ -526,7 +541,7 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...headers,
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };

@@ -122,8 +122,12 @@ function devicesView() {
       </section>
       ${pending.length ? `<section class="content-section pending-section"><div class="section-heading"><div><p class="eyebrow">SETUP REQUIRED</p><h2 class="small-heading">待处理设备 <span class="count">${pending.length}</span></h2></div></div><div class="device-list">${pending.map((device) => deviceCard(device, false)).join("")}</div></section>` : ""}
       <details class="diagnostics"><summary>开发诊断入口</summary><div class="diagnostic-row"><input id="base-url" value="${escapeHTML(currentState.diagnostics?.baseURL || "http://localhost:8088")}" spellcheck="false" /><button class="button small" data-action="health">检查盒端服务</button></div><p>${escapeHTML(currentState.diagnostics?.message || "仅用于本机开发诊断，不替代设备发现与初始化。")}</p></details>
-      <section class="content-section"><div class="section-heading"><div><p class="eyebrow">WANX APPLICATIONS</p><h2 class="small-heading">我的应用</h2></div></div><p class="muted">应用通过万象 Host 复用当前已连接盒子；安装目录仅用于开发联调。</p><div class="diagnostic-row"><input id="application-source" placeholder="知君源码目录" spellcheck="false" /><button class="button small" data-action="applications-install">安装目录</button></div>${(currentState.applications || []).map((item) => `<div class="device-meta"><span>${escapeHTML(item.name)} ${escapeHTML(item.version)}</span><button class="button small" data-action="applications-launch" data-application-id="${escapeHTML(item.applicationId)}">启动</button></div>`).join("") || "<p class=muted>尚未安装应用。</p>"}</section>
+      ${applicationsView()}
     </div>`;
+}
+
+function applicationsView() {
+  return `<section class="content-section"><div class="section-heading"><div><p class="eyebrow">WANX APPLICATIONS</p><h2 class="small-heading">我的应用</h2></div></div><p class="muted">应用通过万象 Host 复用当前已连接盒子；安装后可在当前盒子上直接启动。</p><div class="diagnostic-row"><input id="application-source" placeholder="知君桌面应用目录" spellcheck="false" /><button class="button small" data-action="applications-install">安装应用</button></div>${(currentState.applications || []).map((item) => `<div class="device-meta"><span>${escapeHTML(item.name)} ${escapeHTML(item.version)}</span><button class="button small" data-action="applications-launch" data-application-id="${escapeHTML(item.applicationId)}">打开</button></div>`).join("") || "<p class=muted>尚未安装应用。</p>"}</section>`;
 }
 
 function provisioningView() {
@@ -186,6 +190,7 @@ function connectedView() {
       <section class="connected-hero"><div class="connected-mark">W</div><div><p class="eyebrow">CONNECTED BOX</p><h2>${escapeHTML(device?.name || "当前盒子")}</h2><p class="lede">设备已经通过平台授权并进入当前工作上下文。</p></div><span class="status-tag ready">已连接</span></section>
       ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
       <section class="service-grid"><article class="service-card featured"><p class="eyebrow">NATIVE SERVICE</p><h3>Octop Dashboard</h3><p>打开当前盒端提供的原生 Dashboard，页面和业务请求由盒端服务处理。</p><button class="button primary" disabled>打开 Dashboard（接口接入后启用）</button></article><article class="service-card"><p class="eyebrow">DEVICE CONTEXT</p><h3>设备状态</h3><dl><dt>设备 ID</dt><dd>${escapeHTML(device?.deviceId)}</dd><dt>初始化</dt><dd>已完成</dd><dt>平台状态</dt><dd>${escapeHTML(statusLabel(device || {}))}</dd></dl></article></section>
+      ${applicationsView()}
       <div class="connected-actions"><button class="button" data-action="back-devices">切换盒子</button><button class="text-button" data-action="disconnect">断开当前盒子</button></div>
     </div>`;
 }

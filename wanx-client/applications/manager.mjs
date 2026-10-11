@@ -10,6 +10,7 @@ export async function createApplicationManager({
   context,
   request,
   stream,
+  createConnection,
   spawn,
   electronPath,
 } = {}) {
@@ -17,32 +18,36 @@ export async function createApplicationManager({
   const sessions = new Map();
   const host = await createApplicationHost({
     applicationId,
-    context,
-    request,
-    openStream: stream,
-    isApplicationAllowed: (id, launchId) => sessions.get(launchId)?.applicationId === id,
+    context: (id, launchId) => sessions.get(launchId)?.connection?.context?.() || context(),
+    request: (input, id, launchId) => sessions.get(launchId)?.connection?.request?.(input) || request(input),
+    openStream: (input, id, launchId) => sessions.get(launchId)?.connection?.openStream?.(input) || stream(input),
+    isApplicationAllowed: (id, launchId, sessionToken) => {
+      const session = sessions.get(launchId);
+      return session?.applicationId === id && session.token === sessionToken;
+    },
     capabilitiesFor: (id, launchId) => {
       const record = sessions.get(launchId);
       return record?.applicationId === id ? record.capabilities : [];
     },
-    closeSession: (_id, launchId) => { sessions.delete(launchId); },
+    closeSession: (_id, launchId) => { sessions.delete(launchId); host.revoke(launchId); },
   });
   const launcher = createApplicationLauncher({
     host: {
       async createSession(record) {
         const launchId = randomUUID();
-        sessions.set(launchId, record);
+        const token = randomUUID() + randomUUID();
+        sessions.set(launchId, { ...record, token, connection: await createConnection?.() });
         return {
           launchId,
           environment: {
             WANX_HOST_SOCKET: host.endpoint,
-            WANX_HOST_TOKEN: host.token,
+            WANX_HOST_TOKEN: token,
             WANX_HOST_APPLICATION_ID: applicationId,
             WANX_HOST_CLIENT_APPLICATION_ID: record.applicationId,
             WANX_HOST_LAUNCH_ID: launchId,
             WANX_HOST_PROTOCOL_VERSION: "1",
           },
-          async close() { sessions.delete(launchId); },
+          async close() { sessions.delete(launchId); host.revoke(launchId); },
         };
       },
     },

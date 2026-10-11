@@ -26,21 +26,24 @@ export async function createApplicationHost({
     ? `\\\\.\\pipe\\wanx-app-${randomUUID()}`
     : `/tmp/wanx-app-${randomUUID()}.sock`);
   const server = net.createServer();
+  const connections = new Map();
   let closed = false;
 
   async function dispatch(message, state) {
-    const hostRequest = message?.applicationId === applicationId;
-    const applicationRequest = message?.applicationId && isApplicationAllowed?.(message.applicationId, message.launchId);
-    if (!message || message.token !== token || (!hostRequest && !applicationRequest))
-      throw fail("APPLICATION_IPC_UNAUTHORIZED");
+    const allowed = isApplicationAllowed
+      ? isApplicationAllowed(message?.applicationId, message?.launchId, message?.token) &&
+        (isApplicationAllowed.length >= 3 || message?.token === token)
+      : message?.applicationId === applicationId && message?.token === token;
+    if (!message || !allowed) throw fail("APPLICATION_IPC_UNAUTHORIZED");
+    state.launchId = message.launchId;
     if (!safeMethod(message.method)) throw fail("APPLICATION_IPC_METHOD_INVALID");
     const capabilities = capabilitiesFor?.(message.applicationId, message.launchId) || [];
-    if (message.method === "context.get") return context();
+    if (message.method === "context.get") return context(message.applicationId, message.launchId);
     if (message.method === "identity.get") {
       if (!capabilities.includes("identity.read")) throw fail("APPLICATION_CAPABILITY_DENIED");
-      return { ...(await context()), identityOnly: true };
+      return { ...(await context(message.applicationId, message.launchId)), identityOnly: true };
     }
-    if (message.method === "http.request") {
+    if (["http.request", "http.stream"].includes(message.method)) {
       if (!capabilities.includes("http.request")) throw fail("APPLICATION_CAPABILITY_DENIED");
       if (typeof request !== "function") throw fail("APPLICATION_REQUEST_UNAVAILABLE");
       const path = message.params?.path;
@@ -58,7 +61,10 @@ export async function createApplicationHost({
         method: message.params?.method || "GET",
         body,
         headers: message.params?.headers,
-      });
+        signal: state.controller.signal,
+        stream: message.method === "http.stream",
+      }, message.applicationId, message.launchId);
+      if (message.method === "http.stream") return { httpStream: response };
       return {
         ...response,
         ...(Buffer.isBuffer(response?.body) ? { body: response.body.toString("base64") } : {}),
@@ -74,7 +80,8 @@ export async function createApplicationHost({
         path,
         headers: message.params?.headers,
         protocols: message.params?.protocols,
-      });
+      }, message.applicationId, message.launchId);
+      if (state.controller.signal.aborted) { upstream.close(); throw fail("APPLICATION_SESSION_CLOSED"); }
       const streamId = randomUUID();
       state.streams.set(streamId, upstream);
       upstream.on("message", (data, binary) => {
@@ -124,15 +131,23 @@ export async function createApplicationHost({
   }
 
   server.on("connection", (socket) => {
+    socket.once("close", () => connections.delete(socket));
     let buffer = "";
     const state = {
       streams: new Map(),
+      controller: new AbortController(),
       send(value) {
-        if (!socket.destroyed) socket.write(JSON.stringify(value) + "\n");
+        if (!socket.destroyed) {
+          if (socket.writableLength > MAX_LINE) return socket.destroy();
+          socket.write(JSON.stringify(value) + "\n");
+        }
       },
     };
+    connections.set(socket, state);
+    socket.on("error", () => {});
     socket.setEncoding("utf8");
     socket.once("close", () => {
+      state.controller.abort();
       for (const stream of state.streams.values()) stream.close();
       state.streams.clear();
     });
@@ -145,10 +160,22 @@ export async function createApplicationHost({
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
         let message;
         try { message = JSON.parse(line); } catch { socket.write(JSON.stringify({ error: "APPLICATION_IPC_INVALID_JSON" }) + "\n"); continue; }
-        void dispatch(message, state).then(
-          (value) => socket.write(JSON.stringify({ id: message.id, ok: true, value }) + "\n"),
-          (error) => socket.write(JSON.stringify({ id: message.id, ok: false, error: error.code || "APPLICATION_IPC_FAILED" }) + "\n"),
-        );
+        void dispatch(message, state).then(async (value) => {
+          if (!value?.httpStream) return state.send({ id: message.id, ok: true, value });
+          const response = value.httpStream;
+          state.send({ id: message.id, ok: true, value: { status: response.status, headers: response.headers } });
+          const body = Buffer.isBuffer(response.body) ? [response.body] : response.body;
+          try {
+            for await (const bytes of body) {
+              for (let offset = 0; offset < bytes.length; offset += 65536) {
+                if (socket.destroyed) throw fail("APPLICATION_SESSION_CLOSED");
+                const data = Buffer.from(bytes.subarray(offset, offset + 65536)).toString("base64");
+                await new Promise((resolve, reject) => socket.write(JSON.stringify({ type: "http.data", data }) + "\n", (error) => error ? reject(error) : resolve()));
+              }
+            }
+            state.send({ type: "http.end" });
+          } catch { state.send({ type: "http.error" }); }
+        }).catch((error) => state.send({ id: message.id, ok: false, error: error.code || "APPLICATION_IPC_FAILED" }));
       }
     });
   });
@@ -156,9 +183,13 @@ export async function createApplicationHost({
   return Object.freeze({
     endpoint,
     token,
+    revoke(launchId) {
+      for (const [socket, state] of connections) if (state.launchId === launchId) socket.destroy();
+    },
     async close() {
       if (closed) return;
       closed = true;
+      for (const socket of connections.keys()) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
       if (process.platform !== "win32") await rm(endpoint, { force: true });
     },

@@ -48,6 +48,8 @@
       "local-ui/**",
       "network/**",
       "octop/**",
+      "app-host/**",
+      "applications/**",
       "package.json",
       "README.md"
     ],

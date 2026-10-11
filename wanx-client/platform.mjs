@@ -593,6 +593,26 @@ export function createPlatformClient({
       if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
       return activeLink.client.openWebSocket(input);
     },
+    async applicationConnection() {
+      const link = activeLink, generation = connectionEpoch;
+      const state = snapshot();
+      if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
+      const connection = link.client.applicationConnection();
+      const assertLive = () => {
+        if (activeLink !== link || generation !== connectionEpoch || snapshot().phase !== "ready") throw fail("NETWORK_CHANGED");
+      };
+      const response = await connection.request({ path: "/api/auth/me" });
+      assertLive();
+      if (response.status !== 200) throw fail("BOX_IDENTITY_UNAVAILABLE");
+      let user;
+      try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
+      const context = { protocolVersion: 1, accountId: state.account.accountId, clientId: state.account.clientId, boxId: state.connection.deviceId, user, connection: "ready" };
+      return {
+        context: () => { assertLive(); return context; },
+        request: (input) => { assertLive(); return connection.request(input); },
+        openStream: (input) => { assertLive(); return connection.openStream(input); },
+      };
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
