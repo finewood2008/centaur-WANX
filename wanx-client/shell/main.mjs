@@ -18,15 +18,17 @@ import { createSidecar } from "../network/sidecar.mjs";
 import { createDashboardWindows } from "./dashboard.mjs";
 import { registerControlActions } from "./control.mjs";
 import { claimSingleInstance } from "./instance.mjs";
-import { createAccount } from "../account/index.mjs";
+import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
+import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createPlatformClient } from "../platform.mjs";
 
-const controlURL = new URL("../fleet/index.html", import.meta.url).href;
+const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 let control;
 let client;
 let dashboards;
 let unsubscribe;
+let setupRuntime;
 let quitting = false;
 
 // Opt-in timings contain fixed step names only, never requests or credentials.
@@ -168,13 +170,15 @@ if (claimSingleInstance(app, () => control))
         },
       });
       control = new BrowserWindow({
-        width: 720,
-        height: 820,
-        minWidth: 540,
-        minHeight: 660,
-        title: "万象 · 连接",
+        width: 1180,
+        height: 760,
+        minWidth: 900,
+        minHeight: 620,
+        title: "万象电脑端",
         webPreferences: {
-          preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),
+          preload: fileURLToPath(
+            new URL("../local-ui/remote-preload.cjs", import.meta.url),
+          ),
           nodeIntegration: false,
           contextIsolation: true,
           sandbox: true,
@@ -207,13 +211,25 @@ if (claimSingleInstance(app, () => control))
         event.preventDefault();
         quitting = true;
         unsubscribe();
-        Promise.allSettled([dashboards.close(), client.close()]).then(() =>
-          app.quit(),
-        );
+        Promise.resolve(setupRuntime?.dispose())
+          .catch(() => {})
+          .then(() => Promise.allSettled([dashboards.close(), client.close()]))
+          .then(() => app.quit());
       });
       control.on("closed", () => app.quit());
       app.on("window-all-closed", () => app.quit());
       await control.loadURL(controlURL);
+      setupRuntime = await createSetupRuntime({
+        control, controlURL, ipcMain, account, client, safeStorage, userData,
+        consumerBaseUrl: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        onError: reportError,
+      }).catch((error) => {
+        reportError(error);
+        control.webContents.send("wanx:setup:state", {
+          state: "terminalError", errorCode: "SETUP_START_FAILED",
+        });
+        return null;
+      });
       void timed("client.initialize", () => client.initialize()).catch(
         reportError,
       );

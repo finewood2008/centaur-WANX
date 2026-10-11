@@ -67,6 +67,7 @@ coverage.xml
 
 # Node / frontend
 node_modules/
+wanx-client/shell/native/bin/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
