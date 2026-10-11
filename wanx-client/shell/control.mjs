@@ -1,0 +1,66 @@
+import { isControlSender } from "./security.mjs";
+
+function text(value, max, code) {
+  if (typeof value !== "string" || !value.trim() || value.length > max)
+    throw new Error(code);
+  return value.trim();
+}
+function phone(input) {
+  const value = text(input?.phone, 32, "invalid_phone");
+  if (!/^1\d{10}$/.test(value)) throw new Error("invalid_phone");
+  return value;
+}
+
+// Remote dashboards have no account bridge. Check the exact control main frame
+// for every action, including reads, and never accept network credentials here.
+export function registerControlActions({
+  ipcMain,
+  control,
+  controlURL,
+  client,
+}) {
+  const register = (name, action) => {
+    ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
+      if (!isControlSender(event, control, controlURL))
+        throw new Error("此页面无权操作万象连接。");
+      return action(argument);
+    });
+  };
+  register("get-state", () => client.snapshot());
+  register("set-network-enabled", (enabled) => {
+    if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
+    return client.setNetworkEnabled(enabled);
+  });
+  register("login-password", (input) => {
+    const number = phone(input);
+    if (
+      typeof input.password !== "string" ||
+      !input.password ||
+      Buffer.byteLength(input.password, "utf8") > 72
+    )
+      throw new Error("invalid_credentials");
+    return client.loginPassword({ phone: number, password: input.password });
+  });
+  register("login-sms", (input) => {
+    const number = phone(input);
+    const code = text(input?.code, 12, "invalid_sms_code");
+    if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
+    return client.loginSMS({ phone: number, code });
+  });
+  register("send-sms", (input) => client.sendSMS({ phone: phone(input) }));
+  register("logout", () => client.logout());
+  register("refresh-devices", () => client.refreshDevices());
+  register("connect-box", (deviceId) =>
+    client.connectBox(text(deviceId, 128, "invalid_device")),
+  );
+  register("connect", (input) => {
+    if (input?.mode !== "direct") throw new Error("invalid_network_mode");
+    return client.connect({
+      mode: "direct",
+      deviceId: text(input.deviceId, 128, "invalid_connection"),
+      name: text(input.name, 128, "invalid_connection"),
+      url: text(input.url, 2048, "invalid_endpoint"),
+    });
+  });
+  register("disconnect", () => client.disconnect());
+}

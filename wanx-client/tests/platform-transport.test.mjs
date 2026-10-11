@@ -1,0 +1,428 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import net from "node:net";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { WebSocket, WebSocketServer } from "ws";
+import { createPlatformSession } from "../octop/platform.mjs";
+import { createDashboardGateway } from "../octop/gateway.mjs";
+import { createTunnelAgent } from "../network/tunnel.mjs";
+
+async function fixture(t, { lease = 120, tunnel = false } = {}) {
+  const state = { exchanges: 0, fail: false, expired: 0, calls: [], cloud: [] };
+  const sockets = new Set();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  };
+  const upstream = http.createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    state.calls.push({
+      path: request.url,
+      headers: request.headers,
+      body: body ? JSON.parse(body) : null,
+    });
+    response.setHeader("content-type", "application/json");
+    if (state.fail) {
+      response.writeHead(503);
+      response.end("{}");
+      return;
+    }
+    if (request.url === "/api/auth/platform/challenge")
+      response.end(
+        JSON.stringify({
+          challengeReceipt: "signed-box-challenge",
+          expiresIn: 60,
+        }),
+      );
+    else if (request.url === "/api/auth/platform/exchange") {
+      state.exchanges++;
+      response.end(
+        JSON.stringify({
+          access_token: `private-box-jwt-${state.exchanges}`,
+          token_type: "Bearer",
+          expires_in: lease,
+          user: { id: 7 },
+        }),
+      );
+    } else if (
+      request.url.startsWith(
+        "/api/agents/agent-a/threads/thread-a/trajectory/stream?",
+      )
+    ) {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"seq":5}\n\n');
+    } else if (request.url.startsWith("/api/redirect?")) {
+      response.writeHead(302, {
+        location: `/api/next?token=private-box-jwt-${state.exchanges}&access_token=private-box-jwt-${state.exchanges}`,
+      });
+      response.end();
+    } else {
+      response.setHeader("x-octop-access-token", "private-sliding-jwt");
+      response.setHeader("set-cookie", "auth=private-cookie");
+      response.end("{}");
+    }
+  });
+  upstream.on("connection", track);
+  upstream.listen(0, "127.0.0.1");
+  await once(upstream, "listening");
+  const wsServer = new WebSocketServer({ server: upstream });
+  wsServer.on("connection", (ws, request) => {
+    state.calls.push({ path: request.url, headers: request.headers });
+    ws.on("message", (data) => {
+      state.frames ||= [];
+      state.frames.push(data.toString());
+      ws.send("ok");
+    });
+  });
+  let proxy, agent;
+  let url = `http://127.0.0.1:${upstream.address().port}`;
+  if (tunnel) {
+    url = "http://198.51.100.9:8088";
+    proxy = http.createServer();
+    proxy.on("connection", track);
+    proxy.on("connect", (request, socket, head) => {
+      assert.equal(request.url, "198.51.100.9:8088");
+      const destination = net.connect(upstream.address().port, "127.0.0.1");
+      track(destination);
+      destination.once("connect", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length) destination.write(head);
+        socket.pipe(destination).pipe(socket);
+      });
+      socket.on("error", () => destination.destroy());
+      destination.on("error", () => socket.destroy());
+      socket.on("close", () => destination.destroy());
+      destination.on("close", () => socket.destroy());
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    agent = createTunnelAgent({
+      url,
+      proxy: { port: proxy.address().port, token: "proxy-secret" },
+    });
+  }
+  const account = {
+    getIdentity: () => ({ accountId: "account-a", clientId: "client-a" }),
+    request: async (request) => {
+      state.cloud.push(request);
+      return { grant: "private-cloud-grant" };
+    },
+  };
+  const options = {
+    url,
+    agent,
+    account,
+    device: { deviceId: "box-a" },
+    networkSessionId: "network-a",
+    onExpired: () => {
+      state.expired++;
+    },
+  };
+  t.after(async () => {
+    agent?.destroy();
+    for (const ws of wsServer.clients) ws.terminate();
+    wsServer.close();
+    for (const socket of sockets) socket.destroy();
+    await Promise.all([
+      new Promise((r) => upstream.close(r)),
+      ...(proxy ? [new Promise((r) => proxy.close(r))] : []),
+    ]);
+  });
+  return { options, state };
+}
+
+test("platform challenge and grant exchange use selected tunnel; bootstrap exposes only opaque marker", async (t) => {
+  const { options, state } = await fixture(t, { tunnel: true });
+  const session = await createPlatformSession(options);
+  const gateway = await createDashboardGateway({
+    targetURL: options.url,
+    agent: options.agent,
+    session,
+  });
+  t.after(() => gateway.close());
+  assert.deepEqual(state.calls[0].body, {
+    accountId: "account-a",
+    clientId: "client-a",
+    networkSessionId: "network-a",
+  });
+  assert.equal(state.cloud[0].path, "/app-api/devices/box-a/wanx/sso-grants");
+  assert.deepEqual(state.cloud[0].body, {
+    challengeReceipt: "signed-box-challenge",
+    networkSessionId: "network-a",
+  });
+  assert.equal((await fetch(gateway.origin + "/api/auth/me")).status, 401);
+  assert.equal(
+    (await fetch(gateway.origin + "/__wanx_session/guessed")).status,
+    404,
+  );
+  const bootstrap = await fetch(gateway.url);
+  const html = await bootstrap.text();
+  assert.equal(bootstrap.headers.get("cache-control"), "no-store");
+  assert.equal(bootstrap.headers.get("referrer-policy"), "no-referrer");
+  assert.match(bootstrap.headers.get("content-security-policy"), /nonce-/);
+  assert.doesNotMatch(html, /private-|signed-box/);
+  const marker = html.match(/setItem\("auth_token","([a-f0-9]+)"\)/)[1];
+  assert.equal(marker.length, 64);
+  const response = await fetch(gateway.origin + "/api/auth/me", {
+    headers: { authorization: `Bearer ${marker}` },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-octop-access-token"), null);
+  assert.equal(response.headers.get("set-cookie"), null);
+  assert.equal(
+    state.calls.at(-1).headers.authorization,
+    "Bearer private-box-jwt-1",
+  );
+  for (const path of [
+    "/api/auth/login",
+    "/api/auth/platform/exchange",
+    "/api/auth/register",
+    "/api/auth/oidc/callback",
+  ])
+    assert.equal(
+      (
+        await fetch(gateway.origin + path, {
+          headers: { authorization: `Bearer ${marker}` },
+        })
+      ).status,
+      401,
+    );
+  assert.equal(
+    (
+      await fetch(gateway.origin + "/api/auth/me", {
+        headers: { authorization: "Bearer forged" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (await fetch(gateway.origin + `/api/file?token=${marker}`)).status,
+    200,
+  );
+  assert.equal(
+    new URL(state.calls.at(-1).path, options.url).searchParams.get("token"),
+    "private-box-jwt-1",
+  );
+  const ws = new WebSocket(
+    gateway.origin.replace("http:", "ws:") + `/api/ws?token=${marker}`,
+    { origin: gateway.origin },
+  );
+  await once(ws, "open");
+  assert.equal(
+    new URL(state.calls.at(-1).path, options.url).searchParams.get("token"),
+    "private-box-jwt-1",
+  );
+  assert.equal(
+    state.calls.at(-1).headers.authorization,
+    "Bearer private-box-jwt-1",
+  );
+  const reply = once(ws, "message");
+  ws.send("hi");
+  assert.equal((await reply)[0].toString(), "ok");
+  const ended = once(ws, "close");
+  await gateway.close();
+  await ended;
+  assert.equal(session.getToken(), "");
+});
+
+test("session renews before lease end and gateway close cancels renewals", async (t) => {
+  const { options, state } = await fixture(t, { lease: 0.2 });
+  const session = await createPlatformSession(options);
+  t.after(() => session.close());
+  await delay(140);
+  assert.ok(state.exchanges >= 2);
+  assert.match(session.getToken(), /private-box-jwt-[2-9]/);
+  session.close();
+  const count = state.exchanges;
+  await delay(180);
+  assert.equal(state.exchanges, count);
+  assert.equal(state.expired, 0);
+});
+
+test("renewal outage expires original lease and clears token exactly once", async (t) => {
+  const { options, state } = await fixture(t, { lease: 0.2 });
+  const session = await createPlatformSession(options);
+  t.after(() => session.close());
+  state.fail = true;
+  await delay(260);
+  assert.equal(session.getToken(), "");
+  assert.equal(state.expired, 1);
+});
+
+test("denied grant expires immediately; cancellation never exchanges a delayed cloud grant", async (t) => {
+  const { options, state } = await fixture(t, { lease: 0.2 });
+  const session = await createPlatformSession(options);
+  options.account.request = async () => {
+    throw Object.assign(new Error("denied"), { status: 403 });
+  };
+  await delay(140);
+  assert.equal(session.getToken(), "");
+  assert.equal(state.expired, 1);
+  const controller = new AbortController();
+  let release;
+  options.account.request = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+  const pending = createPlatformSession({
+    ...options,
+    signal: controller.signal,
+  });
+  while (!release) await delay(5);
+  controller.abort();
+  release({ grant: "cancelled-grant" });
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(state.exchanges, 1);
+});
+
+test("expired lease tears down already-open WebSockets and the local gateway", async (t) => {
+  const { options, state } = await fixture(t, { lease: 0.2 });
+  const session = await createPlatformSession(options);
+  const gateway = await createDashboardGateway({
+    targetURL: options.url,
+    session,
+  });
+  t.after(() => gateway.close());
+  const html = await (await fetch(gateway.url)).text();
+  const marker = html.match(/setItem\("auth_token","([a-f0-9]+)"\)/)[1];
+  const ws = new WebSocket(
+    gateway.origin.replace("http:", "ws:") + `/api/ws?token=${marker}`,
+    { origin: gateway.origin },
+  );
+  await once(ws, "open");
+  const closed = once(ws, "close");
+  state.fail = true;
+  await closed;
+  assert.equal(state.expired, 1);
+  await assert.rejects(fetch(gateway.origin + "/api/health"));
+});
+
+test("platform WebSocket rejects missing or forged marker before contacting box", async (t) => {
+  const { options, state } = await fixture(t);
+  const session = await createPlatformSession(options);
+  const gateway = await createDashboardGateway({
+    targetURL: options.url,
+    session,
+  });
+  t.after(() => gateway.close());
+  await fetch(gateway.url);
+  const before = state.calls.length;
+  for (const suffix of ["/api/ws", "/api/ws?token=forged"]) {
+    const ws = new WebSocket(gateway.origin.replace("http:", "ws:") + suffix, {
+      origin: gateway.origin,
+    });
+    await assert.rejects(once(ws, "open"), /401/);
+  }
+  assert.equal(state.calls.length, before);
+});
+
+test("trajectory EventSource access_token uses opaque marker through CONNECT, rejects conflicting credentials and scrubs redirects", async (t) => {
+  const { options, state } = await fixture(t, { tunnel: true });
+  const session = await createPlatformSession(options);
+  const gateway = await createDashboardGateway({
+    targetURL: options.url,
+    agent: options.agent,
+    session,
+  });
+  t.after(() => gateway.close());
+  const html = await (await fetch(gateway.url)).text();
+  const marker = html.match(/setItem\("auth_token","([a-f0-9]+)"\)/)[1];
+  const path = "/api/agents/agent-a/threads/thread-a/trajectory/stream";
+  const stream = await fetch(
+    `${gateway.origin}${path}?after_seq=4&access_token=${marker}`,
+  );
+  assert.equal(stream.status, 200);
+  assert.equal(stream.headers.get("content-type"), "text/event-stream");
+  const reader = stream.body.getReader();
+  assert.equal(
+    new TextDecoder().decode((await reader.read()).value),
+    'data: {"seq":5}\n\n',
+  );
+  const incoming = state.calls.at(-1);
+  const upstreamURL = new URL(incoming.path, options.url);
+  assert.equal(
+    upstreamURL.searchParams.get("access_token"),
+    "private-box-jwt-1",
+  );
+  assert.equal(upstreamURL.searchParams.get("after_seq"), "4");
+  assert.equal(incoming.headers.authorization, "Bearer private-box-jwt-1");
+  await reader.cancel();
+  const before = state.calls.length;
+  for (const query of [
+    `token=${marker}&access_token=forged`,
+    `token=forged&access_token=${marker}`,
+    `access_token=${marker}&access_token=forged`,
+  ]) {
+    assert.equal(
+      (await fetch(`${gateway.origin}${path}?${query}`)).status,
+      401,
+    );
+  }
+  assert.equal(
+    (
+      await fetch(`${gateway.origin}${path}?access_token=${marker}`, {
+        headers: { authorization: "Bearer forged" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(state.calls.length, before);
+  const redirect = await fetch(
+    `${gateway.origin}/api/redirect?access_token=${marker}&token=${marker}`,
+    { redirect: "manual" },
+  );
+  assert.equal(redirect.status, 302);
+  const location = new URL(redirect.headers.get("location"));
+  assert.equal(location.origin, gateway.origin);
+  assert.equal(location.searchParams.get("token"), marker);
+  assert.equal(location.searchParams.get("access_token"), marker);
+  assert.doesNotMatch(location.href, /private-box/);
+});
+
+for (const stream of ["desktop", "mobile"]) {
+  test(`${stream} first-frame authentication is verified before dialing and rewritten with its connection token`, async (t) => {
+    const { options, state } = await fixture(t);
+    const session = await createPlatformSession(options);
+    const gateway = await createDashboardGateway({
+      targetURL: options.url,
+      session,
+    });
+    t.after(() => gateway.close());
+    const marker = (await (await fetch(gateway.url)).text()).match(
+      /setItem\("auth_token","([a-f0-9]+)"\)/,
+    )[1];
+    const url =
+      gateway.origin.replace("http:", "ws:") + `/api/${stream}-stream/ws`;
+    const before = state.calls.length;
+    const denied = new WebSocket(url, { origin: gateway.origin });
+    await once(denied, "open");
+    const deniedClose = once(denied, "close");
+    denied.send(JSON.stringify({ type: "start", token: "forged" }));
+    assert.equal((await deniedClose)[0], 1008);
+    assert.equal(state.calls.length, before);
+    const ws = new WebSocket(url, { origin: gateway.origin });
+    await once(ws, "open");
+    const reply = once(ws, "message");
+    ws.send(JSON.stringify({ type: "start", token: marker, mode: "view" }));
+    await reply;
+    assert.deepEqual(JSON.parse(state.frames.at(-1)), {
+      type: "start",
+      token: "private-box-jwt-1",
+      mode: "view",
+    });
+    assert.equal(
+      state.calls.at(-1).headers.authorization,
+      "Bearer private-box-jwt-1",
+    );
+    const next = once(ws, "message");
+    ws.send(JSON.stringify({ type: "start", token: marker }));
+    await next;
+    assert.equal(JSON.parse(state.frames.at(-1)).token, "private-box-jwt-1");
+    const ended = once(ws, "close");
+    ws.send(JSON.stringify({ type: "start", token: "forged" }));
+    await ended;
+  });
+}
