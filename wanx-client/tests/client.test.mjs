@@ -160,17 +160,20 @@ test("a newer box choice supersedes an earlier resolution and closes old gateway
   await client.close();
 });
 
-test("peer removal or network failure tears down the active overlay", async () => {
+test("transient peer/control-plane loss preserves gateway; terminal failure closes it", async () => {
   const { client, created, emit } = fixture();
   await client.setNetworkEnabled(true);
   await client.connect(overlay);
   emit({ peers: [] });
-  assert.equal(client.snapshot().phase, "disconnected");
-  assert.equal(created[0].closed, true);
-  await client.setNetworkEnabled(true);
-  await client.connect(overlay);
+  assert.equal(client.snapshot().phase, "recovering");
+  assert.equal(created[0].closed, false);
+  emit({ phase: "recovering" });
+  assert.equal(created[0].closed, false);
+  emit({ phase: "ready", peers: [{ ip: "100.90.1.2", connected: true }] });
+  assert.equal(client.snapshot().phase, "ready");
+  assert.equal(created.length, 1, "recovery must not recreate login or gateway");
   emit({ phase: "unavailable" });
-  assert.equal(created[1].closed, true);
+  assert.equal(created[0].closed, true);
   assert.equal(client.snapshot().reason, "network_unavailable");
   await client.close();
 });
@@ -263,3 +266,16 @@ test("close waits for an in-flight gateway to be disposed", async () => {
   assert.equal(done, true);
   assert.equal(disposed, true);
 });
+
+for (const end of ["disabled", "auth_required"]) {
+  test(`recovery cannot retain a gateway after ${end}`, async () => {
+    const { client, created, emit } = fixture();
+    await client.setNetworkEnabled(true);
+    await client.connect(overlay);
+    emit({ phase: "recovering" });
+    emit({ enabled: end !== "disabled", phase: end });
+    assert.equal(client.snapshot().connection, null);
+    assert.equal(created[0].closed, true);
+    await client.close();
+  });
+}

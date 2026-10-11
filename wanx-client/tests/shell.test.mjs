@@ -233,3 +233,17 @@ test("Dashboard safely opens external documents and isolates same-origin preview
   await h.controller.close();
   assert.equal(child.isDestroyed(), true);
 });
+
+test("transient recovery retains the existing isolated dashboard, revocation closes it", async () => {
+  const h = harness();
+  h.controller.sync(h.ready(41000));
+  h.controller.sync({ ...h.ready(41000), phase: "recovering" });
+  assert.equal(h.windows.length, 1);
+  assert.equal(h.windows[0].destroyed, false);
+  assert.equal(h.sessions[0].cacheCleared, false);
+  h.controller.sync(h.ready(41000));
+  assert.equal(h.windows.length, 1);
+  h.controller.sync({ phase: "disconnected", connection: null });
+  assert.equal(h.windows[0].destroyed, true);
+  await h.controller.close();
+});

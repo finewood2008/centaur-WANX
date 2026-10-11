@@ -158,11 +158,11 @@ func (e *embeddedEngine) Stop(ctx context.Context) error { return e.client.Stop(
 func (e *embeddedEngine) Status() networkStatus {
 	s, err := e.client.Status()
 	if err != nil {
-		return state("error", "network_unavailable")
+		return state("recovering", "network_unavailable")
 	}
 	out := state("ready", "")
 	if !s.ManagementState.Connected || !s.SignalState.Connected {
-		out = state("error", "network_unavailable")
+		out = state("recovering", "network_unavailable")
 	}
 	for _, p := range s.Peers {
 		ip, err := netip.ParseAddr(p.IP)

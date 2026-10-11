@@ -66,6 +66,7 @@ async function harness() {
         deviceId: "box-1",
         accessState: "ready",
         canOpen: true,
+        networkReady: true,
         displayName: "我的盒子",
         serviceUrl: "http://100.64.0.8:8088",
       },
@@ -356,4 +357,45 @@ test("directory loading and failed directory never appear as a genuinely empty a
     platform: { phase: "enrolling" },
   });
   assert.equal(h.ui["devices-empty"].textContent, "暂无已绑定或获授权的盒子。");
+});
+
+
+test("recovering active box keeps cancellation available without offering duplicate open", async () => {
+  const h = await harness();
+  h.notify({
+    ...h.signed,
+    phase: "recovering",
+    reason: "network_unavailable",
+    connection: { deviceId: "box-1", mode: "netbird" },
+    network: { enabled: true, phase: "recovering" },
+  });
+  assert.equal(h.ui.devices.children[0].children[1].textContent, "正在恢复连接");
+  assert.equal(h.ui.devices.children[0].children[1].disabled, true);
+  assert.equal(h.ui.error.hidden, true);
+  assert.match(h.ui["network-state"].textContent, /正在恢复/);
+  assert.match(h.ui["connection-state"].textContent, /会话将保留/);
+  assert.equal(h.ui.disconnect.hidden, false);
+  assert.equal(h.ui.disconnect.disabled, false);
+});
+
+
+test("box availability follows its target peer while control plane is recovering", async () => {
+  const h = await harness();
+  const state = {
+    ...h.signed,
+    network: { enabled: true, phase: "recovering" },
+  };
+  h.notify(state);
+  const oldButton = h.ui.devices.children[0].children[1];
+  assert.equal(oldButton.disabled, false);
+  assert.equal(oldButton.textContent, "打开盒子");
+  h.notify({
+    ...state,
+    devices: [{ ...state.devices[0], networkReady: false, canOpen: false }],
+  });
+  const button = h.ui.devices.children[0].children[1];
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, "正在连接盒子");
+  oldButton.listeners.click();
+  assert.equal(h.calls.length, 0, "stale button cannot open disconnected target");
 });

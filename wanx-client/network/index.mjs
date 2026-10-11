@@ -74,11 +74,12 @@ function parseStatus(data) {
     return [{ ip, name, connected: peer.connected === true }];
   });
   const ready = data.phase === "ready";
+  const recovering = data.phase === "recovering";
   return {
     enabled: true,
-    phase: ready ? "ready" : "unavailable",
+    phase: ready ? "ready" : recovering ? "recovering" : "unavailable",
     reason: ready ? null : "network_unavailable",
-    peers: ready ? peers : [],
+    peers: ready || recovering ? peers : [],
   };
 }
 
@@ -109,6 +110,9 @@ export function createNetwork({
   let closed = false;
   let engine = null;
   let proxy = null;
+  let recovery = null;
+  let recoveryRequired = false;
+  let retryAfter = 0;
   let closePromise;
   const closing = new Set();
   const agents = new Map();
@@ -138,6 +142,7 @@ export function createNetwork({
   const dispose = () => {
     clearAgents();
     proxy = null;
+    recoveryRequired = false;
     const previous = engine;
     engine = null;
     if (!previous) return Promise.resolve();
@@ -186,8 +191,7 @@ export function createNetwork({
       timer.unref?.();
     }
   };
-  async function start(sidecar, generation, extra = {}) {
-    const result = await sidecar.request("start", { ...baseParams, ...extra });
+  function acceptStart(result, generation, preserveAgents = false) {
     if (!current(generation)) return;
     if (
       !result?.proxy ||
@@ -199,9 +203,51 @@ export function createNetwork({
     )
       throw failure("invalid_status");
     const next = parseStatus(result.status);
-    clearAgents();
+    if (!preserveAgents) clearAgents();
+    else if (proxy.port !== result.proxy.port || proxy.token !== result.proxy.token)
+      throw failure("invalid_status");
     proxy = { port: result.proxy.port, token: result.proxy.token };
     publish(next);
+  }
+  async function start(sidecar, generation, extra = {}) {
+    acceptStart(await sidecar.request("start", { ...baseParams, ...extra }), generation);
+  }
+  async function recoverEngine(sidecar, generation) {
+    recoveryRequired = true;
+    for (const agent of agents.values()) agent.resetConnections();
+    publish({ ...state, phase: "recovering", reason: "network_unavailable" });
+    try {
+      acceptStart(await sidecar.request("recover"), generation, true);
+      if (current(generation)) recoveryRequired = false;
+    } catch (error) {
+      if (!current(generation)) return;
+      if (!["start_failed", "network_unavailable"].includes(error.code)) throw error;
+      retryAfter = Date.now() + 5_000;
+      publish({ ...state, phase: "recovering", reason: "network_unavailable" });
+    }
+  }
+  function networkChanged() {
+    if (closed || !state.enabled) return Promise.resolve(snapshot());
+    if (recovery) return recovery;
+    const generation = epoch;
+    const operation = (async () => {
+      // Let an existing status/start request settle before scheduling recovery.
+      if (pending) await pending;
+      if (!current(generation) || !proxy) return snapshot();
+      // If every active target still accepts a fresh connection, a switch did
+      // not invalidate the data path. Keep healthy streams and engine intact.
+      const targets = [...agents.values()];
+      if (targets.length && !recoveryRequired) {
+        const reachable = await Promise.all(targets.map((agent) => agent.probe()));
+        if (!current(generation)) return snapshot();
+        if (reachable.every(Boolean)) return refresh();
+      }
+      while (pending) await pending;
+      if (!current(generation) || !proxy) return snapshot();
+      return run(recoverEngine);
+    })().finally(() => { if (recovery === operation) recovery = null; });
+    recovery = operation;
+    return operation;
   }
   function run(action) {
     if (pending) return pending;
@@ -237,17 +283,19 @@ export function createNetwork({
     if (!state.enabled || closed) return Promise.resolve(snapshot());
     return run(async (sidecar, generation) => {
       if (!proxy) return start(sidecar, generation);
+      if (recoveryRequired && Date.now() >= retryAfter)
+        return recoverEngine(sidecar, generation);
       const next = parseStatus(await sidecar.request("status"));
       if (current(generation)) {
-        if (next.phase !== "ready") clearAgents();
-        else {
+        if (!["ready", "recovering"].includes(next.phase)) clearAgents();
+        else if (next.phase === "ready") {
           for (const [url, agent] of agents) {
             const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
             if (
-              !next.peers.some((peer) => peer.ip === host && peer.connected)
+              !next.peers.some((peer) => peer.ip === host && peer.connected) &&
+              state.peers.some((peer) => peer.ip === host && peer.connected)
             ) {
-              agent.destroy();
-              agents.delete(url);
+              agent.resetConnections();
             }
           }
         }
@@ -366,7 +414,7 @@ export function createNetwork({
     const generation = epoch;
     const next = await refresh();
     if (!current(generation)) throw failure("network_disabled");
-    if (next.phase !== "ready" || !proxy)
+    if (!["ready", "recovering"].includes(next.phase) || !proxy)
       throw failure(next.reason || "network_unavailable");
     const peer = next.peers.find((candidate) => candidate.ip === host);
     if (!peer) throw failure("netbird_peer_unknown");
@@ -396,6 +444,7 @@ export function createNetwork({
     },
     setEnabled,
     refresh,
+    networkChanged,
     login,
     enroll,
     resolveEndpoint,

@@ -727,3 +727,102 @@ test("a newer OFF cancels a queued replacement before it can spawn", async (t) =
   assert.equal(spawned(), 1);
   assert.equal(network.snapshot().phase, "disabled");
 });
+
+
+test("network changes deduplicate recovery and retain the existing target agent", async (t) => {
+  let finish;
+  const { network, calls } = harness(t, (method) => {
+    if (method === "recover") return new Promise((resolve) => { finish = resolve; });
+    return method === "start" ? started() : connected();
+  });
+  await network.setEnabled(true);
+  const input = { url: "http://100.80.1.2:8088", mode: "netbird" };
+  const initial = await network.resolveEndpoint(input);
+  initial.agent.probe = async () => false;
+  const first = network.networkChanged();
+  assert.equal(network.networkChanged(), first);
+  await tick();
+  assert.equal(network.snapshot().phase, "recovering");
+  finish(started());
+  await first;
+  assert.equal((await network.resolveEndpoint(input)).agent, initial.agent);
+  assert.equal(calls.filter((c) => c.method === "recover").length, 1);
+  assert.ok(!JSON.stringify(network.snapshot()).includes(proxy.token));
+});
+
+test("healthy target probe avoids restarting after an interface event", async (t) => {
+  const { network, calls } = harness(t);
+  await network.setEnabled(true);
+  const endpoint = await network.resolveEndpoint({ url: "http://100.80.1.2:8088", mode: "netbird" });
+  endpoint.agent.probe = async () => true;
+  await network.networkChanged();
+  assert.equal(calls.filter((c) => c.method === "recover").length, 0);
+});
+
+test("disabled network never starts recovery; disable cancels in-flight recovery", async (t) => {
+  let finish;
+  const { network, calls } = harness(t, (method) => method === "recover"
+    ? new Promise((resolve) => { finish = resolve; })
+    : started());
+  await network.networkChanged();
+  assert.equal(calls.length, 0);
+  await network.setEnabled(true);
+  const recovering = network.networkChanged();
+  await tick();
+  await network.setEnabled(false);
+  finish(started());
+  assert.equal((await recovering).phase, "disabled");
+});
+
+test("temporary recovery failure retries saved identity with backoff and stops on auth denial", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+  let denied = false;
+  const { network, calls } = harness(t, (method) => {
+    if (method === "recover") throw error(denied ? "auth_required" : "start_failed");
+    return method === "start" ? started() : { phase: "recovering", peers: [] };
+  });
+  await network.setEnabled(true);
+  assert.equal((await network.networkChanged()).phase, "recovering");
+  await network.refresh();
+  assert.equal(calls.filter((c) => c.method === "recover").length, 1);
+  denied = true;
+  t.mock.timers.tick(5_000);
+  await tick();
+  assert.equal(network.snapshot().phase, "auth_required");
+  assert.equal(calls.filter((c) => c.method === "recover").length, 2);
+});
+
+
+test("control-plane outage preserves active transport sockets; explicit peer loss retires once", async (t) => {
+  let status = connected();
+  const { network } = harness(t, (method) => method === "start" ? started(status) : status);
+  await network.setEnabled(true);
+  const endpoint = await network.resolveEndpoint({ url: "http://100.80.1.2:8088", mode: "netbird" });
+  let resets = 0;
+  endpoint.agent.resetConnections = () => { resets++; };
+  status = { phase: "recovering", peers: [] };
+  await network.refresh();
+  assert.equal(resets, 0);
+  status = connected();
+  await network.refresh();
+  status = connected([{ ip: "100.80.1.2", connected: false }]);
+  await network.refresh();
+  await network.refresh();
+  assert.equal(resets, 1);
+});
+
+
+test("connected target resolves during control-plane recovery but missing/disconnected peers cannot", async (t) => {
+  let status = connected();
+  const { network } = harness(t, (method) => method === "start" ? started(status) : status);
+  await network.setEnabled(true);
+  const input = { url: "http://100.80.1.2:8088", mode: "netbird" };
+  status = { ...connected(), phase: "recovering", reason: "network_unavailable" };
+  const endpoint = await network.resolveEndpoint(input);
+  assert.equal(endpoint.peer.connected, true);
+  assert.equal(typeof endpoint.agent.createConnection, "function");
+  status.peers[0].connected = false;
+  await rejectsCode(network.resolveEndpoint(input), "netbird_peer_disconnected");
+  status.peers = [];
+  await rejectsCode(network.resolveEndpoint(input), "netbird_peer_unknown");
+});

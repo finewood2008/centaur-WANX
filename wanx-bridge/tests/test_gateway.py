@@ -105,6 +105,23 @@ async def environment():
         seen.append({"path": request.url.path, "headers": dict(request.headers)})
         return {"id": "mapped-user", "locale": "zh"}
 
+    @upstream.patch("/api/auth/me")
+    @upstream.post("/api/auth/me/avatar")
+    @upstream.delete("/api/auth/me/avatar")
+    async def profile(request: Request):
+        body = await request.body()
+        seen.append(
+            {
+                "path": request.url.path,
+                "method": request.method,
+                "headers": dict(request.headers),
+                "body": body,
+            }
+        )
+        if request.headers.get("authorization") != "Bearer private.upstream.jwt":
+            return JSONResponse({"code": "UPSTREAM_PROFILE_DENIED"}, status_code=403)
+        return {"id": "mapped-user"}
+
     @upstream.get("/api/admin/backup/list")
     @upstream.get("/api/admin/backup/status")
     @upstream.get("/api/admin/backup/auto")
@@ -266,6 +283,61 @@ async def test_dashboard_boot_requires_live_session_for_setup_status_and_me(envi
         assert response.status_code == 401
         assert response.json()["code"] == "LEASE_EXPIRED"
     assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("PATCH", "/api/auth/me", b'{"display_name":"bruce"}'),
+        ("PATCH", "/api/auth/me", b'{"avatar_icon":"briefcase"}'),
+        ("PATCH", "/api/auth/me", b'{"locale":"en"}'),
+        ("POST", "/api/auth/me/avatar", b"avatar-upload"),
+        ("DELETE", "/api/auth/me/avatar", b""),
+    ],
+)
+async def test_profile_writes_require_live_session_and_preserve_upstream_checks(
+    environment, method, path, body
+):
+    auth, client, _, seen, _ = environment
+    headers = {"Authorization": "Bearer opaque-marker"}
+    assert (await client.request(method, path, content=body)).status_code == 401
+    assert seen == []
+
+    result = await client.request(method, path, headers=headers, content=body)
+    assert result.status_code == 200
+    assert seen[-1]["method"] == method
+    assert seen[-1]["path"] == path
+    assert seen[-1]["body"] == body
+    assert seen[-1]["headers"]["authorization"] == "Bearer private.upstream.jwt"
+
+    auth.session.upstream_token = "rejected.upstream.jwt"
+    result = await client.request(method, path, headers=headers, content=body)
+    assert result.status_code == 403
+    assert result.json()["code"] == "UPSTREAM_PROFILE_DENIED"
+
+    auth.deadline = 0
+    result = await client.request(method, path, headers=headers, content=body)
+    assert result.status_code == 401
+    assert result.json()["code"] == "LEASE_EXPIRED"
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_profile_exception_keeps_other_auth_methods_and_paths_blocked(environment):
+    _, client, _, seen, _ = environment
+    headers = {"Authorization": "Bearer opaque-marker"}
+    for path, methods in [
+        ("/api/auth/me", ["POST", "PUT", "DELETE", "HEAD", "OPTIONS"]),
+        ("/api/auth/me/avatar", ["GET", "PUT", "PATCH", "HEAD", "OPTIONS"]),
+    ]:
+        for method in methods:
+            assert (await client.request(method, path, headers=headers)).status_code == 403
+        for variant in [path + "/", path + "/extra", path.replace("/auth/", "/auth//")]:
+            assert (await client.patch(variant, headers=headers)).status_code == 403
+    for path in ["/api/auth/change-password", "/api/auth/oauth/bind/start", "/api/auth/logout"]:
+        assert (await client.post(path, headers=headers)).status_code == 403
+    assert seen == []
 
 
 @pytest.mark.asyncio

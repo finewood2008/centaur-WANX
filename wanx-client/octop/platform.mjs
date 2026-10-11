@@ -12,6 +12,7 @@ export async function createPlatformSession({
   networkSessionId,
   onExpired = () => {},
   signal,
+  measure = (_step, operation) => operation(),
 }) {
   const target = new URL(url);
   if (
@@ -122,11 +123,13 @@ export async function createPlatformSession({
   }
 
   async function exchange() {
-    const challenge = await post("/api/auth/platform/challenge", {
-      accountId: identity.accountId,
-      clientId: identity.clientId,
-      networkSessionId,
-    });
+    const challenge = await measure("box.challenge", () =>
+      post("/api/auth/platform/challenge", {
+        accountId: identity.accountId,
+        clientId: identity.clientId,
+        networkSessionId,
+      }),
+    );
     if (
       typeof challenge.challengeReceipt !== "string" ||
       !challenge.challengeReceipt
@@ -143,9 +146,11 @@ export async function createPlatformSession({
     controller.signal.throwIfAborted();
     if (typeof authorization?.grant !== "string" || !authorization.grant)
       throw new Error("PLATFORM_GRANT_INVALID");
-    const result = await post("/api/auth/platform/exchange", {
-      grant: authorization.grant,
-    });
+    const result = await measure("box.exchange", () =>
+      post("/api/auth/platform/exchange", {
+        grant: authorization.grant,
+      }),
+    );
     controller.signal.throwIfAborted();
     if (
       typeof result.access_token !== "string" ||

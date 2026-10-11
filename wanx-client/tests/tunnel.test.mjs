@@ -142,3 +142,55 @@ test("destroy during pending CONNECT rejects the waiting request promptly", asyn
   agent.destroy();
   await rejected;
 });
+
+
+test("transport reset retains reusable agent without replaying an interrupted write", async (t) => {
+  let writes = 0;
+  const sockets = new Set();
+  const upstream = http.createServer((req, res) => {
+    if (req.method === "POST") { writes++; return; }
+    res.end("reconnected");
+  });
+  const targetPort = await listen(upstream);
+  const proxy = http.createServer();
+  proxy.on("connect", (_req, downstream) => {
+    sockets.add(downstream);
+    downstream.on("close", () => sockets.delete(downstream));
+    const target = net.connect(targetPort, "127.0.0.1", () => {
+      downstream.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      downstream.pipe(target); target.pipe(downstream);
+    });
+    sockets.add(target);
+    target.on("error", () => downstream.destroy());
+    downstream.on("error", () => target.destroy());
+    target.on("close", () => sockets.delete(target));
+  });
+  const port = await listen(proxy);
+  const agent = createTunnelAgent({ url: "http://100.90.1.2:8088", proxy: { port, token } });
+  t.after(async () => {
+    agent.destroy();
+    for (const socket of sockets) socket.destroy();
+    upstream.closeAllConnections();
+    await Promise.all([new Promise((r) => upstream.close(r)), new Promise((r) => proxy.close(r))]);
+  });
+  const received = once(upstream, "request");
+  const failed = new Promise((resolve) => {
+    const req = http.request("http://100.90.1.2:8088/action", { agent, method: "POST" });
+    req.once("error", resolve);
+    req.end("write once");
+  });
+  await received;
+  agent.resetConnections();
+  await failed;
+  const result = await new Promise((resolve, reject) => {
+    http.get("http://100.90.1.2:8088/", { agent }, (res) => {
+      let body = "";
+      res.on("data", (data) => { body += data; });
+      res.on("end", () => resolve(body));
+    }).on("error", reject);
+  });
+  assert.equal(result, "reconnected");
+  assert.equal(writes, 1);
+  assert.equal(await agent.probe(), true);
+  assert.equal(writes, 1, "health probe must send no application request");
+});
