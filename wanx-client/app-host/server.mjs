@@ -74,7 +74,7 @@ export async function createApplicationHost({
       if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
       if (typeof openStream !== "function") throw fail("APPLICATION_STREAM_UNAVAILABLE");
       const path = message.params?.path;
-      if (typeof path !== "string" || !path.startsWith("/api/") || path.includes("\\") || path.includes("//"))
+      if (typeof path !== "string" || !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(path))
         throw fail("APPLICATION_PATH_NOT_ALLOWED");
       const upstream = await openStream({
         path,
