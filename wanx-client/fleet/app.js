@@ -144,9 +144,10 @@ function showError(error) {
 function canOpenBox(device) {
   return (
     device?.canOpen === true &&
+    device.networkReady === true &&
     state.account?.phase === "authenticated" &&
     state.network.enabled &&
-    state.network.phase === "ready" &&
+    ["ready", "recovering"].includes(state.network.phase) &&
     state.platform?.phase === "ready" &&
     state.phase === "disconnected" &&
     !pending.has("connection") &&
@@ -161,7 +162,7 @@ function render(next) {
     account.phase === "authenticating" || pending.has("login");
   const network = state.network;
   const reason =
-    state.reason ||
+    (state.phase === "recovering" ? null : state.reason) ||
     account.reason ||
     state.directory?.reason ||
     state.platform?.reason ||
@@ -201,6 +202,8 @@ function render(next) {
     ? "P2P 已关闭"
     : !signedIn
     ? "登录万象后自动连接 P2P 网络"
+    : network.phase === "recovering"
+    ? "正在恢复 P2P 网络连接…"
     : network.phase === "ready" && state.platform?.phase === "ready"
     ? "P2P 网络已连接"
     : network.phase === "unavailable" || state.platform?.phase === "unavailable"
@@ -210,6 +213,7 @@ function render(next) {
     : "正在自动连接 P2P 网络…";
   const connecting = state.phase === "connecting" || pending.has("connection");
   const ready = state.phase === "ready";
+  const recovering = state.phase === "recovering";
   ui["refresh-devices"].disabled = !signedIn || pending.has("refresh");
   const devices = signedIn ? state.devices || [] : [];
   ui["devices-empty"].hidden = devices.length > 0;
@@ -231,6 +235,8 @@ function render(next) {
       button.textContent =
         ready && state.connection?.deviceId === device.deviceId
           ? "已打开"
+          : recovering && state.connection?.deviceId === device.deviceId
+          ? "正在恢复连接"
           : device.accessState === "service_unavailable"
           ? "账号服务待更新"
           : device.accessState === "access_denied"
@@ -247,6 +253,11 @@ function render(next) {
           ? "开启 P2P 后打开"
           : canOpenBox(device)
           ? "打开盒子"
+          : device.accessState === "ready" &&
+            device.networkReady === false &&
+            ["ready", "recovering"].includes(network.phase) &&
+            state.platform?.phase === "ready"
+          ? "正在连接盒子"
           : network.phase === "ready" && state.platform?.phase === "ready"
           ? "正在同步访问权限"
           : "等待网络连接";
@@ -266,13 +277,15 @@ function render(next) {
       return row;
     }),
   );
-  ui.connect.disabled = connecting || ready;
+  ui.connect.disabled = connecting || ready || recovering;
   for (const el of [ui["device-id"], ui.name, ui.url])
-    el.disabled = connecting || ready;
+    el.disabled = connecting || ready || recovering;
   ui["connection-state"].textContent = ready
     ? `已连接 ${
         state.connection?.name || state.connection?.deviceId || "万象"
       } · ${state.connection?.mode === "direct" ? "直接连接" : "P2P 网络"}`
+    : recovering
+    ? "正在恢复连接，已打开的万象会话将保留…"
     : connecting
     ? "正在打开万象…"
     : "尚未连接";

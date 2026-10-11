@@ -210,3 +210,52 @@ Owner 默认权限补齐仅针对当前账号本人拥有的盒子和当前客�
 实际客户端打开 `/admin/advanced?tab=backup`：list/status/auto 均为 HTTP 200，备份文件区域正常显示，无 `BOX_PLATFORM_ROUTE_FORBIDDEN` 或离线提示；页面截图 `/tmp/wanx102-backup-fixed.png` 已人工查看。没有执行创建、下载或恢复操作。
 
 根目录 `make all PYTEST_JOBS=4` 通过，测试 4421 passed、17 skipped；本轮 bridge 100 项、客户端 144 项通过，客户端入口语法检查与 `git diff --check` 通过。
+
+
+## 家庭网络恢复与资源传输优化（2026-10-11，待部署验收）
+
+### 实现范围与验收目标
+
+本轮针对三段等待分别改造：启动到盒子可点击、换网后恢复、点击到页面可用。验收要求：已有身份预热与云端准备重叠；后台续租不闪断有效按钮；短暂换网保留同一个本地网关及有效 SSO；退出、关闭 P2P、明确撤销和租约到期仍立即终止；相同发布的静态资源跨次打开不重复下载。改动只在 `wanx-client`、`wanx-bridge` 和 Admin，没有修改 `src/octop`。
+
+客户端在操作系统加密存储中保存最小网络恢复索引（账号、客户端、网络会话、管理端），不保存入网码或盒子访问权限。账号恢复后并行预热已有引擎和执行云端权限准备；必须取得当前有效授权后才允许打开盒子。服务器返回其他会话或拒绝时销毁预热引擎。第一次启用新版本需要一次正常连接生成索引。
+
+管理/信令短断及 peer 暂时不可达进入 `recovering`；保留现有网关、页面和未过期 SSO。macOS 监听 SystemConfiguration 的链路、Wi-Fi 和默认网络变化，并以地址轮询及唤醒事件补充；其他平台当前采用地址轮询及唤醒通知，同 IP 的路由变化仍依赖引擎自身发现。变化去抖后先做有界连通探测，失败才用已有身份重建网络引擎，保持本地代理地址不变。失败重试有退避，不重放 HTTP 写请求；WebSocket 中断由上层协议自行恢复，不承诺流不断线。
+
+后台目录读取使用独立 refreshing 状态，成功后替换有效结果。临时错误不延长旧租约，不等同于权限撤销；到期、401/403、退出或关闭 P2P 仍执行原有硬清理。初次离线启动失败后，仅可重试的网络故障允许在系统网络恢复时重试，认证和配置错误不会自动重试。
+
+Admin 在 `nexus_network_enrollments` 增加已确认策略摘要与核验时间；每次恢复和巡检仍重读账号、客户端、归属、授权、应用权限、设备身份和过期时间。未变化且最近 30 秒确认过时不请求网络管理 API；约每 30 秒重新检查实际配置，正常核验仅 4 次 GET、无重复写入。数据库撤权检查保持原巡检频率。实际策略修改仍在授权事务锁内，未以取消锁换取速度。
+
+bridge 从已安装的 Octop wheel 中读取公开静态资源，生成 SHA-256 清单并按请求在盒端执行 gzip（不是预生成压缩包）。只处理 JS/CSS/字体，支持 HEAD、ETag/304 和编码协商。客户端在主进程独立缓存清单验证过的资源，按账号、盒子、发布版本、路径和摘要隔离，保留临时浏览器会话和随机端口。API、HTML、用户文件、认证响应不缓存。单资源上限 8 MiB，磁盘缓存上限 256 MiB，捕获响应占用受限；旧 bridge 或清单失败直接回退流式代理。源码 editable 开发环境没有可定位的 wheel 资源时也回退。
+
+### 发布依赖
+
+1. **Admin 先迁移再发布**：执行 `nexusaos-admin/admin-backend/sql/20261011_wanx_projection_resume.sql`（一次性 ADD COLUMN），再发布新 Admin。旧数据字段为空，首次恢复完整确认。回退旧程序可保留新增字段。
+2. **盒子更新 WANX/bridge**：仍使用 `centuarai-os/scripts/box.sh` 的既定 101 构建 → MinIO → 目标盒子流程。源码需先进入构建实际选择的仓库 ref；本地修改不会自动进入远端构建。新 bridge 用已安装 wheel 自动生成资源清单，无额外令牌配置。
+3. **客户端更新并重启**：必须包含重新构建的 native 引擎（新增 recover RPC）。源码运行 `npm --prefix wanx-client start` 的 prestart 会检查构建；发布安装包需使用对应平台打包命令。客户端/盒端缓存接口向后兼容旧 bridge。
+
+本轮只完成代码与本地验证，未执行数据库迁移、云端发布或盒子部署，也未中断当前客户端。不能用本地测试代替家庭网络与 102 的端到端验收。
+
+### 日志与性能复测
+
+客户端默认在 userData 的 `logs/connection-timings.jsonl` 保存固定阶段名、时间及耗时，单文件约 512 KiB 后轮转，保留一个旧文件；没有账号、设备标识、URL、请求体或 Token。`WANX_CONNECTION_TIMINGS=1` 额外打印到控制台；Admin 设置同名变量后输出锁等待与策略处理阶段。主要步骤包括 `account.restore`、`boxes.prepare`、`network.restore`、`engine.start`、`network.devices`、`network.recover`、`box.challenge`、`box.grant`、`box.exchange`。
+
+每种场景运行 5–10 次，分别记录中位数和尾部耗时：
+
+- 家庭网络冷启动：首次完整启动与已有恢复索引的后续启动分开统计。
+- 正在访问 102 时切换 Wi-Fi/热点、同 IP 不同路径，以及休眠唤醒：检查网关地址和窗口保持，业务读取恢复，写请求不重复。
+- 关闭再打开同一版本：第一次填缓存，第二次确认大资源来自本机；升级盒子版本后确认不会命中旧资源。
+- 在恢复和后台刷新中关闭 P2P、退出、撤销权限或等待租约到期：确认停止访问且迟到响应不复活会话。
+
+本地当前最大脚本测得原始 2,200,331 字节，gzip level 5 为 518,465 字节，减少约 76.4%。这是资源体积测量，不是家庭网络耗时。尚不承诺连接总时长达到固定秒数。
+
+
+本轮本地验证结果：
+
+- `make all`：Ruff、mypy、格式检查通过；4421 passed、17 skipped。
+- `npm test --prefix wanx-client`：174 passed。
+- 在工程根目录执行 `uv run pytest -c wanx-bridge/pyproject.toml wanx-bridge/tests -q`：110 passed。真实 Octop 边界测试需要根工程环境，独立 bridge 虚拟环境不包含 Octop。
+- 在 `wanx-client/native` 执行 `go test -race ./...`：通过。
+- Admin 的 `test_network_access.py`、`test_network_box_access.py`、`test_network_management_diagnostics.py`、`test_network_box_registration.py`：112 passed。
+- `npm run build:network --prefix wanx-client -- darwin-arm64`：通过；同时修正 Go 依赖许可证只读属性导致重复构建无法覆盖的问题，仅原子替换生成目录中的许可证副本。
+- `git diff --check` 和客户端入口语法检查通过。没有提交或推送；没有执行线上迁移或部署。

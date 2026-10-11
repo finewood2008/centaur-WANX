@@ -13,17 +13,19 @@ import inspect
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import anyio
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import Headers, QueryParams
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
+from .assets import DashboardAssets, installed_dashboard
 from .config import BridgeAuthError
 from .upstream import BridgeUpstreamError
 
@@ -44,7 +46,12 @@ _SECRET_RESPONSE = frozenset({"set-cookie", "x-octop-access-token", "authorizati
 _TOKEN_PARAMS = frozenset({"token", "access_token"})
 _PUBLIC = frozenset({"/api/health"})
 _PROFILE = frozenset(
-    {("GET", "/api/auth/me"), ("POST", "/api/auth/me/avatar"), ("DELETE", "/api/auth/me/avatar")}
+    {
+        ("GET", "/api/auth/me"),
+        ("PATCH", "/api/auth/me"),
+        ("POST", "/api/auth/me/avatar"),
+        ("DELETE", "/api/auth/me/avatar"),
+    }
 )
 
 
@@ -179,6 +186,7 @@ def create_app(
     upstream_url: str = "http://127.0.0.1:18088",
     http_transport: Any = None,
     lease_check_interval: float = 0.25,
+    dashboard_dir: Path | None = None,
 ) -> FastAPI:
     parsed = urlsplit(upstream_url)
     if (
@@ -191,6 +199,7 @@ def create_app(
         or parsed.fragment
     ):
         raise ValueError("upstream_url must be a loopback HTTP origin")
+    assets = DashboardAssets(dashboard_dir or installed_dashboard())
     origin = upstream_url.rstrip("/")
     client = httpx.AsyncClient(
         transport=http_transport,
@@ -241,10 +250,18 @@ def create_app(
             await _call(auth.exchange, grant, adapter), headers={"Cache-Control": "no-store"}
         )
 
+    @app.get("/api/platform/assets/manifest")
+    async def asset_manifest(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        manifest = await assets.manifest()
+        await _call(auth.assert_live, session)
+        return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
+
     @app.api_route(
         "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
     )
-    async def proxy(request: Request, path: str) -> StreamingResponse:
+    async def proxy(request: Request, path: str) -> Response:
         path = "/" + path
         if not _allowed(path, request.method):
             raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
@@ -252,6 +269,12 @@ def create_app(
         marker = _credentials(request.headers, request.query_params, required=protected)
         session = await _call(auth.authorize, marker) if marker else None
         token = _field(session, "upstream_token") if session else None
+        if path.startswith("/assets/"):
+            asset_response = await assets.response(request, path)
+            if asset_response is not None:
+                if session:
+                    await _call(auth.assert_live, session)
+                return asset_response
         guard = asyncio.create_task(watch(session)) if session else None
         upstream = None
         pending = None

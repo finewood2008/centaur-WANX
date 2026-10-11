@@ -110,6 +110,39 @@ async def test_signed_platform_exchange_through_bridge_to_unmodified_octop(
                             "/api/auth/me", headers={"authorization": "Bearer " + upstream_token}
                         )
                     ).status_code == 401
+                owner_headers = {"authorization": "Bearer " + owner["access_token"]}
+                member_headers = {"authorization": "Bearer " + member["access_token"]}
+                # Use the real profile handler: only the mapped user's editable
+                # profile fields change; platform role authority is unaffected.
+                updated = await client.patch(
+                    "/api/auth/me",
+                    headers=member_headers,
+                    json={
+                        "display_name": "bruce",
+                        "locale": "en",
+                        "avatar_icon": "briefcase",
+                        "role": "admin",
+                    },
+                )
+                assert updated.status_code == 200, updated.text
+                persisted = (await client.get("/api/auth/me", headers=member_headers)).json()
+                assert persisted["display_name"] == "bruce"
+                assert persisted["locale"] == "en"
+                assert persisted["avatar_icon"] == "briefcase"
+                assert persisted["role"] == "user"
+                assert persisted["id"] == member["user"]["id"]
+                unchanged = (await client.get("/api/auth/me", headers=owner_headers)).json()
+                assert unchanged["display_name"] == "owner"
+                assert unchanged["role"] == "admin"
+                cleared = await client.patch(
+                    "/api/auth/me",
+                    headers=member_headers,
+                    json={"display_name": None, "avatar_icon": None},
+                )
+                assert cleared.status_code == 200
+                assert cleared.json()["display_name"] is None
+                assert cleared.json()["avatar_icon"] is None
+                assert cleared.json()["locale"] == "en"
                 assert (await client.get("/api/auth/me")).status_code == 401
                 assert (
                     await client.get(

@@ -1,7 +1,15 @@
 import { spawn } from "node:child_process";
-import { mkdir, copyFile, writeFile, readdir } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  readdir,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const targets = {
@@ -41,6 +49,21 @@ function run(args, env = {}, capture = false) {
         : reject(new Error(`go exited ${code}`)),
     );
   });
+}
+
+// Go's module cache marks notices read-only. Replacing copied notices atomically
+// keeps repeated local builds working without changing the dependency cache.
+async function copyNotice(source, destination) {
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, await readFile(source), {
+      flag: "wx",
+      mode: 0o644,
+    });
+    await rename(temporary, destination);
+  } finally {
+    await unlink(temporary).catch(() => {});
+  }
 }
 
 await mkdir(path.join(root, "native/bin"), { recursive: true });
@@ -83,7 +106,7 @@ const netbirdDir = await run(
   {},
   true,
 );
-await copyFile(
+await copyNotice(
   path.join(netbirdDir, "LICENSE"),
   path.join(root, "native/bin", "NETBIRD-LICENSE"),
 );
@@ -126,7 +149,7 @@ for (const [module, directory] of moduleDirectories) {
   );
   await mkdir(destination, { recursive: true });
   for (const notice of notices)
-    await copyFile(
+    await copyNotice(
       path.join(directory, notice.name),
       path.join(destination, notice.name),
     );

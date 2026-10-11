@@ -29,6 +29,12 @@ export function createDashboardWindows({
   }
 
   function sync(state) {
+    if (
+      state.phase === "recovering" &&
+      current &&
+      state.connection?.gatewayURL === current.gatewayURL
+    )
+      return;
     const connection = state.phase === "ready" ? state.connection : null;
     if (current?.gatewayURL === connection?.gatewayURL) return;
     const old = current;

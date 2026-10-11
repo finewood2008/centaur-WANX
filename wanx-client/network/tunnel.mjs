@@ -92,12 +92,35 @@ export function createTunnelAgent({ url, proxy, timeoutMs = 15_000 }) {
     request.end();
   };
   const destroy = agent.destroy.bind(agent);
-  agent.destroy = () => {
-    destroyed = true;
+  // Close only transport sockets on a confirmed network change; the gateway
+  // retains this Agent and can open fresh tunnels once the engine recovers.
+  agent.resetConnections = (code = "network_recovering") => {
     for (const connection of connections)
-      connection.destroy(failure("network_disabled"));
+      connection.destroy(failure(code));
     connections.clear();
     destroy();
   };
+  agent.destroy = () => {
+    destroyed = true;
+    agent.resetConnections("network_disabled");
+  };
+  agent.probe = ({ timeoutMs: deadlineMs = 1_000 } = {}) =>
+    new Promise((resolve) => {
+      let done = false;
+      const check = createTunnelAgent({ url, proxy, timeoutMs: deadlineMs });
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        check.destroy();
+        resolve(ok);
+      };
+      const timer = setTimeout(() => finish(false), deadlineMs);
+      // TCP/TLS only: no application request or user action is replayed.
+      check.createConnection({ host, port }, (error, socket) => {
+        socket?.destroy();
+        finish(!error);
+      });
+    });
   return agent;
 }
