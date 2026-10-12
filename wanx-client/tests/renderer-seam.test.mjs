@@ -72,6 +72,7 @@ async function harness(initial = state(), installed = [application]) {
   await new Promise((resolve) => setImmediate(resolve));
   return {
     app, calls, launches, dashboards,
+    navigate(page) { listeners.get("wanx-client:navigate")({}, page); },
     update(next, publish = true) {
       rawState = next;
       if (publish) listeners.get("wanx-client:state")({}, { ...rawState, applications: records });
@@ -233,4 +234,21 @@ test("device setup retains its wizard across polling and returns to settings", a
   await h.click("back-devices");
   assert.match(h.app.innerHTML, /设备管理/);
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
+});
+
+test("native menu navigation reaches settings and home while preserving login and setup boundaries", async () => {
+  const h = await harness({ account: { phase: "signed_out" } });
+  h.navigate("settings");
+  assert.match(h.app.innerHTML, /登录万象平台/);
+  h.update(state());
+  h.navigate("settings");
+  assert.match(h.app.innerHTML, /设备管理/);
+  h.navigate("https://untrusted.example/");
+  assert.match(h.app.innerHTML, /设备管理/);
+  h.navigate("applications");
+  assert.match(h.app.innerHTML, /class="application-card"/);
+  await h.click("show-settings");
+  await h.click("provisioning");
+  h.navigate("applications");
+  assert.match(h.app.innerHTML, /发现并初始化盒子/);
 });

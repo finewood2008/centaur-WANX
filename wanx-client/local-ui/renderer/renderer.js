@@ -431,6 +431,12 @@ function acceptRemoteState(state) {
   render(state);
 }
 window.wanxClient.onLocalState(acceptRemoteState);
+window.wanxClient.onNavigate?.((destination) => {
+  if (!currentState || currentState.route === "auth" || page === "provisioning") return;
+  page = destination;
+  notice = null;
+  render(currentState);
+});
 window.wanxSetup?.subscribe((snapshot) => {
   setupState = snapshot;
   if (page === "provisioning") render(currentState);

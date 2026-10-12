@@ -19,6 +19,13 @@ function requireConnectedBox(state) {
     throw new Error("BOX_CONNECTION_REQUIRED");
 }
 
+export function openConnectedDashboard(client, dashboards) {
+  const state = client.snapshot();
+  requireConnectedBox(state);
+  if (!state.connection.gatewayURL) throw new Error("BOX_CONNECTION_REQUIRED");
+  return dashboards.open(state);
+}
+
 // Remote dashboards have no account bridge. Check the exact control main frame
 // for every action, including reads, and never accept network credentials here.
 export function registerControlActions({
@@ -76,12 +83,7 @@ export function registerControlActions({
     });
   });
   register("disconnect", () => client.disconnect());
-  register("dashboard-open", () => {
-    const state = client.snapshot();
-    requireConnectedBox(state);
-    if (!state.connection.gatewayURL) throw new Error("BOX_CONNECTION_REQUIRED");
-    return dashboards.open(state);
-  });
+  register("dashboard-open", () => openConnectedDashboard(client, dashboards));
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");

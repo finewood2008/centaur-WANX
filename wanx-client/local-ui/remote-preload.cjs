@@ -113,6 +113,13 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.on("wanx-client:state", receive);
       return () => ipcRenderer.removeListener("wanx-client:state", receive);
     },
+    onNavigate(listener) {
+      const receive = (_event, page) => {
+        if (page === "applications" || page === "settings") listener(page);
+      };
+      ipcRenderer.on("wanx-client:navigate", receive);
+      return () => ipcRenderer.removeListener("wanx-client:navigate", receive);
+    },
   }),
 );
 

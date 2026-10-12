@@ -6,6 +6,10 @@ import {
   powerMonitor,
   session,
   shell,
+  Menu,
+  Tray,
+  nativeImage,
+  dialog,
 } from "electron";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
@@ -15,8 +19,9 @@ import os from "node:os";
 import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
 import { createSidecar } from "../network/sidecar.mjs";
-import { registerControlActions } from "./control.mjs";
+import { registerControlActions, openConnectedDashboard } from "./control.mjs";
 import { createDashboardWindows } from "./dashboard.mjs";
+import { APP_ICON, DESKTOP_NAME, createDesktopIntegration } from "./desktop.mjs";
 import { claimSingleInstance } from "./instance.mjs";
 import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
@@ -35,6 +40,7 @@ let unsubscribe;
 let setupRuntime;
 let applications;
 let dashboards;
+let desktop;
 let quitting = false;
 let stopNetworkMonitor;
 let timings;
@@ -50,6 +56,9 @@ function reportError(error) {
 
 // Do not await readiness at ESM top level: Electron waits for the entry module
 // to finish evaluating before emitting ready.
+// Keep Electron's existing name/data/keychain identity; branding lives in the
+// bundle, About panel and menus. Match the installer identity on Windows.
+if (process.platform === "win32") app.setAppUserModelId("ai.centuarai.wanx.client");
 if (claimSingleInstance(app, () => control))
   app
     .whenReady()
@@ -184,7 +193,8 @@ if (claimSingleInstance(app, () => control))
         height: 760,
         minWidth: 900,
         minHeight: 620,
-        title: "半人马AI-万象",
+        title: DESKTOP_NAME,
+        icon: APP_ICON,
         webPreferences: {
           preload: fileURLToPath(
             new URL("../local-ui/remote-preload.cjs", import.meta.url),
@@ -209,6 +219,18 @@ if (claimSingleInstance(app, () => control))
         openExternal: (url) => shell.openExternal(url),
         onError: reportError,
       });
+      desktop = createDesktopIntegration({
+        app, Menu, Tray, nativeImage, control, client,
+        openDashboard: () => openConnectedDashboard(client, dashboards),
+        onError: () => {
+          desktop.show();
+          void dialog.showMessageBox(control, {
+            type: "error", title: DESKTOP_NAME,
+            message: "暂时无法打开 Dashboard",
+            detail: "请在设置中确认网络和盒子已连接，然后重试。",
+          });
+        },
+      });
       registerControlActions({
         ipcMain,
         control,
@@ -219,6 +241,7 @@ if (claimSingleInstance(app, () => control))
       });
       unsubscribe = client.subscribe(async () => {
         dashboards.sync(client.snapshot());
+        desktop.sync(client.snapshot());
         if (!control.isDestroyed()) {
           const applicationsState = applications ? await applications.listInstalled() : [];
           if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...client.snapshot(), applications: applicationsState });
@@ -229,6 +252,7 @@ if (claimSingleInstance(app, () => control))
         if (quitting) return;
         event.preventDefault();
         quitting = true;
+        desktop.dispose();
         unsubscribe();
         stopNetworkMonitor?.();
         Promise.resolve(setupRuntime?.dispose())
