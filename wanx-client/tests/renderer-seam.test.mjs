@@ -2,10 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { EventEmitter } from "node:events";
+import { installElectronBluetoothPicker } from "@nexusaos/device-discovery-electron/main";
 import { registerControlActions } from "../shell/control.mjs";
 
 const source = await readFile(new URL("../local-ui/renderer/renderer.js", import.meta.url), "utf8");
 const preload = await readFile(new URL("../local-ui/remote-preload.cjs", import.meta.url), "utf8");
+const transportBundle = await readFile(new URL("../local-ui/renderer/device-setup.bundle.js", import.meta.url), "utf8");
 const application = { applicationId: "centaurai.wanx.zhijun", name: "知君", version: "0.4.3", description: "你的私人空间" };
 const devices = ["102", "103"].map((id) => ({
   deviceId: `box-${id}`, displayName: `CentuarAI-AMD-${id}`, accessState: "ready", canOpen: true,
@@ -24,6 +27,7 @@ function state(platformPhase = "ready", networkPhase = "ready", boxId = null) {
 
 // Execute the real renderer -> preload -> control IPC seam without Electron or a live box.
 async function harness(initial = state(), installed = [application], options = {}) {
+  const discoveryTest = options.after ? options : undefined;
   let rawState = initial;
   let records = [...installed];
   let launchError;
@@ -31,7 +35,10 @@ async function harness(initial = state(), installed = [application], options = {
   const calls = [], launches = [], dashboards = [];
   const app = { innerHTML: "", addEventListener: (name, fn) => events.set(name, fn) };
   const controlURL = "file:///client/local-ui/renderer/index.html";
-  const frame = { url: controlURL }, contents = { mainFrame: frame };
+  const frame = { url: controlURL }, contents = Object.assign(new EventEmitter(), { mainFrame: frame });
+  const ipcMain = new EventEmitter();
+  const ipcEvent = { sender: contents, senderFrame: frame };
+  contents.send = (name, payload) => listeners.get(name)?.({}, payload);
   const client = {
     snapshot: () => structuredClone(rawState),
     loginPassword: async () => { rawState = state("enrolling", "checking"); },
@@ -72,21 +79,45 @@ async function harness(initial = state(), installed = [application], options = {
     ipcRenderer: {
       invoke: async (name, input) => {
         calls.push([name, input]);
-        if (name.startsWith("wanx:setup:")) return { ok: true, value: { state: "idle" } };
+        if (name.startsWith("wanx:setup:")) return { ok: true, value: { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
         return handlers.get(name)({ sender: contents, senderFrame: frame }, input);
       },
       on: (name, listener) => listeners.set(name, listener), removeListener() {},
-      send() {},
+      send(name, payload) { calls.push([name, payload]); ipcMain.emit(name, ipcEvent, payload); },
     },
   }) });
+  let chooser, nearby = [{ deviceId: "provider-1", deviceName: "Test box" }];
+  if (discoveryTest) {
+    const clock = { monotonicMs: () => Date.now() };
+    discoveryTest.after(installElectronBluetoothPicker({ webContents: contents, ipcMain, documentUrl: controlURL, clock, scanTimeoutMs: 12000 }));
+    const bluetooth = {
+      requestDevice: () => new Promise((resolve, reject) => {
+        chooser = (id) => id ? resolve({ id, name: "Test box" }) : reject(Object.assign(new Error("User cancelled the requestDevice() chooser."), { name: "NotFoundError" }));
+        queueMicrotask(() => contents.emit("select-bluetooth-device", { preventDefault() {} }, nearby, chooser));
+      }),
+    };
+    // Run the shipped transport too, including its independent 12-second deadline.
+    vm.runInNewContext(transportBundle, {
+      window, navigator: { bluetooth }, crypto: globalThis.crypto,
+      performance: { now: clock.monotonicMs }, setTimeout, clearTimeout,
+      AbortController, DOMException, TextEncoder, TextDecoder,
+    });
+    discoveryTest.after(() => window.wanxDeviceSetupTransport.dispose());
+  }
   vm.runInNewContext(source, {
     window,
+    setTimeout, clearTimeout,
     document: { querySelector: (selector) => selector === "#app" ? app : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
+  if (discoveryTest) {
+    listeners.get("wanx:setup:ready")();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   return {
     app, calls, launches, dashboards,
+    nearby(value) { nearby = value; },
     failLaunch(code) { launchError = code; },
     navigate(page) { listeners.get("wanx-client:navigate")({}, page); },
     window,
@@ -339,6 +370,104 @@ test("device setup retains its wizard across polling and returns to settings", a
   await h.click("back-devices");
   assert.match(h.app.innerHTML, /设备管理/);
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
+});
+
+test("discovered boxes remain selectable after the scan times out", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(h.app.innerHTML, /Test box/);
+  t.mock.timers.tick(12000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /Test box/, "timeout must not discard discovered boxes");
+  await h.click("select-candidate", { candidateId });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /确认设备身份/);
+  assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:reselect"));
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 1);
+});
+
+test("selection during a live scan still opens device identity", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate", { candidateId });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /确认设备身份/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 1);
+});
+
+test("expired results are removed and require a new scan", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(12000);
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(120000);
+  assert.doesNotMatch(h.app.innerHTML, /Test box/);
+  assert.match(h.app.innerHTML, /扫描结果已过期/);
+  assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:forget"));
+});
+
+test("a missing retained target never selects a different box with the same name", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  t.mock.timers.tick(12000);
+  await new Promise((resolve) => setImmediate(resolve));
+  h.nearby([{ deviceId: "provider-2", deviceName: "Test box" }]);
+  await h.click("select-candidate", { candidateId });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(12000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+  assert.match(h.app.innerHTML, /未能连接所选盒子/);
+  assert.match(h.app.innerHTML, /Test box/);
+  h.nearby([{ deviceId: "provider-1", deviceName: "Test box" }]);
+  await h.click("select-candidate", { candidateId });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /确认设备身份/);
+});
+
+for (const leave of ["back-devices", "logout"]) {
+  test(`${leave} revokes scan results and a late chooser cannot start setup`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const h = await harness(state(), [application], t);
+    await h.click("provisioning");
+    await h.click("start-provisioning");
+    await new Promise((resolve) => setImmediate(resolve));
+    if (leave === "logout") h.update({ account: { phase: "signed_out" } });
+    else await h.click(leave);
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(132000);
+    assert.doesNotMatch(h.app.innerHTML, /Test box|扫描结果已过期/);
+    assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+    assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:forget"));
+  });
+}
+
+test("an empty scan gives an actionable retry message", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  h.nearby([]);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(12000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /未发现可用盒子/);
+  assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
 });
 
 test("native menu navigation reaches settings and home while preserving login and setup boundaries", async () => {

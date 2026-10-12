@@ -19,6 +19,8 @@ let setupReady = false;
 let discoveryCandidates = [];
 let discoverySessionId = null;
 let selectionPromise;
+let retainedDiscovery;
+let discoveryExpiry;
 const stageLabels = {
   discover: "发现盒子",
   identity: "读取设备身份",
@@ -380,7 +382,8 @@ function provisioningView() {
     cancelled: "本次配网已取消。",
   }[setupPhase] || "请让设备进入配置模式后开始扫描。";
   const previewBlock = preview ? `<dl class="setup-preview"><dt>设备名称</dt><dd>${escapeHTML(preview.display_name)}</dd><dt>设备 ID</dt><dd>${escapeHTML(preview.device_id)}</dd><dt>型号</dt><dd>${escapeHTML(preview.model)}</dd><dt>身份公钥指纹</dt><dd>${escapeHTML(preview.identity_public_key_sha256)}</dd></dl>` : "";
-  const discoveryBlock = selectionPromise ? `<div class="discovery-list"><p>选择要配置的盒子：</p>${discoveryCandidates.length ? discoveryCandidates.map((candidate) => `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}"><strong>${escapeHTML(candidate.advertisedName || "CentaurOS 盒子")}</strong><span>BLE 配网设备</span></button>`).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
+  const candidates = retainedDiscovery?.candidates || discoveryCandidates;
+  const discoveryBlock = selectionPromise || retainedDiscovery ? `<div class="discovery-list"><p>${retainedDiscovery ? "扫描已结束，结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map((candidate) => `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${selectionPromise && retainedDiscovery ? "disabled" : ""}><strong>${escapeHTML(candidate.advertisedName || "CentaurOS 盒子")}</strong><span>BLE 配网设备</span></button>`).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
   const controls = setupPhase === "previewReady"
     ? `<button class="button primary" data-action="provisioning-confirm" ${busy ? "disabled" : ""}>确认设备身份</button>`
     : setupPhase === "awaitingWifi"
@@ -473,16 +476,47 @@ async function run(action, input = {}) {
   }
 }
 
-function startBluetoothSelection() {
+function forgetRetainedDiscovery() {
+  clearTimeout(discoveryExpiry);
+  discoveryExpiry = undefined;
+  if (retainedDiscovery) window.wanxDiscovery?.forget(retainedDiscovery.sessionId);
+  retainedDiscovery = undefined;
+}
+
+function stopBluetoothSelection() {
+  selectionPromise = undefined;
+  window.wanxDeviceSetupTransport?.cancelSelection();
+  if (discoverySessionId) window.wanxDiscovery?.forget(discoverySessionId);
+  forgetRetainedDiscovery();
+  discoveryCandidates = [];
+  discoverySessionId = null;
+}
+
+function retainDiscovery() {
+  if (retainedDiscovery || !discoverySessionId || !discoveryCandidates.length) return;
+  retainedDiscovery = { sessionId: discoverySessionId, candidates: [...discoveryCandidates] };
+  discoveryExpiry = setTimeout(() => {
+    stopBluetoothSelection();
+    notice = "扫描结果已过期，请重新扫描盒子。";
+    if (page === "provisioning") render(currentState);
+  }, 120000);
+}
+
+function startBluetoothSelection(candidateId) {
   if (selectionPromise) return;
   if (!window.wanxDeviceSetupTransport) {
     notice = "当前运行时尚未接入本地配网能力";
     render(currentState);
     return;
   }
+  const previous = candidateId && retainedDiscovery;
+  if (candidateId && !previous?.candidates.some((candidate) => candidate.candidateId === candidateId)) return;
+  if (!previous) stopBluetoothSelection();
   notice = null;
   discoveryCandidates = [];
   discoverySessionId = null;
+  // Keep requestDevice synchronous within this click and obtain a fresh lease.
+  if (previous) window.wanxDiscovery.reselect(previous.sessionId, candidateId);
   selectionPromise = window.wanxDeviceSetupTransport.requestDeviceFromUserGesture();
   render(currentState);
   const attempt = selectionPromise;
@@ -491,6 +525,7 @@ function startBluetoothSelection() {
       if (selectionPromise !== attempt) return;
       selectedCandidate = candidate;
       selectionPromise = undefined;
+      forgetRetainedDiscovery();
       discoveryCandidates = [];
       discoverySessionId = null;
       render(currentState);
@@ -498,10 +533,13 @@ function startBluetoothSelection() {
     },
     (error) => {
       if (selectionPromise !== attempt) return;
+      retainDiscovery();
+      if (discoverySessionId) window.wanxDiscovery?.cancel(discoverySessionId);
       selectionPromise = undefined;
       discoveryCandidates = [];
       discoverySessionId = null;
-      notice = error.message;
+      notice = previous ? "未能连接所选盒子，请确认盒子仍处于配网模式后重试。" : retainedDiscovery ? null :
+        error.name === "NotFoundError" || error.code === "LOCAL_SELECTION_TIMEOUT" ? "未发现可用盒子，请确认盒子已进入配网模式后重新扫描。" : error.message;
       render(currentState);
     },
   );
@@ -570,6 +608,7 @@ app.addEventListener("click", async (event) => {
   if (action === "refresh") { page = "settings"; await run("devices.refresh"); return; }
   if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
   if (action === "provisioning") {
+    stopBluetoothSelection();
     page = "provisioning";
     busy = true;
     render(currentState);
@@ -580,16 +619,17 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "start-provisioning") { startBluetoothSelection(); return; }
   if (action === "select-candidate") {
-    if (discoverySessionId) window.wanxDiscovery?.select(discoverySessionId, target.dataset.candidateId);
+    if (retainedDiscovery && !selectionPromise) startBluetoothSelection(target.dataset.candidateId);
+    else if (discoverySessionId && !retainedDiscovery) window.wanxDiscovery?.select(discoverySessionId, target.dataset.candidateId);
     return;
   }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
   if (action === "provisioning-owner") { await run("provisioning.owner"); return; }
-  if (action === "cancel-provisioning") { provisioningTargetId = null; selectionPromise = undefined; window.wanxDeviceSetupTransport?.cancelSelection(); if (discoverySessionId) window.wanxDiscovery?.cancel(discoverySessionId); await run("provisioning.cancel"); return; }
+  if (action === "cancel-provisioning") { provisioningTargetId = null; stopBluetoothSelection(); await run("provisioning.cancel"); return; }
   if (action === "connect") { if (currentState.networkReady) await run("devices.connect", { deviceId: target.dataset.deviceId }); return; }
   if (action === "disconnect") { await run("devices.disconnect"); return; }
-  if (action === "back-devices") { provisioningTargetId = null; page = "settings"; notice = null; render(currentState); return; }
+  if (action === "back-devices") { provisioningTargetId = null; stopBluetoothSelection(); page = "settings"; notice = null; render(currentState); return; }
   if (action === "applications-select-current") {
     await run("applications.select-current", { applicationId: target.dataset.applicationId, version: target.dataset.version });
     return;
@@ -651,8 +691,7 @@ function acceptRemoteState(state) {
   }
   if (state.route === "auth" || accountChanged) {
     page = "applications";
-    window.wanxDeviceSetupTransport?.cancelSelection();
-    selectionPromise = undefined;
+    stopBluetoothSelection();
     marketItems = [];
     marketCandidates = new Map();
     marketConfirmation = null;
@@ -679,11 +718,13 @@ window.wanxSetup?.subscribe((snapshot) => {
   if (page === "provisioning") render(currentState);
 });
 window.wanxDiscovery?.subscribe((payload) => {
-  if (!payload || typeof payload.sessionId !== "string") return;
+  if (!selectionPromise || !payload || typeof payload.sessionId !== "string") return;
   discoverySessionId = payload.sessionId;
   discoveryCandidates = Array.isArray(payload.candidates) ? payload.candidates : [];
   if (page === "provisioning") render(currentState);
-}, () => {});
+}, (payload) => {
+  if (selectionPromise && payload?.sessionId === discoverySessionId && payload.cancelled) retainDiscovery();
+});
 window.wanxSetup?.state().then((snapshot) => {
   setupState = snapshot;
   if (page === "provisioning") render(currentState);
