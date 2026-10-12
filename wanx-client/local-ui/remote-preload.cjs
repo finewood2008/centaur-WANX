@@ -10,6 +10,8 @@ function projectState(raw) {
   const authenticated = account.phase === "authenticated";
   const connection = source.connection || null;
   const connected = source.phase === "ready" && connection?.mode === "netbird";
+  const networkReady =
+    source.platform?.phase === "ready" && source.network?.phase === "ready";
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,
@@ -35,6 +37,7 @@ function projectState(raw) {
       displayName: account.accountId || "万象用户",
     },
     devices,
+    networkReady,
     availableDevices: devices.filter((device) => device.accessState === "ready"),
     selectedDeviceId: connection?.deviceId || null,
     activeDeviceId: connected ? connection.deviceId : null,

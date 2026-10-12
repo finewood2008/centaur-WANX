@@ -45,8 +45,10 @@ function statusLabel(device) {
 
 function deviceCard(device, available) {
   const selected = currentState.selectedDeviceId === device.deviceId;
-  const action = available
+  const action = available && currentState.networkReady
     ? `<button class="button primary small" data-action="connect" data-device-id="${escapeHTML(device.deviceId)}">${selected ? "连接当前盒子" : "连接"}</button>`
+    : available
+      ? '<button class="button primary small" disabled>网络连接中</button>'
     : `<button class="button small" data-action="provisioning" data-device-id="${escapeHTML(device.deviceId)}">开始初始化</button>`;
   return `
     <article class="device-card ${selected ? "selected" : ""}">
@@ -116,6 +118,7 @@ function devicesView() {
         <div><p class="eyebrow">YOUR DEVICES</p><h2>从设备中心进入盒端服务</h2><p class="lede">只有完成认领、配网和初始化的盒子会出现在可用列表中。</p></div>
         <button class="button primary" data-action="provisioning">＋ 发现新盒子</button>
       </section>
+      ${available.length && !currentState.networkReady ? '<div class="notice">网络连接中，请稍候…</div>' : ""}
       ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
       <section class="content-section"><div class="section-heading"><div><p class="eyebrow">READY DEVICES</p><h2 class="small-heading">可用盒子 <span class="count">${available.length}</span></h2></div><button class="text-button" data-action="refresh">刷新列表</button></div>
         ${available.length ? `<div class="device-list">${available.map((device) => deviceCard(device, true)).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">＋</div><h3>还没有可用盒子</h3><p>点击“发现新盒子”，开始完成设备接入。</p><button class="button primary" data-action="provisioning">开始发现</button></div>'}
