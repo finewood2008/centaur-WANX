@@ -13,7 +13,6 @@ test("application host requires the launch token and restricts paths", async () 
     token: "token",
     context: () => ({ boxId: "box-1", connection: "ready" }),
     isApplicationAllowed: (applicationId, launchId) => applicationId === "centaurai.wanx.zhijun" && launchId === "launch-1",
-    capabilitiesFor: (_applicationId, launchId) => launchId === "launch-1" ? ["http.request"] : [],
     request: ({ path }) => ({ status: 200, headers: {}, body: Buffer.from(JSON.stringify({ path })) }),
   });
   const call = (value) => new Promise((resolve, reject) => {
@@ -28,6 +27,11 @@ test("application host requires the launch token and restricts paths", async () 
   assert.equal((await call({ id: "2", token: "bad", applicationId: "centaurai.wanx.zhijun", launchId: "launch-1", method: "context.get" })).error, "APPLICATION_IPC_UNAUTHORIZED");
   assert.equal((await call({ id: "3", token: "token", applicationId: "centaurai.wanx.zhijun", launchId: "other-launch", method: "context.get" })).error, "APPLICATION_IPC_UNAUTHORIZED");
   assert.equal((await call({ id: "4", token: "token", applicationId: "centaurai.wanx.zhijun", launchId: "launch-1", method: "http.request", params: { path: "/private" } })).error, "APPLICATION_PATH_NOT_ALLOWED");
+  assert.deepEqual((await call({ id: "5", token: "token", applicationId: "centaurai.wanx.zhijun", launchId: "launch-1", method: "identity.get" })).value, { boxId: "box-1", connection: "ready", identityOnly: true });
+  const response = await call({ id: "6", token: "token", applicationId: "centaurai.wanx.zhijun", launchId: "launch-1", method: "http.request", params: { path: "/api/agents" } });
+  assert.equal(response.ok, true);
+  assert.deepEqual(JSON.parse(Buffer.from(response.value.body, "base64").toString()), { path: "/api/agents" });
+  assert.equal((await call({ id: "7", token: "token", applicationId: "centaurai.wanx.zhijun", launchId: "launch-1", method: "http.stream", params: { path: "/api/events" } })).value.status, 200);
   await host.close();
 });
 
@@ -42,7 +46,6 @@ test("application host relays a chat stream over the fixed IPC socket", async ()
     token: "token",
     context: () => ({ boxId: "box-1", connection: "ready" }),
     isApplicationAllowed: (applicationId, launchId) => applicationId === "centaurai.wanx.zhijun" && launchId === "launch-1",
-    capabilitiesFor: () => ["chat.stream"],
     openStream: () => fake,
   });
   const socket = net.createConnection(host.endpoint);

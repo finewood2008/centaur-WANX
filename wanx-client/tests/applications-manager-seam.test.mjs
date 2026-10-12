@@ -117,7 +117,7 @@ test('HTTP launch credentials follow app stop, box switch, logout and session ex
   t.after(() => rm(root, {recursive:true,force:true}));
   const source = path.join(root,'source'); await mkdir(source);
   await writeFile(path.join(source,'main.cjs'),'module.exports = {};');
-  await writeFile(path.join(source,'application.manifest.json'),JSON.stringify({applicationId:'centaurai.wanx.zhijun',name:'知君',version:'0.4.4',protocolVersion:1,runtime:'electron',entrypoint:'main.cjs',capabilities:['identity.read','http.request']}));
+  await writeFile(path.join(source,'application.manifest.json'),JSON.stringify({applicationId:'centaurai.wanx.zhijun',name:'知君',version:'0.4.4',protocolVersion:1,runtime:'electron',entrypoint:'main.cjs'}));
   let box='102', epoch=0, phase='ready';
   const events=new Set(), environments=[], calls=[];
   const manager=await createApplicationManager({

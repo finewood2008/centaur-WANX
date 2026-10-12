@@ -2,6 +2,7 @@ const app = document.querySelector("#app");
 let currentState;
 let page = "applications";
 let applicationSource = "";
+let directoryInstallOpen = false;
 let authMode = "login";
 let authUsername = "";
 let notice = null;
@@ -180,8 +181,8 @@ function applicationsView() {
     <section class="page-hero compact-hero"><div><p class="eyebrow">YOUR APPLICATIONS</p><h2>我的应用</h2><p class="lede">你的应用入口，连接盒子后即可开始使用。</p></div></section>
     <section class="connection-banner ${connected ? "ready" : ""}" aria-label="应用连接状态"><div class="connection-summary"><span class="connection-indicator" aria-hidden="true"></span><div><span class="connection-caption">当前盒子</span><strong>${connected ? `已连接 ${escapeHTML(activeDeviceName())}` : currentState.networkReady ? "打开应用前，请先连接盒子" : networkStatus().label}</strong><p>${connected ? "应用将使用当前盒子中的服务。" : currentState.networkReady ? "在设置中选择一台设备，连接后返回这里打开应用。" : networkStatus().detail}</p></div></div><div class="connection-actions">${dashboardButton()}<button class="${connected ? "text-button" : "button small"}" data-action="show-settings">${connected ? "切换盒子" : currentState.networkReady ? "连接盒子" : "网络设置"}</button></div></section>
     ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="content-section applications-section" aria-label="已安装应用"><div class="section-heading"><h2 class="small-heading">已安装应用</h2><span class="count">${applications.length} 个应用</span></div>${applications.length ? `<div class="application-grid">${applications.map(applicationCard).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">＋</div><h3>安装你的第一个应用</h3><p>使用下方的应用目录安装，连接盒子后即可打开。</p></div>'}</section>
-    <section class="install-panel"><h2 class="small-heading">安装应用</h2><p class="muted">选择已准备好的应用目录进行安装。</p><form class="install-form" data-form="install"><label class="sr-only" for="application-source">应用目录</label><input id="application-source" name="sourceDir" value="${escapeHTML(applicationSource)}" placeholder="输入应用目录路径" spellcheck="false" required /><button class="button" type="submit" ${busy ? "disabled" : ""}>安装应用</button></form></section>
+    <section class="content-section applications-section" aria-label="已安装应用"><div class="section-heading"><h2 class="small-heading">已安装应用</h2><span class="count">${applications.length} 个应用</span></div>${applications.length ? `<div class="application-grid">${applications.map(applicationCard).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">＋</div><h3>安装你的第一个应用</h3><p>选择下载好的应用压缩包安装，连接盒子后即可打开。</p></div>'}</section>
+    <section class="install-panel"><h2 class="small-heading">安装应用</h2><p class="muted">选择下载好的 ZIP 安装包，万象会自动解压并安装。</p><button class="button primary" data-action="applications-install" ${busy ? "disabled" : ""}>选择安装包</button><details id="directory-install" ${directoryInstallOpen ? "open" : ""}><summary>开发者：从目录安装</summary><form class="install-form" data-form="install"><label class="sr-only" for="application-source">应用目录</label><input id="application-source" name="sourceDir" value="${escapeHTML(applicationSource)}" placeholder="输入应用目录路径" spellcheck="false" required /><button class="button" type="submit" ${busy ? "disabled" : ""}>安装应用</button></form></details></section>
   </div>`;
 }
 
@@ -268,8 +269,7 @@ async function run(action, input = {}) {
     if (!response.ok) throw new Error(response.code);
     return response;
   } catch (error) {
-    const code = ["ACCOUNT_LOGIN_REQUIRED", "NETWORK_NOT_READY", "BOX_CONNECTION_REQUIRED", "NETWORK_CHANGED", "BOX_IDENTITY_UNAVAILABLE", "BOX_IDENTITY_INVALID", "DASHBOARD_OPEN_FAILED", "APPLICATION_START_FAILED", "APPLICATION_START_TIMEOUT"].find((value) => error.message.includes(value));
-    notice = {
+    const messages = {
       ACCOUNT_LOGIN_REQUIRED: "请先登录万象。",
       NETWORK_NOT_READY: "网络尚未连接，请在设置中检查网络状态。",
       BOX_CONNECTION_REQUIRED: "请先在设置中连接一台盒子，再打开应用或 Dashboard。",
@@ -279,7 +279,19 @@ async function run(action, input = {}) {
       DASHBOARD_OPEN_FAILED: "Dashboard 打开失败，请检查盒子连接后重试。",
       APPLICATION_START_FAILED: "应用启动失败，请重新打开；若仍失败，请检查应用安装是否完整。",
       APPLICATION_START_TIMEOUT: "应用启动超时，请稍后重新打开。",
-    }[code] || error.message;
+      APPLICATION_ARCHIVE_INVALID: "安装包损坏或格式不受支持，请重新下载应用 ZIP 安装包。",
+      APPLICATION_ARCHIVE_TOO_LARGE: "安装包过大，请联系应用提供方。",
+      APPLICATION_MANIFEST_READ_FAILED: "安装包缺少有效的应用描述文件，请联系应用提供方。",
+      APPLICATION_PLATFORM_REQUIRED: "独立应用安装包需要声明适用的系统和架构。",
+      APPLICATION_PLATFORM_UNSUPPORTED: "此安装包不适用于当前电脑，请下载对应系统和架构的版本。",
+      APPLICATION_VERSION_ALREADY_INSTALLED: "此版本已经安装，可在应用列表中打开。",
+      APPLICATION_ENTRYPOINT_NOT_FOUND: "安装包缺少启动文件，请重新下载完整安装包。",
+      INVALID_APPLICATION_ENTRYPOINT: "安装包中的启动文件无效，请联系应用提供方。",
+      APPLICATION_ENTRYPOINT_NOT_EXECUTABLE: "启动文件缺少执行权限，请联系应用提供方重新打包。",
+      APPLICATION_INSTALL_FAILED: "应用安装失败，请检查磁盘空间和目录权限后重试。",
+    };
+    const code = Object.keys(messages).find(value => error.message.includes(value));
+    notice = messages[code] || error.message;
     render(currentState);
     return null;
   } finally {
@@ -373,6 +385,7 @@ app.addEventListener("click", async (event) => {
   if (action === "connect") { if (currentState.networkReady) await run("devices.connect", { deviceId: target.dataset.deviceId }); return; }
   if (action === "disconnect") { await run("devices.disconnect"); return; }
   if (action === "back-devices") { provisioningTargetId = null; page = "settings"; notice = null; render(currentState); return; }
+  if (action === "applications-install") { await run("applications.install"); return; }
   if (action === "applications-launch") {
     if (!currentState.canLaunchApplications) {
       page = "settings";
@@ -388,6 +401,10 @@ app.addEventListener("click", async (event) => {
 app.addEventListener("input", (event) => {
   if (event.target.id === "application-source") applicationSource = event.target.value;
 });
+
+app.addEventListener("toggle", (event) => {
+  if (event.target.id === "directory-install") directoryInstallOpen = event.target.open;
+}, true);
 
 app.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -426,6 +443,7 @@ function acceptRemoteState(state) {
   if (state.route === "auth") {
     page = "applications";
     applicationSource = "";
+    directoryInstallOpen = false;
     window.wanxDeviceSetupTransport?.cancelSelection();
     selectionPromise = undefined;
     setupState = { state: "idle" };

@@ -72,7 +72,9 @@ Dashboard 按需在独立临时 Electron session 中打开，不随连接自动�
 
 ## 桌面图标与菜单
 
-应用启动统一经过 `shell/entry.mjs`：普通启动进入 Host；带 `--wanx-application` 的子进程只加载已安装应用 manifest 指定的入口，在 Host 单实例锁和网络初始化之前分流。开发启动会额外传入万象源码目录，打包版直接复用可执行文件，不能依赖只适用于默认 Electron 启动器的 `--app` 参数。子应用使用独立 Chromium 数据目录，窗口完成首次页面加载后才向父进程报告启动成功；提前退出、加载失败或 30 秒未就绪会撤销该启动会话，并在首页提示重试。业务 API、Host SDK 和 Web/LAN 模式不变。
+应用首页支持“选择安装包”安装 ZIP，无需手动解压。应用包可复用万象运行时（`launchMode: "shared"`，默认），也可自带完整 Electron（`launchMode: "bundled"`，需声明系统/架构并接入 SDK 的 Electron 生命周期 helper）。完整包的入口是包内可执行程序；`.dmg`、`.msi` 或安装向导 `.exe` 不能直接导入。目录安装保留为开发者入口。包结构与接入示例见 [WANX Host 应用接入](../docs/wanx-host-app-integration.md)。
+
+Host 和共享运行时应用启动经过 `shell/entry.mjs`：普通启动进入 Host；带 `--wanx-application` 的子进程只加载已安装应用 manifest 指定的 JS 入口，在 Host 单实例锁和网络初始化之前分流。开发启动会额外传入万象源码目录，打包版直接复用可执行文件，不能依赖只适用于默认 Electron 启动器的 `--app` 参数。独立运行时应用直接启动包内可执行程序，通过 SDK helper 对接相同的启动协议。两种应用均使用独立 Chromium 数据目录，窗口完成首次页面加载后才向父进程报告启动成功；提前退出、加载失败或 30 秒未就绪会撤销该启动会话，并在首页提示重试。业务 API、Host SDK 的传输接口和 Web/LAN 模式不变。
 
 发布前可设置 `WANX_PACKAGED_EXECUTABLE` 为打包程序的可执行文件路径，运行 `node --test tests/packaged-application-seam.test.mjs`。该 seam 使用临时用户目录，验证真实打包进程进入 manifest 入口，以及应用异常时返回失败，不会读取真实盒子或账号。
 

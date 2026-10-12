@@ -1,4 +1,7 @@
 import { spawn as defaultSpawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { assertApplicationPlatform, resolveApplicationEntry } from "./manifest.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 
@@ -13,6 +16,11 @@ export function createApplicationLauncher({
   async function launch(record) {
     if (!record?.applicationId || !record.installPath || !record.entrypoint)
       throw fail("APPLICATION_RECORD_INVALID");
+    assertApplicationPlatform(record);
+    const bundled = record.launchMode === "bundled";
+    const executable = bundled ? await resolveApplicationEntry(record.installPath, record) : electronPath;
+    const userData = bundled ? path.resolve(record.installPath, "..", "..", ".runtime", record.applicationId) : null;
+    if (userData) await mkdir(userData, { recursive: true, mode: 0o700 });
     const previous = running.get(record.applicationId);
     if (previous && previous.child.exitCode === null) {
       try {
@@ -31,9 +39,9 @@ export function createApplicationLauncher({
     const launchId = session.launchId;
     let child;
     try {
-      child = spawn(electronPath, [...runtimeArgs, `--wanx-application=${record.installPath}`], {
+      child = spawn(executable, bundled ? [] : [...runtimeArgs, `--wanx-application=${record.installPath}`], {
         cwd: record.installPath,
-        env: { ...process.env, ...session.environment },
+        env: { ...process.env, ...session.environment, ...(userData ? { WANX_HOST_USER_DATA_DIR: userData } : {}) },
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         windowsHide: true,
         detached: false,

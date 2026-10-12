@@ -8,7 +8,7 @@ const TERMINAL = new Set(["NETWORK_CHANGED", "SESSION_CLOSED", "GATEWAY_CLOSED",
 const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"]);
 
 // One listener and credential per launch. The connection is an immutable box lease.
-export async function createApplicationGateway({ connection, token, capabilities = [], onInvalidated } = {}) {
+export async function createApplicationGateway({ connection, token, onInvalidated } = {}) {
   let url, invalid = false, closing, unsubscribe;
   const operations = new Set(), events = new Set(), sockets = new Set();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY, perMessageDeflate: false,
@@ -28,12 +28,11 @@ export async function createApplicationGateway({ connection, token, capabilities
     for (const ws of sockets) ws.terminate();
     onInvalidated?.();
   }
-  function authorize(req, capability) {
+  function authorize(req) {
     if (req.headers.host !== new URL(url).host || req.headers.origin ||
         (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "none")) throw fail("HOST_ORIGIN_DENIED", 403);
     if (req.headers.authorization !== `Bearer ${token}`) throw fail("HOST_UNAUTHORIZED");
     const current = state();
-    if (capability && !capabilities.includes(capability)) throw fail("APPLICATION_CAPABILITY_DENIED", 403);
     return current;
   }
   function apiPath(raw, websocket = false, method = "GET") {
@@ -63,7 +62,7 @@ export async function createApplicationGateway({ connection, token, capabilities
     let abort, controller;
     try {
       const control = ["/__wanx/context", "/__wanx/events"].includes(req.url);
-      const current = authorize(req, control ? "identity.read" : "http.request");
+      const current = authorize(req);
       if (control) {
         if (req.method !== "GET") throw fail("HOST_METHOD_NOT_ALLOWED", 405);
         if (req.url === "/__wanx/context") {
@@ -140,7 +139,7 @@ export async function createApplicationGateway({ connection, token, capabilities
     socket.on("error", () => {});
     socket.once("close", abort);
     try {
-      authorize(req, "chat.stream");
+      authorize(req);
       const path = apiPath(req.url, true);
       checkReady(); operations.add(abort);
       const protocols = String(req.headers["sec-websocket-protocol"] || "").split(",").map(x => x.trim()).filter(Boolean);

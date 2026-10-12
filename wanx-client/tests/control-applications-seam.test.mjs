@@ -10,7 +10,7 @@ const connected = {
   connection: { mode: "netbird", deviceId: "box-102", gatewayURL: "http://127.0.0.1:41000/__wanx_session/test" },
 };
 
-function control(state) {
+function control(state, selectApplicationArchive) {
   const handlers = new Map(), launched = [], installed = [], dashboards = [];
   const frame = { url: "file:///wanx/index.html" }, webContents = { mainFrame: frame };
   registerControlActions({
@@ -18,6 +18,7 @@ function control(state) {
     control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
     client: { snapshot: () => state },
     dashboards: { open: (snapshot) => dashboards.push(snapshot.connection) },
+    selectApplicationArchive,
     applications: {
       launch: (...args) => launched.push(args),
       install: (input) => installed.push(input),
@@ -75,6 +76,19 @@ test("local installation remains available without a connected box", () => {
   h.invoke("applications-install", { sourceDir: "/application-package" });
   assert.deepEqual(h.installed, [{ sourceDir: "/application-package" }]);
   assert.deepEqual(h.launched, []);
+});
+
+test("ZIP selection installs the chosen file, cancellation does nothing, and untrusted pages cannot open the picker", async () => {
+  let chosen = "download.zip", selections = 0;
+  const h = control({ ...connected, connection: null }, async () => { selections++; return chosen; });
+  await h.invoke("applications-install");
+  assert.deepEqual(h.installed, [{ archivePath: chosen }]);
+  chosen = null;
+  assert.deepEqual(await h.invoke("applications-install"), { canceled: true });
+  assert.equal(h.installed.length, 1);
+  assert.throws(() => h.invoke("applications-install", {}, { sender: {}, senderFrame: {} }), /此页面无权操作万象连接/);
+  assert.equal(selections, 2);
+  assert.throws(() => h.invoke("applications-install", { sourceDir: "source", archivePath: "app.zip" }), /APPLICATION_SOURCE_REQUIRED/);
 });
 
 test("state reads sample the connection after the asynchronous application list finishes", async () => {

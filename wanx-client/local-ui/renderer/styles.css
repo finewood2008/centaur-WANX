@@ -113,6 +113,8 @@ label { display: block; margin: 14px 0 8px; color: var(--fn-text-secondary); fon
 .application-card-footer .button { flex-shrink: 0; }
 .install-panel { margin-top: 32px; padding: 22px 24px; border: 1px solid var(--fn-border-primary); border-radius: 12px; background: var(--fn-bg-secondary); }
 .install-panel h2.small-heading { font-size: 20px; margin-bottom: 8px; }
+.install-panel details { margin-top: 16px; }
+.install-panel summary { margin-bottom: 12px; color: var(--fn-text-secondary); cursor: pointer; }
 .install-form { display: flex; gap: 12px; max-width: 760px; }
 .install-form input { min-width: 0; flex: 1; }
 .install-form .button { flex-shrink: 0; }

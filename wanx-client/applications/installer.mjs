@@ -1,6 +1,7 @@
-import { access, cp, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { readApplicationManifest, validateApplicationManifest } from "./manifest.mjs";
+import { assertApplicationPlatform, readApplicationManifest, resolveApplicationEntry, validateApplicationManifest } from "./manifest.mjs";
+import { extractApplicationArchive } from "./archive.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 
@@ -12,7 +13,21 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
   if (typeof rootDir !== "string" || !rootDir) throw new TypeError("rootDir is required");
   const installedPath = (manifest) => path.join(rootDir, safePart(manifest.applicationId), safePart(manifest.version));
 
-  async function install({ sourceDir, manifest: suppliedManifest, manifestPath } = {}) {
+  async function install({ archivePath, sourceDir, ...options } = {}) {
+    if (archivePath !== undefined) {
+      if (typeof archivePath !== "string" || !archivePath || sourceDir || Object.keys(options).length)
+        throw fail("APPLICATION_SOURCE_REQUIRED");
+      await mkdir(rootDir, { recursive: true, mode: 0o700 });
+      const staging = await mkdtemp(path.join(await realpath(rootDir), ".unpacking-"));
+      try {
+        const extracted = await extractApplicationArchive(archivePath, staging);
+        return await installDirectory({ sourceDir: extracted });
+      } finally { await rm(staging, { recursive: true, force: true }); }
+    }
+    return installDirectory({ sourceDir, ...options });
+  }
+
+  async function installDirectory({ sourceDir, manifest: suppliedManifest, manifestPath }) {
     if (typeof sourceDir !== "string" || !sourceDir) throw fail("APPLICATION_SOURCE_REQUIRED");
     let source;
     try { source = await stat(sourceDir); } catch { throw fail("APPLICATION_SOURCE_NOT_FOUND"); }
@@ -20,25 +35,25 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     const manifest = suppliedManifest
       ? validateApplicationManifest(suppliedManifest)
       : await readApplicationManifest(manifestPath || path.join(sourceDir, "application.manifest.json"));
-    const entry = path.resolve(sourceDir, manifest.entrypoint);
-    if (!entry.startsWith(`${path.resolve(sourceDir)}${path.sep}`)) throw fail("INVALID_APPLICATION_ENTRYPOINT");
-    try { await access(entry); } catch { throw fail("APPLICATION_ENTRYPOINT_NOT_FOUND"); }
+    assertApplicationPlatform(manifest);
+    await resolveApplicationEntry(sourceDir, manifest);
     const target = installedPath(manifest);
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    const temporary = `${target}.installing-${process.pid}-${now()}`;
-    await rm(temporary, { recursive: true, force: true });
+    try { await access(target); throw fail("APPLICATION_VERSION_ALREADY_INSTALLED"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const staging = await mkdtemp(path.join(path.dirname(target), ".installing-"));
+    const temporary = path.join(staging, "content");
+    const record = { ...manifest, installPath: target, installedAt: now() };
     try {
-      await copy(sourceDir, temporary, { recursive: true, errorOnExist: true, force: false });
+      await copy(sourceDir, temporary, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+      await writeFile(path.join(temporary, ".wanx-install.json"), JSON.stringify(record), { mode: 0o600, flag: "wx" });
       await rename(temporary, target);
     } catch (error) {
-      await rm(temporary, { recursive: true, force: true });
-      if (error?.code === "EEXIST") throw fail("APPLICATION_VERSION_ALREADY_INSTALLED");
+      if (["EEXIST", "ENOTEMPTY"].includes(error?.code)) throw fail("APPLICATION_VERSION_ALREADY_INSTALLED");
       throw fail("APPLICATION_INSTALL_FAILED");
+    } finally {
+      await rm(staging, { recursive: true, force: true });
     }
-    const record = { ...manifest, installPath: target, installedAt: now() };
-    await import("node:fs/promises").then(({ writeFile }) => writeFile(
-      path.join(target, ".wanx-install.json"), JSON.stringify(record), { mode: 0o600 },
-    ));
     return Object.freeze(record);
   }
 
@@ -48,12 +63,12 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     try { apps = await (await import("node:fs/promises")).readdir(rootDir, { withFileTypes: true }); }
     catch (error) { if (error?.code === "ENOENT") return result; throw error; }
     for (const app of apps) {
-      if (!app.isDirectory()) continue;
+      if (!app.isDirectory() || app.name.startsWith(".")) continue;
       let versions;
       try { versions = await (await import("node:fs/promises")).readdir(path.join(rootDir, app.name), { withFileTypes: true }); }
       catch { continue; }
       for (const version of versions) {
-        if (!version.isDirectory()) continue;
+        if (!version.isDirectory() || version.name.startsWith(".")) continue;
         try { result.push(JSON.parse(await readFile(path.join(rootDir, app.name, version.name, ".wanx-install.json"), "utf8"))); }
         catch { /* Ignore incomplete installations. */ }
       }

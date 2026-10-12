@@ -27,12 +27,14 @@
     "@nexusaos/device-discovery-electron": "file:vendor/nexusaos-device-discovery-electron-1.0.6.tgz",
     "@nexusaos/local-provisioning-contracts": "file:vendor/nexusaos-local-provisioning-contracts-2.0.0.tgz",
     "@nexusaos/local-provisioning-core": "file:vendor/nexusaos-local-provisioning-core-2.0.0.tgz",
-    "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz"
+    "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "electron": "37.10.3",
     "electron-builder": "26.15.3",
-    "esbuild": "0.25.9"
+    "esbuild": "0.25.9",
+    "yazl": "3.3.1"
   },
   "build": {
     "appId": "ai.centuarai.wanx.client",

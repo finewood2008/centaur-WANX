@@ -27,10 +27,6 @@ export async function createApplicationManager({
       const session = sessions.get(launchId);
       return session?.applicationId === id && session.token === sessionToken;
     },
-    capabilitiesFor: (id, launchId) => {
-      const record = sessions.get(launchId);
-      return record?.applicationId === id ? record.capabilities : [];
-    },
     closeSession: (_id, launchId) => sessions.get(launchId)?.gateway?.revoke(),
   });
   const launcher = createApplicationLauncher({
@@ -40,7 +36,7 @@ export async function createApplicationManager({
         const token = randomUUID() + randomUUID();
         const connection = await createConnection?.() || { context, request, openStream: stream };
         const gateway = await createApplicationGateway({
-          connection, token, capabilities: record.capabilities,
+          connection, token,
           onInvalidated: () => { sessions.delete(launchId); host.revoke(launchId); },
         });
         try { gateway.assertLive(); }

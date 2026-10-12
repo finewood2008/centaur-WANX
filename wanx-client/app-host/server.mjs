@@ -12,7 +12,6 @@ function safeMethod(method) {
 export async function createApplicationHost({
   applicationId,
   isApplicationAllowed,
-  capabilitiesFor,
   context,
   request,
   openStream,
@@ -37,14 +36,11 @@ export async function createApplicationHost({
     if (!message || !allowed) throw fail("APPLICATION_IPC_UNAUTHORIZED");
     state.launchId = message.launchId;
     if (!safeMethod(message.method)) throw fail("APPLICATION_IPC_METHOD_INVALID");
-    const capabilities = capabilitiesFor?.(message.applicationId, message.launchId) || [];
     if (message.method === "context.get") return context(message.applicationId, message.launchId);
     if (message.method === "identity.get") {
-      if (!capabilities.includes("identity.read")) throw fail("APPLICATION_CAPABILITY_DENIED");
       return { ...(await context(message.applicationId, message.launchId)), identityOnly: true };
     }
     if (["http.request", "http.stream"].includes(message.method)) {
-      if (!capabilities.includes("http.request")) throw fail("APPLICATION_CAPABILITY_DENIED");
       if (typeof request !== "function") throw fail("APPLICATION_REQUEST_UNAVAILABLE");
       const path = message.params?.path;
       if (typeof path !== "string" || !path.startsWith("/api/") || path.includes("\\") || path.includes("//"))
@@ -71,7 +67,6 @@ export async function createApplicationHost({
       };
     }
     if (message.method === "stream.open") {
-      if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
       if (typeof openStream !== "function") throw fail("APPLICATION_STREAM_UNAVAILABLE");
       const path = message.params?.path;
       if (typeof path !== "string" || !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(path))
@@ -105,7 +100,6 @@ export async function createApplicationHost({
       return { streamId };
     }
     if (message.method === "stream.send") {
-      if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
       const stream = state.streams.get(message.params?.streamId);
       const data = message.params?.data;
       if (!stream || typeof data !== "string") throw fail("APPLICATION_STREAM_INVALID");
@@ -113,7 +107,6 @@ export async function createApplicationHost({
       return { sent: true };
     }
     if (message.method === "stream.close") {
-      if (!capabilities.includes("chat.stream")) throw fail("APPLICATION_CAPABILITY_DENIED");
       const stream = state.streams.get(message.params?.streamId);
       if (stream) {
         state.streams.delete(message.params.streamId);

@@ -35,6 +35,7 @@ export function registerControlActions({
   client,
   applications,
   dashboards,
+  selectApplicationArchive,
 }) {
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
@@ -87,7 +88,14 @@ export function registerControlActions({
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
-    return applications.install({ sourceDir: text(input?.sourceDir, 4096, "invalid_application_source") });
+    if (input?.sourceDir !== undefined && input?.archivePath !== undefined) throw new Error("APPLICATION_SOURCE_REQUIRED");
+    if (input?.sourceDir !== undefined)
+      return applications.install({ sourceDir: text(input.sourceDir, 4096, "invalid_application_source") });
+    if (input?.archivePath !== undefined)
+      return applications.install({ archivePath: text(input.archivePath, 4096, "invalid_application_source") });
+    if (!selectApplicationArchive) throw new Error("APPLICATION_ARCHIVE_PICKER_UNAVAILABLE");
+    return selectApplicationArchive().then(archivePath => archivePath
+      ? applications.install({ archivePath }) : { canceled: true });
   });
   register("applications-launch", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");

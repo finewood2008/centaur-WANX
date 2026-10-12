@@ -239,6 +239,15 @@ if (claimSingleInstance(app, () => control))
         client,
         applications,
         dashboards,
+        selectApplicationArchive: async () => {
+          const result = await dialog.showOpenDialog(control, {
+            title: "选择应用安装包",
+            buttonLabel: "安装",
+            filters: [{ name: "应用压缩包", extensions: ["zip"] }],
+            properties: ["openFile"],
+          });
+          return result.canceled ? null : result.filePaths[0];
+        },
       });
       unsubscribe = client.subscribe(async () => {
         dashboards.sync(client.snapshot());

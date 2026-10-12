@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { setImmediate } from "node:timers/promises";
 import path from "node:path";
+import os from "node:os";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createApplicationLauncher } from "../applications/launcher.mjs";
 
 const record = { applicationId: "test.app", version: "1.0.0", installPath: path.resolve("installed/app"), entrypoint: "main.cjs" };
@@ -57,4 +59,23 @@ test("a child load failure is surfaced without leaking child diagnostics or cred
   h.child.emit("message", { type: "wanx:application-failed", launchId: "launch-1", detail: "private diagnostic" });
   await rejected;
   assert.equal(h.closed, 1);
+});
+
+test("bundled launch uses the installed executable, isolates its data, and still waits for readiness", async t => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wanx-bundled-launch-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const installPath = path.join(root, "applications", record.applicationId, record.version);
+  await mkdir(installPath, { recursive: true });
+  await writeFile(path.join(installPath, "app.exe"), "fixture", { mode: 0o755 });
+  const bundled = { ...record, installPath, entrypoint: "app.exe", launchMode: "bundled", platform: process.platform, arch: process.arch };
+  const h = harness();
+  const launched = h.launcher.launch(bundled);
+  while (!h.invocation) await setImmediate();
+  assert.equal(h.invocation.file, path.join(installPath, "app.exe"));
+  assert.deepEqual(h.invocation.args, []);
+  assert.ok(h.invocation.options.env.WANX_HOST_USER_DATA_DIR.endsWith(path.join(".runtime", "test.app")));
+  h.child.emit("message", { type: "wanx:application-ready", launchId: "launch-1" });
+  assert.equal((await launched).state, "running");
+  await h.launcher.stop(record.applicationId);
+  await assert.rejects(h.launcher.launch({ ...bundled, platform: process.platform === "win32" ? "darwin" : "win32" }), { code: "APPLICATION_PLATFORM_UNSUPPORTED" });
 });

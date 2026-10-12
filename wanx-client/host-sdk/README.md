@@ -21,4 +21,19 @@ Host 注入 `WANX_HOST_TRANSPORT=http-v1`、`WANX_HOST_BASE_URL=http://127.0.0.1
 
 结束进程时调用 `host.close()`。默认监听只在 `context()` 后启动；不使用 SDK 的客户端仍受网关的实时撤销保护。
 
+## 自带 Electron 的独立应用
+
+万象支持包含完整 Electron 运行时的 ZIP 应用包。manifest 设置 `launchMode: "bundled"`，声明 `platform`、`arch`，`entrypoint` 指向包内可执行程序；安装包仍需包含根级 `application.manifest.json`。
+
+SDK `0.2.0` 提供独立应用的启动接入，在主进程入口最前面、获取单实例锁和创建窗口之前调用：
+
+```js
+const {attachElectronHost} = require('@centaurai/wanx-host-sdk/electron');
+attachElectronHost();
+const {fromEnvironment} = require('@centaurai/wanx-host-sdk');
+const host = fromEnvironment();
+```
+
+helper 在万象启动时设置独立数据目录，窗口加载成功后报告就绪，并处理重复打开时的窗口唤起；未接入会触发万象的 30 秒启动超时。非万象启动时返回 `false`，保留应用自身的启动流程。业务请求和失效通知仍由 `host` 处理。`launchMode: "shared"` 或未声明模式的应用使用万象内置 Electron，已有启动包装自动完成窗口生命周期处理，无需调用此 helper。
+
 打包：在本目录运行 `npm pack`，将生成的 tgz 作为应用的生产依赖安装。当前包用于本地交付，尚未上传 npm registry。

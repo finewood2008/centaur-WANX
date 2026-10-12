@@ -25,7 +25,7 @@ async function fixture(t, handler) {
     openStream: (input) => upstream.openWebSocket(input),
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };
-  const gateway = await createApplicationGateway({ connection, token: "app-secret", capabilities: ["identity.read", "http.request", "chat.stream"] });
+  const gateway = await createApplicationGateway({ connection, token: "app-secret" });
   const client = createHostClient({ baseURL: gateway.url, token: "app-secret" });
   t.after(async () => {
     client.close(); await gateway.close(); await upstream.close();
@@ -109,7 +109,7 @@ test('network recovery is retryable but never resurrects an invalidated launch',
   await assert.rejects(f.client.context(), {code:'HOST_SESSION_EXPIRED'});
 });
 
-test('gateway validates credentials, browser origins, paths and capability before reaching the box', async t => {
+test('gateway validates credentials, browser origins and paths before reaching the box', async t => {
   let calls = 0;
   const f = await fixture(t, (_req,res) => {calls++;res.end('{}');});
   const raw = (path, headers = {}) => new Promise((resolve, reject) => {
@@ -123,9 +123,6 @@ test('gateway validates credentials, browser origins, paths and capability befor
   assert.equal((await f.client.context()).boxId, '102');
   for (const path of ['http://example.com/api/test','//example.com/api/test','/api/%2e%2e/admin','/api/%5csecret','/api/test?token=stolen','/api/test?access_token=stolen']) assert.equal(await raw(path), 400, path);
   assert.equal(calls, 0);
-  const restricted = await createApplicationGateway({connection:{context:()=>({connection:'ready'})},token:'restricted',capabilities:['identity.read']});
-  t.after(() => restricted.close());
-  assert.equal((await fetch(restricted.url+'/api/test', {headers:{authorization:'Bearer restricted'}})).status, 403);
 });
 
 test('box session rejection revokes the launch and HTTP requests are never replayed', async t => {
@@ -157,7 +154,7 @@ test('aborting one HTTP stream cancels the box operation without ending the appl
 test('a response arriving after revocation is discarded, including transports that ignore abort', {timeout:3000}, async t => {
   let complete, started;
   const waiting=new Promise(resolve=>{started=resolve;});
-  const gateway=await createApplicationGateway({token:'slow',capabilities:['identity.read','http.request'],connection:{
+  const gateway=await createApplicationGateway({token:'slow',connection:{
     context:()=>({boxId:'102',connection:'ready'}),
     request:()=>{started();return new Promise(resolve=>{complete=resolve;});},
   }});

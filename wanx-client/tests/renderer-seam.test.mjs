@@ -27,6 +27,7 @@ async function harness(initial = state(), installed = [application]) {
   let rawState = initial;
   let records = [...installed];
   let launchError;
+  let installError, archivePath = "download.zip";
   const events = new Map(), handlers = new Map(), listeners = new Map();
   const calls = [], launches = [], dashboards = [];
   const app = { innerHTML: "", addEventListener: (name, fn) => events.set(name, fn) };
@@ -47,9 +48,10 @@ async function harness(initial = state(), installed = [application]) {
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     control: { webContents: contents, isDestroyed: () => false }, controlURL, client,
     dashboards: { open: async (snapshot) => { dashboards.push(snapshot.connection); } },
+    selectApplicationArchive: async () => archivePath,
     applications: {
       listInstalled: async () => records,
-      install: async () => { records = [application]; return application; },
+      install: async () => { if (installError) throw new Error(installError); records = [application]; return application; },
       launch: async (id, version) => { launches.push([id, version]); if (launchError) throw new Error(launchError); return { state: "running" }; },
     },
   });
@@ -74,6 +76,8 @@ async function harness(initial = state(), installed = [application]) {
   return {
     app, calls, launches, dashboards,
     failLaunch(code) { launchError = code; },
+    failInstall(code) { installError = code; },
+    selectArchive(value) { archivePath = value; },
     navigate(page) { listeners.get("wanx-client:navigate")({}, page); },
     update(next, publish = true) {
       rawState = next;
@@ -83,6 +87,7 @@ async function harness(initial = state(), installed = [application]) {
       return events.get("click")({ target: { closest: () => ({ dataset: { action, ...data } }) } });
     },
     input(value) { events.get("input")({ target: { id: "application-source", value } }); },
+    toggleDirectory(open) { events.get("toggle")({ target: { id: "directory-install", open } }); },
     submit(form, values) { return events.get("submit")({ preventDefault() {}, target: { dataset: { form }, values } }); },
   };
 }
@@ -210,14 +215,40 @@ test("network failure and recovery update both application and settings actions"
 test("installation works before connecting and applies the IPC response without a state broadcast", async () => {
   const h = await harness(state(), []);
   assert.match(h.app.innerHTML, /安装你的第一个应用/);
+  h.toggleDirectory(true);
   h.input('/apps/zhijun & "draft"');
   h.update(state());
+  assert.match(h.app.innerHTML, /id="directory-install" open/);
   assert.match(h.app.innerHTML, /value="\/apps\/zhijun &amp; &quot;draft&quot;"/);
   await h.submit("install", { sourceDir: " /apps/zhijun " });
   assert.match(h.app.innerHTML, /class="application-card"/);
   assert.match(h.app.innerHTML, /知君/);
   assert.equal(h.launches.length, 0);
   assert.equal(h.calls.find(([name]) => name === "wanx-client:applications-install")[1].sourceDir, "/apps/zhijun");
+});
+
+test("ZIP picker installs without a box and cancellation leaves the application list unchanged", async () => {
+  const h = await harness(state(), []);
+  assert.match(h.app.innerHTML, /选择安装包/);
+  h.selectArchive(null);
+  await h.click("applications-install");
+  assert.match(h.app.innerHTML, /安装你的第一个应用/);
+  h.selectArchive("download.zip");
+  await h.click("applications-install");
+  assert.match(h.app.innerHTML, /class="application-card"/);
+  assert.equal(h.launches.length, 0);
+});
+
+test("ZIP installation errors explain incompatible packages and allow retry", async () => {
+  const h = await harness(state(), []);
+  h.failInstall("APPLICATION_PLATFORM_UNSUPPORTED");
+  await h.click("applications-install");
+  assert.match(h.app.innerHTML, /此安装包不适用于当前电脑/);
+  assert.doesNotMatch(h.app.innerHTML, /APPLICATION_PLATFORM_UNSUPPORTED/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="applications-install"[^>]*disabled/);
+  h.failInstall(null);
+  await h.click("applications-install");
+  assert.match(h.app.innerHTML, /class="application-card"/);
 });
 
 test("a stale open button cannot bypass the main-process box check", async () => {

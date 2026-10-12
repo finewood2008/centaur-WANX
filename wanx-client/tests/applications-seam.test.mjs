@@ -13,12 +13,18 @@ const manifest = {
   protocolVersion: 1,
   runtime: "electron",
   entrypoint: "shell/main.cjs",
-  capabilities: ["identity.read", "http.request"],
 };
 
 test("application manifest accepts a fixed electron entrypoint and rejects traversal", () => {
   assert.equal(validateApplicationManifest(manifest).applicationId, manifest.applicationId);
   assert.throws(() => validateApplicationManifest({ ...manifest, entrypoint: "../main.cjs" }), { code: "INVALID_APPLICATION_ENTRYPOINT" });
+});
+
+test("application manifest needs no capabilities and ignores legacy declarations", () => {
+  const expected = validateApplicationManifest(manifest);
+  for (const capabilities of [[], ["identity.read"], ["custom.capability"], null, "legacy"]) {
+    assert.deepEqual(validateApplicationManifest({ ...manifest, capabilities }), expected);
+  }
 });
 
 test("application installer copies a complete source atomically and records installation", async () => {
