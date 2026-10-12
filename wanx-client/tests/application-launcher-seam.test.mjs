@@ -48,7 +48,7 @@ test("an immediate child exit rejects launch and revokes the session instead of 
   await setImmediate();
   h.child.kill();
   await rejected;
-  assert.equal(h.launcher.running.size, 0);
+  assert.equal((await h.launcher.stop(record.applicationId)).state, "stopped");
   assert.equal(h.closed, 1);
 });
 

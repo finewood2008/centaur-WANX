@@ -96,9 +96,7 @@ label { display: block; margin: 14px 0 8px; color: var(--fn-text-secondary); fon
 .connection-caption { display: block; margin-bottom: 6px; color: var(--fn-text-tertiary); font-size: 11px; }
 .connection-indicator { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--fn-text-tertiary); box-shadow: 0 0 0 6px var(--fn-bg-secondary); }
 .ready .connection-indicator { background: var(--fn-text-success); box-shadow: 0 0 0 6px var(--fn-bg-success); }
-.connection-actions, .current-device-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; flex-shrink: 0; }
-.current-device-actions { margin-top: 18px; }
-.current-device-actions .text-button { margin-top: 0; }
+.connection-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 18px; flex-shrink: 0; }
 .connection-banner p { margin: 5px 0 0; color: var(--fn-text-secondary); font-size: 13px; }
 .connection-banner .button { flex-shrink: 0; }
 .applications-section { margin-top: 34px; }
@@ -111,6 +109,8 @@ label { display: block; margin: 14px 0 8px; color: var(--fn-text-secondary); fon
 .application-description { flex: 1; margin-bottom: 24px; color: var(--fn-text-secondary); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .application-card-footer .muted { overflow-wrap: anywhere; min-width: 0; }
 .application-card-footer .button { flex-shrink: 0; }
+.version-choices { flex-wrap: wrap; justify-content: flex-start; }
+.version-choices .button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .install-panel { margin-top: 32px; padding: 22px 24px; border: 1px solid var(--fn-border-primary); border-radius: 12px; background: var(--fn-bg-secondary); }
 .install-panel h2.small-heading { font-size: 20px; margin-bottom: 8px; }
 .install-panel details { margin-top: 16px; }
@@ -118,6 +118,20 @@ label { display: block; margin: 14px 0 8px; color: var(--fn-text-secondary); fon
 .install-form { display: flex; gap: 12px; max-width: 760px; }
 .install-form input { min-width: 0; flex: 1; }
 .install-form .button { flex-shrink: 0; }
+.market-section { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--fn-border-primary); }
+.market-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.market-status { color: var(--fn-text-secondary); font-size: 13px; margin: 18px 0 12px; overflow-wrap: anywhere; }
+.market-metadata { color: var(--fn-text-secondary); font-size: 13px; margin: 0 0 12px; }
+.market-notes { color: var(--fn-text-secondary); font-size: 13px; margin: 0 0 16px; overflow-wrap: anywhere; }
+.market-notes summary { cursor: pointer; }
+.market-notes p { white-space: pre-wrap; line-height: 1.6; }
+.market-empty { padding: 24px 0; color: var(--fn-text-secondary); }
+.danger-text { color: #c64940; }
+.market-confirmation { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .45); }
+.market-confirm-card { width: min(480px, 100%); padding: 28px; border: 1px solid var(--fn-border-primary); border-radius: 12px; background: var(--fn-bg-elevated); box-shadow: var(--fn-card-shadow); }
+.market-confirm-card h2 { margin: 0 0 16px; overflow-wrap: anywhere; }
+.market-confirm-card p { color: var(--fn-text-secondary); line-height: 1.7; overflow-wrap: anywhere; }
+.market-confirm-card .market-actions { justify-content: flex-end; margin-top: 24px; }
 .settings-panel { padding: 22px; margin: 16px 0; border: 1px solid var(--fn-border-primary); border-radius: 14px; background: var(--fn-bg-elevated); }
 .settings-panel h2.small-heading { font-size: 22px; }
 .settings-panel .muted { margin: 8px 0 0; }

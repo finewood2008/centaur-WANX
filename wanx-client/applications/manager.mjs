@@ -1,4 +1,5 @@
 import path from "node:path";
+import { verifyEnvelope } from "./descriptor.mjs";
 import { randomUUID } from "node:crypto";
 import { createApplicationHost } from "../app-host/server.mjs";
 import { createApplicationGateway } from "../app-host/http-gateway.mjs";
@@ -15,9 +16,34 @@ export async function createApplicationManager({
   spawn,
   electronPath,
   runtimeArgs,
+  launcherArgs,
+  trustedKeys = {},
 } = {}) {
-  const installer = createApplicationInstaller({ rootDir: applicationRoot });
-  const sessions = new Map();
+  const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys });
+  await installer.recover();
+  const sessions = new Map(), mutations = new Map();
+  function assertOpen() {
+    if (closed) throw Object.assign(new Error("APPLICATIONS_CLOSED"), { code: "APPLICATIONS_CLOSED" });
+  }
+  async function track(operation) {
+    installing.add(operation);
+    try { return await operation; } finally { installing.delete(operation); }
+  }
+  function mutate(id, operation, assertSession = () => {}) {
+    assertOpen();
+    if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
+    const check = () => { controller.signal.throwIfAborted(); assertSession(); };
+    const pending = Promise.resolve().then(async () => {
+      check();
+      await launcher.stop(id);
+      check();
+      return operation(id, check);
+    }).finally(() => mutations.delete(id));
+    mutations.set(id, pending);
+    return track(pending);
+  }
+  const installing = new Set(), controller = new AbortController();
+  let closed = false, closing;
   const host = await createApplicationHost({
     applicationId,
     context: (id, launchId) => sessions.get(launchId)?.connection?.context?.() || context(),
@@ -30,16 +56,19 @@ export async function createApplicationManager({
     closeSession: (_id, launchId) => sessions.get(launchId)?.gateway?.revoke(),
   });
   const launcher = createApplicationLauncher({
+    resolveRecord: installer.resolveCurrent,
+    onStarted: record => installer.prune(record.applicationId, record.version),
     host: {
-      async createSession(record) {
+      async createSession(record, { signal }) {
         const launchId = randomUUID();
         const token = randomUUID() + randomUUID();
         const connection = await createConnection?.() || { context, request, openStream: stream };
+        signal.throwIfAborted();
         const gateway = await createApplicationGateway({
           connection, token,
           onInvalidated: () => { sessions.delete(launchId); host.revoke(launchId); },
         });
-        try { gateway.assertLive(); }
+        try { signal.throwIfAborted(); gateway.assertLive(); }
         catch (error) { await gateway.close(); throw error; }
         sessions.set(launchId, { ...record, token, connection, gateway });
         return {
@@ -52,6 +81,7 @@ export async function createApplicationManager({
             WANX_HOST_CLIENT_APPLICATION_ID: record.applicationId,
             WANX_HOST_LAUNCH_ID: launchId,
             WANX_HOST_PROTOCOL_VERSION: "1",
+            WANX_HOST_INSTALL_ROOT: record.installPath,
             WANX_HOST_TRANSPORT: "http-v1",
             WANX_HOST_BASE_URL: gateway.url,
           },
@@ -62,19 +92,44 @@ export async function createApplicationManager({
     spawn,
     electronPath,
     runtimeArgs,
+    launcherArgs,
   });
   return Object.freeze({
     host,
-    async install(input) { return installer.install(input); },
+    async install(input) {
+      assertOpen();
+      if (mutations.size) throw Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" });
+      return track(installer.install(input, { signal: controller.signal }));
+    },
+    async installVerifiedPackage(input) {
+      assertOpen();
+      const descriptor = verifyEnvelope(input.envelope, trustedKeys);
+      if (mutations.has(descriptor.applicationId)) throw Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" });
+      // Preparing an update never interrupts the running version; launch owns switching.
+      return track(installer.installVerifiedPackage(input, { signal: controller.signal }));
+    },
+    uninstall: (id, check) => mutate(id, installer.uninstall, check),
+    rollback: (id, check) => mutate(id, installer.rollback, check),
+    async selectCurrent(id, version) {
+      if (closed) throw Object.assign(new Error("APPLICATIONS_CLOSED"), { code: "APPLICATIONS_CLOSED" });
+      return track(installer.selectCurrent(id, version, { signal: controller.signal }));
+    },
     listInstalled: installer.list,
-    async launch(id, version) {
-      const records = await installer.list();
-      const record = records.find((item) => item.applicationId === id && (!version || item.version === version));
-      if (!record) throw Object.assign(new Error("APPLICATION_NOT_INSTALLED"), { code: "APPLICATION_NOT_INSTALLED" });
-      return launcher.launch(record);
+    launch(id) {
+      if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
+      return launcher.launch(id);
     },
     stop: launcher.stop,
-    async close() { for (const id of launcher.running.keys()) await launcher.stop(id); await host.close(); },
+    close() {
+      closed = true;
+      controller.abort();
+      return closing ||= (async () => {
+        try {
+          const results = await Promise.allSettled([launcher.close(), ...installing]);
+          if (results[0].status === "rejected") throw results[0].reason;
+        } finally { await host.close(); }
+      })().catch(error => { closing = null; throw error; });
+    },
     installRoot: path.resolve(applicationRoot),
   });
 }

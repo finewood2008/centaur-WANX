@@ -36,6 +36,8 @@ export function registerControlActions({
   applications,
   dashboards,
   selectApplicationArchive,
+  market,
+  allowDevelopmentInstall = false,
 }) {
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
@@ -87,6 +89,7 @@ export function registerControlActions({
   register("dashboard-open", () => openConnectedDashboard(client, dashboards));
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
+    if (!allowDevelopmentInstall) throw new Error("MARKET_SIGNED_PACKAGE_REQUIRED");
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     if (input?.sourceDir !== undefined && input?.archivePath !== undefined) throw new Error("APPLICATION_SOURCE_REQUIRED");
     if (input?.sourceDir !== undefined)
@@ -101,10 +104,24 @@ export function registerControlActions({
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     const state = client.snapshot();
     requireConnectedBox(state);
-    return applications.launch(text(input?.applicationId, 64, "invalid_application_id"), input?.version);
+    return applications.launch(text(input?.applicationId, 64, "invalid_application_id"));
+  });
+  register("applications-select-current", (input) => {
+    if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return applications.selectCurrent(text(input?.applicationId, 64, "invalid_application_id"), text(input?.version, 64, "INVALID_APPLICATION_VERSION"));
   });
   register("applications-stop", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     return applications.stop(text(input?.applicationId, 64, "invalid_application_id"));
   });
+  for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
+    register(`market-${method}`, (input) => {
+      if (!market) throw new Error("MARKET_UNAVAILABLE");
+      if (client.snapshot().account?.phase !== "authenticated")
+        throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      return method === "list"
+        ? market.list()
+        : market[method](text(input?.applicationId, 64, "invalid_application_id"));
+    });
+  }
 }

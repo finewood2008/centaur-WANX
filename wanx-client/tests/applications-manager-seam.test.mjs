@@ -106,6 +106,7 @@ test("reopening after a box switch creates a new launch instead of reusing the o
   assert.equal((await context(environments[2])).value.boxId, "box-103");
   box = null;
   await assert.rejects(manager.launch("centaurai.wanx.zhijun", "0.4.3"), { code: "NETWORK_NOT_READY" });
+  await assert.rejects(manager.launch("centaurai.wanx.zhijun"), { code: "NETWORK_NOT_READY" });
   assert.equal(children.length, 3);
 });
 

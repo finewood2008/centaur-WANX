@@ -18,16 +18,18 @@
     "test:native": "cd native && go test ./...",
     "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && electron-builder --mac --dir",
     "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && electron-builder --win nsis",
-    "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js"
+    "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js",
+    "package:application": "node tools/package-application.mjs"
   },
   "dependencies": {
-    "ws": "8.22.0",
     "@nexusaos/consumer-contracts": "file:vendor/nexusaos-consumer-contracts-1.0.0.tgz",
     "@nexusaos/device-discovery-contracts": "file:vendor/nexusaos-device-discovery-contracts-1.0.0.tgz",
     "@nexusaos/device-discovery-electron": "file:vendor/nexusaos-device-discovery-electron-1.0.6.tgz",
     "@nexusaos/local-provisioning-contracts": "file:vendor/nexusaos-local-provisioning-contracts-2.0.0.tgz",
     "@nexusaos/local-provisioning-core": "file:vendor/nexusaos-local-provisioning-core-2.0.0.tgz",
     "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz",
+    "semver": "7.8.5",
+    "ws": "8.22.0",
     "yauzl": "3.4.0"
   },
   "devDependencies": {

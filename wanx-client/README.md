@@ -72,9 +72,9 @@ Dashboard 按需在独立临时 Electron session 中打开，不随连接自动�
 
 ## 桌面图标与菜单
 
-应用首页支持“选择安装包”安装 ZIP，无需手动解压。应用包可复用万象运行时（`launchMode: "shared"`，默认），也可自带完整 Electron（`launchMode: "bundled"`，需声明系统/架构并接入 SDK 的 Electron 生命周期 helper）。完整包的入口是包内可执行程序；`.dmg`、`.msi` 或安装向导 `.exe` 不能直接导入。目录安装保留为开发者入口。包结构与接入示例见 [WANX Host 应用接入](../docs/wanx-host-app-integration.md)。
+应用首页通过在线市场 API 查询候选、授权下载并验证签名安装包。应用包可复用万象运行时（`launchMode: "shared"`，默认），也可自带完整 Electron（`launchMode: "bundled"`，需声明系统/架构并接入 SDK 的 Electron 生命周期 helper）。同一应用只展示一个当前版本，安装更高 SemVer 版本后在下次打开时完成旧进程回收并切换；历史版本无法比较时先选择当前版本。停止和退出会等待应用主进程退出，超时强制终止，回收失败会明确报错。完整包的入口是包内可执行程序；`.dmg`、`.msi` 或安装向导 `.exe` 不能直接导入。本地 ZIP／目录安装保留为默认关闭的开发 IPC 入口，正常页面不展示。包结构与接入示例见 [WANX Host 应用接入](../docs/wanx-host-app-integration.md)。
 
-Host 和共享运行时应用启动经过 `shell/entry.mjs`：普通启动进入 Host；带 `--wanx-application` 的子进程只加载已安装应用 manifest 指定的 JS 入口，在 Host 单实例锁和网络初始化之前分流。开发启动会额外传入万象源码目录，打包版直接复用可执行文件，不能依赖只适用于默认 Electron 启动器的 `--app` 参数。独立运行时应用直接启动包内可执行程序，通过 SDK helper 对接相同的启动协议。两种应用均使用独立 Chromium 数据目录，窗口完成首次页面加载后才向父进程报告启动成功；提前退出、加载失败或 30 秒未就绪会撤销该启动会话，并在首页提示重试。业务 API、Host SDK 的传输接口和 Web/LAN 模式不变。
+Host 和共享运行时应用启动经过 `shell/entry.mjs`：普通启动进入 Host；市场 `--wanx-managed-app` 子进程先验签，开发包 `--wanx-application` 子进程校验本地记录，两者都只加载已安装清单指定的 JS 入口，在 Host 单实例锁和网络初始化之前分流。开发启动会额外传入万象源码目录，打包版直接复用可执行文件，不能依赖只适用于默认 Electron 启动器的 `--app` 参数。独立运行时应用直接启动包内可执行程序，通过 SDK helper 对接相同的启动协议。两种应用均使用独立 Chromium 数据目录，窗口完成首次页面加载后才向父进程报告启动成功；提前退出、加载失败或 30 秒未就绪会撤销该启动会话，并在首页提示重试。业务 API、Host SDK 的传输接口和 Web/LAN 模式不变。
 
 发布前可设置 `WANX_PACKAGED_EXECUTABLE` 为打包程序的可执行文件路径，运行 `node --test tests/packaged-application-seam.test.mjs`。该 seam 使用临时用户目录，验证真实打包进程进入 manifest 入口，以及应用异常时返回失败，不会读取真实盒子或账号。
 
@@ -87,6 +87,8 @@ Dock、任务栏和应用包使用“万”字图标，与知君采用相同的�
 `npm start` 在 macOS 创建并缓存独立的 `release/dev/万象.app` 开发运行包，更新名称、图标后进行本地 ad-hoc 签名。源码仍直接从当前项目加载，Electron 依赖原包不会被修改。Dock 悬浮名称、菜单和安装包均显示“万象”；`package.name`、既有账号、安装目录及系统加密存储身份保持不变。直接运行 `electron .` 会绕过这一步。非 macOS 开发启动保持原有运行方式。
 
 ## 构建与分发
+
+应用市场的包格式、版本比较、签名与后台发布流程见 [WANX 应用市场开发与发布](../docs/wanx-application-market.md)。
 
 ```sh
 # 当前平台，或一次构建 macOS/Windows 两种架构

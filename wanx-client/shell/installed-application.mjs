@@ -1,12 +1,13 @@
-import { mkdir, readFile, realpath } from "node:fs/promises";
+import { access, mkdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { verifyEnvelope } from "../applications/descriptor.mjs";
 import { validateApplicationManifest } from "../applications/manifest.mjs";
 
 const invalid = () => Object.assign(new Error("APPLICATION_RECORD_INVALID"), { code: "APPLICATION_RECORD_INVALID" });
 
 export async function launchInstalledApplication({
-  app, applicationRoot, installPath, environment = process.env,
+  app, applicationRoot, installPath, environment = process.env, trustedKeys = {},
   send = message => process.send?.(message, () => {}),
   receive = listener => process.on("message", listener),
   load = entry => import(pathToFileURL(entry).href),
@@ -17,15 +18,24 @@ export async function launchInstalledApplication({
   const directory = await realpath(installPath);
   if (path.dirname(path.dirname(directory)) !== root) throw invalid();
   const record = JSON.parse(await readFile(path.join(directory, ".wanx-install.json"), "utf8"));
-  const manifest = validateApplicationManifest(record);
+  const manifest = validateApplicationManifest(record, { allowLegacyVersion: true, signed: Boolean(record.envelope) });
   if (manifest.applicationId !== environment.WANX_HOST_CLIENT_APPLICATION_ID || await realpath(record.installPath) !== directory)
     throw invalid();
+  if (record.envelope) {
+    const descriptor = verifyEnvelope(record.envelope, trustedKeys);
+    if (descriptor.artifactId !== path.basename(directory) || JSON.stringify(validateApplicationManifest(descriptor.manifest, { signed: true })) !== JSON.stringify(manifest)) throw invalid();
+  }
   const entry = await realpath(path.join(directory, manifest.entrypoint));
   if (!entry.startsWith(`${directory}${path.sep}`)) throw invalid();
 
   // Give the child its own Chromium state before any app code can create a
   // window or take a single-instance lock. Apps may choose a narrower profile.
-  const userData = path.join(root, ".runtime", manifest.applicationId);
+  let userData = path.join(root, ".runtime", manifest.applicationId);
+  try { await access(userData); } catch {
+    const legacyMarketData = path.join(path.dirname(root), "application-data", manifest.applicationId);
+    try { await access(legacyMarketData); userData = legacyMarketData; } catch { /* First launch uses the shared application profile. */ }
+  }
+  process.env.WANX_HOST_APPLICATION_DATA = userData;
   await mkdir(userData, { recursive: true, mode: 0o700 });
   app.setName(manifest.name);
   app.setPath("userData", userData);

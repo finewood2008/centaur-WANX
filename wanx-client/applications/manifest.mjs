@@ -1,5 +1,6 @@
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
+import { validateVersion } from "./version.mjs";
 import path from "node:path";
 
 export const WANX_APP_PROTOCOL_VERSION = 1;
@@ -19,14 +20,18 @@ function relativeEntry(value) {
   return parts.join("/");
 }
 
-export function validateApplicationManifest(input) {
+export function isComparableApplicationVersion(value) {
+  try { validateVersion(value); return true; } catch { return false; }
+}
+
+export function validateApplicationManifest(input, { allowLegacyVersion = false, signed = false } = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw fail("INVALID_APPLICATION_MANIFEST");
   const manifest = input;
   if (typeof manifest.applicationId !== "string" || !ID.test(manifest.applicationId)) throw fail("INVALID_APPLICATION_ID");
   if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 128)
     throw fail("INVALID_APPLICATION_NAME");
-  if (!VERSION.test(manifest.version)) throw fail("INVALID_APPLICATION_VERSION");
+  if (typeof manifest.version !== "string" || !VERSION.test(manifest.version) || (!allowLegacyVersion && !isComparableApplicationVersion(manifest.version))) throw fail("INVALID_APPLICATION_VERSION");
   if (manifest.protocolVersion !== WANX_APP_PROTOCOL_VERSION)
     throw fail("APPLICATION_PROTOCOL_UNSUPPORTED");
   if (manifest.runtime !== "electron") throw fail("APPLICATION_RUNTIME_UNSUPPORTED");
@@ -41,6 +46,9 @@ export function validateApplicationManifest(input) {
   if (manifest.arch === "universal" && manifest.platform !== "darwin")
     throw fail("APPLICATION_PLATFORM_UNSUPPORTED");
   const entrypoint = relativeEntry(manifest.entrypoint);
+  const capabilities = manifest.capabilities ?? [];
+  const allowed = ["identity.read", "experts.read", "experts.select", "http.request", "chat.stream", "files.upload"];
+  if (signed && (!Array.isArray(capabilities) || capabilities.some(value => !allowed.includes(value)))) throw fail("INVALID_APPLICATION_CAPABILITIES");
   return Object.freeze({
     applicationId: manifest.applicationId,
     name: manifest.name.trim(),
@@ -51,6 +59,7 @@ export function validateApplicationManifest(input) {
     ...(manifest.platform ? { platform: manifest.platform } : {}),
     ...(manifest.arch ? { arch: manifest.arch } : {}),
     entrypoint,
+    ...(signed ? { capabilities: Object.freeze([...new Set(capabilities)]) } : {}),
     description: typeof manifest.description === "string" ? manifest.description.slice(0, 2000) : "",
   });
 }

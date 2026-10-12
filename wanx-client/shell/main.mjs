@@ -23,11 +23,15 @@ import { registerControlActions, openConnectedDashboard } from "./control.mjs";
 import { createDashboardWindows } from "./dashboard.mjs";
 import { APP_ICON, DESKTOP_NAME, createDesktopIntegration } from "./desktop.mjs";
 import { claimSingleInstance } from "./instance.mjs";
+import { registerShutdown } from "./shutdown.mjs";
 import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
+import { createApplicationMarket } from "../applications/market.mjs";
+import { runManagedApplication } from "../applications/runtime.mjs";
+import { createMarketSessionGuard } from "./market-session.mjs";
 import { monitorNetworkChanges } from "./network-monitor.mjs";
 import { createTimingRecorder } from "./timings.mjs";
 import { createDashboardGateway } from "../octop/gateway.mjs";
@@ -39,9 +43,9 @@ let client;
 let unsubscribe;
 let setupRuntime;
 let applications;
+let marketSession;
 let dashboards;
 let desktop;
-let quitting = false;
 let stopNetworkMonitor;
 let timings;
 
@@ -54,12 +58,25 @@ function reportError(error) {
   console.error("[wanx-client]", error.message);
 }
 
+async function marketTrustedKeys() {
+  const trust = JSON.parse(await readFile(new URL("../applications/market-trust.json", import.meta.url), "utf8"));
+  return trust.keys;
+}
+
 // Do not await readiness at ESM top level: Electron waits for the entry module
 // to finish evaluating before emitting ready.
 // Keep Electron's existing name/data/keychain identity; branding lives in the
 // bundle, About panel and menus. Match the installer identity on Windows.
 if (process.platform === "win32") app.setAppUserModelId("ai.centuarai.wanx.client");
-if (claimSingleInstance(app, () => control))
+if (process.argv.includes("--wanx-managed-app")) {
+  marketTrustedKeys().then(trustedKeys => runManagedApplication({
+    applicationRoot: path.join(app.getPath("userData"), "applications"), trustedKeys, app,
+  })).catch(error => {
+    reportError(error);
+    process.send?.({ type: "wanx:application-failed", launchId: process.env.WANX_HOST_LAUNCH_ID }, () => {});
+    app.exit(1);
+  });
+} else if (claimSingleInstance(app, () => control))
   app
     .whenReady()
     .then(async () => {
@@ -180,6 +197,7 @@ if (claimSingleInstance(app, () => control))
           };
         },
       });
+      const trustedKeys = await marketTrustedKeys();
       applications = await createApplicationManager({
         applicationRoot: path.join(userData, "applications"),
         runtimeArgs: process.defaultApp ? [app.getAppPath()] : [],
@@ -188,6 +206,23 @@ if (claimSingleInstance(app, () => control))
         request: (input) => client.applicationRequest(input),
         stream: (input) => client.applicationStream(input),
         createConnection: () => client.applicationConnection(),
+        trustedKeys,
+        launcherArgs: [
+          ...(app.isPackaged ? [] : [app.getAppPath()]),
+          "--wanx-managed-app",
+          `--user-data-dir=${userData}`,
+          ...(app.commandLine.hasSwitch("use-mock-keychain") ? ["--use-mock-keychain"] : []),
+        ],
+      });
+      marketSession = createMarketSessionGuard(account);
+      const market = createApplicationMarket({
+        request: (input) => account.request(input),
+        applications,
+        wanxVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        trustedKeys,
+        captureSession: () => marketSession.captureSession(),
       });
       control = new BrowserWindow({
         width: 1180,
@@ -239,6 +274,8 @@ if (claimSingleInstance(app, () => control))
         client,
         applications,
         dashboards,
+        market,
+        allowDevelopmentInstall: !app.isPackaged && process.env.WANX_ALLOW_DEVELOPMENT_INSTALL === "1",
         selectApplicationArchive: async () => {
           const result = await dialog.showOpenDialog(control, {
             title: "选择应用安装包",
@@ -258,18 +295,24 @@ if (claimSingleInstance(app, () => control))
         }
       });
 
-      app.on("before-quit", (event) => {
-        if (quitting) return;
-        event.preventDefault();
-        quitting = true;
-        desktop.dispose();
-        unsubscribe();
-        stopNetworkMonitor?.();
-        Promise.resolve(setupRuntime?.dispose())
-          .catch(() => {})
-          .then(() => Promise.allSettled([dashboards.close(), applications?.close(), client.close()]))
-          .then(() => timings.flush())
-          .finally(() => app.quit());
+      registerShutdown({
+        app,
+        async closeApplications() {
+          marketSession?.close();
+          await Promise.all([market.close(), applications?.close()]);
+        },
+        async closeHost() {
+          desktop.dispose();
+          unsubscribe();
+          stopNetworkMonitor?.();
+          await Promise.resolve(setupRuntime?.dispose()).catch(() => {});
+          await Promise.allSettled([dashboards.close(), client.close()]);
+          await timings.flush();
+        },
+        onError(error) {
+          reportError(error);
+          dialog.showErrorBox("无法退出万象", "应用尚未完全退出。请关闭应用后再次退出万象。");
+        },
       });
       control.on("closed", () => app.quit());
       app.on("window-all-closed", () => app.quit());

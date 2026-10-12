@@ -468,6 +468,27 @@ test("revoked refresh publishes signed_out, clears tokens, and retains the clien
   );
 });
 
+test("market errors preserve safe codes without exposing backend messages or arbitrary codes", async () => {
+  const store = memoryStore();
+  const setup = fixture({ store });
+  await setup.account.loginSMS({ phone: "13800138000", code: "123456" });
+  let code = "MARKET_DOWNLOAD_UNAVAILABLE";
+  const account = createAccount({
+    store,
+    fetch: async (url) => {
+      if (url.endsWith("/auth/refresh")) {
+        const saved = await store.load();
+        return reply({ ...saved.active.session, expiresIn: 3600 });
+      }
+      return new Response(JSON.stringify({ success: false, errorCode: code, msg: "private-secret-details" }), { status: 503 });
+    },
+  });
+  await account.restore();
+  await assert.rejects(account.request({ path: "/app-api/market/apps" }), { code, message: code });
+  code = "MARKET_bad-secret-value";
+  await assert.rejects(account.request({ path: "/app-api/market/apps" }), { code: "ACCOUNT_REQUEST_FAILED", message: "ACCOUNT_REQUEST_FAILED" });
+});
+
 test("network 404 distinguishes an undeployed API from a missing enrollment", async () => {
   const store = memoryStore();
   const setup = fixture({ store });

@@ -74,8 +74,13 @@ const actions = {
   "network.set-enabled": (input) =>
     ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
-  "applications.install": (input) => ipcRenderer.invoke("wanx-client:applications-install", input),
+  "market.list": () => ipcRenderer.invoke("wanx-client:market-list"),
+  "market.candidate": (input) => ipcRenderer.invoke("wanx-client:market-candidate", { applicationId: input?.applicationId }),
+  "market.install": (input) => ipcRenderer.invoke("wanx-client:market-install", { applicationId: input?.applicationId }),
+  "market.uninstall": (input) => ipcRenderer.invoke("wanx-client:market-uninstall", { applicationId: input?.applicationId }),
+  "market.rollback": (input) => ipcRenderer.invoke("wanx-client:market-rollback", { applicationId: input?.applicationId }),
   "applications.launch": (input) => ipcRenderer.invoke("wanx-client:applications-launch", input),
+  "applications.select-current": (input) => ipcRenderer.invoke("wanx-client:applications-select-current", input),
   "applications.stop": (input) => ipcRenderer.invoke("wanx-client:applications-stop", input),
 };
 

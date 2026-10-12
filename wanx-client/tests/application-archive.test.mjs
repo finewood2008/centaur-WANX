@@ -30,7 +30,7 @@ for (const prefix of ["", "download/"]) {
     assert.deepEqual(await f.installer.list(), [record]);
     await assert.rejects(f.installer.install({ archivePath: f.archivePath }), { code: "APPLICATION_VERSION_ALREADY_INSTALLED" });
     assert.deepEqual(await readdir(f.installRoot), [manifest.applicationId]);
-    assert.deepEqual(await readdir(path.dirname(record.installPath)), [manifest.version]);
+    assert.deepEqual(await readdir(path.dirname(record.installPath)), [".current-version.json", manifest.version]);
     assert.deepEqual(await f.installer.list(), [record]);
   });
 }

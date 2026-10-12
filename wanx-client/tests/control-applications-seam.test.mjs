@@ -19,6 +19,7 @@ function control(state, selectApplicationArchive) {
     client: { snapshot: () => state },
     dashboards: { open: (snapshot) => dashboards.push(snapshot.connection) },
     selectApplicationArchive,
+    allowDevelopmentInstall: Boolean(selectApplicationArchive),
     applications: {
       launch: (...args) => launched.push(args),
       install: (input) => installed.push(input),
@@ -65,14 +66,14 @@ test("Dashboard IPC rejects a ready box without its local gateway", () => {
   assert.deepEqual(h.dashboards, []);
 });
 
-test("launch IPC forwards the selected application version only with a ready box", () => {
+test("launch IPC uses the current application and ignores stale renderer versions", () => {
   const h = control(connected);
   h.invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun", version: "0.4.3", boxId: "injected" });
-  assert.deepEqual(h.launched, [["centaurai.wanx.zhijun", "0.4.3"]]);
+  assert.deepEqual(h.launched, [["centaurai.wanx.zhijun"]]);
 });
 
-test("local installation remains available without a connected box", () => {
-  const h = control({ ...connected, phase: "disconnected", connection: null });
+test("explicit development installation remains available without a connected box", () => {
+  const h = control({ ...connected, phase: "disconnected", connection: null }, true);
   h.invoke("applications-install", { sourceDir: "/application-package" });
   assert.deepEqual(h.installed, [{ sourceDir: "/application-package" }]);
   assert.deepEqual(h.launched, []);

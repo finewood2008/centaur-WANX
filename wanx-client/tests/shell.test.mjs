@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { createDashboardWindows } from "../shell/dashboard.mjs";
 import {
   externalHTTPURL,
@@ -8,6 +10,31 @@ import {
   isDashboardURL,
   sameOrigin,
 } from "../shell/security.mjs";
+
+test("managed application arguments retain userData without inheriting debug ports", async () => {
+  const source = await readFile(new URL("../shell/main.mjs", import.meta.url), "utf8");
+  const expression = source.match(/launcherArgs: (\[[\s\S]*?\n        \]),/)[1];
+  const userData = "/isolated profile/万象";
+  for (const isPackaged of [false, true]) {
+    for (const mockKeychain of [false, true]) {
+      const switches = new Set(["remote-debugging-port", "inspect", ...(mockKeychain ? ["use-mock-keychain"] : [])]);
+      const args = vm.runInNewContext(expression, {
+        userData,
+        app: {
+          isPackaged,
+          getAppPath: () => "/source/wanx-client",
+          commandLine: { hasSwitch: (name) => switches.has(name) },
+        },
+      });
+      assert.deepEqual([...args], [
+        ...(isPackaged ? [] : ["/source/wanx-client"]),
+        "--wanx-managed-app",
+        `--user-data-dir=${userData}`,
+        ...(mockKeychain ? ["--use-mock-keychain"] : []),
+      ]);
+    }
+  }
+});
 
 test("only the exact trusted main frame can invoke shell actions", () => {
   const url = "file:///client/fleet/index.html";
