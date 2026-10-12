@@ -4,6 +4,8 @@ import {
   ipcMain,
   safeStorage,
   powerMonitor,
+  session,
+  shell,
 } from "electron";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
@@ -14,6 +16,7 @@ import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
 import { createSidecar } from "../network/sidecar.mjs";
 import { registerControlActions } from "./control.mjs";
+import { createDashboardWindows } from "./dashboard.mjs";
 import { claimSingleInstance } from "./instance.mjs";
 import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
@@ -31,6 +34,7 @@ let client;
 let unsubscribe;
 let setupRuntime;
 let applications;
+let dashboards;
 let quitting = false;
 let stopNetworkMonitor;
 let timings;
@@ -199,14 +203,22 @@ if (claimSingleInstance(app, () => control))
         event.preventDefault(),
       );
 
+      dashboards = createDashboardWindows({
+        BrowserWindow,
+        session,
+        openExternal: (url) => shell.openExternal(url),
+        onError: reportError,
+      });
       registerControlActions({
         ipcMain,
         control,
         controlURL,
         client,
         applications,
+        dashboards,
       });
       unsubscribe = client.subscribe(async () => {
+        dashboards.sync(client.snapshot());
         if (!control.isDestroyed()) {
           const applicationsState = applications ? await applications.listInstalled() : [];
           if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...client.snapshot(), applications: applicationsState });
@@ -221,7 +233,7 @@ if (claimSingleInstance(app, () => control))
         stopNetworkMonitor?.();
         Promise.resolve(setupRuntime?.dispose())
           .catch(() => {})
-          .then(() => Promise.allSettled([applications?.close(), client.close()]))
+          .then(() => Promise.allSettled([dashboards.close(), applications?.close(), client.close()]))
           .then(() => timings.flush())
           .finally(() => app.quit());
       });

@@ -7,24 +7,25 @@ const connected = {
   platform: { phase: "ready" },
   network: { enabled: true, phase: "ready" },
   phase: "ready",
-  connection: { mode: "netbird", deviceId: "box-102" },
+  connection: { mode: "netbird", deviceId: "box-102", gatewayURL: "http://127.0.0.1:41000/__wanx_session/test" },
 };
 
 function control(state) {
-  const handlers = new Map(), launched = [], installed = [];
+  const handlers = new Map(), launched = [], installed = [], dashboards = [];
   const frame = { url: "file:///wanx/index.html" }, webContents = { mainFrame: frame };
   registerControlActions({
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
     client: { snapshot: () => state },
+    dashboards: { open: (snapshot) => dashboards.push(snapshot.connection) },
     applications: {
       launch: (...args) => launched.push(args),
       install: (input) => installed.push(input),
     },
   });
   return {
-    launched, installed,
-    invoke: (name, input) => handlers.get(`wanx-client:${name}`)({ sender: webContents, senderFrame: frame }, input),
+    launched, installed, dashboards,
+    invoke: (name, input, event = { sender: webContents, senderFrame: frame }) => handlers.get(`wanx-client:${name}`)(event, input),
   };
 }
 
@@ -40,12 +41,28 @@ for (const [label, override, code] of [
   ["direct development connection", { connection: { mode: "direct", deviceId: "local" } }, "BOX_CONNECTION_REQUIRED"],
   ["box identity absent", { connection: { mode: "netbird" } }, "BOX_CONNECTION_REQUIRED"],
 ]) {
-  test(`launch IPC rejects ${label} without calling the application manager`, () => {
+  test(`application and Dashboard IPC reject ${label} before opening`, () => {
     const h = control({ ...connected, ...override });
     assert.throws(() => h.invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" }), { message: code });
     assert.deepEqual(h.launched, []);
+    assert.throws(() => h.invoke("dashboard-open"), { message: code });
+    assert.deepEqual(h.dashboards, []);
   });
 }
+
+test("Dashboard IPC opens only the trusted current gateway and rejects untrusted senders", () => {
+  const h = control(connected);
+  h.invoke("dashboard-open", { url: "https://untrusted.example/", deviceId: "box-103" });
+  assert.deepEqual(h.dashboards, [connected.connection]);
+  assert.throws(() => h.invoke("dashboard-open", {}, { sender: {}, senderFrame: {} }), /此页面无权操作万象连接/);
+  assert.equal(h.dashboards.length, 1);
+});
+
+test("Dashboard IPC rejects a ready box without its local gateway", () => {
+  const h = control({ ...connected, connection: { mode: "netbird", deviceId: "box-102" } });
+  assert.throws(() => h.invoke("dashboard-open"), /BOX_CONNECTION_REQUIRED/);
+  assert.deepEqual(h.dashboards, []);
+});
 
 test("launch IPC forwards the selected application version only with a ready box", () => {
   const h = control(connected);

@@ -18,7 +18,7 @@ function state(platformPhase = "ready", networkPhase = "ready", boxId = null) {
     platform: { phase: platformPhase },
     network: { enabled: true, phase: networkPhase },
     devices,
-    connection: boxId ? { mode: "netbird", deviceId: boxId } : null,
+    connection: boxId ? { mode: "netbird", deviceId: boxId, gatewayURL: "http://127.0.0.1:41000/__wanx_session/test" } : null,
   };
 }
 
@@ -27,7 +27,7 @@ async function harness(initial = state(), installed = [application]) {
   let rawState = initial;
   let records = [...installed];
   const events = new Map(), handlers = new Map(), listeners = new Map();
-  const calls = [], launches = [];
+  const calls = [], launches = [], dashboards = [];
   const app = { innerHTML: "", addEventListener: (name, fn) => events.set(name, fn) };
   const controlURL = "file:///client/local-ui/renderer/index.html";
   const frame = { url: controlURL }, contents = { mainFrame: frame };
@@ -45,6 +45,7 @@ async function harness(initial = state(), installed = [application]) {
   registerControlActions({
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     control: { webContents: contents, isDestroyed: () => false }, controlURL, client,
+    dashboards: { open: async (snapshot) => { dashboards.push(snapshot.connection); } },
     applications: {
       listInstalled: async () => records,
       install: async () => { records = [application]; return application; },
@@ -70,7 +71,7 @@ async function harness(initial = state(), installed = [application]) {
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
-    app, calls, launches,
+    app, calls, launches, dashboards,
     update(next, publish = true) {
       rawState = next;
       if (publish) listeners.get("wanx-client:state")({}, { ...rawState, applications: records });
@@ -107,6 +108,45 @@ test("home guides an unconnected user to settings and enables launch after conne
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
   await h.click("applications-launch", { applicationId: application.applicationId, version: application.version });
   assert.deepEqual(h.launches, [[application.applicationId, application.version]]);
+});
+
+test("settings is a header button and Dashboard opens the connected box from home or settings", async () => {
+  const h = await harness();
+  const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
+  assert.match(header, /<button[^>]*data-action="show-settings"[^>]*>[\s\S]*?设置/);
+  assert.doesNotMatch(header, /<nav/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"/);
+  await h.click("show-settings");
+  await h.click("connect", { deviceId: "box-102" });
+  assert.match(h.app.innerHTML, /data-action="dashboard-open"[^>]*>打开 Dashboard/);
+  await h.click("dashboard-open", { url: "https://untrusted.example/" });
+  await h.click("show-applications");
+  assert.match(h.app.innerHTML, /data-action="dashboard-open"[^>]*>打开 Dashboard/);
+  await h.click("dashboard-open");
+  assert.deepEqual(h.dashboards.map((connection) => connection.deviceId), ["box-102", "box-102"]);
+  assert.ok(h.dashboards.every((connection) => connection.gatewayURL === state("ready", "ready", "box-102").connection.gatewayURL));
+  assert.equal(h.launches.length, 0);
+  await h.click("show-settings");
+  await h.click("disconnect");
+  assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"/);
+});
+
+test("Dashboard entry follows gateway readiness and rejects a stale button after disconnect", async () => {
+  const h = await harness(state("ready", "ready", "box-102"));
+  h.update(state(), false);
+  await h.click("dashboard-open");
+  assert.deepEqual(h.dashboards, []);
+  assert.match(h.app.innerHTML, /请先在设置中连接一台盒子/);
+  for (const next of [
+    { ...state("ready", "ready", "box-102"), phase: "recovering" },
+    state("enrolling", "checking", "box-102"),
+    { ...state("ready", "ready", "box-102"), connection: { mode: "netbird", deviceId: "box-102" } },
+  ]) {
+    h.update(next);
+    assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"/);
+    await h.click("dashboard-open");
+    assert.deepEqual(h.dashboards, []);
+  }
 });
 
 test("settings stays selected across network polling and blocks connection until ready", async () => {

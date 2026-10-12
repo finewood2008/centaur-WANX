@@ -88,13 +88,11 @@ function shellHeader(title, eyebrow = "") {
       <img class="brand-mark" src="./assets/centaurai-mark.png" alt="" />
       <div class="brand-names"><strong class="brand-name">半人马AI-万象</strong><span class="brand-english">CentaurAI-WANX</span></div>
       <h1 class="sr-only">${title}</h1>
-      <nav class="shell-nav" aria-label="主导航">
-        <button class="nav-button ${page === "applications" ? "active" : ""}" data-action="show-applications" ${page === "applications" ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>应用</button>
-        <button class="nav-button ${page === "settings" ? "active" : ""}" data-action="show-settings" ${page === "settings" ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>设置</button>
-      </nav>
       <div class="topbar-spacer"></div>
-      <span class="mode-tag">${currentState.activeDeviceId ? `已连接 · ${escapeHTML(activeDeviceName())}` : "未连接盒子"}</span>
-      <span class="account-chip">${escapeHTML(account)}</span>
+      <div class="topbar-tools">
+        <span class="account-chip" title="${escapeHTML(account)}">${escapeHTML(account)}</span>
+        <button class="button settings-button ${page === "settings" ? "active" : ""}" data-action="show-settings" ${page === "settings" ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>设置</button>
+      </div>
     </header>
     ${eyebrow ? `<div class="section-label">${eyebrow}</div>` : ""}`;
 }
@@ -147,7 +145,7 @@ function settingsView() {
       </section>
       <section class="settings-panel"><div class="section-heading"><div><p class="eyebrow">CURRENT DEVICE</p><h2 class="small-heading">当前盒子</h2></div>${currentState.activeDeviceId ? '<span class="status-tag ready">已连接</span>' : '<span class="status-tag pending">未连接</span>'}</div>
         <p class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</p><p class="muted">${currentState.activeDeviceId ? "应用将连接此设备中的服务。切换或断开盒子后，请重新打开应用。" : "从下方设备列表选择并连接一台盒子，然后返回应用首页。"}</p>
-        ${currentState.activeDeviceId ? `<button class="text-button" data-action="disconnect" ${busy ? "disabled" : ""}>断开当前盒子</button>` : ""}
+        ${currentState.activeDeviceId ? `<div class="current-device-actions">${dashboardButton()}<button class="text-button" data-action="disconnect" ${busy ? "disabled" : ""}>断开当前盒子</button></div>` : ""}
       </section>
       <section class="content-section"><div class="section-heading"><div><p class="eyebrow">YOUR DEVICES</p><h2 class="small-heading">设备管理 <span class="count">${available.length}</span></h2></div><div class="settings-actions"><button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>刷新列表</button><button class="button small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
         ${available.length && !currentState.networkReady ? `<div class="notice">${network.label}，${network.detail}</div>` : ""}
@@ -156,6 +154,12 @@ function settingsView() {
       ${pending.length ? `<section class="content-section pending-section"><div class="section-heading"><div><p class="eyebrow">SETUP REQUIRED</p><h2 class="small-heading">待处理设备 <span class="count">${pending.length}</span></h2></div></div><div class="device-list">${pending.map((device) => deviceCard(device, false)).join("")}</div></section>` : ""}
       <section class="settings-panel account-panel"><div><h2 class="small-heading">账号</h2><p class="muted">${escapeHTML(currentState.account?.displayName || currentState.account?.accountId || "万象用户")}</p></div><button class="button" data-action="logout" ${busy ? "disabled" : ""}>退出登录</button></section>
     </div>`;
+}
+
+function dashboardButton() {
+  return currentState.canOpenDashboard
+    ? `<button class="button small" data-action="dashboard-open" ${busy ? "disabled" : ""}>打开 Dashboard</button>`
+    : "";
 }
 
 function applicationCard(item) {
@@ -173,10 +177,10 @@ function applicationsView() {
   const connected = currentState.canLaunchApplications;
   return `<div class="app-layout">
     ${shellHeader("万象")}
-    <section class="page-hero compact-hero"><div><p class="eyebrow">YOUR APPLICATIONS</p><h2>我的应用</h2><p class="lede">你的应用入口，连接盒子后即可开始使用。</p></div><span class="count">${applications.length} 个已安装应用</span></section>
-    <section class="connection-banner ${connected ? "ready" : ""}" aria-label="应用连接状态"><div><strong>${connected ? `已连接 ${escapeHTML(activeDeviceName())}` : currentState.networkReady ? "打开应用前，请先连接盒子" : networkStatus().label}</strong><p>${connected ? "应用将使用当前盒子中的服务。" : currentState.networkReady ? "在设置中选择一台设备，连接后返回这里打开应用。" : networkStatus().detail}</p></div><button class="button small" data-action="show-settings">${connected ? "切换盒子" : currentState.networkReady ? "连接盒子" : "网络设置"}</button></section>
+    <section class="page-hero compact-hero"><div><p class="eyebrow">YOUR APPLICATIONS</p><h2>我的应用</h2><p class="lede">你的应用入口，连接盒子后即可开始使用。</p></div></section>
+    <section class="connection-banner ${connected ? "ready" : ""}" aria-label="应用连接状态"><div class="connection-summary"><span class="connection-indicator" aria-hidden="true"></span><div><span class="connection-caption">当前盒子</span><strong>${connected ? `已连接 ${escapeHTML(activeDeviceName())}` : currentState.networkReady ? "打开应用前，请先连接盒子" : networkStatus().label}</strong><p>${connected ? "应用将使用当前盒子中的服务。" : currentState.networkReady ? "在设置中选择一台设备，连接后返回这里打开应用。" : networkStatus().detail}</p></div></div><div class="connection-actions">${dashboardButton()}<button class="${connected ? "text-button" : "button small"}" data-action="show-settings">${connected ? "切换盒子" : currentState.networkReady ? "连接盒子" : "网络设置"}</button></div></section>
     ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="content-section" aria-label="已安装应用">${applications.length ? `<div class="application-grid">${applications.map(applicationCard).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">＋</div><h3>安装你的第一个应用</h3><p>使用下方的应用目录安装，连接盒子后即可打开。</p></div>'}</section>
+    <section class="content-section applications-section" aria-label="已安装应用"><div class="section-heading"><h2 class="small-heading">已安装应用</h2><span class="count">${applications.length} 个应用</span></div>${applications.length ? `<div class="application-grid">${applications.map(applicationCard).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">＋</div><h3>安装你的第一个应用</h3><p>使用下方的应用目录安装，连接盒子后即可打开。</p></div>'}</section>
     <section class="install-panel"><h2 class="small-heading">安装应用</h2><p class="muted">选择已准备好的应用目录进行安装。</p><form class="install-form" data-form="install"><label class="sr-only" for="application-source">应用目录</label><input id="application-source" name="sourceDir" value="${escapeHTML(applicationSource)}" placeholder="输入应用目录路径" spellcheck="false" required /><button class="button" type="submit" ${busy ? "disabled" : ""}>安装应用</button></form></section>
   </div>`;
 }
@@ -264,14 +268,15 @@ async function run(action, input = {}) {
     if (!response.ok) throw new Error(response.code);
     return response;
   } catch (error) {
-    const code = ["ACCOUNT_LOGIN_REQUIRED", "NETWORK_NOT_READY", "BOX_CONNECTION_REQUIRED", "NETWORK_CHANGED", "BOX_IDENTITY_UNAVAILABLE", "BOX_IDENTITY_INVALID"].find((value) => error.message.includes(value));
+    const code = ["ACCOUNT_LOGIN_REQUIRED", "NETWORK_NOT_READY", "BOX_CONNECTION_REQUIRED", "NETWORK_CHANGED", "BOX_IDENTITY_UNAVAILABLE", "BOX_IDENTITY_INVALID", "DASHBOARD_OPEN_FAILED"].find((value) => error.message.includes(value));
     notice = {
       ACCOUNT_LOGIN_REQUIRED: "请先登录万象。",
       NETWORK_NOT_READY: "网络尚未连接，请在设置中检查网络状态。",
-      BOX_CONNECTION_REQUIRED: "请先在设置中连接一台盒子，再打开应用。",
+      BOX_CONNECTION_REQUIRED: "请先在设置中连接一台盒子，再打开应用或 Dashboard。",
       NETWORK_CHANGED: "盒子连接已变化，请重新连接后打开应用。",
       BOX_IDENTITY_UNAVAILABLE: "暂时无法访问盒端服务，请重新连接盒子。",
       BOX_IDENTITY_INVALID: "盒端服务返回了无效身份，请重新连接盒子。",
+      DASHBOARD_OPEN_FAILED: "Dashboard 打开失败，请检查盒子连接后重试。",
     }[code] || error.message;
     render(currentState);
     return null;
@@ -339,6 +344,10 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (busy && action !== "cancel-provisioning") return;
+  if (action === "dashboard-open") {
+    if (currentState.canOpenDashboard) await run("dashboard.open");
+    return;
+  }
   if (action === "refresh") { page = "settings"; await run("devices.refresh"); return; }
   if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
   if (action === "provisioning") {

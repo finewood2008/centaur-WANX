@@ -41,6 +41,7 @@ function projectState(raw) {
     devices,
     networkReady,
     canLaunchApplications: connected,
+    canOpenDashboard: connected && Boolean(connection.gatewayURL),
     availableDevices: devices.filter((device) => device.accessState === "ready"),
     selectedDeviceId: connection?.deviceId || null,
     activeDeviceId: connected ? connection.deviceId : null,
@@ -69,6 +70,7 @@ const actions = {
   "devices.connect": (input) =>
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
+  "dashboard.open": () => ipcRenderer.invoke("wanx-client:dashboard-open"),
   "network.set-enabled": (input) =>
     ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
