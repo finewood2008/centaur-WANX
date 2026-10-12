@@ -36,9 +36,11 @@ export async function createApplicationManager({
       async createSession(record) {
         const launchId = randomUUID();
         const token = randomUUID() + randomUUID();
-        sessions.set(launchId, { ...record, token, connection: await createConnection?.() });
+        const connection = await createConnection?.();
+        sessions.set(launchId, { ...record, token, connection });
         return {
           launchId,
+          assertLive: () => connection?.context(),
           environment: {
             WANX_HOST_SOCKET: host.endpoint,
             WANX_HOST_TOKEN: token,

@@ -9,9 +9,11 @@ function projectState(raw) {
   const account = source.account || { phase: "signed_out" };
   const authenticated = account.phase === "authenticated";
   const connection = source.connection || null;
-  const connected = source.phase === "ready" && connection?.mode === "netbird";
   const networkReady =
+    source.network?.enabled !== false &&
     source.platform?.phase === "ready" && source.network?.phase === "ready";
+  const connected = authenticated && networkReady && source.phase === "ready" &&
+    connection?.mode === "netbird" && Boolean(connection.deviceId);
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,
@@ -24,7 +26,7 @@ function projectState(raw) {
 
   return {
     ...source,
-    route: !authenticated ? "auth" : connected ? "connected" : "devices",
+    route: authenticated ? "applications" : "auth",
     phase: !authenticated
       ? account.phase === "authenticating"
         ? "authenticating"
@@ -38,6 +40,7 @@ function projectState(raw) {
     },
     devices,
     networkReady,
+    canLaunchApplications: connected,
     availableDevices: devices.filter((device) => device.accessState === "ready"),
     selectedDeviceId: connection?.deviceId || null,
     activeDeviceId: connected ? connection.deviceId : null,
@@ -66,6 +69,8 @@ const actions = {
   "devices.connect": (input) =>
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
+  "network.set-enabled": (input) =>
+    ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
   "applications.install": (input) => ipcRenderer.invoke("wanx-client:applications-install", input),
   "applications.launch": (input) => ipcRenderer.invoke("wanx-client:applications-launch", input),

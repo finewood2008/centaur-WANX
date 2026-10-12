@@ -13,7 +13,16 @@ export function createApplicationLauncher({
     if (!record?.applicationId || !record.installPath || !record.entrypoint)
       throw fail("APPLICATION_RECORD_INVALID");
     const previous = running.get(record.applicationId);
-    if (previous && previous.child.exitCode === null) return { applicationId: record.applicationId, launchId: previous.launchId, state: "running" };
+    if (previous && previous.child.exitCode === null) {
+      try {
+        previous.session.assertLive?.();
+        if (previous.version === record.version)
+          return { applicationId: record.applicationId, launchId: previous.launchId, state: "running" };
+      } catch {
+        // A box switch invalidates the old launch; reopening binds a fresh session.
+      }
+      await stop(record.applicationId);
+    }
     const session = await host.createSession(record);
     const launchId = session.launchId;
     let child;
@@ -31,7 +40,7 @@ export function createApplicationLauncher({
     }
     child.once("error", () => { if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId); void session.close(); });
     child.once("exit", () => { if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId); void session.close(); });
-    running.set(record.applicationId, { child, launchId, session });
+    running.set(record.applicationId, { child, launchId, session, version: record.version });
     return { applicationId: record.applicationId, launchId, state: "running" };
   }
   async function stop(applicationId) {

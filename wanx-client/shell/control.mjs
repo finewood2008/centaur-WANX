@@ -27,10 +27,10 @@ export function registerControlActions({
       return action(argument);
     });
   };
-  register("get-state", async () => ({
-    ...client.snapshot(),
-    applications: applications ? await applications.listInstalled() : [],
-  }));
+  register("get-state", async () => {
+    const installed = applications ? await applications.listInstalled() : [];
+    return { ...client.snapshot(), applications: installed };
+  });
   register("set-network-enabled", (enabled) => {
     if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
     return client.setNetworkEnabled(enabled);
@@ -74,6 +74,12 @@ export function registerControlActions({
   });
   register("applications-launch", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
+    const state = client.snapshot();
+    if (state.account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (state.network?.enabled === false || state.platform?.phase !== "ready" || state.network?.phase !== "ready")
+      throw new Error("NETWORK_NOT_READY");
+    if (state.phase !== "ready" || state.connection?.mode !== "netbird" || !state.connection.deviceId)
+      throw new Error("BOX_CONNECTION_REQUIRED");
     return applications.launch(text(input?.applicationId, 64, "invalid_application_id"), input?.version);
   });
   register("applications-stop", (input) => {

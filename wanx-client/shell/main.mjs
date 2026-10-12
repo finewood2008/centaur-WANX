@@ -1,10 +1,7 @@
 import {
   app,
   BrowserWindow,
-  dialog,
   ipcMain,
-  session,
-  shell,
   safeStorage,
 } from "electron";
 import { createHash } from "node:crypto";
@@ -15,7 +12,6 @@ import os from "node:os";
 import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
 import { createSidecar } from "../network/sidecar.mjs";
-import { createDashboardWindows } from "./dashboard.mjs";
 import { registerControlActions } from "./control.mjs";
 import { claimSingleInstance } from "./instance.mjs";
 import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
@@ -27,7 +23,6 @@ import { createApplicationManager } from "../applications/manager.mjs";
 const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 let control;
 let client;
-let dashboards;
 let unsubscribe;
 let setupRuntime;
 let applications;
@@ -158,27 +153,6 @@ if (claimSingleInstance(app, () => control))
         stream: (input) => client.applicationStream(input),
         createConnection: () => client.applicationConnection(),
       });
-      dashboards = createDashboardWindows({
-        BrowserWindow,
-        session,
-        disconnect: () => client.disconnect(),
-        onError: reportError,
-        openExternal: (url) => shell.openExternal(url),
-        async requestMedia(window, mediaTypes) {
-          const devices = mediaTypes.includes("video")
-            ? "摄像头或麦克风"
-            : "麦克风";
-          const { response } = await dialog.showMessageBox(window, {
-            type: "question",
-            title: "万象设备权限",
-            message: `允许当前万象页面使用${devices}吗？`,
-            buttons: ["不允许", "允许"],
-            defaultId: 0,
-            cancelId: 0,
-          });
-          return response === 1;
-        },
-      });
       control = new BrowserWindow({
         width: 1180,
         height: 760,
@@ -208,14 +182,12 @@ if (claimSingleInstance(app, () => control))
         control,
         controlURL,
         client,
-        openExternal: (url) => shell.openExternal(url),
         applications,
       });
-      unsubscribe = client.subscribe(async (state) => {
-        dashboards.sync(state);
+      unsubscribe = client.subscribe(async () => {
         if (!control.isDestroyed()) {
           const applicationsState = applications ? await applications.listInstalled() : [];
-          if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...state, applications: applicationsState });
+          if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...client.snapshot(), applications: applicationsState });
         }
       });
 
@@ -226,7 +198,7 @@ if (claimSingleInstance(app, () => control))
         unsubscribe();
         Promise.resolve(setupRuntime?.dispose())
           .catch(() => {})
-          .then(() => Promise.allSettled([applications?.close(), dashboards.close(), client.close()]))
+          .then(() => Promise.allSettled([applications?.close(), client.close()]))
           .then(() => app.quit());
       });
       control.on("closed", () => app.quit());
