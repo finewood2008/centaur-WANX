@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-export const DESKTOP_NAME = "半人马AI-万象";
+export const DESKTOP_NAME = "万象";
 const resource = (name) => fileURLToPath(new URL(`../resources/${name}`, import.meta.url));
 export const APP_ICON = resource("icon.png");
 

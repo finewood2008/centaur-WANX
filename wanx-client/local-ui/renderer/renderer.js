@@ -85,7 +85,7 @@ function shellHeader(title, eyebrow = "") {
   const account = currentState.account?.displayName || currentState.account?.id || "万象用户";
   return `
     <header class="topbar">
-      <img class="brand-mark" src="./assets/centaurai-mark.png" alt="" />
+      <img class="brand-mark" src="../../resources/icon.png" alt="" />
       <div class="brand-names"><strong class="brand-name">半人马AI-万象</strong><span class="brand-english">CentaurAI-WANX</span></div>
       <h1 class="sr-only">${title}</h1>
       <div class="topbar-spacer"></div>
@@ -102,7 +102,7 @@ function authView() {
   return `
     <div class="auth-layout">
       <section class="auth-intro">
-        <div class="auth-brand"><img class="brand-mark large" src="./assets/centaurai-mark.png" alt="" /><div class="brand-names"><strong class="brand-name">半人马AI-万象</strong><span class="brand-english">CentaurAI-WANX</span></div></div>
+        <div class="auth-brand"><img class="brand-mark large" src="../../resources/icon.png" alt="" /><div class="brand-names"><strong class="brand-name">半人马AI-万象</strong><span class="brand-english">CentaurAI-WANX</span></div></div>
         <p class="eyebrow">万象 · 应用工作台</p>
         <h1>你的应用，<br />连接你的万象盒子</h1>
         <p class="lede">登录后管理应用，连接一台盒子，即可使用设备中的服务。</p>

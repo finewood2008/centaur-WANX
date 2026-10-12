@@ -106,6 +106,8 @@ test("Windows uses a color tray and standard editing/window roles", () => {
 test("packaging ships readable platform icons and Retina tray artwork", async () => {
   const root = new URL("../", import.meta.url);
   const config = JSON.parse(await readFile(new URL("package.json", root), "utf8")).build;
+  assert.equal(config.productName, "万象");
+  assert.equal(DESKTOP_NAME, "万象");
   assert.ok(config.files.includes("resources/**"));
   const icns = await readFile(new URL(config.mac.icon, root));
   assert.equal(icns.toString("ascii", 0, 4), "icns");
