@@ -693,8 +693,12 @@ export function createPlatformClient({
       if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
       const connection = link.client.applicationConnection();
       const assertLive = () => {
-        if (activeLink !== link || generation !== connectionEpoch || snapshot().phase !== "ready") throw fail("NETWORK_CHANGED");
+        const next = snapshot();
+        if (closed || activeLink !== link || generation !== connectionEpoch ||
+            !["ready", "recovering"].includes(next.phase) || next.account.phase !== "authenticated") throw fail("NETWORK_CHANGED");
+        return next.phase;
       };
+      const assertReady = () => { if (assertLive() !== "ready") throw fail("NETWORK_NOT_READY"); };
       const response = await connection.request({ path: "/api/auth/me" });
       assertLive();
       if (response.status !== 200) throw fail("BOX_IDENTITY_UNAVAILABLE");
@@ -702,9 +706,10 @@ export function createPlatformClient({
       try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
       const context = { protocolVersion: 1, accountId: state.account.accountId, clientId: state.account.clientId, boxId: state.connection.deviceId, user, connection: "ready" };
       return {
-        context: () => { assertLive(); return context; },
-        request: (input) => { assertLive(); return connection.request(input); },
-        openStream: (input) => { assertLive(); return connection.openStream(input); },
+        context: () => ({ ...context, connection: assertLive() }),
+        request: (input) => { assertReady(); return connection.request(input); },
+        openStream: (input) => { assertReady(); return connection.openStream(input); },
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       };
     },
     subscribe(listener) {

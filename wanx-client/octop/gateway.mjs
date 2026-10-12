@@ -596,7 +596,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id"].includes(key))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };
@@ -685,7 +685,13 @@ export async function createDashboardGateway({
           socket.terminate();
           rejectSocket(error);
         };
-        socket.once("open", resolve);
+        socket.once("open", () => {
+          // Consumers attach handlers after awaiting this method. Preserve frames
+          // delivered in the same TCP packet as the upgrade response.
+          socket.pause();
+          resolve();
+          setImmediate(() => { if (socket.readyState === WebSocket.OPEN) socket.resume(); });
+        });
         socket.once("error", failSocket);
         socket.once("close", () => rejectSocket(new Error("BOX_STREAM_CLOSED")));
       });

@@ -1,0 +1,180 @@
+import http from "node:http";
+import { pipeline } from "node:stream/promises";
+import { WebSocket, WebSocketServer } from "ws";
+
+const fail = (code, status = 401) => Object.assign(new Error(code), { code, status });
+const MAX_BODY = 32 * 1024 * 1024;
+const TERMINAL = new Set(["NETWORK_CHANGED", "SESSION_CLOSED", "GATEWAY_CLOSED", "PLATFORM_SESSION_EXPIRED", "HOST_SESSION_EXPIRED"]);
+const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"]);
+
+// One listener and credential per launch. The connection is an immutable box lease.
+export async function createApplicationGateway({ connection, token, capabilities = [], onInvalidated } = {}) {
+  let url, invalid = false, closing, unsubscribe;
+  const operations = new Set(), events = new Set(), sockets = new Set();
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY, perMessageDeflate: false,
+    handleProtocols: (_protocols, req) => req.selectedProtocol || false });
+  function state() {
+    if (invalid) throw fail("HOST_SESSION_EXPIRED");
+    try { return connection.context(); }
+    catch { invalidate(); throw fail("HOST_SESSION_EXPIRED"); }
+  }
+  function invalidate() {
+    if (invalid) return;
+    invalid = true;
+    unsubscribe?.();
+    for (const res of events) res.end('data: {"type":"invalidated","code":"HOST_SESSION_EXPIRED"}\n\n');
+    events.clear();
+    for (const abort of operations) abort();
+    for (const ws of sockets) ws.terminate();
+    onInvalidated?.();
+  }
+  function authorize(req, capability) {
+    if (req.headers.host !== new URL(url).host || req.headers.origin ||
+        (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "none")) throw fail("HOST_ORIGIN_DENIED", 403);
+    if (req.headers.authorization !== `Bearer ${token}`) throw fail("HOST_UNAUTHORIZED");
+    const current = state();
+    if (capability && !capabilities.includes(capability)) throw fail("APPLICATION_CAPABILITY_DENIED", 403);
+    return current;
+  }
+  function apiPath(raw, websocket = false, method = "GET") {
+    let decoded;
+    try { decoded = decodeURIComponent(raw.split("?")[0]); } catch { throw fail("APPLICATION_PATH_NOT_ALLOWED", 400); }
+    if (!decoded.startsWith("/api/") || /[\\\x00-\x1f#]/.test(decoded) || decoded.includes("//") || decoded.split(/[/?]/).some(p => p === "." || p === "..")) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
+    const endpoint = new URL(raw, url);
+    if ((decoded === "/api/auth" || decoded.startsWith("/api/auth/")) &&
+        !["GET /api/auth/me", "PATCH /api/auth/me", "POST /api/auth/me/avatar", "DELETE /api/auth/me/avatar"].includes(`${method} ${decoded}`)) throw fail("HOST_AUTH_MANAGED", 403);
+    // Credentials are supplied by the Host, never by an application URL.
+    if (["token", "access_token"].some(key => endpoint.searchParams.has(key))) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
+    if (websocket && !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(decoded)) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
+    return raw;
+  }
+  const headersFor = req => Object.fromEntries(Object.entries(req.headers).filter(([name]) => REQUEST_HEADERS.has(name)));
+  function errorResponse(res, error) {
+    if (res.destroyed) return;
+    if (res.headersSent) return res.destroy();
+    const code = error.status ? error.code : error.code === "NETWORK_NOT_READY" ? "NETWORK_NOT_READY" : "HOST_UPSTREAM_UNAVAILABLE";
+    res.writeHead(error.status || 503, { "content-type": "application/json", "cache-control": "no-store", "x-wanx-error": code });
+    res.end(JSON.stringify({ code }));
+  }
+  function checkReady() {
+    if (state().connection !== "ready") throw fail("NETWORK_NOT_READY", 503);
+  }
+  const server = http.createServer(async (req, res) => {
+    let abort, controller;
+    try {
+      const control = ["/__wanx/context", "/__wanx/events"].includes(req.url);
+      const current = authorize(req, control ? "identity.read" : "http.request");
+      if (control) {
+        if (req.method !== "GET") throw fail("HOST_METHOD_NOT_ALLOWED", 405);
+        if (req.url === "/__wanx/context") {
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+          return res.end(JSON.stringify(current));
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
+        res.write(`data: ${JSON.stringify({ type: "connection", connection: current.connection })}\n\n`);
+        events.add(res);
+        res.once("close", () => events.delete(res));
+        return;
+      }
+      const path = apiPath(req.url, false, req.method);
+      checkReady();
+      controller = new AbortController();
+      abort = () => { controller.abort(); res.destroy(); };
+      operations.add(abort);
+      res.once("close", abort);
+      const chunks = []; let size = 0;
+      for await (const part of req.iterator({ destroyOnReturn: false })) {
+        size += part.length;
+        if (size > MAX_BODY) throw fail("HOST_REQUEST_TOO_LARGE", 413);
+        chunks.push(part);
+      }
+      checkReady();
+      const result = await connection.request({ path, method: req.method, headers: headersFor(req),
+        body: size ? Buffer.concat(chunks) : undefined, stream: true, signal: controller.signal });
+      if (invalid || controller.signal.aborted) { result.body?.destroy?.(); return; }
+      if (result.status === 401) {
+        result.body?.destroy?.(); operations.delete(abort); res.removeListener("close", abort);
+        invalidate(); throw fail("HOST_SESSION_EXPIRED");
+      }
+      const headers = { ...result.headers };
+      for (const key of Object.keys(headers)) if (["set-cookie", "x-octop-access-token", "location", "x-wanx-error"].includes(key.toLowerCase())) delete headers[key];
+      res.writeHead(result.status, headers);
+      if (result.body?.pipe) await pipeline(result.body, res);
+      else res.end(result.body);
+    } catch (error) {
+      if (error.code === "HOST_REQUEST_TOO_LARGE") res.setHeader("connection", "close");
+      if (TERMINAL.has(error.code || error.message)) {
+        operations.delete(abort);
+        if (abort) res.removeListener("close", abort);
+        invalidate();
+        error = fail("HOST_SESSION_EXPIRED");
+      }
+      errorResponse(res, error);
+    } finally {
+      if (abort) { operations.delete(abort); res.removeListener("close", abort); }
+    }
+  });
+  function track(ws) {
+    sockets.add(ws);
+    ws.once("close", () => sockets.delete(ws));
+    ws.on("error", () => {});
+  }
+  function bridge(source, target) {
+    source.on("message", (data, binary) => {
+      if (invalid || target.readyState !== WebSocket.OPEN) return source.terminate();
+      source.pause();
+      target.send(data, { binary }, error => {
+        if (error) { source.terminate(); target.terminate(); }
+        else if (source.readyState === WebSocket.OPEN) source.resume();
+      });
+    });
+    source.on("error", () => target.terminate());
+    source.on("close", (code, reason) => {
+      if (target.readyState === WebSocket.OPEN && ![1005, 1006, 1015].includes(code)) target.close(code, reason);
+      else target.terminate();
+    });
+  }
+  server.on("upgrade", async (req, socket, head) => {
+    let upstream;
+    const abort = () => { upstream?.terminate(); socket.destroy(); };
+    socket.on("error", () => {});
+    socket.once("close", abort);
+    try {
+      authorize(req, "chat.stream");
+      const path = apiPath(req.url, true);
+      checkReady(); operations.add(abort);
+      const protocols = String(req.headers["sec-websocket-protocol"] || "").split(",").map(x => x.trim()).filter(Boolean);
+      upstream = await connection.openStream({ path, headers: headersFor(req), protocols });
+      track(upstream);
+      if (invalid || socket.destroyed) return upstream.terminate();
+      checkReady();
+      req.selectedProtocol = upstream.protocol;
+      wss.handleUpgrade(req, socket, head, client => {
+        track(client); socket.removeListener("close", abort);
+        bridge(client, upstream); bridge(upstream, client);
+      });
+    } catch (error) {
+      upstream?.terminate();
+      if (TERMINAL.has(error.code || error.message)) { invalidate(); error = fail("HOST_SESSION_EXPIRED"); }
+      if (!socket.destroyed) socket.end(`HTTP/1.1 ${error.status || 503} Rejected\r\nConnection: close\r\nContent-Length: 0\r\nX-Wanx-Error: ${error.status ? error.code : "HOST_UPSTREAM_UNAVAILABLE"}\r\n\r\n`);
+    } finally { operations.delete(abort); }
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  url = `http://127.0.0.1:${server.address().port}`;
+  unsubscribe = connection.subscribe?.(() => {
+    try {
+      const current = state();
+      for (const res of events) res.write(`data: ${JSON.stringify({ type: "connection", connection: current.connection })}\n\n`);
+    } catch { /* state() already revoked the lease. */ }
+  });
+  const heartbeat = setInterval(() => { for (const res of events) res.write(": alive\n\n"); }, 10_000);
+  heartbeat.unref();
+  return Object.freeze({ url, revoke: invalidate, assertLive: state,
+    close() {
+      if (closing) return closing;
+      invalidate(); unsubscribe?.(); clearInterval(heartbeat);
+      closing = new Promise(resolve => { server.close(resolve); server.closeAllConnections(); wss.close(); });
+      return closing;
+    },
+  });
+}

@@ -148,7 +148,7 @@ function harness(t, options = {}) {
                   },
                 };
               }
-              return {
+              return options.sidecarStatus?.() || {
                 phase: "ready",
                 peers: [{ ip: "100.80.1.2", connected: true }],
               };
@@ -165,6 +165,7 @@ function harness(t, options = {}) {
         probe: async () => {},
         createGateway: async ({ session }) => ({
           url: "http://127.0.0.1:19800",
+          request: options.gatewayRequest,
           close: async () => {
             item.gatewayClosed = true;
             await session?.close();
@@ -1230,4 +1231,37 @@ test("box readiness follows its own connected peer during management recovery", 
   network.snapshot = () => ({ ...original(), peers: [] });
   assert.equal(h.client.snapshot().devices[0].networkReady, false);
   assert.equal(h.client.snapshot().devices[0].canOpen, false);
+});
+
+test('application connection seam: recovery preserves the lease, logout revokes it synchronously', async t => {
+  let connected=true;
+  const h=harness(t,{
+    sidecarStatus:()=>({phase:'ready',peers:[{ip:'100.80.1.2',connected}]}),
+    gatewayRequest:async()=>({status:200,body:Buffer.from('{"id":4}')}),
+  });
+  await h.client.loginPassword({phone:'13800000001',password:'test'});
+  await h.client.connectBox('box-1');
+  const lease=await h.client.applicationConnection();
+  const states=[];const off=lease.subscribe(()=>{try{states.push(lease.context().connection);}catch{states.push('expired');}});
+  t.after(off);
+  connected=false;await h.transports[0].network.refresh();
+  assert.equal(lease.context().connection,'recovering');
+  assert.throws(()=>lease.request({path:'/api/action'}),{code:'NETWORK_NOT_READY'});
+  connected=true;await h.transports[0].network.refresh();
+  assert.equal(lease.context().connection,'ready');
+  const loggingOut=h.client.logout();
+  assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
+  assert.ok(states.includes('expired'));await loggingOut;
+});
+
+test('application connection seam: box-session expiry cannot be revived by reconnecting the same device', async t => {
+  const h=harness(t,{gatewayRequest:async()=>({status:200,body:Buffer.from('{"id":4}')})});
+  await h.client.loginPassword({phone:'13800000001',password:'test'});
+  await h.client.connectBox('box-1');
+  const lease=await h.client.applicationConnection();
+  h.sessions[0].input.onExpired();
+  assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
+  await h.client.connectBox('box-1');
+  assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
+  assert.equal((await h.client.applicationConnection()).context().boxId,'box-1');
 });

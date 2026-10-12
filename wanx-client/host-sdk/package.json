@@ -1,0 +1,11 @@
+{
+  "name": "@centaurai/wanx-host-sdk",
+  "version": "0.1.0",
+  "description": "WANX Electron main-process HTTP transport and session lifecycle",
+  "license": "UNLICENSED",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "files": ["index.cjs", "index.d.ts", "README.md"],
+  "engines": {"node": ">=22"},
+  "dependencies": {"ws": "8.22.0"}
+}

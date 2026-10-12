@@ -1,6 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createApplicationHost } from "../app-host/server.mjs";
+import { createApplicationGateway } from "../app-host/http-gateway.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
 
@@ -29,18 +30,24 @@ export async function createApplicationManager({
       const record = sessions.get(launchId);
       return record?.applicationId === id ? record.capabilities : [];
     },
-    closeSession: (_id, launchId) => { sessions.delete(launchId); host.revoke(launchId); },
+    closeSession: (_id, launchId) => sessions.get(launchId)?.gateway?.revoke(),
   });
   const launcher = createApplicationLauncher({
     host: {
       async createSession(record) {
         const launchId = randomUUID();
         const token = randomUUID() + randomUUID();
-        const connection = await createConnection?.();
-        sessions.set(launchId, { ...record, token, connection });
+        const connection = await createConnection?.() || { context, request, openStream: stream };
+        const gateway = await createApplicationGateway({
+          connection, token, capabilities: record.capabilities,
+          onInvalidated: () => { sessions.delete(launchId); host.revoke(launchId); },
+        });
+        try { gateway.assertLive(); }
+        catch (error) { await gateway.close(); throw error; }
+        sessions.set(launchId, { ...record, token, connection, gateway });
         return {
           launchId,
-          assertLive: () => connection?.context(),
+          assertLive: gateway.assertLive,
           environment: {
             WANX_HOST_SOCKET: host.endpoint,
             WANX_HOST_TOKEN: token,
@@ -48,8 +55,10 @@ export async function createApplicationManager({
             WANX_HOST_CLIENT_APPLICATION_ID: record.applicationId,
             WANX_HOST_LAUNCH_ID: launchId,
             WANX_HOST_PROTOCOL_VERSION: "1",
+            WANX_HOST_TRANSPORT: "http-v1",
+            WANX_HOST_BASE_URL: gateway.url,
           },
-          async close() { sessions.delete(launchId); host.revoke(launchId); },
+          async close() { sessions.delete(launchId); host.revoke(launchId); await gateway.close(); },
         };
       },
     },

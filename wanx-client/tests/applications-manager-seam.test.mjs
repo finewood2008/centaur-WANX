@@ -103,3 +103,49 @@ test("reopening after a box switch creates a new launch instead of reusing the o
   await assert.rejects(manager.launch("centaurai.wanx.zhijun", "0.4.3"), { code: "NETWORK_NOT_READY" });
   assert.equal(children.length, 3);
 });
+
+test('HTTP launch credentials follow app stop, box switch, logout and session expiry without retargeting', async t => {
+  const { EventEmitter } = await import('node:events');
+  const { rm } = await import('node:fs/promises');
+  const { fromEnvironment } = await import('../host-sdk/index.cjs');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wanx-http-manager-'));
+  t.after(() => rm(root, {recursive:true,force:true}));
+  const source = path.join(root,'source'); await mkdir(source);
+  await writeFile(path.join(source,'main.cjs'),'module.exports = {};');
+  await writeFile(path.join(source,'application.manifest.json'),JSON.stringify({applicationId:'centaurai.wanx.zhijun',name:'知君',version:'0.4.4',protocolVersion:1,runtime:'electron',entrypoint:'main.cjs',capabilities:['identity.read','http.request']}));
+  let box='102', epoch=0, phase='ready';
+  const events=new Set(), environments=[], calls=[];
+  const manager=await createApplicationManager({
+    applicationRoot:path.join(root,'installed'), applicationId:'wanx-host',
+    createConnection:async()=>{
+      if(!box)throw Object.assign(new Error('NETWORK_NOT_READY'),{code:'NETWORK_NOT_READY'});
+      const pinned=box, generation=epoch;
+      return {
+        context(){if(epoch!==generation)throw Error('NETWORK_CHANGED');return {boxId:pinned,connection:phase,user:{id:4}};},
+        request(input){calls.push({box:pinned,path:input.path});return {status:200,headers:{'content-type':'application/json'},body:Buffer.from(JSON.stringify({boxId:pinned}))};},
+        subscribe(fn){events.add(fn);return()=>events.delete(fn);},
+      };
+    },
+    spawn:(_file,_args,options)=>{
+      environments.push(options.env);
+      const child=new EventEmitter();child.exitCode=null;child.kill=()=>{child.exitCode=0;child.emit('exit',0);};return child;
+    },
+  });
+  t.after(()=>manager.close());await manager.install({sourceDir:source});
+  const clients=[];t.after(()=>clients.forEach(client=>client.close()));
+  const launch=async()=>{await manager.launch('centaurai.wanx.zhijun');const client=fromEnvironment(environments.at(-1));clients.push(client);await client.context();return client;};
+  let client=await launch();
+  assert.equal((await(await client.request('/api/test')).json()).boxId,'102');
+  for(const reason of ['switch','logout','expiry','stop']) {
+    const invalidated=new Promise(resolve=>client.onSessionInvalidated(resolve));
+    if(reason==='stop')await manager.stop('centaurai.wanx.zhijun');
+    else {epoch++;box=reason==='switch'?'103':null;for(const fn of events)fn();}
+    await invalidated;
+    await assert.rejects(client.request('/api/test'),{code:'HOST_SESSION_EXPIRED'});
+    box='103';const previous=environments.at(-1);
+    client=await launch();
+    assert.notEqual(environments.at(-1).WANX_HOST_TOKEN,previous.WANX_HOST_TOKEN);
+    assert.equal((await client.context()).boxId,'103');
+  }
+  assert.deepEqual(calls,[{box:'102',path:'/api/test'}]);
+});
