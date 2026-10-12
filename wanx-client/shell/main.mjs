@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   ipcMain,
   safeStorage,
+  powerMonitor,
 } from "electron";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
@@ -19,6 +20,10 @@ import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
+import { monitorNetworkChanges } from "./network-monitor.mjs";
+import { createTimingRecorder } from "./timings.mjs";
+import { createDashboardGateway } from "../octop/gateway.mjs";
+import { createStaticAssetCache } from "../octop/static-cache.mjs";
 
 const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 let control;
@@ -27,26 +32,12 @@ let unsubscribe;
 let setupRuntime;
 let applications;
 let quitting = false;
+let stopNetworkMonitor;
+let timings;
 
-// Opt-in timings contain fixed step names only, never requests or credentials.
+// Local timings contain fixed step names only; console output remains opt-in.
 async function timed(step, operation) {
-  if (process.env.WANX_CONNECTION_TIMINGS !== "1") return operation();
-  const started = performance.now();
-  console.info("[wanx-timing]", step, "started");
-  let outcome = "failed";
-  try {
-    const result = await operation();
-    outcome = "completed";
-    return result;
-  } finally {
-    console.info(
-      "[wanx-timing]",
-      step,
-      outcome,
-      Math.round(performance.now() - started),
-      "ms",
-    );
-  }
+  return timings ? timings.run(step, operation) : operation();
 }
 
 function reportError(error) {
@@ -63,6 +54,13 @@ if (claimSingleInstance(app, () => control))
         process.platform === "win32" ? ".exe" : ""
       }`;
       const userData = app.getPath("userData");
+      timings = createTimingRecorder({
+        filePath: path.join(userData, "logs", "connection-timings.jsonl"),
+        consoleOutput: process.env.WANX_CONNECTION_TIMINGS === "1",
+      });
+      const staticCache = createStaticAssetCache({
+        directory: path.join(userData, "static-assets"),
+      });
       const binaryPath = app.isPackaged
         ? path.join(process.resourcesPath, "network", binaryName)
         : fileURLToPath(
@@ -81,13 +79,19 @@ if (claimSingleInstance(app, () => control))
       const preferenceFile = path.join(userData, "p2p-preference.json");
       const requestAccount = account.request;
       account.request = (input) => {
-        const step = {
-          "/app-api/network/boxes": "boxes.read",
-          "/app-api/network/boxes/prepare": "boxes.prepare",
-          "/app-api/network/restore": "network.restore",
-          "/app-api/network/enrollments": "network.enroll",
-          "/app-api/network/devices": "network.devices",
-        }[input.path];
+        const step =
+          {
+            "/app-api/network/boxes": "boxes.read",
+            "/app-api/network/boxes/prepare": "boxes.prepare",
+            "/app-api/network/restore": "network.restore",
+            "/app-api/network/enrollments": "network.enroll",
+            "/app-api/network/devices": "network.devices",
+          }[input.path] ||
+          (/^\/app-api\/network\/enrollments\/[\w-]+$/.test(input.path)
+            ? "network.confirm"
+            : /\/wanx\/sso-grants$/.test(input.path)
+            ? "box.grant"
+            : null);
         return step
           ? timed(step, () => requestAccount(input))
           : requestAccount(input);
@@ -95,6 +99,11 @@ if (claimSingleInstance(app, () => control))
       let preferenceWrites = Promise.resolve();
       client = createPlatformClient({
         account,
+        measure: timed,
+        resumeStore: createSecureAccountStore({
+          filePath: path.join(userData, "network-resume.enc"),
+          safeStorage,
+        }),
         async readPreference() {
           try {
             return (
@@ -142,7 +151,20 @@ if (claimSingleInstance(app, () => control))
             configDir: path.join(userData, "network", scope),
             deviceName: `wanx-${os.hostname()}`,
           });
-          return { network, client: createClient({ network }) };
+          return {
+            network,
+            client: createClient({
+              network,
+              createGateway: (options) =>
+                createDashboardGateway({
+                  ...options,
+                  staticCache,
+                  cacheScope: identity
+                    ? { accountId: identity.accountId, boxId: options.deviceId }
+                    : undefined,
+                }),
+            }),
+          };
         },
       });
       applications = await createApplicationManager({
@@ -196,10 +218,12 @@ if (claimSingleInstance(app, () => control))
         event.preventDefault();
         quitting = true;
         unsubscribe();
+        stopNetworkMonitor?.();
         Promise.resolve(setupRuntime?.dispose())
           .catch(() => {})
           .then(() => Promise.allSettled([applications?.close(), client.close()]))
-          .then(() => app.quit());
+          .then(() => timings.flush())
+          .finally(() => app.quit());
       });
       control.on("closed", () => app.quit());
       app.on("window-all-closed", () => app.quit());
@@ -214,6 +238,11 @@ if (claimSingleInstance(app, () => control))
           state: "terminalError", errorCode: "SETUP_START_FAILED",
         });
         return null;
+      });
+      stopNetworkMonitor = monitorNetworkChanges({
+        powerMonitor,
+        onChange: () => client.networkChanged(),
+        onError: reportError,
       });
       void timed("client.initialize", () => client.initialize()).catch(
         reportError,

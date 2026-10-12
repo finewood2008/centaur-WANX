@@ -20,9 +20,14 @@ async function fixture(t, { lease = 120, tunnel = false } = {}) {
     let body = "";
     for await (const chunk of request) body += chunk;
     state.calls.push({
+      method: request.method,
       path: request.url,
       headers: request.headers,
-      body: body ? JSON.parse(body) : null,
+      body: body
+        ? request.headers["content-type"]?.includes("application/json")
+          ? JSON.parse(body)
+          : body
+        : null,
     });
     response.setHeader("content-type", "application/json");
     if (state.fail) {
@@ -226,6 +231,115 @@ test("platform challenge and grant exchange use selected tunnel; bootstrap expos
   await gateway.close();
   await ended;
   assert.equal(session.getToken(), "");
+});
+
+test("platform profile edits and avatar uploads require a current session and preserve the request", async (t) => {
+  const { options, state } = await fixture(t, { tunnel: true });
+  const session = await createPlatformSession(options);
+  const gateway = await createDashboardGateway({
+    targetURL: options.url,
+    agent: options.agent,
+    session,
+  });
+  t.after(() => gateway.close());
+  const html = await (await fetch(gateway.url)).text();
+  const marker = html.match(/setItem\("auth_token","([a-f0-9]+)"\)/)[1];
+  const avatar = new FormData();
+  avatar.append(
+    "file",
+    new Blob(["image-data"], { type: "image/png" }),
+    "avatar.png",
+  );
+  const requests = [
+    { method: "GET", path: "/api/auth/me" },
+    {
+      method: "PATCH",
+      path: "/api/auth/me",
+      body: JSON.stringify({ display_name: "bruce" }),
+      headers: { "content-type": "application/json" },
+    },
+    {
+      method: "PATCH",
+      path: "/api/auth/me",
+      body: JSON.stringify({ avatar_icon: "scientist" }),
+      headers: { "content-type": "application/json" },
+    },
+    { method: "POST", path: "/api/auth/me/avatar", body: avatar },
+    { method: "DELETE", path: "/api/auth/me/avatar" },
+  ];
+  for (const { path, ...request } of requests) {
+    for (const authorization of [undefined, "Bearer forged"]) {
+      const before = state.calls.length;
+      const response = await fetch(gateway.origin + path, {
+        ...request,
+        headers: {
+          ...request.headers,
+          origin: gateway.origin,
+          ...(authorization ? { authorization } : {}),
+        },
+      });
+      assert.equal(response.status, 401, `${request.method} ${path}`);
+      assert.equal(state.calls.length, before);
+    }
+    const response = await fetch(gateway.origin + path, {
+      ...request,
+      headers: {
+        ...request.headers,
+        origin: gateway.origin,
+        authorization: `Bearer ${marker}`,
+      },
+    });
+    assert.equal(response.status, 200, `${request.method} ${path}`);
+    const forwarded = state.calls.at(-1);
+    assert.equal(forwarded.method, request.method);
+    assert.equal(forwarded.path, path);
+    assert.equal(forwarded.headers.authorization, "Bearer private-box-jwt-1");
+    if (request.body instanceof FormData) {
+      assert.match(
+        forwarded.headers["content-type"],
+        /^multipart\/form-data; boundary=/,
+      );
+      assert.match(forwarded.body, /name="file"; filename="avatar.png"/);
+      assert.match(forwarded.body, /image-data/);
+    } else {
+      assert.deepEqual(
+        forwarded.body,
+        request.body ? JSON.parse(request.body) : null,
+      );
+    }
+  }
+  for (const [method, path] of [
+    ["POST", "/api/auth/me"],
+    ["DELETE", "/api/auth/me"],
+    ["GET", "/api/auth/me/avatar"],
+    ["PUT", "/api/auth/me/avatar"],
+    ["POST", "/api/auth/login"],
+    ["POST", "/api/auth/change-password"],
+    ["POST", "/api/auth/platform/exchange"],
+    ["POST", "/api/auth/oauth/bind/start"],
+  ]) {
+    const before = state.calls.length;
+    const response = await fetch(gateway.origin + path, {
+      method,
+      headers: { origin: gateway.origin, authorization: `Bearer ${marker}` },
+    });
+    assert.equal(response.status, 401, `${method} ${path}`);
+    assert.equal(state.calls.length, before);
+  }
+  session.close();
+  for (const { path, ...request } of requests) {
+    const before = state.calls.length;
+    const response = await fetch(gateway.origin + path, {
+      ...request,
+      headers: {
+        ...request.headers,
+        origin: gateway.origin,
+        authorization: `Bearer ${marker}`,
+      },
+    });
+    assert.equal(response.status, 401, `${request.method} ${path} after expiry`);
+    assert.equal(state.calls.length, before);
+  }
 });
 
 test("session renews before lease end and gateway close cancels renewals", async (t) => {

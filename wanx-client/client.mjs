@@ -71,14 +71,17 @@ export function createClient({
         );
       if (
         !state.enabled ||
-        ["unavailable", "auth_required"].includes(state.phase) ||
-        lostPeer
+        ["unavailable", "auth_required"].includes(state.phase)
       ) {
         // Invalidate synchronously; a delayed connect must not resurrect this session.
         void disconnect(
           state.enabled ? "network_unavailable" : "network_disabled",
         );
         return;
+      }
+      if (connection) {
+        phase = state.phase === "recovering" || lostPeer ? "recovering" : "ready";
+        reason = phase === "recovering" ? "network_unavailable" : null;
       }
     }
     emit();
@@ -129,6 +132,7 @@ export function createClient({
         }
       }
       created = await createGateway({
+        deviceId: input.deviceId,
         targetURL: endpoint.url,
         agent: endpoint.agent,
         session: platformSession,
@@ -200,6 +204,11 @@ export function createClient({
       // Apply the switch before awaiting disposal so a later toggle wins.
       const switching = network.setEnabled(enabled);
       await Promise.all([stopping, switching]);
+      return snapshot();
+    },
+    async networkChanged() {
+      if (closed) return snapshot();
+      await network.networkChanged();
       return snapshot();
     },
     async loginNetwork() {

@@ -127,3 +127,38 @@ func TestProxyPreservesConnectHeadAndClosesTunnels(t *testing.T) {
 		t.Fatal("listener survived stop")
 	}
 }
+
+func TestReplacingEngineClosesOldStreamsAndKeepsListener(t *testing.T) {
+	makeEngine := func() *fakeEngine {
+		e := &fakeEngine{}
+		e.allow.Store(true)
+		e.dial = func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go func() { defer server.Close(); _, _ = io.Copy(server, server) }()
+			return client, nil
+		}
+		return e
+	}
+	p, err := newProxy(makeEngine())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	_, old, response := connectProxy(t, p, "100.90.1.2:8088", p.info.Token, "")
+	if response.StatusCode != 200 {
+		t.Fatal(response.StatusCode)
+	}
+	p.replaceEngine(nil)
+	if _, err := old.ReadByte(); err == nil {
+		t.Fatal("stale stream survived recovery")
+	}
+	p.replaceEngine(makeEngine())
+	_, fresh, response := connectProxy(t, p, "100.90.1.2:8088", p.info.Token, "hello")
+	if response.StatusCode != 200 {
+		t.Fatal(response.StatusCode)
+	}
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(fresh, buf); err != nil || string(buf) != "hello" {
+		t.Fatal(err, string(buf))
+	}
+}

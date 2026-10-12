@@ -26,6 +26,7 @@ type tunnelProxy struct {
 	cancel      context.CancelFunc
 	mu          sync.Mutex
 	closed      bool
+	generation  uint64
 	connections map[net.Conn]struct{}
 }
 
@@ -45,10 +46,10 @@ func newProxy(e engine) (*tunnelProxy, error) {
 	go func() { _ = p.server.Serve(listener) }()
 	return p, nil
 }
-func (p *tunnelProxy) track(c net.Conn) bool {
+func (p *tunnelProxy) track(c net.Conn, generation uint64) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
+	if p.closed || p.generation != generation {
 		return false
 	}
 	p.connections[c] = struct{}{}
@@ -60,9 +61,26 @@ func (p *tunnelProxy) release(c net.Conn) {
 	delete(p.connections, c)
 	p.mu.Unlock()
 }
-func (p *tunnelProxy) close() {
-	p.cancel()
+
+// Keep the authenticated loopback listener while replacing only the network
+// engine. Old TCP/WebSocket connections are closed, never replayed.
+func (p *tunnelProxy) replaceEngine(e engine) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cancel()
+	p.generation++
+	p.engine = e
+	for c := range p.connections {
+		c.Close()
+	}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+	if p.closed {
+		p.cancel()
+	}
+}
+func (p *tunnelProxy) close() {
+	p.mu.Lock()
+	p.cancel()
 	p.closed = true
 	for c := range p.connections {
 		c.Close()
@@ -79,21 +97,29 @@ func (p *tunnelProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
 		return
 	}
+	p.mu.Lock()
+	e, parent, generation := p.engine, p.ctx, p.generation
+	closed := p.closed
+	p.mu.Unlock()
+	if e == nil || closed {
+		http.Error(w, "Recovering", http.StatusServiceUnavailable)
+		return
+	}
 	host, port, err := net.SplitHostPort(r.Host)
 	ip, ipErr := netip.ParseAddr(host)
 	n, portErr := strconv.Atoi(port)
-	if err != nil || ipErr != nil || portErr != nil || n < 1 || n > 65535 || ip.Zone() != "" || !p.engine.Allowed(ip.Unmap()) {
+	if err != nil || ipErr != nil || portErr != nil || n < 1 || n > 65535 || ip.Zone() != "" || !e.Allowed(ip.Unmap()) {
 		http.Error(w, "Unknown peer", http.StatusForbidden)
 		return
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, 15*time.Second)
-	upstream, err := p.engine.DialContext(ctx, "tcp", net.JoinHostPort(ip.Unmap().String(), port))
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	upstream, err := e.DialContext(ctx, "tcp", net.JoinHostPort(ip.Unmap().String(), port))
 	cancel()
 	if err != nil {
 		http.Error(w, "Peer unavailable", http.StatusBadGateway)
 		return
 	}
-	if !p.track(upstream) {
+	if !p.track(upstream, generation) {
 		upstream.Close()
 		http.Error(w, "Stopped", http.StatusServiceUnavailable)
 		return
@@ -108,7 +134,7 @@ func (p *tunnelProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if !p.track(conn) {
+	if !p.track(conn, generation) {
 		conn.Close()
 		return
 	}

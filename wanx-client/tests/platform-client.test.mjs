@@ -29,7 +29,7 @@ function harness(t, options = {}) {
     calls = [],
     transports = [],
     sessions = [];
-  let serverSession = null,
+  let serverSession = options.serverSession || null,
     nextID = 0,
     catalog = [device],
     override;
@@ -55,7 +55,14 @@ function harness(t, options = {}) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    restore: async () => state,
+    restore: async () =>
+      options.restoreIdentity
+        ? publish({
+            phase: "authenticated",
+            accountId: options.restoreIdentity.accountId,
+            clientId: options.restoreIdentity.clientId,
+          })
+        : state,
     loginPassword: async ({ phone }) =>
       publish({
         phase: "authenticated",
@@ -116,8 +123,11 @@ function harness(t, options = {}) {
     pollIntervalMs: 1,
     renewIntervalMs: options.renewIntervalMs ?? 60_000,
     writePreference: options.writePreference,
+    resumeStore: options.resumeStore,
+    measure: options.measure,
     createTransport(identity) {
       const key = JSON.stringify(identity);
+      if (options.savedKeys?.has(key)) keys.add(key);
       const item = { identity, starts: 0, closed: false, gatewayClosed: false };
       transports.push(item);
       const network = createNetwork({
@@ -127,6 +137,7 @@ function harness(t, options = {}) {
           return {
             async request(method, params) {
               if (method === "start") {
+                await options.onStart?.(params);
                 if (params.setupKey) keys.add(key);
                 if (!keys.has(key)) throw fail("auth_required");
                 return {
@@ -733,7 +744,7 @@ test("renewals do not repeat preparation and refresh turns pending into ready", 
   assert.equal(h.client.snapshot().devices[0].canOpen, true);
 });
 
-test("failed network renewal retains directory but disables stale endpoints", async (t) => {
+test("transient network renewal retains endpoints only within their existing lease", async (t) => {
   const h = harness(t);
   await h.client.loginPassword({ phone: "13800000001", password: "test" });
   h.override((input) => {
@@ -742,7 +753,7 @@ test("failed network renewal retains directory but disables stale endpoints", as
   });
   await h.client.refreshDevices();
   assert.equal(h.client.snapshot().devices.length, 1);
-  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
   assert.equal(h.client.snapshot().directory.phase, "ready");
 });
 
@@ -765,6 +776,7 @@ test("undeployed directory shows account boxes read-only while P2P is disabled",
       displayName: "我的盒子",
       deviceRole: undefined,
       accessState: "service_unavailable",
+      networkReady: false,
       canOpen: false,
     },
   ]);
@@ -809,6 +821,7 @@ for (const first of ["directory", "prepare"]) {
         displayName: "已关联盒子",
         deviceRole: "owner",
         accessState: "service_unavailable",
+        networkReady: false,
         canOpen: false,
       },
     ]);
@@ -994,4 +1007,227 @@ test("a linked box needing an authorization upgrade does not block other ready b
   });
   await h.client.connectBox("box-1");
   assert.equal(h.client.snapshot().phase, "ready");
+});
+
+function memoryResume() {
+  let value = null;
+  return {
+    load: async () => value && structuredClone(value),
+    save: async (next) => {
+      value = structuredClone(next);
+    },
+    clear: async () => {
+      value = null;
+    },
+  };
+}
+
+test("saved identity warms the engine while cloud prepares, but cannot authorize a box", async (t) => {
+  const store = memoryResume();
+  const first = harness(t, { resumeStore: store });
+  await first.client.loginPassword({ phone: "account-1" });
+  await first.client.close();
+  const saved = await store.load();
+  assert.deepEqual(
+    Object.keys(saved).sort(),
+    [
+      "accountId",
+      "clientId",
+      "managementURL",
+      "networkSessionId",
+      "version",
+    ].sort(),
+  );
+  const next = harness(t, {
+    resumeStore: store,
+    restoreIdentity: saved,
+    serverSession: saved.networkSessionId,
+    savedKeys: first.keys,
+  });
+  const prepared = deferred();
+  next.override(async (input) => {
+    if (input.path.endsWith("/prepare")) await prepared.promise;
+  });
+  const opening = next.client.initialize();
+  await tick();
+  await tick();
+  assert.equal(next.transports.length, 1);
+  assert.equal(next.transports[0].network.snapshot().phase, "ready");
+  assert.equal(next.client.snapshot().devices[0].canOpen, false);
+  await assert.rejects(next.client.connectBox("box-1"), {
+    code: "NETWORK_NOT_READY",
+  });
+  prepared.resolve();
+  await opening;
+  assert.equal(
+    next.transports.length,
+    1,
+    "reuse exactly the confirmed warm engine",
+  );
+  assert.equal(next.client.snapshot().devices[0].canOpen, true);
+});
+
+test("a different account cannot prewarm the previous account's saved identity", async (t) => {
+  const store = memoryResume();
+  await store.save({
+    version: 1,
+    accountId: "other",
+    clientId: "other-client",
+    managementURL: "https://p2p.qeeshu.com",
+    networkSessionId: "old-session",
+  });
+  const h = harness(t, {
+    resumeStore: store,
+    restoreIdentity: { accountId: "new-account", clientId: "new-client" },
+  });
+  const prepared = deferred();
+  h.override(async (input) => {
+    if (input.path.endsWith("/prepare")) await prepared.promise;
+  });
+  const opening = h.client.initialize();
+  await tick();
+  await tick();
+  assert.equal(h.transports.length, 0);
+  prepared.resolve();
+  await opening;
+  assert.equal(h.transports[0].identity.accountId, "new-account");
+  await h.client.logout();
+  await h.client.close();
+  assert.equal(await store.load(), null);
+});
+
+test("cloud revocation closes a prewarmed engine without publishing endpoints", async (t) => {
+  const store = memoryResume();
+  const first = harness(t, { resumeStore: store });
+  await first.client.loginPassword({ phone: "account-1" });
+  await first.client.close();
+  const saved = await store.load();
+  const h = harness(t, {
+    resumeStore: store,
+    restoreIdentity: saved,
+    serverSession: saved.networkSessionId,
+    savedKeys: first.keys,
+  });
+  h.override((input) => {
+    if (input.path === "/app-api/network/restore")
+      throw fail("ACCOUNT_ACCESS_DENIED", 403);
+  });
+  await h.client.initialize();
+  assert.equal(h.transports.length, 1);
+  assert.equal(h.transports[0].closed, true);
+  assert.equal(
+    h.client.snapshot().devices.some((box) => box.canOpen),
+    false,
+  );
+  await h.client.close();
+  assert.equal(await store.load(), null);
+});
+
+test("background directory refresh keeps valid buttons, then atomically applies revocation", async (t) => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-1" });
+  await h.client.connectBox("box-1");
+  const waiting = deferred();
+  h.override(async (input) => {
+    if (input.path.includes("/network/boxes")) {
+      await waiting.promise;
+      return { boxes: [] };
+    }
+  });
+  const refreshing = h.client.refreshDevices();
+  await tick();
+  assert.equal(h.client.snapshot().directory.phase, "ready");
+  assert.equal(h.client.snapshot().directory.refreshing, true);
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  assert.equal(h.sessions[0].closed, false);
+  waiting.resolve();
+  await refreshing;
+  assert.equal(h.sessions[0].closed, true);
+  assert.equal(h.client.snapshot().devices.length, 0);
+});
+
+test("system network notifications cannot enable a disabled or signed-out network", async (t) => {
+  const h = harness(t);
+  await h.client.networkChanged();
+  assert.equal(h.transports.length, 0);
+  await h.client.loginPassword({ phone: "account-1" });
+  let recoveries = 0;
+  h.transports[0].network.networkChanged = async () => {
+    recoveries++;
+  };
+  await h.client.networkChanged();
+  assert.equal(recoveries, 1);
+  await h.client.setNetworkEnabled(false);
+  await h.client.networkChanged();
+  assert.equal(recoveries, 1);
+});
+
+test("connectivity return retries a prior offline startup but not a denied account", async (t) => {
+  const h = harness(t);
+  h.override((input) => {
+    if (input.path.endsWith("/prepare")) throw fail("ACCOUNT_NETWORK_ERROR");
+  });
+  await h.client.loginPassword({ phone: "account-1" });
+  assert.equal(h.client.snapshot().platform.phase, "unavailable");
+  h.override(undefined);
+  await h.client.networkChanged();
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  h.override((input) => {
+    if (input.path.endsWith("/restore"))
+      throw fail("ACCOUNT_ACCESS_DENIED", 403);
+  });
+  await h.client.refreshDevices();
+  const count = h.calls.length;
+  await h.client.networkChanged();
+  assert.equal(
+    h.calls.length,
+    count,
+    "system notification cannot retry a terminal auth denial",
+  );
+});
+
+test("network event during a failed native start retries the confirmed saved identity", async (t) => {
+  const store = memoryResume();
+  const first = harness(t, { resumeStore: store });
+  await first.client.loginPassword({ phone: "account-1" });
+  await first.client.close();
+  const saved = await store.load();
+  const waiting = deferred();
+  let failurePending = true;
+  const h = harness(t, {
+    resumeStore: store,
+    restoreIdentity: saved,
+    serverSession: saved.networkSessionId,
+    savedKeys: first.keys,
+    onStart: async () => {
+      if (failurePending) {
+        await waiting.promise;
+        failurePending = false;
+        throw fail("start_failed");
+      }
+    },
+  });
+  const login = h.client.initialize();
+  await tick();
+  await tick();
+  const changed = h.client.networkChanged();
+  waiting.resolve();
+  await login;
+  await changed;
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  assert.equal(h.transports[0].closed, true);
+});
+
+test("box readiness follows its own connected peer during management recovery", async (t) => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-1" });
+  const network = h.transports[0].network;
+  const original = network.snapshot;
+  network.snapshot = () => ({ ...original(), phase: "recovering" });
+  assert.equal(h.client.snapshot().network.phase, "recovering");
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  network.snapshot = () => ({ ...original(), peers: [] });
+  assert.equal(h.client.snapshot().devices[0].networkReady, false);
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
 });

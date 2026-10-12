@@ -26,6 +26,8 @@ export function createPlatformClient({
   renewIntervalMs = 60_000,
   pollIntervalMs = 500,
   pollAttempts = 60,
+  resumeStore,
+  measure = (_step, operation) => operation(),
 } = {}) {
   let enabled = true;
   let transport = null,
@@ -50,6 +52,37 @@ export function createPlatformClient({
     selectionController;
   let switching = Promise.resolve(),
     activeWork = null;
+  let resumeHint = null;
+  let retryActivation = false;
+  let resumeWrites = Promise.resolve();
+  const persistResume = (value) => {
+    resumeHint = value;
+    // Serialize writes with logout/identity invalidation. This is only a startup
+    // hint, never an authorization snapshot or a reusable enrollment secret.
+    resumeWrites = resumeWrites
+      .catch(() => {})
+      .then(() => (value ? resumeStore?.save(value) : resumeStore?.clear()))
+      .catch(() => {});
+    return resumeWrites;
+  };
+  const usableLease = () =>
+    Boolean(
+      networkSession && networkSession.leaseExpiresAt * 1000 > Date.now(),
+    );
+  const transientError = (error) =>
+    error.retryable === true ||
+    error.code === "ACCOUNT_NETWORK_ERROR" ||
+    error.status === 429 ||
+    (error.status >= 500 && error.status < 600);
+  function validResume(value, identity) {
+    return (
+      value?.version === 1 &&
+      value.accountId === identity.accountId &&
+      value.clientId === identity.clientId &&
+      value.managementURL === managementURL &&
+      validID(value.networkSessionId)
+    );
+  }
   const draining = new Set(),
     listeners = new Set();
   const empty = () => ({
@@ -60,6 +93,7 @@ export function createPlatformClient({
   const snapshot = () => {
     const connection = activeLink?.client.snapshot() || empty();
     const signedIn = account.snapshot().phase === "authenticated";
+    const transportNetwork = transport?.network.snapshot();
     const network = !enabled
       ? { phase: "disabled", reason: null }
       : !signedIn
@@ -68,16 +102,29 @@ export function createPlatformClient({
       ? { phase: "checking", reason: null }
       : platform.phase === "unavailable"
       ? { phase: "unavailable", reason: platform.reason }
-      : transport?.network.snapshot() || { phase: "checking", reason: null };
+      : transportNetwork || { phase: "checking", reason: null };
     return structuredClone({
       ...connection,
       account: account.snapshot(),
       devices: boxes.map((box) => {
         const endpoint = devices.find((item) => item.deviceId === box.deviceId);
+        const host =
+          endpoint &&
+          new URL(endpoint.serviceUrl).hostname.replace(/^\[|\]$/g, "");
+        const networkReady = Boolean(
+          host &&
+            ["ready", "recovering"].includes(transportNetwork?.phase) &&
+            transportNetwork.peers.some(
+              (peer) => peer.ip === host && peer.connected,
+            ),
+        );
         return {
           ...box,
+          networkReady,
           canOpen: Boolean(
             enabled &&
+              usableLease() &&
+              networkReady &&
               platform.phase === "ready" &&
               directory.phase === "ready" &&
               box.accessState === "ready" &&
@@ -100,6 +147,7 @@ export function createPlatformClient({
     if (!current(generation)) throw fail("NETWORK_CANCELLED");
   };
   function cancel() {
+    retryActivation = false;
     epoch++;
     directoryRevision++;
     clearTimeout(timer);
@@ -222,7 +270,10 @@ export function createPlatformClient({
   }
   async function loadDirectory(generation, { prepare = false, signal } = {}) {
     const revision = prepare ? directoryRevision : ++directoryRevision;
-    directory = { phase: "loading", reason: null };
+    const retain = directory.phase === "ready" && usableLease();
+    directory = retain
+      ? { phase: "ready", reason: null, refreshing: true }
+      : { phase: "loading", reason: null };
     emit();
     try {
       const result = await request(
@@ -284,6 +335,16 @@ export function createPlatformClient({
       return true;
     } catch (error) {
       if (!current(generation) || revision !== directoryRevision) return false;
+      if (retain && usableLease() && transientError(error)) {
+        directory = {
+          phase: "ready",
+          reason: safeReason(error),
+          refreshing: false,
+        };
+        emit();
+        if (prepare) throw error;
+        return false;
+      }
       devices = [];
       if (!prepare && error.code === "NETWORK_SERVICE_NOT_DEPLOYED") {
         // The existing account directory is display-only until network APIs ship.
@@ -374,8 +435,20 @@ export function createPlatformClient({
     return emit();
   }
   async function activateImpl(generation, signal) {
+    retryActivation = false;
     const identity = authenticated();
     if (!enabled) return snapshot();
+    // Only an identity bound to this account/client can be warmed. Cloud
+    // confirmation below remains mandatory before exposing any endpoint.
+    const warming =
+      !transport && validResume(resumeHint, identity)
+        ? ensureTransport(identity, resumeHint.networkSessionId, generation)
+            .then(async (target) => ({
+              target,
+              status: await target.network.setEnabled(true),
+            }))
+            .catch(() => null)
+        : null;
     if (platform.phase !== "ready")
       platform = { phase: "enrolling", reason: null };
     emit();
@@ -418,7 +491,12 @@ export function createPlatformClient({
       enrollment.networkSessionId,
       generation,
     );
-    let status = await target.network.setEnabled(true);
+    const warmed = await warming;
+    assertCurrent(generation);
+    let status =
+      warmed?.target === target
+        ? warmed.status
+        : await target.network.setEnabled(true);
     assertCurrent(generation);
     if (status.phase === "auth_required" && !enrollment.setupKey) {
       // Includes a committed enrollment whose one-time key response was lost.
@@ -453,7 +531,15 @@ export function createPlatformClient({
       status = await target.network.enroll({ setupKey });
       assertCurrent(generation);
     }
-    if (status.phase !== "ready") throw fail("NETWORK_ENGINE_UNAVAILABLE");
+    if (status.phase !== "ready" && status.phase !== "recovering") {
+      const error = fail("NETWORK_ENGINE_UNAVAILABLE");
+      error.retryable =
+        status.phase === "unavailable" &&
+        ["start_failed", "network_unavailable", "engine_timeout"].includes(
+          status.reason,
+        );
+      throw error;
+    }
     for (
       let attempt = 0;
       enrollment.phase !== "ready" && attempt < pollAttempts;
@@ -475,6 +561,13 @@ export function createPlatformClient({
     assertCurrent(generation);
     await loadNetworkDevices(generation, signal);
     platform = { phase: "ready", reason: null };
+    void persistResume({
+      version: 1,
+      accountId: identity.accountId,
+      clientId: identity.clientId,
+      networkSessionId: enrollment.networkSessionId,
+      managementURL,
+    });
     schedule(generation);
     return emit();
   }
@@ -486,17 +579,16 @@ export function createPlatformClient({
     const work = activateImpl(generation, controller.signal)
       .catch(async (error) => {
         if (current(generation)) {
-          const transient =
-            error.code === "ACCOUNT_NETWORK_ERROR" ||
-            error.status === 429 ||
-            (error.status >= 500 && error.status < 600);
+          const transient = transientError(error);
+          retryActivation = transient;
           if (
             transient &&
             platform.phase === "ready" &&
             networkSession?.leaseExpiresAt * 1000 > Date.now() &&
-            transport?.network.snapshot().phase === "ready"
+            ["ready", "recovering"].includes(
+              transport?.network.snapshot().phase,
+            )
           ) {
-            devices = [];
             // Existing authorization remains bounded by the independent deadline.
             schedule(generation, 5000);
             return emit();
@@ -505,6 +597,7 @@ export function createPlatformClient({
           networkSession = null;
           devices = [];
           platform = { phase: "unavailable", reason: safeReason(error) };
+          if (!transient) void persistResume(null);
           await retireTransport();
           if (current(generation)) emit();
         }
@@ -534,6 +627,7 @@ export function createPlatformClient({
       boxes = [];
       directory = { phase: "idle", reason: null };
       prepareNeeded = true;
+      void persistResume(null);
       platform = { phase: "idle", reason: null };
       void retireTransport().catch(() => {});
     }
@@ -623,7 +717,15 @@ export function createPlatformClient({
         const preference = await readPreference();
         if (!current(generation)) return snapshot();
         enabled = preference !== false;
-        await account.restore();
+        await measure("account.restore", () => account.restore());
+        if (!current(generation)) return snapshot();
+        const identity = account.getIdentity();
+        if (enabled && identity && resumeStore) {
+          const saved = await resumeStore.load().catch(() => null);
+          if (!current(generation)) return snapshot();
+          if (validResume(saved, identity)) resumeHint = saved;
+          else if (saved) void persistResume(null);
+        }
       } catch (error) {
         if (current(generation))
           platform = { phase: "unavailable", reason: safeReason(error) };
@@ -636,6 +738,25 @@ export function createPlatformClient({
     loginSMS: (input) => afterLogin(() => account.loginSMS(input)),
     sendSMS: ({ phone }) => account.sendSMS(phone),
     refreshDevices,
+    async networkChanged() {
+      if (closed || !enabled || !account.getIdentity()) return snapshot();
+      const generation = epoch;
+      // Let an in-flight startup settle before repairing its path. A late system
+      // notification must never resurrect a disabled or logged-out generation.
+      if (activeWork) await activeWork;
+      if (!current(generation) || !enabled) return snapshot();
+      if (transport && usableLease()) {
+        await measure("network.recover", () =>
+          transport.network.networkChanged?.(),
+        );
+        if (current(generation)) emit();
+      } else if (retryActivation) {
+        // Retry only a previously requested, transiently failed activation.
+        // Auth rejection, a hard lease expiry, and logout cannot enter this path.
+        await activate();
+      }
+      return snapshot();
+    },
     async setNetworkEnabled(value) {
       if (closed) throw fail("NETWORK_CANCELLED");
       if (typeof value !== "boolean") throw fail("NETWORK_INVALID_SWITCH");
@@ -736,6 +857,7 @@ export function createPlatformClient({
               identity,
               networkSessionId: sessionId,
               signal,
+              measure,
               onExpired: () => {
                 if (transport === target && selection === connectionEpoch)
                   void target.client.disconnect();
@@ -760,6 +882,7 @@ export function createPlatformClient({
       boxes = [];
       directory = { phase: "idle", reason: null };
       prepareNeeded = true;
+      void persistResume(null);
       platform = { phase: "idle", reason: null };
       const stopping = Promise.all([retireTransport(), retireDirect()]);
       emit();
@@ -792,6 +915,7 @@ export function createPlatformClient({
       await switching.catch(() => {});
       await Promise.allSettled([...draining]);
       await account.close();
+      await resumeWrites;
       listeners.clear();
     },
   };

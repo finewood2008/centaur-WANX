@@ -36,6 +36,8 @@ func (s *service) dispatch(ctx context.Context, method string, raw json.RawMessa
 	switch method {
 	case "start":
 		return s.start(ctx, p)
+	case "recover":
+		return s.recover(ctx)
 	case "status":
 		return s.status(), nil
 	case "stop":
@@ -53,7 +55,11 @@ func (s *service) status() networkStatus {
 	s.mu.Lock()
 	e := s.engine
 	starting := s.starting
+	recovering := s.proxy != nil
 	s.mu.Unlock()
+	if recovering && (starting || e == nil) {
+		return state("recovering", "network_unavailable")
+	}
 	if starting {
 		return state("starting", "")
 	}
@@ -125,6 +131,70 @@ func (s *service) start(parent context.Context, p startParams) (any, error) {
 		if proxy != nil {
 			proxy.close()
 		}
+		if e != nil {
+			stopEngine(e)
+		}
+		return nil, err
+	}
+	return struct {
+		Proxy  proxyInfo     `json:"proxy"`
+		Status networkStatus `json:"status"`
+	}{proxy.info, e.Status()}, nil
+}
+
+// Recovery reuses the saved peer identity and local proxy. It never consumes
+// another enrollment key or closes the application's box login session.
+func (s *service) recover(parent context.Context) (any, error) {
+	s.mu.Lock()
+	if s.pendingStart {
+		s.mu.Unlock()
+		return nil, failure("busy")
+	}
+	if s.proxy == nil {
+		s.mu.Unlock()
+		return nil, failure("network_unavailable")
+	}
+	s.epoch++
+	epoch := s.epoch
+	previous, proxy, p := s.engine, s.proxy, s.activeParams
+	s.engine = nil
+	s.starting, s.pendingStart = true, true
+	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
+	s.cancel = cancel
+	proxy.replaceEngine(nil)
+	s.mu.Unlock()
+	defer cancel()
+	defer func() { s.mu.Lock(); s.pendingStart = false; s.mu.Unlock() }()
+	if previous != nil {
+		stopEngine(previous)
+	}
+	var e engine
+	var err error
+	if ctx.Err() == nil {
+		e, err = s.factory(p, "")
+	}
+	if e != nil && err == nil {
+		err = e.Start(ctx)
+	}
+	s.mu.Lock()
+	current := s.epoch == epoch
+	if !current || ctx.Err() == context.Canceled {
+		err = failure("cancelled")
+	} else if ctx.Err() == context.DeadlineExceeded && (err == nil || err.Error() != "auth_required") {
+		// A slow/offline network is retryable. Only an explicit stop or parent
+		// cancellation invalidates the retained gateway; auth denial still wins.
+		err = failure("start_failed")
+	}
+	if current {
+		s.starting = false
+		s.cancel = nil
+		if err == nil {
+			s.engine = e
+			proxy.replaceEngine(e)
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
 		if e != nil {
 			stopEngine(e)
 		}

@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { randomBytes } from "node:crypto";
+import { validAssetManifest } from "./static-cache.mjs";
 import { WebSocket, WebSocketServer } from "ws";
 
 const HOP_HEADERS = new Set([
@@ -15,6 +16,12 @@ const HOP_HEADERS = new Set([
 ]);
 const MAX_SOCKET_BYTES = 16 * 1024 * 1024;
 const TOKEN_QUERY_FIELDS = ["token", "access_token"];
+const PROFILE_ROUTES = new Set([
+  "GET /api/auth/me",
+  "PATCH /api/auth/me",
+  "POST /api/auth/me/avatar",
+  "DELETE /api/auth/me/avatar",
+]);
 
 function headersWithoutHop(headers) {
   const blocked = new Set(HOP_HEADERS);
@@ -41,7 +48,13 @@ function reject(response, status, message) {
  * Platform mode holds a box-session provider in main and gives the renderer only
  * an opaque per-gateway marker; direct mode forwards existing box credentials.
  */
-export async function createDashboardGateway({ targetURL, agent, session }) {
+export async function createDashboardGateway({
+  targetURL,
+  agent,
+  session,
+  staticCache,
+  cacheScope,
+}) {
   const target = new URL(targetURL);
   if (
     !["http:", "https:"].includes(target.protocol) ||
@@ -118,7 +131,7 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
     if (pathname.includes("\\") || pathname.includes("//")) return null;
     if (
       (pathname === "/api/auth" || pathname.startsWith("/api/auth/")) &&
-      pathname !== "/api/auth/me"
+      (websocket || !PROFILE_ROUTES.has(`${request.method} ${pathname}`))
     )
       return null;
     const headerToken = request.headers.authorization;
@@ -148,7 +161,51 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
     return { path: endpoint.pathname + endpoint.search, headers, token };
   }
 
-  const server = http.createServer((request, response) => {
+  let assetManifest = null;
+  // Metadata travels through the same trusted box tunnel and requires a live
+  // platform session. Old boxes simply continue through the streaming proxy.
+  if (staticCache && session && cacheScope?.accountId && cacheScope?.boxId) {
+    const manifestRequest = transport.request(target, {
+      method: "GET",
+      path: "/api/platform/assets/manifest",
+      agent: agent ?? false,
+      headers: {
+        authorization: `Bearer ${session.getToken()}`,
+        "accept-encoding": "identity",
+      },
+    });
+    requests.add(manifestRequest);
+    const timeout = setTimeout(() => manifestRequest.destroy(), 1500);
+    timeout.unref();
+    manifestRequest.once("close", () => {
+      clearTimeout(timeout);
+      requests.delete(manifestRequest);
+    });
+    manifestRequest.on("error", () => {});
+    manifestRequest.on("response", (incoming) => {
+      if (incoming.statusCode !== 200) return incoming.resume();
+      let length = 0;
+      const chunks = [];
+      incoming.on("error", () => {});
+      incoming.on("data", (chunk) => {
+        length += chunk.length;
+        if (length > 512 * 1024) return incoming.destroy();
+        chunks.push(chunk);
+      });
+      incoming.on("end", () => {
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          if (!closed && session.getToken() && validAssetManifest(parsed))
+            assetManifest = parsed;
+        } catch {
+          /* unsupported or invalid catalog: no cache */
+        }
+      });
+    });
+    manifestRequest.end();
+  }
+
+  const server = http.createServer(async (request, response) => {
     if (!allowed(request))
       return reject(response, 403, "Gateway request rejected");
     if (session && request.url.startsWith("/__wanx_session/")) {
@@ -176,6 +233,53 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
     }
     const authorized = authorize(request);
     if (!authorized) return reject(response, 401, "Platform session required");
+    const cachePath = request.url;
+    const cacheable =
+      staticCache &&
+      session &&
+      assetManifest &&
+      bootstrapped &&
+      ["GET", "HEAD"].includes(request.method) &&
+      !request.headers.range &&
+      !request.headers["service-worker"] &&
+      assetManifest.assets[cachePath];
+    // Cached bytes are stored decoded. Respect a caller that forbids identity.
+    const encodings = String(
+      request.headers["accept-encoding"] || "",
+    ).toLowerCase();
+    const identityForbidden =
+      /(?:^|,)\s*identity\s*;\s*q=0(?:\.0*)?\s*(?:,|$)/.test(encodings) ||
+      (!/(?:^|,)\s*identity(?:\s*;|\s*,|$)/.test(encodings) &&
+        /(?:^|,)\s*\*\s*;\s*q=0(?:\.0*)?\s*(?:,|$)/.test(encodings));
+    if (cacheable && !identityForbidden) {
+      const hit = await staticCache
+        .get(cacheScope, assetManifest, cachePath)
+        .catch(() => null);
+      if (closed || response.destroyed) return;
+      if (!session.getToken())
+        return reject(response, 401, "Platform session required");
+      if (hit) {
+        const headers = {
+          "content-type": hit.contentType,
+          etag: hit.etag,
+          "cache-control": "private, no-cache",
+          vary: "Accept-Encoding",
+          "x-content-type-options": "nosniff",
+        };
+        const validators = String(request.headers["if-none-match"] || "")
+          .split(",")
+          .map((value) => value.trim().replace(/^W\//, ""));
+        if (validators.includes(hit.etag) || validators.includes("*")) {
+          response.writeHead(304, headers);
+          return response.end();
+        }
+        response.writeHead(200, {
+          ...headers,
+          "content-length": hit.data.length,
+        });
+        return response.end(request.method === "HEAD" ? undefined : hit.data);
+      }
+    }
     const upstream = transport.request(target, {
       method: request.method,
       path: authorized.path,
@@ -260,6 +364,17 @@ export async function createDashboardGateway({ targetURL, agent, session }) {
           403,
           "Service workers are disabled in the client",
         );
+      }
+      if (
+        staticCache &&
+        session &&
+        bootstrapped &&
+        assetManifest &&
+        request.method === "GET" &&
+        !request.headers.range &&
+        session.getToken()
+      ) {
+        staticCache.capture(cacheScope, assetManifest, request.url, incoming);
       }
       response.writeHead(incoming.statusCode, headers);
       response.flushHeaders();
