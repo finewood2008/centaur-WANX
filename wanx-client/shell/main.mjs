@@ -158,7 +158,7 @@ if (claimSingleInstance(app, () => control))
         height: 760,
         minWidth: 900,
         minHeight: 620,
-        title: "万象电脑端",
+        title: "半人马AI-万象",
         webPreferences: {
           preload: fileURLToPath(
             new URL("../local-ui/remote-preload.cjs", import.meta.url),

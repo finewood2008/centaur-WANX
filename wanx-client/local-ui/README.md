@@ -15,6 +15,14 @@ adapter:
 The adapter projects client state and forwards account, device, network, and
 application actions. P2P, credentials, and application sessions stay in the shell.
 
+## Appearance
+
+The UI follows `docs/centaur-ui.md`: the CentaurAI light palette from
+`dashboard/src/styles/theme-vars.css`, serif headings, and the original
+`dashboard/public/centaurai-mark.png`. The logo is copied unchanged into
+`renderer/assets/`; the local palette and asset ship inside the Electron package
+without requiring the Dashboard or a remote font/image service.
+
 ## Product navigation
 
 - Login or account restoration opens the application card homepage. Local

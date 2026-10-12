@@ -56,7 +56,7 @@ function deviceCard(device, available) {
     : `<button class="button small" data-action="provisioning" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>开始初始化</button>`;
   return `
     <article class="device-card ${selected ? "selected" : ""}">
-      <div class="device-icon">W</div>
+      <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
       <div class="device-main">
         <div class="device-title-row">
           <h3>${escapeHTML(device.name)}</h3>
@@ -85,8 +85,9 @@ function shellHeader(title, eyebrow = "") {
   const account = currentState.account?.displayName || currentState.account?.id || "万象用户";
   return `
     <header class="topbar">
-      <div class="brand-mark">W</div>
-      <div><p class="eyebrow">WANX CLIENT</p><h1>${title}</h1></div>
+      <img class="brand-mark" src="./assets/centaurai-mark.png" alt="" />
+      <div class="brand-names"><strong class="brand-name">半人马AI-万象</strong><span class="brand-english">CentaurAI-WANX</span></div>
+      <h1 class="sr-only">${title}</h1>
       <nav class="shell-nav" aria-label="主导航">
         <button class="nav-button ${page === "applications" ? "active" : ""}" data-action="show-applications" ${page === "applications" ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>应用</button>
         <button class="nav-button ${page === "settings" ? "active" : ""}" data-action="show-settings" ${page === "settings" ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>设置</button>
@@ -103,8 +104,8 @@ function authView() {
   return `
     <div class="auth-layout">
       <section class="auth-intro">
-        <div class="brand-mark large">W</div>
-        <p class="eyebrow">WANX PLATFORM</p>
+        <div class="auth-brand"><img class="brand-mark large" src="./assets/centaurai-mark.png" alt="" /><div class="brand-names"><strong class="brand-name">半人马AI-万象</strong><span class="brand-english">CentaurAI-WANX</span></div></div>
+        <p class="eyebrow">万象 · 应用工作台</p>
         <h1>你的应用，<br />连接你的万象盒子</h1>
         <p class="lede">登录后管理应用，连接一台盒子，即可使用设备中的服务。</p>
         <div class="flow-preview"><span>登录万象</span><i>→</i><span>连接盒子</span><i>→</i><span>打开应用</span></div>
@@ -221,7 +222,7 @@ function provisioningView() {
   return `
     <div class="app-layout">
       ${shellHeader("发现并初始化盒子", "设备接入")}
-      <section class="wizard-hero"><div><p class="eyebrow">NEW DEVICE SETUP</p><h2>把一台新盒子加入你的平台</h2><p class="lede">按照发现、身份确认、配网、认领和初始化顺序完成接入。未完成的设备不会进入可用列表。</p></div><div class="wizard-orb">${running ? "…" : "W"}</div></section>
+      <section class="wizard-hero"><div><p class="eyebrow">NEW DEVICE SETUP</p><h2>把一台新盒子加入你的平台</h2><p class="lede">按照发现、身份确认、配网、认领和初始化顺序完成接入。未完成的设备不会进入可用列表。</p></div><div class="wizard-orb">${running ? "…" : '<img src="./assets/centaurai-mark.png" alt="半人马AI-万象" />'}</div></section>
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
         <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${discoveryBlock}${previewBlock}${controls}</div>
         <div class="wizard-actions">${running ? '<button class="button" disabled>返回设置</button><button class="button danger" data-action="cancel-provisioning">取消</button>' : `<button class="button" data-action="back-devices">返回设置</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary" data-action="start-provisioning" ${busy || !setupReady ? "disabled" : ""}>${provisioning.phase === "failed" ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">返回设备管理</button>' : '<button class="button danger" data-action="cancel-provisioning">取消</button>'}</div>`}
