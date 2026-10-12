@@ -19,6 +19,8 @@ export function registerControlActions({
   controlURL,
   client,
   applications,
+  market,
+  allowDevelopmentInstall = false,
 }) {
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
@@ -69,6 +71,7 @@ export function registerControlActions({
   register("disconnect", () => client.disconnect());
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
+    if (!allowDevelopmentInstall) throw new Error("MARKET_SIGNED_PACKAGE_REQUIRED");
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     return applications.install({ sourceDir: text(input?.sourceDir, 4096, "invalid_application_source") });
   });
@@ -86,4 +89,14 @@ export function registerControlActions({
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     return applications.stop(text(input?.applicationId, 64, "invalid_application_id"));
   });
+  for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
+    register(`market-${method}`, (input) => {
+      if (!market) throw new Error("MARKET_UNAVAILABLE");
+      if (client.snapshot().account?.phase !== "authenticated")
+        throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      return method === "list"
+        ? market.list()
+        : market[method](text(input?.applicationId, 64, "invalid_application_id"));
+    });
+  }
 }

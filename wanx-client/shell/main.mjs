@@ -20,6 +20,9 @@ import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
+import { createApplicationMarket } from "../applications/market.mjs";
+import { runManagedApplication } from "../applications/runtime.mjs";
+import { createMarketSessionGuard } from "./market-session.mjs";
 import { monitorNetworkChanges } from "./network-monitor.mjs";
 import { createTimingRecorder } from "./timings.mjs";
 import { createDashboardGateway } from "../octop/gateway.mjs";
@@ -31,6 +34,7 @@ let client;
 let unsubscribe;
 let setupRuntime;
 let applications;
+let marketSession;
 let quitting = false;
 let stopNetworkMonitor;
 let timings;
@@ -44,9 +48,24 @@ function reportError(error) {
   console.error("[wanx-client]", error.message);
 }
 
+async function marketTrustedKeys() {
+  const trust = JSON.parse(await readFile(new URL("../applications/market-trust.json", import.meta.url), "utf8"));
+  return trust.keys;
+}
+
 // Do not await readiness at ESM top level: Electron waits for the entry module
 // to finish evaluating before emitting ready.
-if (claimSingleInstance(app, () => control))
+if (process.argv.includes("--wanx-managed-app")) {
+  // Managed application children use their own userData and never claim the
+  // WANX singleton or initialize another network/account controller.
+  marketTrustedKeys()
+    .then((trustedKeys) => runManagedApplication({
+      applicationRoot: path.join(app.getPath("userData"), "applications"),
+      trustedKeys,
+      app,
+    }))
+    .catch((error) => { reportError(error); app.exit(1); });
+} else if (claimSingleInstance(app, () => control))
   app
     .whenReady()
     .then(async () => {
@@ -167,6 +186,7 @@ if (claimSingleInstance(app, () => control))
           };
         },
       });
+      const trustedKeys = await marketTrustedKeys();
       applications = await createApplicationManager({
         applicationRoot: path.join(userData, "applications"),
         applicationId: "wanx-host",
@@ -174,13 +194,30 @@ if (claimSingleInstance(app, () => control))
         request: (input) => client.applicationRequest(input),
         stream: (input) => client.applicationStream(input),
         createConnection: () => client.applicationConnection(),
+        trustedKeys,
+        launcherArgs: [
+          ...(app.isPackaged ? [] : [app.getAppPath()]),
+          "--wanx-managed-app",
+          `--user-data-dir=${userData}`,
+          ...(app.commandLine.hasSwitch("use-mock-keychain") ? ["--use-mock-keychain"] : []),
+        ],
+      });
+      marketSession = createMarketSessionGuard(account);
+      const market = createApplicationMarket({
+        request: (input) => account.request(input),
+        applications,
+        wanxVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        trustedKeys,
+        captureSession: () => marketSession.captureSession(),
       });
       control = new BrowserWindow({
         width: 1180,
         height: 760,
         minWidth: 900,
         minHeight: 620,
-        title: "半人马AI-万象",
+        title: "万象",
         webPreferences: {
           preload: fileURLToPath(
             new URL("../local-ui/remote-preload.cjs", import.meta.url),
@@ -205,6 +242,8 @@ if (claimSingleInstance(app, () => control))
         controlURL,
         client,
         applications,
+        market,
+        allowDevelopmentInstall: !app.isPackaged && process.env.WANX_ALLOW_DEVELOPMENT_INSTALL === "1",
       });
       unsubscribe = client.subscribe(async () => {
         if (!control.isDestroyed()) {
@@ -218,6 +257,7 @@ if (claimSingleInstance(app, () => control))
         event.preventDefault();
         quitting = true;
         unsubscribe();
+        marketSession?.close();
         stopNetworkMonitor?.();
         Promise.resolve(setupRuntime?.dispose())
           .catch(() => {})

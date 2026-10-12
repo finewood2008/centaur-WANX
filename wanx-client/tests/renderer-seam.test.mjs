@@ -23,7 +23,7 @@ function state(platformPhase = "ready", networkPhase = "ready", boxId = null) {
 }
 
 // Execute the real renderer -> preload -> control IPC seam without Electron or a live box.
-async function harness(initial = state(), installed = [application]) {
+async function harness(initial = state(), installed = [application], options = {}) {
   let rawState = initial;
   let records = [...installed];
   const events = new Map(), handlers = new Map(), listeners = new Map();
@@ -45,6 +45,16 @@ async function harness(initial = state(), installed = [application]) {
   registerControlActions({
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     control: { webContents: contents, isDestroyed: () => false }, controlURL, client,
+    market: {
+      list: async () => options.list ? options.list() : { items: [application] },
+      candidate: async (id) => options.candidate ? options.candidate(id) : {
+        status: records.some((item) => item.applicationId === id) ? "up_to_date" : "available",
+        release: { version: application.version },
+      },
+      install: async () => { records = [application]; return application; },
+      uninstall: async () => { records = []; },
+      rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
+    },
     applications: {
       listInstalled: async () => records,
       install: async () => { records = [application]; return application; },
@@ -70,7 +80,7 @@ async function harness(initial = state(), installed = [application]) {
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
-    app, calls, launches,
+    app, calls, launches, window,
     update(next, publish = true) {
       rawState = next;
       if (publish) listeners.get("wanx-client:state")({}, { ...rawState, applications: records });
@@ -78,7 +88,7 @@ async function harness(initial = state(), installed = [application]) {
     click(action, data = {}) {
       return events.get("click")({ target: { closest: () => ({ dataset: { action, ...data } }) } });
     },
-    input(value) { events.get("input")({ target: { id: "application-source", value } }); },
+    keydown(key) { return events.get("keydown")({ key, preventDefault() {} }); },
     submit(form, values) { return events.get("submit")({ preventDefault() {}, target: { dataset: { form }, values } }); },
   };
 }
@@ -151,17 +161,76 @@ test("network failure and recovery update both application and settings actions"
   assert.match(h.app.innerHTML, /data-action="connect"/);
 });
 
-test("installation works before connecting and applies the IPC response without a state broadcast", async () => {
+test("market installation requires confirmation and works without a connected box", async () => {
   const h = await harness(state(), []);
   assert.match(h.app.innerHTML, /安装你的第一个应用/);
-  h.input('/apps/zhijun & "draft"');
-  h.update(state());
-  assert.match(h.app.innerHTML, /value="\/apps\/zhijun &amp; &quot;draft&quot;"/);
-  await h.submit("install", { sourceDir: " /apps/zhijun " });
+  assert.match(h.app.innerHTML, /data-action="market-install"/);
+  assert.doesNotMatch(h.app.innerHTML, /application-source|sourceDir|应用目录路径/);
+  await h.click("market-install", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /role="alertdialog"/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:market-install").length, 0);
+  await h.click("market-confirm");
   assert.match(h.app.innerHTML, /class="application-card"/);
-  assert.match(h.app.innerHTML, /知君/);
+  assert.match(h.app.innerHTML, /已是最新版本/);
   assert.equal(h.launches.length, 0);
-  assert.equal(h.calls.find(([name]) => name === "wanx-client:applications-install")[1].sourceDir, "/apps/zhijun");
+  assert.equal(h.calls.find(([name]) => name === "wanx-client:market-install")[1].applicationId, application.applicationId);
+});
+
+test("market cancellation, uninstall and rollback require explicit confirmation", async () => {
+  const h = await harness(state(), [{ ...application, previous: { version: "0.4.2" } }]);
+  assert.match(h.app.innerHTML, /恢复上一版本/);
+  await h.click("market-uninstall", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /保留应用业务数据/);
+  await h.click("market-cancel");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:market-uninstall").length, 0);
+  await h.click("market-rollback", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /恢复到 v0.4.2/);
+  await h.keydown("Escape");
+  assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
+  await h.click("market-rollback", { applicationId: application.applicationId });
+  await h.click("market-confirm");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:market-rollback").length, 1);
+  await h.click("market-uninstall", { applicationId: application.applicationId });
+  await h.click("market-confirm");
+  assert.match(h.app.innerHTML, /安装你的第一个应用/);
+});
+
+for (const [status, label] of [["local_newer", "本机版本较新"], ["incompatible", "暂不兼容"], ["unavailable", "暂无适用版本"]]) {
+  test(`market status ${status} never enables an install action`, async () => {
+    const h = await harness(state(), [], { candidate: async () => ({ status }) });
+    assert.match(h.app.innerHTML, new RegExp(label));
+    assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"/);
+    await h.click("market-install", { applicationId: application.applicationId });
+    assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
+  });
+}
+
+test("market update displays the target version and retains box launch gating", async () => {
+  const h = await harness(state("enrolling", "checking"), [application], { candidate: async () => ({ status: "available", release: { version: "0.5.0" } }) });
+  assert.match(h.app.innerHTML, /可更新至 v0.5.0/);
+  await h.click("market-install", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /将 v0.4.3 更新至 v0.5.0/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"/);
+});
+
+test("preload strips untrusted package inputs and hides directory installation", async () => {
+  const h = await harness(state(), []);
+  await h.window.wanxClient.action("market.install", { applicationId: application.applicationId, url: "https://attacker.example/file", sourceDir: "/tmp/evil", sha256: "evil" });
+  const input = h.calls.find(([name]) => name === "wanx-client:market-install")[1];
+  assert.deepEqual(Object.keys(input), ["applicationId"]);
+  const response = await h.window.wanxClient.action("applications.install", { sourceDir: "/tmp/evil" });
+  assert.equal(response.ok, false);
+  assert.equal(response.code, "UNKNOWN_CLIENT_ACTION");
+});
+
+test("late market responses after logout do not leak the previous account catalog", async () => {
+  let resolveList;
+  const h = await harness(state(), [], { list: () => new Promise((resolve) => { resolveList = resolve; }) });
+  await h.click("logout");
+  resolveList({ items: [{ ...application, name: "Private old catalog" }] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /登录万象平台/);
+  assert.doesNotMatch(h.app.innerHTML, /Private old catalog/);
 });
 
 test("a stale open button cannot bypass the main-process box check", async () => {
@@ -194,3 +263,110 @@ test("device setup retains its wizard across polling and returns to settings", a
   assert.match(h.app.innerHTML, /设备管理/);
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
 });
+
+
+test("market failure leaves installed applications available and presents a Chinese retry message", async () => {
+  const h = await harness(state("ready", "ready", "box-102"), [application], { list: async () => { throw new Error("MARKET_NOT_CONFIGURED"); } });
+  assert.match(h.app.innerHTML, /应用市场尚未配置完成/);
+  assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+  assert.match(h.app.innerHTML, /刷新与检查更新/);
+  assert.doesNotMatch(h.app.innerHTML, /MARKET_NOT_CONFIGURED/);
+});
+
+test("catalog text is escaped and unauthenticated users do not request the market", async () => {
+  const signedOut = await harness({ account: { phase: "signed_out" } });
+  assert.equal(signedOut.calls.filter(([name]) => name.startsWith("wanx-client:market-")).length, 0);
+  const h = await harness(state(), [], { list: async () => ({ items: [{ ...application, name: '<script>unsafe</script>', description: '<img src=x onerror="unsafe()">' }] }) });
+  assert.match(h.app.innerHTML, /&lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.doesNotMatch(h.app.innerHTML, /<script>unsafe|<img src=x/);
+});
+
+for (const installed of [[], [application]]) {
+  test(`candidate package details and escaped release notes appear on ${installed.length ? "installed" : "market"} cards`, async () => {
+    const h = await harness(state(), installed, { candidate: async () => ({
+      status: "available", release: { version: "0.5.0", notes: '支持新模型\n<script>alert("unsafe")</script>' },
+      artifact: { os: "macos", arch: "arm64", size: 2568392 },
+    }) });
+    assert.match(h.app.innerHTML, /macOS · Apple 芯片 · 2.4 MB/);
+    assert.match(h.app.innerHTML, /v0.5.0 更新说明/);
+    assert.match(h.app.innerHTML, /支持新模型\n&lt;script&gt;/);
+    assert.doesNotMatch(h.app.innerHTML, /<script>alert/);
+  });
+}
+
+test("missing artifacts and blank release notes do not create empty detail sections", async () => {
+  const h = await harness(state(), [], { candidate: async () => ({ status: "unavailable", release: { version: "0.5.0", notes: " \n " }, artifact: null }) });
+  assert.doesNotMatch(h.app.innerHTML, /class="market-metadata"|class="market-notes"|undefined|NaN/);
+});
+
+for (const [reason, label] of [
+  ["application_unlisted", "此应用尚未上架或已下架"],
+  ["no_published_target", "暂无适用于此电脑平台的安装包"],
+  ["release_unavailable", "此发行版本暂不可用"],
+  ["wanx_version", "请先升级万象"],
+  ["host_protocol", "当前万象运行协议不兼容"],
+  ["reinstall_required", "此版本需管理员协助重新安装"],
+]) {
+  test(`candidate reason ${reason} explains how to proceed without enabling install`, async () => {
+    const h = await harness(state(), [], { candidate: async () => ({ status: reason.endsWith("unlisted") || reason.endsWith("target") || reason.endsWith("unavailable") ? "unavailable" : "incompatible", reason }) });
+    assert.match(h.app.innerHTML, new RegExp(label));
+    assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"/);
+  });
+}
+
+for (const [code, label] of [
+  ["MARKET_SERVICE_NOT_DEPLOYED", "应用市场接口尚未部署"],
+  ["MARKET_UNTRUSTED_SIGNING_KEY", "服务器不信任此发行签名"],
+  ["MARKET_STORAGE_UNAVAILABLE", "安装包存储暂不可用"],
+  ["APPLICATION_RETIRED", "此应用已退役"],
+]) {
+  test(`candidate error ${code} survives IPC and presents its recovery message`, async () => {
+    let failed = true;
+    const h = await harness(state(), [], { candidate: async () => {
+      if (failed) throw Object.assign(new Error("request failed"), { code });
+      return { status: "available", release: { version: "0.4.3" } };
+    } });
+    assert.match(h.app.innerHTML, new RegExp(label));
+    assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"/);
+    failed = false;
+    await h.click("market-refresh");
+    assert.match(h.app.innerHTML, /data-action="market-install"/);
+    assert.doesNotMatch(h.app.innerHTML, new RegExp(label));
+  });
+}
+
+test("one candidate failure does not hide another app's installable version", async () => {
+  const other = { ...application, applicationId: "example.other", name: "另一个应用" };
+  const h = await harness(state(), [], {
+    list: async () => ({ items: [application, other] }),
+    candidate: async (id) => {
+      if (id === application.applicationId) throw new Error("MARKET_DATABASE_UNAVAILABLE");
+      return { status: "available", release: { version: "1.0.0" } };
+    },
+  });
+  assert.match(h.app.innerHTML, /应用市场服务暂不可用/);
+  assert.match(h.app.innerHTML, /data-action="market-install" data-application-id="example.other"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="market-install" data-application-id="centaurai.wanx.zhijun"/);
+});
+
+for (const provisioning of [false, true]) {
+  test(`account switching discards stale candidates${provisioning ? " while provisioning" : ""}`, async () => {
+    let resolveCandidate;
+    let listCalls = 0;
+    const h = await harness(state(), [], {
+      list: async () => ({ items: [{ ...application, name: ++listCalls === 1 ? "旧账号目录" : "新账号目录" }] }),
+      candidate: () => listCalls === 1 ? new Promise((resolve) => { resolveCandidate = resolve; })
+        : Promise.resolve({ status: "available", release: { version: "0.5.0", notes: "新账号版本说明" } }),
+    });
+    if (provisioning) await h.click("provisioning");
+    h.update({ ...state(), account: { phase: "authenticated", accountId: "account-2" } });
+    await new Promise((resolve) => setImmediate(resolve));
+    resolveCandidate({ status: "available", release: { version: "99.0.0", notes: "旧账号版本说明" } });
+    await new Promise((resolve) => setImmediate(resolve));
+    if (provisioning) await h.click("show-applications");
+    assert.match(h.app.innerHTML, /新账号目录/);
+    assert.match(h.app.innerHTML, /新账号版本说明/);
+    assert.doesNotMatch(h.app.innerHTML, /旧账号|99.0.0/);
+    assert.equal(listCalls, 2);
+  });
+}

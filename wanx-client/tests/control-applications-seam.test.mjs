@@ -10,13 +10,14 @@ const connected = {
   connection: { mode: "netbird", deviceId: "box-102" },
 };
 
-function control(state) {
+function control(state, allowDevelopmentInstall = false) {
   const handlers = new Map(), launched = [], installed = [];
   const frame = { url: "file:///wanx/index.html" }, webContents = { mainFrame: frame };
   registerControlActions({
     ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
     client: { snapshot: () => state },
+    allowDevelopmentInstall,
     applications: {
       launch: (...args) => launched.push(args),
       install: (input) => installed.push(input),
@@ -53,11 +54,17 @@ test("launch IPC forwards the selected application version only with a ready box
   assert.deepEqual(h.launched, [["centaurai.wanx.zhijun", "0.4.3"]]);
 });
 
-test("local installation remains available without a connected box", () => {
-  const h = control({ ...connected, phase: "disconnected", connection: null });
+test("explicit development installation remains available without a connected box", () => {
+  const h = control({ ...connected, phase: "disconnected", connection: null }, true);
   h.invoke("applications-install", { sourceDir: "/application-package" });
   assert.deepEqual(h.installed, [{ sourceDir: "/application-package" }]);
   assert.deepEqual(h.launched, []);
+});
+
+test("production IPC rejects unsigned directory installation", () => {
+  const h = control(connected);
+  assert.throws(() => h.invoke("applications-install", { sourceDir: "/application-package" }), /MARKET_SIGNED_PACKAGE_REQUIRED/);
+  assert.deepEqual(h.installed, []);
 });
 
 test("state reads sample the connection after the asynchronous application list finishes", async () => {

@@ -72,6 +72,8 @@ P2P 模式所有拨号都经内置引擎：包括 `/api/health`、普通请求�
 
 ## 构建与分发
 
+应用市场的包格式、版本比较、签名与后台发布流程见 [WANX 应用市场开发与发布](../docs/wanx-application-market.md)。
+
 ```sh
 # 当前平台，或一次构建 macOS/Windows 两种架构
 npm --prefix wanx-client run build:network

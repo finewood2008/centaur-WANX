@@ -2,7 +2,9 @@
 
 WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用户数据。**万象电脑端**在笔记本上运行独立的客户端界面，通过 `centaurai-wanx` SDK 联入盒子。知君及其他产品使用同一个通用 SDK，并拥有各自的应用身份和用户实例。
 
-当前电脑端代码位于 `wanx-desktop/`，使用 Electron 封装并复用原 Dashboard 的功能页面。电脑端保留盒子连接、应用中心两个入口；本次 Octop Web 控制台新增「盒子管理」主导航，包含 SDK 平台管理和已有地址连接。管理员权限由选中的盒子决定。此前 Go/Wails 远程网页壳和独立管理员原型保留作历史参考。
+当前万象底座与应用市场代码位于 `wanx-client/`，通过 Consumer 账号查询已上架应用、检查版本和下载安装 `.wanxapp`，连接盒子后启动应用。在仓库根目录运行 `npm run start:client`；macOS 和 Windows 打包分别使用 `npm run package:client:mac`、`npm run package:client:windows`。macOS 此命令输出应用目录。详细使用见 [客户端说明](wanx-client/README.md) 和 [应用市场说明](docs/wanx-application-market.md)。
+
+下文的 `wanx-desktop/` 是保留的 Dashboard 桌面壳实现，根目录 `npm start`、`npm run package:mac`、`npm run package:windows` 仍对应它，不包含新的 WANX 应用市场。Web 控制台的盒子管理与该桌面壳继续保留，管理员权限由选中的盒子决定。
 
 ## 本次 GitHub 迁移
 

@@ -266,16 +266,22 @@ export function createAccount({
       let payload;
       const missingNetworkRoute =
         response.status === 404 && path.startsWith("/app-api/network/");
+      const missingMarketRoute =
+        response.status === 404 && path.startsWith("/app-api/market/");
       try {
         payload = JSON.parse(responseText);
       } catch {
         if (missingNetworkRoute)
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+        if (missingMarketRoute)
+          throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         if (missingNetworkRoute)
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+        if (missingMarketRoute)
+          throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
       assert(generation);
@@ -316,11 +322,18 @@ export function createAccount({
         const explicitNetworkCode =
           typeof remoteCode === "string" &&
           /^NETWORK_[A-Z0-9_]{1,64}$/.test(remoteCode);
+        const explicitMarketCode =
+          typeof remoteCode === "string" &&
+          (/^MARKET_[A-Z0-9_]{1,64}$/.test(remoteCode) || remoteCode === "APPLICATION_RETIRED");
         const code =
           missingNetworkRoute && !explicitNetworkCode
             ? "NETWORK_SERVICE_NOT_DEPLOYED"
+            : missingMarketRoute && !explicitMarketCode
+            ? "MARKET_SERVICE_NOT_DEPLOYED"
+            : path.startsWith("/app-api/market/") && remoteCode === "APPLICATION_RETIRED"
+            ? remoteCode
             : typeof remoteCode === "string" &&
-              /^(NETWORK|SSO|OMNIA)_[A-Z0-9_]{1,64}$/.test(remoteCode)
+              /^(NETWORK|SSO|OMNIA|MARKET)_[A-Z0-9_]{1,64}$/.test(remoteCode)
             ? remoteCode
             : status === 401
             ? "ACCOUNT_SESSION_EXPIRED"

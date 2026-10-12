@@ -6,6 +6,7 @@ export function createApplicationLauncher({
   host,
   spawn = defaultSpawn,
   electronPath = process.execPath,
+  launcherArgs = ["--wanx-managed-app"],
 } = {}) {
   if (!host) throw new TypeError("host is required");
   const running = new Map();
@@ -27,7 +28,7 @@ export function createApplicationLauncher({
     const launchId = session.launchId;
     let child;
     try {
-      child = spawn(electronPath, [`--app=${record.installPath}`], {
+      child = spawn(electronPath, launcherArgs, {
         cwd: record.installPath,
         env: { ...process.env, ...session.environment },
         stdio: "ignore",
@@ -46,8 +47,18 @@ export function createApplicationLauncher({
   async function stop(applicationId) {
     const current = running.get(applicationId);
     if (!current) return { applicationId, state: "stopped" };
-    current.child.kill();
-    await current.session.close();
+    try {
+      if (current.child.exitCode === null) {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(fail("APPLICATION_STOP_FAILED")), 5000);
+          const done = () => { clearTimeout(timeout); resolve(); };
+          current.child.once("exit", done);
+          current.child.once("error", done);
+          current.child.kill();
+          if (current.child.exitCode !== null) done();
+        });
+      }
+    } finally { await current.session.close(); }
     running.delete(applicationId);
     return { applicationId, state: "stopped" };
   }
