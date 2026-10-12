@@ -4,7 +4,7 @@
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
-  "main": "shell/main.mjs",
+  "main": "shell/entry.mjs",
   "engines": {
     "node": ">=22"
   },

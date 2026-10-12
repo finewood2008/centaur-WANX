@@ -268,7 +268,7 @@ async function run(action, input = {}) {
     if (!response.ok) throw new Error(response.code);
     return response;
   } catch (error) {
-    const code = ["ACCOUNT_LOGIN_REQUIRED", "NETWORK_NOT_READY", "BOX_CONNECTION_REQUIRED", "NETWORK_CHANGED", "BOX_IDENTITY_UNAVAILABLE", "BOX_IDENTITY_INVALID", "DASHBOARD_OPEN_FAILED"].find((value) => error.message.includes(value));
+    const code = ["ACCOUNT_LOGIN_REQUIRED", "NETWORK_NOT_READY", "BOX_CONNECTION_REQUIRED", "NETWORK_CHANGED", "BOX_IDENTITY_UNAVAILABLE", "BOX_IDENTITY_INVALID", "DASHBOARD_OPEN_FAILED", "APPLICATION_START_FAILED", "APPLICATION_START_TIMEOUT"].find((value) => error.message.includes(value));
     notice = {
       ACCOUNT_LOGIN_REQUIRED: "请先登录万象。",
       NETWORK_NOT_READY: "网络尚未连接，请在设置中检查网络状态。",
@@ -277,6 +277,8 @@ async function run(action, input = {}) {
       BOX_IDENTITY_UNAVAILABLE: "暂时无法访问盒端服务，请重新连接盒子。",
       BOX_IDENTITY_INVALID: "盒端服务返回了无效身份，请重新连接盒子。",
       DASHBOARD_OPEN_FAILED: "Dashboard 打开失败，请检查盒子连接后重试。",
+      APPLICATION_START_FAILED: "应用启动失败，请重新打开；若仍失败，请检查应用安装是否完整。",
+      APPLICATION_START_TIMEOUT: "应用启动超时，请稍后重新打开。",
     }[code] || error.message;
     render(currentState);
     return null;

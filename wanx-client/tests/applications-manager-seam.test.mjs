@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { createApplicationManager } from "../applications/manager.mjs";
 
 test("manager installs and launches an application with a one-time host environment", async () => {
@@ -20,7 +21,10 @@ test("manager installs and launches an application with a one-time host environm
     context: () => ({ boxId: "box-1", connection: "ready" }),
     spawn: (_file, _args, options) => {
       launchOptions = options;
-      const child = { exitCode: null, once(_event, callback) { child.exit = callback; }, kill() { child.exitCode = 0; child.exit?.(); } };
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = () => { child.exitCode = 0; child.emit("exit", 0); };
+      queueMicrotask(() => child.emit("message", { type: "wanx:application-ready", launchId: options.env.WANX_HOST_LAUNCH_ID }));
       return child;
     },
   });
@@ -63,6 +67,7 @@ test("reopening after a box switch creates a new launch instead of reusing the o
       child.exitCode = null;
       child.kill = () => { child.exitCode = 0; child.emit("exit", 0); };
       children.push(child);
+      queueMicrotask(() => child.emit("message", { type: "wanx:application-ready", launchId: options.env.WANX_HOST_LAUNCH_ID }));
       return child;
     },
   });
@@ -128,7 +133,8 @@ test('HTTP launch credentials follow app stop, box switch, logout and session ex
     },
     spawn:(_file,_args,options)=>{
       environments.push(options.env);
-      const child=new EventEmitter();child.exitCode=null;child.kill=()=>{child.exitCode=0;child.emit('exit',0);};return child;
+      const child=new EventEmitter();child.exitCode=null;child.kill=()=>{child.exitCode=0;child.emit('exit',0);};
+      queueMicrotask(()=>child.emit('message',{type:'wanx:application-ready',launchId:options.env.WANX_HOST_LAUNCH_ID}));return child;
     },
   });
   t.after(()=>manager.close());await manager.install({sourceDir:source});

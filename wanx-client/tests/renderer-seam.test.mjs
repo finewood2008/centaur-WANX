@@ -26,6 +26,7 @@ function state(platformPhase = "ready", networkPhase = "ready", boxId = null) {
 async function harness(initial = state(), installed = [application]) {
   let rawState = initial;
   let records = [...installed];
+  let launchError;
   const events = new Map(), handlers = new Map(), listeners = new Map();
   const calls = [], launches = [], dashboards = [];
   const app = { innerHTML: "", addEventListener: (name, fn) => events.set(name, fn) };
@@ -49,7 +50,7 @@ async function harness(initial = state(), installed = [application]) {
     applications: {
       listInstalled: async () => records,
       install: async () => { records = [application]; return application; },
-      launch: async (id, version) => { launches.push([id, version]); return { state: "running" }; },
+      launch: async (id, version) => { launches.push([id, version]); if (launchError) throw new Error(launchError); return { state: "running" }; },
     },
   });
   const window = {};
@@ -72,6 +73,7 @@ async function harness(initial = state(), installed = [application]) {
   await new Promise((resolve) => setImmediate(resolve));
   return {
     app, calls, launches, dashboards,
+    failLaunch(code) { launchError = code; },
     navigate(page) { listeners.get("wanx-client:navigate")({}, page); },
     update(next, publish = true) {
       rawState = next;
@@ -94,6 +96,19 @@ test("login lands on the application cards even while the network is preparing",
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
   assert.doesNotMatch(h.app.innerHTML, /Octop Dashboard|data-action="applications-launch"/);
 });
+
+for (const [code, message] of [["APPLICATION_START_FAILED", "应用启动失败"], ["APPLICATION_START_TIMEOUT", "应用启动超时"]]) {
+  test(`application home surfaces ${code} and allows retry without disconnecting the box`, async () => {
+    const h = await harness(state("ready", "ready", "box-102"));
+    h.failLaunch(code);
+    await h.click("applications-launch", { applicationId: application.applicationId, version: application.version });
+    assert.ok(h.app.innerHTML.includes(message));
+    assert.doesNotMatch(h.app.innerHTML, new RegExp(code));
+    assert.match(h.app.innerHTML, /已连接 CentuarAI-AMD-102/);
+    assert.match(h.app.innerHTML, /data-action="applications-launch"[^>]*>打开应用/);
+    assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"[^>]*disabled/);
+  });
+}
 
 test("home guides an unconnected user to settings and enables launch after connecting a box", async () => {
   const h = await harness();

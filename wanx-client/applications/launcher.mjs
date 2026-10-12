@@ -6,6 +6,7 @@ export function createApplicationLauncher({
   host,
   spawn = defaultSpawn,
   electronPath = process.execPath,
+  runtimeArgs = [],
 } = {}) {
   if (!host) throw new TypeError("host is required");
   const running = new Map();
@@ -16,8 +17,11 @@ export function createApplicationLauncher({
     if (previous && previous.child.exitCode === null) {
       try {
         previous.session.assertLive?.();
-        if (previous.version === record.version)
-          return { applicationId: record.applicationId, launchId: previous.launchId, state: "running" };
+        if (previous.version === record.version) {
+          const result = await previous.ready;
+          previous.child.send?.({ type: "wanx:application-activate", launchId: previous.launchId }, () => {});
+          return result;
+        }
       } catch {
         // A box switch invalidates the old launch; reopening binds a fresh session.
       }
@@ -27,10 +31,10 @@ export function createApplicationLauncher({
     const launchId = session.launchId;
     let child;
     try {
-      child = spawn(electronPath, [`--app=${record.installPath}`], {
+      child = spawn(electronPath, [...runtimeArgs, `--wanx-application=${record.installPath}`], {
         cwd: record.installPath,
         env: { ...process.env, ...session.environment },
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
         windowsHide: true,
         detached: false,
       });
@@ -38,17 +42,47 @@ export function createApplicationLauncher({
       await session.close();
       throw error;
     }
-    child.once("error", () => { if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId); void session.close(); });
-    child.once("exit", () => { if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId); void session.close(); });
-    running.set(record.applicationId, { child, launchId, session, version: record.version });
-    return { applicationId: record.applicationId, launchId, state: "running" };
+    let closing;
+    const release = () => {
+      if (running.get(record.applicationId)?.child === child) running.delete(record.applicationId);
+      return closing ||= Promise.resolve().then(() => session.close());
+    };
+    let settleFailure;
+    const ready = new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.removeListener("message", onMessage);
+        if (error) {
+          child.kill();
+          void release().then(() => reject(error), () => reject(error));
+        } else resolve({ applicationId: record.applicationId, launchId, state: "running" });
+      };
+      const onMessage = (message) => {
+        if (message?.launchId !== launchId) return;
+        if (message.type === "wanx:application-failed") finish(fail("APPLICATION_START_FAILED"));
+        if (message.type === "wanx:application-ready") {
+          try { session.assertLive?.(); finish(); }
+          catch (error) { finish(error); }
+        }
+      };
+      const timer = setTimeout(() => finish(fail("APPLICATION_START_TIMEOUT")), 30_000);
+      settleFailure = () => finish(fail("APPLICATION_START_FAILED"));
+      child.on("message", onMessage);
+    });
+    const onExit = () => { settleFailure(); void release().catch(() => {}); };
+    child.once("error", onExit);
+    child.once("exit", onExit);
+    running.set(record.applicationId, { child, launchId, session, ready, release, version: record.version });
+    return ready;
   }
   async function stop(applicationId) {
     const current = running.get(applicationId);
     if (!current) return { applicationId, state: "stopped" };
     current.child.kill();
-    await current.session.close();
-    running.delete(applicationId);
+    await current.release();
     return { applicationId, state: "stopped" };
   }
   return Object.freeze({ launch, stop, running });

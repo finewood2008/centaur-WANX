@@ -182,6 +182,7 @@ if (claimSingleInstance(app, () => control))
       });
       applications = await createApplicationManager({
         applicationRoot: path.join(userData, "applications"),
+        runtimeArgs: process.defaultApp ? [app.getAppPath()] : [],
         applicationId: "wanx-host",
         context: () => client.applicationContext(),
         request: (input) => client.applicationRequest(input),

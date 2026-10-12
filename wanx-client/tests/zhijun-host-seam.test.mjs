@@ -33,6 +33,7 @@ test('installed ZhiJun child uses Host HTTP and clears its session on box switch
     const {startDesktopRuntime}=require(${JSON.stringify(path.join(zhijun,'desktop/shell/runtime.cjs'))});
     startDesktopRuntime({dataDir:${JSON.stringify(path.join(root,'data'))},staticDir:${JSON.stringify(path.join(zhijun,'desktop/renderer'))}}).then(runtime=>{
       console.log(runtime.origin);
+      process.send({type:'wanx:application-ready',launchId:process.env.WANX_HOST_LAUNCH_ID});
       runtime.hostClient.onSessionInvalidated(()=>console.log('expired'));
       process.once('SIGTERM',()=>{runtime.close();process.exit(0);});
     }).catch(()=>process.exit(1));
@@ -47,8 +48,8 @@ test('installed ZhiJun child uses Host HTTP and clears its session on box switch
         subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);}};
     },
     spawn:(_executable,args,options)=>{
-      const installPath=args[0].slice('--app='.length);
-      child=spawn(process.execPath,[path.join(installPath,manifest.entrypoint)],{...options,stdio:['ignore','pipe','pipe']});
+      const installPath=args[0].slice('--wanx-application='.length);
+      child=spawn(process.execPath,[path.join(installPath,manifest.entrypoint)],{...options,stdio:['ignore','pipe','pipe','ipc']});
       lines=createInterface({input:child.stdout})[Symbol.asyncIterator]();return child;
     },
   });

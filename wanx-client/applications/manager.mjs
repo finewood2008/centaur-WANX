@@ -14,6 +14,7 @@ export async function createApplicationManager({
   createConnection,
   spawn,
   electronPath,
+  runtimeArgs,
 } = {}) {
   const installer = createApplicationInstaller({ rootDir: applicationRoot });
   const sessions = new Map();
@@ -64,6 +65,7 @@ export async function createApplicationManager({
     },
     spawn,
     electronPath,
+    runtimeArgs,
   });
   return Object.freeze({
     host,

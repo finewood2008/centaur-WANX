@@ -72,6 +72,10 @@ Dashboard 按需在独立临时 Electron session 中打开，不随连接自动�
 
 ## 桌面图标与菜单
 
+应用启动统一经过 `shell/entry.mjs`：普通启动进入 Host；带 `--wanx-application` 的子进程只加载已安装应用 manifest 指定的入口，在 Host 单实例锁和网络初始化之前分流。开发启动会额外传入万象源码目录，打包版直接复用可执行文件，不能依赖只适用于默认 Electron 启动器的 `--app` 参数。子应用使用独立 Chromium 数据目录，窗口完成首次页面加载后才向父进程报告启动成功；提前退出、加载失败或 30 秒未就绪会撤销该启动会话，并在首页提示重试。业务 API、Host SDK 和 Web/LAN 模式不变。
+
+发布前可设置 `WANX_PACKAGED_EXECUTABLE` 为打包程序的可执行文件路径，运行 `node --test tests/packaged-application-seam.test.mjs`。该 seam 使用临时用户目录，验证真实打包进程进入 manifest 入口，以及应用异常时返回失败，不会读取真实盒子或账号。
+
 Dock、任务栏和应用包使用“万”字图标，与知君采用相同的朱红底、米白边框和宋体字标风格。macOS 菜单栏使用单色“万”字 Template 图标，并提供 Retina 版本；Windows 托盘使用多尺寸彩色图标。图标资源位于 `resources/`，可在 macOS 执行 `npm run build:icons` 从字体轮廓重新生成，产物随源码提交供各平台打包。
 
 原生菜单与托盘提供主窗口、我的应用、设置、Dashboard 和退出入口。`Cmd/Ctrl+1` 返回应用首页，`Cmd/Ctrl+,` 打开设置，`Cmd/Ctrl+Shift+D` 打开当前盒子的 Dashboard。配网向导期间保留当前步骤。编辑、缩放、全屏和窗口操作使用系统菜单能力。
