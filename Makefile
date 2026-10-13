@@ -60,7 +60,7 @@ help:
 	@echo ""
 	@echo "Quality targets (ship bar):"
 	@echo "  all              format-all + lint + typecheck + test (backend lint/typecheck/test)"
-	@echo "  precommit        fast change-aware gate for the git pre-commit hook (testmon-scoped tests)"
+	@echo "  precommit        git pre-commit checks (format + lint + typecheck; no tests)"
 	@echo "  lint             Ruff check + format check (src, tests)"
 	@echo "  format           Ruff auto-fix + format (src, tests)"
 	@echo "  typecheck        mypy --strict src/octop"
@@ -233,12 +233,9 @@ test-live:
 	@echo "[test] pytest (live)..."
 	$(RUN) pytest -m live
 
-# Fast, change-aware gate for the local pre-commit hook. Runs ruff/mypy (cheap
-# and kept full for accuracy) plus only the tests affected by changed files via
-# pytest-testmon. The full suite still runs in CI (`make all`); this is local
-# feedback only, so a missed cross-module impact is caught there.
+# Local pre-commit gate. Tests are explicit via test-affected / all, or run in CI.
 .PHONY: precommit
-precommit: format-all lint typecheck test-affected
+precommit: format-all lint typecheck
 
 # NOTE: do NOT pass `-m` here — pytest-testmon deactivates its affected-test
 # selection whenever a marker expression is present, which would fall back to
@@ -296,7 +293,7 @@ install-hooks:
 	@echo "[install-hooks] Setting core.hooksPath=.githooks"
 	git config core.hooksPath .githooks
 	@chmod +x "$(REPO_ROOT)/.githooks/"* 2>/dev/null || true
-	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck + testmon-scoped tests), dashboard build"
+	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck), dashboard build; tests run separately"
 	@echo "[install-hooks] Bypass: SKIP_PRECOMMIT=1 git commit …   or   git commit --no-verify"
 
 .PHONY: install install-dev
