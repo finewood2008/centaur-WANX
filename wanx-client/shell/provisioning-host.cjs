@@ -455,6 +455,17 @@ async function createProvisioningHost({
     const current = await check(context);
     if (current.suspending) await current.suspending;
     await check(current);
+    if (method === "confirmPhysicalDevice") {
+      const value = current.coordinator.getSnapshot();
+      const preview = value.preview ?? value.compatiblePreview;
+      if (value.state !== "previewReady") throw failure("CLAIM_INVALID_STATE");
+      // Discovery also exposes read-only previews outside pairing mode. Do not
+      // attempt hello, device proof or account claim for these candidates.
+      if (preview?.cloud_enrollment_status === "not_enrolled") throw failure("DEVICE_NOT_ENROLLED");
+      if (preview?.cloud_enrollment_status !== "ready" ||
+        !Number.isInteger(preview.pairing_mode_remaining_seconds)) throw failure("PROTOCOL_CHANGED");
+      if (preview.pairing_mode_remaining_seconds <= 0) throw failure("PAIRING_MODE_CLOSED");
+    }
     await current.coordinator[method](
       ...(argument === undefined ? [current.abort.signal] : [argument]),
     );

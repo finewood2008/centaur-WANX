@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>ai.centuarai.wanx.discovery</string>
+  <key>CFBundleName</key>
+  <string>万象盒子发现</string>
+  <key>CFBundleDisplayName</key>
+  <string>万象盒子发现</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>万象仅在你扫描附近盒子时，通过蓝牙读取盒子广播与公开设备名称，帮助你区分盒子；不会修改盒子设置或网络。</string>
+</dict>
+</plist>

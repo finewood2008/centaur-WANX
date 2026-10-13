@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 // Composition seam: the existing BLE coordinator borrows the P2P account identity.
 export async function createSetupRuntime({
   control, controlURL, ipcMain, account, client, safeStorage, userData, consumerBaseUrl,
+  advertisementNames,
   makeHost = createProvisioningHost, makeStore = createClaimResumeStore,
   installPicker = installElectronBluetoothPicker,
   onError = () => {},
@@ -26,6 +27,7 @@ export async function createSetupRuntime({
     });
     disposePicker = installPicker({
       webContents: control.webContents, ipcMain, documentUrl: controlURL,
+      advertisementNames,
       scanTimeoutMs: 12000, clock: { monotonicMs: () => performance.now() },
     });
     unsubscribeHost = host.subscribe((state) => {

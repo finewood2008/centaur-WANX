@@ -10,6 +10,7 @@ import {
   Tray,
   nativeImage,
   dialog,
+  screen,
 } from "electron";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
@@ -36,9 +37,17 @@ import { monitorNetworkChanges } from "./network-monitor.mjs";
 import { createTimingRecorder } from "./timings.mjs";
 import { createDashboardGateway } from "../octop/gateway.mjs";
 import { createStaticAssetCache } from "../octop/static-cache.mjs";
+import { createUIState } from "./ui-state.mjs";
+import { createUIBroadcast } from "./ui-broadcast.mjs";
+import { createStartupSettings } from "./startup.mjs";
+import { createAdvertisementNames } from "./discovery-names.mjs";
 
 const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
+const panelURL = new URL("../local-ui/panel/index.html", import.meta.url).href;
 let control;
+let panel;
+let uiState;
+let broadcast;
 let client;
 let unsubscribe;
 let setupRuntime;
@@ -76,7 +85,10 @@ if (process.argv.includes("--wanx-managed-app")) {
     process.send?.({ type: "wanx:application-failed", launchId: process.env.WANX_HOST_LAUNCH_ID }, () => {});
     app.exit(1);
   });
-} else if (claimSingleInstance(app, () => control))
+} else if (claimSingleInstance(app, () => desktop ? {
+  isDestroyed: () => false, isMinimized: () => false,
+  show: () => desktop.show(), focus() {},
+} : control))
   app
     .whenReady()
     .then(async () => {
@@ -224,13 +236,23 @@ if (process.argv.includes("--wanx-managed-app")) {
         trustedKeys,
         captureSession: () => marketSession.captureSession(),
       });
+      const startup = createStartupSettings({ app });
+      uiState = await createUIState({
+        client, account, applications,
+        preferenceFile: path.join(userData, "ui-preferences.json"),
+        serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        onChanged: () => { void broadcast?.publish(); },
+        onOpened: () => desktop?.hidePanel(),
+      });
       control = new BrowserWindow({
-        width: 1180,
-        height: 760,
-        minWidth: 900,
-        minHeight: 620,
+        width: 860,
+        height: 640,
+        minWidth: 760,
+        minHeight: 560,
+        show: false,
         title: DESKTOP_NAME,
         icon: APP_ICON,
+        backgroundColor: "#faf8f4",
         webPreferences: {
           preload: fileURLToPath(
             new URL("../local-ui/remote-preload.cjs", import.meta.url),
@@ -239,15 +261,44 @@ if (process.argv.includes("--wanx-managed-app")) {
           contextIsolation: true,
           sandbox: true,
           webSecurity: true,
+          backgroundThrottling: false,
         },
       });
-      control.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      control.webContents.on("will-navigate", (event) =>
-        event.preventDefault(),
-      );
-      control.webContents.on("will-attach-webview", (event) =>
-        event.preventDefault(),
-      );
+      if (process.platform === "darwin") {
+        panel = new BrowserWindow({
+          width: 400, height: 320, show: false, frame: false,
+          resizable: false, maximizable: false, minimizable: false,
+          fullscreenable: false, skipTaskbar: true, hasShadow: true,
+          roundedCorners: true, alwaysOnTop: true, backgroundColor: "#faf8f4",
+          title: `${DESKTOP_NAME} · 我的应用`, icon: APP_ICON,
+          webPreferences: {
+            preload: fileURLToPath(new URL("../local-ui/panel-preload.cjs", import.meta.url)),
+            nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+          },
+        });
+        panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+      }
+      for (const window of [control, panel].filter(Boolean)) {
+        window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        window.webContents.on("will-navigate", event => event.preventDefault());
+        window.webContents.on("will-attach-webview", event => event.preventDefault());
+      }
+      broadcast = createUIBroadcast({
+        client, applications, uiState, startup, windows: () => [control, panel], onError: reportError,
+      });
+      let quitPrompt;
+      const requestQuit = () => {
+        if (quitPrompt) return quitPrompt;
+        // Only an explicit user action opens this confirmation. Background state
+        // changes never bring either window to the front.
+        quitPrompt = dialog.showMessageBox({
+          type: "question", title: "退出万象", message: "退出万象？",
+          detail: "这会关闭万象所承载的应用，并断开盒子连接。收起窗口可以继续在后台运行。",
+          buttons: ["继续运行", "退出万象"], defaultId: 0, cancelId: 0,
+        }).then(result => { if (result.response === 1) app.quit(); })
+          .finally(() => { quitPrompt = null; });
+        return quitPrompt;
+      };
 
       dashboards = createDashboardWindows({
         BrowserWindow,
@@ -256,7 +307,15 @@ if (process.argv.includes("--wanx-managed-app")) {
         onError: reportError,
       });
       desktop = createDesktopIntegration({
-        app, Menu, Tray, nativeImage, control, client,
+        app, Menu, Tray, nativeImage, control, panel, screen, client, requestQuit,
+        onPanelHidden: () => uiState.dismissPanel(),
+        openManagement(page) {
+          if (control.isDestroyed()) return;
+          if (control.isMinimized()) control.restore();
+          control.webContents.send("wanx-client:navigate", page);
+          control.show();
+          control.focus();
+        },
         openDashboard: () => openConnectedDashboard(client, dashboards),
         onError: () => {
           desktop.show();
@@ -271,6 +330,16 @@ if (process.argv.includes("--wanx-managed-app")) {
         ipcMain,
         control,
         controlURL,
+        panel,
+        panelURL,
+        uiState,
+        desktop,
+        getState: broadcast.getState,
+        publishState: broadcast.publish,
+        getDesktopStartup: startup.get,
+        setDesktopStartup: startup.set,
+        showAbout: () => { desktop.hidePanel({ preserveIntent: true }); app.showAboutPanel(); },
+        quit: requestQuit,
         client,
         applications,
         dashboards,
@@ -286,24 +355,24 @@ if (process.argv.includes("--wanx-managed-app")) {
           return result.canceled ? null : result.filePaths[0];
         },
       });
-      unsubscribe = client.subscribe(async () => {
+      unsubscribe = client.subscribe(() => {
         dashboards.sync(client.snapshot());
         desktop.sync(client.snapshot());
-        if (!control.isDestroyed()) {
-          const applicationsState = applications ? await applications.listInstalled() : [];
-          if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...client.snapshot(), applications: applicationsState });
-        }
+        void broadcast.publish();
       });
 
       registerShutdown({
         app,
         async closeApplications() {
+          uiState.invalidateOpen();
           marketSession?.close();
           await Promise.all([market.close(), applications?.close()]);
         },
         async closeHost() {
           desktop.dispose();
           unsubscribe();
+          broadcast.dispose();
+          await uiState.dispose();
           stopNetworkMonitor?.();
           await Promise.resolve(setupRuntime?.dispose()).catch(() => {});
           await Promise.allSettled([dashboards.close(), client.close()]);
@@ -314,11 +383,15 @@ if (process.argv.includes("--wanx-managed-app")) {
           dialog.showErrorBox("无法退出万象", "应用尚未完全退出。请关闭应用后再次退出万象。");
         },
       });
-      control.on("closed", () => app.quit());
       app.on("window-all-closed", () => app.quit());
-      await control.loadURL(controlURL);
+      await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
       setupRuntime = await createSetupRuntime({
         control, controlURL, ipcMain, account, client, safeStorage, userData,
+        advertisementNames: createAdvertisementNames({
+          helperPath: app.isPackaged
+            ? path.join(process.resourcesPath, "network", `wanx-discovery-${process.platform}-${process.arch}`)
+            : fileURLToPath(new URL(`../native/bin/wanx-discovery-${process.platform}-${process.arch}`, import.meta.url)),
+        }),
         consumerBaseUrl: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onError: reportError,
       }).catch((error) => {
@@ -333,6 +406,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         onChange: () => client.networkChanged(),
         onError: reportError,
       });
+      if (!startup.wasOpenedAtLogin()) desktop.show();
+      void broadcast.publish();
       void timed("client.initialize", () => client.initialize()).catch(
         reportError,
       );
