@@ -69,6 +69,11 @@ const actions = {
     ipcRenderer.invoke("wanx-client:register", { phone: input?.username, password: input?.password, code: input?.code }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
+  "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
+  "ownership.send-code": () => ipcRenderer.invoke("wanx-client:ownership-send-code"),
+  "ownership.create": (input) => ipcRenderer.invoke("wanx-client:ownership-create", input),
+  "ownership.accept": (input) => ipcRenderer.invoke("wanx-client:ownership-accept", input),
+
   "devices.connect": (input) =>
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
@@ -147,6 +152,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
   begin: (candidate) => setupCall("begin", candidate),
   resume: (input = {}) => setupCall("resume", input),
   confirmPhysical: () => setupCall("confirmPhysical"),
+  scanWifi: () => setupCall("scanWifi"),
   wifi: (input) => setupCall("wifi", input),
   confirmOwnership: () => setupCall("confirmOwnership"),
   refresh: () => setupCall("refresh"),

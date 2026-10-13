@@ -8,6 +8,12 @@ let marketError = null;
 let marketGeneration = 0;
 let marketAccount = null;
 let marketConfirmation = null;
+let ownershipTransfers = [];
+let ownershipRevision = 0;
+let transferDeviceId = null;
+let transferNotice = null;
+let transferResendAt = 0;
+let transferResendTimer;
 let authMode = "login";
 let authUsername = "";
 let resendAt = 0;
@@ -20,6 +26,68 @@ const expandedDetails = new Set();
 let busy = false;
 let setupState = { state: "idle" };
 let setupReady = false;
+let wifiPicker = newWifiPicker();
+function newWifiPicker() { return { scanned: false, pending: null, networks: [], selected: null, manual: false, error: null, sessionId: null }; }
+function resetWifiPicker() {
+  const form = app.querySelector?.('[data-form="wifi"]');
+  form?.reset?.();
+  const password = form?.querySelector('[name="password"]');
+  if (password) password.value = "";
+  wifiPicker = newWifiPicker();
+}
+function wifiKey(network) { return JSON.stringify([network.ssid, network.security]); }
+function wifiOptions() {
+  const networks = [...wifiPicker.networks];
+  if (wifiPicker.selected && !networks.some(item => wifiKey(item) === wifiKey(wifiPicker.selected))) networks.unshift(wifiPicker.selected);
+  return '<option value="">请选择 Wi-Fi</option>' + networks.map(network => `<option value="${escapeHTML(wifiKey(network))}" ${network.security === "unsupported" ? "disabled" : ""}>${escapeHTML(network.ssid)} · 信号 ${network.signal}% · ${network.security === "open" ? "开放网络" : network.security === "unsupported" ? "暂不支持此安全类型" : "需要密码"}</option>`).join("");
+}
+function updateWifiPicker() {
+  const form = app.querySelector?.('[data-form="wifi"]');
+  if (!form) return;
+  const picker = form.querySelector('[data-input="wifi-network"]');
+  if (picker) { picker.innerHTML = wifiOptions(); picker.value = wifiPicker.selected ? wifiKey(wifiPicker.selected) : ""; picker.required = !wifiPicker.manual; }
+  const status = form.querySelector('[data-wifi-status]');
+  if (status) status.textContent = wifiPicker.pending ? "正在扫描盒子附近的 Wi-Fi…" : wifiPicker.error || (wifiPicker.scanned && !wifiPicker.networks.length ? "未发现 Wi-Fi，请刷新重试，或手动添加隐藏网络。" : "列表来自盒子附近的 Wi-Fi，按信号强度排列。暂不支持的安全类型不可选择。");
+  const refresh = form.querySelector('[data-action="wifi-refresh"]');
+  if (refresh) { refresh.disabled = Boolean(wifiPicker.pending); refresh.textContent = wifiPicker.pending ? "扫描中…" : "刷新列表"; }
+  for (const name of ["ssid", "security", "hidden"]) {
+    const field = form.querySelector(`[name="${name}"]`);
+    if (field) { const label = field.closest?.("label"); if (label) label.hidden = !wifiPicker.manual; }
+  }
+  const list = form.querySelector('[data-wifi-list]');
+  if (list) list.hidden = wifiPicker.manual;
+  const mode = form.querySelector('[data-action="wifi-manual"]');
+  if (mode) mode.textContent = wifiPicker.manual ? "返回 Wi-Fi 列表" : "隐藏网络 / 手动添加";
+  const security = form.querySelector('[name="security"]');
+  const password = form.querySelector('[name="password"]');
+  if (password && security) {
+    password.disabled = security.value === "open";
+    password.required = security.value !== "open";
+    const label = password.closest?.("label"); if (label) label.hidden = security.value === "open";
+  }
+}
+async function scanWifi() {
+  if (page !== "provisioning" || setupState.state !== "awaitingWifi") return;
+  const picker = wifiPicker;
+  if (picker.pending) return picker.pending;
+  picker.scanned = true;
+  picker.error = null;
+  picker.pending = Promise.resolve().then(() => {
+    if (wifiPicker !== picker || page !== "provisioning" || setupState.state !== "awaitingWifi") return [];
+    return window.wanxSetup.scanWifi();
+  }).then(networks => {
+    if (wifiPicker !== picker || page !== "provisioning" || setupState.state !== "awaitingWifi") return;
+    picker.networks = [...networks].sort((a, b) => b.signal - a.signal || a.ssid.localeCompare(b.ssid));
+  }).catch(() => {
+    if (wifiPicker === picker) picker.error = "无法扫描盒子附近的 Wi-Fi，请刷新重试，或手动添加网络。";
+  }).finally(() => {
+    if (wifiPicker !== picker) return;
+    picker.pending = null;
+    if (page === "provisioning" && setupState.state === "awaitingWifi") updateWifiPicker();
+  });
+  updateWifiPicker();
+  return picker.pending;
+}
 let discoveryView = { selecting: false, retained: false, candidates: [] };
 const selection = createDiscoverySelection({
   discovery: window.wanxDiscovery,
@@ -39,8 +107,8 @@ const selection = createDiscoverySelection({
   },
   onSelected(candidate) { void run("provisioning.start", { candidate }); },
 });
-window.addEventListener?.("pagehide", () => selection.dispose(), { once: true });
-window.addEventListener?.("pagehide", () => clearTimeout(resendTimer), { once: true });
+window.addEventListener?.("pagehide", () => { resetWifiPicker(); selection.dispose(); }, { once: true });
+window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); }, { once: true });
 const stageLabels = {
   discover: "发现盒子",
   identity: "读取设备身份",
@@ -97,7 +165,7 @@ function deviceCard(device) {
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
     <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${escapeHTML(statusLabel(device))}</p></div>
-    <div class="device-action">${action}</div></article>`;
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
@@ -134,6 +202,17 @@ function updateResendButton() {
     button.textContent = remaining ? `${remaining} 秒后重新获取` : "获取验证码";
   }
   if (remaining) resendTimer = setTimeout(updateResendButton, 1000);
+}
+
+function updateTransferCodeButton() {
+  clearTimeout(transferResendTimer);
+  const remaining = Math.max(0, Math.ceil((transferResendAt - Date.now()) / 1000));
+  const button = document.querySelector('[data-action="transfer-code"]');
+  if (button) {
+    button.disabled = busy || remaining > 0;
+    button.textContent = remaining ? `${remaining} 秒后重新发送` : "发送验证码";
+  }
+  if (remaining) transferResendTimer = setTimeout(updateTransferCodeButton, 1000);
 }
 
 function authView() {
@@ -177,7 +256,39 @@ function boxesView() {
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="connection-banner ${currentState.canLaunchApplications ? "ready" : ""}"><div><span class="connection-caption">当前盒子</span><strong class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : ["connecting", "recovering"].includes(currentState.connectionPhase) ? currentState.connectionPhase === "recovering" ? "正在恢复连接…" : "正在连接…" : "尚未连接盒子"}</strong><p>${currentState.canLaunchApplications ? "切换或断开连接后，需要重新打开应用。" : networkStatus().detail}</p></div>${dashboardButton()}</section>
     <section class="content-section" aria-label="设备管理"><div class="section-heading"><h3>设备管理 <span class="count">${devices.length}</span></h3></div>${devices.length ? `<div class="device-list">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
+    ${ownershipView()}
   </div></div>${confirmationView()}`;
+}
+
+function ownershipView() {
+  const device = currentState.devices?.find(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner"));
+  const pending = ownershipTransfers.filter(item => item.state === "pending_target" && Date.parse(item.expiresAt) > Date.now());
+  return `<section class="content-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" ${busy ? "disabled" : ""}>刷新转移记录</button></div>
+    <p class="muted">将盒子交给另一个万象账号。此操作保留盒内数据；需要清空交付时，请由管理员执行盒子清除。</p>
+    ${transferNotice ? `<p role="status">${escapeHTML(transferNotice)}</p>` : ""}
+    ${device ? `<form data-form="transfer" data-device-id="${escapeHTML(device.deviceId)}" class="auth-card transfer-form"><h3>转移 ${escapeHTML(device.name || device.displayName || device.deviceId)}</h3>
+      <label for="transfer-phone">客户万象账号手机号</label><input id="transfer-phone" name="targetPhone" type="tel" pattern="1[0-9]{10}" maxlength="11" required autocomplete="off" />
+      <label for="transfer-code">你的账号短信验证码</label><div class="code-field"><input id="transfer-code" name="verificationCode" pattern="[0-9]{6}" maxlength="6" inputmode="numeric" required autocomplete="one-time-code" /><button type="button" class="button small" data-action="transfer-code" ${busy || Date.now() < transferResendAt ? "disabled" : ""}>发送验证码</button></div>
+      <p class="muted">客户接受后，你和原授权用户将失去此盒子的访问权限。请确认盒内保留的数据可交给客户。</p>
+      <label class="transfer-consent"><input type="checkbox" name="retainData" required /> 我同意保留盒内数据并转移所有权</label>
+      <div class="market-actions"><button type="button" class="button" data-action="transfer-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>发送转移邀请</button></div></form>` : ""}
+    ${pending.map(item => `<article class="device-card"><div class="device-main"><h3>${escapeHTML(currentState.devices?.find(device => device.deviceId === item.deviceId)?.name || item.deviceId)}</h3><p class="muted">${item.direction === "incoming" ? "待你接受" : "等待客户接受"} · ${item.retainData ? "保留盒内数据" : "此转移不支持，请联系原所有者"} · ${escapeHTML(new Date(item.expiresAt).toLocaleString())} 前有效</p></div>${item.direction === "incoming" && item.retainData ? `<button class="button small" data-action="transfer-accept" data-transfer-id="${escapeHTML(item.transferId)}" ${busy ? "disabled" : ""}>接受转移</button>` : ""}</article>`).join("")}
+    ${!pending.length ? '<p class="muted">暂无待处理的转移邀请。</p>' : ""}</section>`;
+}
+
+async function refreshTransfers() {
+  const generation = marketGeneration;
+  const revision = ++ownershipRevision;
+  try {
+    const response = await window.wanxClient.action("ownership.list");
+    if (generation !== marketGeneration || revision !== ownershipRevision) return;
+    if (!response.ok) throw new Error(response.code);
+    ownershipTransfers = response.value || [];
+  } catch (error) {
+    if (generation !== marketGeneration || revision !== ownershipRevision) return;
+    transferNotice = "转移记录暂时无法加载，请刷新重试。";
+  }
+  render(currentState);
 }
 
 function dashboardButton() {
@@ -218,6 +329,11 @@ function pendingOpenView() {
 function marketErrorMessage(error) {
   const message = String(error?.code || error?.message || error || "");
   const messages = {
+    BOX_APPLICATION_PLATFORM_SESSION_REQUIRED: "请登录万象并选择已关联的盒子后打开此应用。",
+    BOX_APPLICATION_RUNTIME_UPDATE_REQUIRED: "盒子需要更新万象服务后才能打开此应用，请联系管理员。",
+    BOX_APPLICATION_ACCESS_DENIED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
+    BOX_APPLICATION_SCOPE_FORBIDDEN: "此应用的连接权限不匹配，请更新万象后重试。",
+    BOX_APPLICATION_SESSION_INVALID: "无法建立应用会话，请更新万象和盒端服务后重试。",
     ACCOUNT_LOGIN_REQUIRED: "登录已失效，请重新登录万象。",
     ACCOUNT_CANCELLED: "登录状态已变化，请重新登录后重试。",
     ACCOUNT_CHANGED: "登录账号已变化，请刷新应用市场后重试。",
@@ -393,7 +509,7 @@ function discoveryCard(candidate) {
   const boxName = (value) => {
     const name = typeof value === "string" ? value.trim() : "";
     return name && name !== deviceId && !/^CentaurAI\s+Box$/i.test(name) &&
-      !/^CentaurOS-(?:Setup-[0-9a-f]*|[0-9a-f]*)$/i.test(name) ? name : "";
+      !/^CentaurOS-(?:Setup-[0-9a-f]*|[0-9a-f]{24})?$/i.test(name) ? name : "";
   };
   const knownName = boxName(known?.name) || boxName(known?.displayName);
   const specificName = deviceId && boxName(hint?.displayName);
@@ -433,7 +549,7 @@ function provisioningView() {
     idle: "请让盒子进入蓝牙配网模式，然后点击扫描并选择附近的盒子。",
     attentionRequired: "盒子授权尚未完成，请检查盒子联网状态后刷新。",
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
-    awaitingWifi: "设备身份已验证，请输入设备要连接的 Wi‑Fi。",
+    awaitingWifi: "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
     awaitingOwnershipConfirmation: "设备已准备联网，请确认绑定到当前账号。",
     submittingAppProof: "正在提交账号绑定证明…",
     provisioningWifi: "正在通过加密通道配置 Wi‑Fi…",
@@ -447,7 +563,7 @@ function provisioningView() {
   const controls = setupPhase === "previewReady"
     ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? "盒子尚未准备好配网" : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
-      ? `<form class="setup-wifi" data-form="wifi"><label>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check"><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>继续绑定账号</button></form>`
+      ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>继续绑定账号</button></form>`
       : setupPhase === "awaitingOwnershipConfirmation"
         ? `<button class="button primary" data-action="provisioning-owner" ${busy ? "disabled" : ""}>确认绑定到当前账号</button>`
         : "";
@@ -474,7 +590,8 @@ function render(state) {
   // selection and focus; network polling does not rebuild active setup forms.
   const wifiForm = page === "provisioning" && setupState.state === "awaitingWifi" ? app.querySelector?.('[data-form="wifi"]') : null;
   const authForm = auth && previousAuth?.dataset.mode === authMode ? previousAuth : null;
-  const retainedForm = wifiForm || authForm;
+  const transferForm = !auth && page === "boxes" && transferDeviceId && currentState.devices?.some(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner")) ? app.querySelector?.(`[data-form="transfer"][data-device-id="${transferDeviceId}"]`) : null;
+  const retainedForm = wifiForm || authForm || transferForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   if (state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating") app.innerHTML = authView();
   else if (page === "provisioning") app.innerHTML = provisioningView();
@@ -482,7 +599,7 @@ function render(state) {
   else if (page === "settings") app.innerHTML = settingsView();
   else app.innerHTML = applicationsView();
   if (retainedForm) {
-    const formName = wifiForm ? "wifi" : "auth";
+    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : "auth";
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
@@ -492,6 +609,11 @@ function render(state) {
     focused?.focus();
   }
   updateResendButton();
+  updateTransferCodeButton();
+  if (page === "provisioning" && setupState.state === "awaitingWifi") {
+    updateWifiPicker();
+    if (!busy && !wifiPicker.scanned) void scanWifi();
+  }
   if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
 }
 
@@ -499,23 +621,40 @@ function setupErrorMessage(error) {
   const code = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
     DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，暂不能配网或绑定。请先由设备管理员完成注册，再让盒子进入配网模式并重新扫描。",
-    PAIRING_MODE_CLOSED: "盒子尚未开启配网模式，或配网时间已结束。请在盒子上开启配网模式后重新扫描。",
+    PAIRING_MODE_CLOSED: "盒子尚未开启配网模式，或配网时间已结束。首次使用请联系设备提供方完成配网初始化；已初始化的盒子请重新开启配网窗口后再扫描。",
     PROTOCOL_CHANGED: "盒子与客户端的配网协议未能匹配，接入已停止（PROTOCOL_CHANGED）。",
     DEVICE_IDENTITY_MISMATCH: "盒子身份校验未通过，接入已停止。请核对目标盒子。",
     LOCAL_TRANSPORT_DISCONNECTED: "蓝牙连接已断开，请靠近盒子并重新扫描。",
     LOCAL_CONNECT_TIMEOUT: "连接盒子超时，请确认盒子处于配网模式后重试。",
     GATT_FRAGMENT_INCOMPLETE: "未完整收到盒子的蓝牙响应，请靠近盒子后重试。",
     PAIRING_EXPIRED: "本次配网已过期，请让盒子重新进入配网模式。",
-    CONTRACT_MISMATCH: "账号服务的配网响应不兼容，请联系管理员核对服务版本。",
+    CONTRACT_MISMATCH: "账号服务的配网响应不兼容，请联系管理员核对服务版本（CONTRACT_MISMATCH）。",
+    LOCAL_SELECTION_LEASE_INVALID: "扫描结果已失效，请重新扫描并选择盒子。",
     AUTH_SESSION_CHANGED: "登录状态已变化，请重新开始配网。",
   };
   const key = Object.keys(messages).find((key) => code.includes(key));
-  return messages[key] || "盒子接入未完成，请重试；如仍失败，请联系管理员。";
+  const diagnostic = /^[A-Z][A-Z0-9_]{1,79}$/.test(code) ? `（${code}）` : "";
+  return messages[key] || `盒子接入未完成，请重试；如仍失败，请联系管理员。${diagnostic}`;
 }
 
 function operationErrorMessage(error) {
   const message = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
+      OWNERSHIP_RETAIN_DATA_REQUIRED: "此功能仅转移所有权并保留数据；清空交付请使用盒子清除。",
+      OWNERSHIP_TRANSFER_PENDING: "此盒子已有待处理的转移邀请，请等待客户接受或邀请过期。",
+      OWNERSHIP_TRANSFER_NOT_FOUND: "未找到属于你的转移邀请，请刷新记录。",
+      OWNERSHIP_TRANSFER_EXPIRED: "转移邀请已过期，请原所有者重新发起。",
+      OWNERSHIP_ACCOUNT_INACTIVE: "当前账号不可接受所有权，请检查账号状态。",
+      OWNERSHIP_CLIENT_INACTIVE: "当前客户端登录已失效，请重新登录万象后再接受转移。",
+      OWNERSHIP_OWNER_CHANGED: "盒子所有者已变化，请刷新盒子列表。",
+      OWNERSHIP_DEVICE_UPDATE_REQUIRED: "盒子交付组件需要更新，请联系管理员更新后再转移。",
+      OWNERSHIP_NETWORK_REVOKE_FAILED: "旧访问权限暂未撤销，转移尚未完成，请稍后重试。",
+      OWNERSHIP_DEVICE_UNAVAILABLE: "盒子当前无法进行所有权转移，请稍后刷新重试。",
+      OWNERSHIP_OWNER_REQUIRED: "只有当前盒子所有者可以发起转移，请刷新盒子列表。",
+      OWNERSHIP_TARGET_SELF: "客户手机号不能是你当前登录的手机号。",
+      OWNERSHIP_TRANSFER_UNAVAILABLE: "转移邀请已失效或不适用于当前账号，请刷新转移记录。",
+      ACCOUNT_CANCELLED: "登录状态已变化，请重新操作。",
+      invalid_sms_code: "请输入 6 位短信验证码。",
       invalid_phone: "请输入有效的手机号。",
       invalid_credentials: "手机号或密码不正确，请重试。",
       account_unavailable: "暂时无法连接账号服务，请稍后重试。",
@@ -571,6 +710,7 @@ function operationErrorMessage(error) {
 }
 
 async function run(action, input = {}) {
+  if (["provisioning.start", "provisioning.cancel", "auth.logout"].includes(action)) resetWifiPicker();
   notice = null;
   codeSent = false;
   const actionAccount = marketAccount;
@@ -624,7 +764,12 @@ app.addEventListener("click", async (event) => {
     const confirmation = marketConfirmation;
     if (!confirmation || busy) return;
     marketConfirmation = null;
+    const generation = marketGeneration;
     const result = await run(confirmation.action, confirmation.input || { applicationId: confirmation.applicationId });
+    if (result && generation === marketGeneration && confirmation.action === "ownership.accept") {
+      transferNotice = result.value?.refreshRequired ? "所有权已接受，盒子列表暂未刷新，请点击刷新。" : "已接受所有权，请等待盒子授权同步后连接。";
+      await refreshTransfers();
+    }
     if (result && confirmation.action.startsWith("market.")) await refreshMarket();
     return;
   }
@@ -647,10 +792,28 @@ app.addEventListener("click", async (event) => {
     render(currentState);
     return;
   }
+  if (busy && action.startsWith("transfer-")) return;
+  if (action === "transfer-open") { transferDeviceId = target.dataset.deviceId; transferNotice = null; render(currentState); return; }
+  if (action === "transfer-cancel") { transferDeviceId = null; render(currentState); return; }
+  if (action === "transfer-refresh") { await refreshTransfers(); return; }
+  if (action === "transfer-code") {
+    if (Date.now() < transferResendAt) return;
+    const generation = marketGeneration;
+    const response = await run("ownership.send-code");
+    if (response && generation === marketGeneration) { transferResendAt = Date.now() + 60000; transferNotice = "验证码已发送到你当前登录账号的手机号，60 秒后可再次发送。"; render(currentState); }
+    return;
+  }
+  if (action === "transfer-accept") {
+    const transfer = ownershipTransfers.find(item => item.transferId === target.dataset.transferId);
+    if (!transfer || !transfer.retainData || transfer.direction !== "incoming") return;
+    marketConfirmation = { title: "接受盒子所有权", detail: `确认接收盒子 ${transfer.deviceId} 及其保留的数据？接受后你将成为新所有者，原所有者将失去访问权限。`, verb: "接受", action: "ownership.accept", input: { transferId: transfer.transferId, retainData: true } };
+    render(currentState); return;
+  }
   if (action === "logout") { await run("auth.logout"); return; }
   if (["show-applications", "show-boxes", "show-settings"].includes(action)) {
     if (page === "provisioning") return;
     page = action.slice(5);
+    if (page === "boxes") void refreshTransfers();
     notice = null;
     render(currentState);
     return;
@@ -687,9 +850,10 @@ app.addEventListener("click", async (event) => {
     render(currentState);
     return;
   }
-  if (action === "refresh") { if (page === "provisioning") page = "boxes"; await run("devices.refresh"); return; }
+  if (action === "refresh") { if (page === "provisioning") page = "boxes"; await run("devices.refresh"); if (page === "boxes") await refreshTransfers(); return; }
   if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
   if (action === "provisioning") {
+    resetWifiPicker();
     selection.reset();
     page = "provisioning";
     busy = true;
@@ -699,7 +863,14 @@ app.addEventListener("click", async (event) => {
     finally { busy = false; render(currentState); }
     return;
   }
-  if (action === "start-provisioning") { selection.start(); return; }
+  if (action === "wifi-refresh") { await scanWifi(); return; }
+  if (action === "wifi-manual") {
+    if (setupState.state !== "awaitingWifi") return;
+    wifiPicker.manual = !wifiPicker.manual;
+    if (!wifiPicker.manual && wifiPicker.selected) selectWifi(wifiKey(wifiPicker.selected));
+    updateWifiPicker(); return;
+  }
+  if (action === "start-provisioning") { resetWifiPicker(); selection.start(); return; }
   if (action === "select-candidate") { selection.choose(target.dataset.candidateId); return; }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
@@ -718,7 +889,7 @@ app.addEventListener("click", async (event) => {
     marketConfirmation = { action: "devices.disconnect", input: {}, title: "断开当前盒子", detail: "当前应用与盒子的连接将失效。重新连接后，请再次打开应用。", verb: "断开" };
     render(currentState); return;
   }
-  if (action === "back-devices") { selection.reset(); page = "boxes"; notice = null; render(currentState); return; }
+  if (action === "back-devices") { resetWifiPicker(); page = "boxes"; selection.reset(); notice = null; render(currentState); return; }
   if (action === "applications-select-current") {
     await run("applications.select-current", { applicationId: target.dataset.applicationId, version: target.dataset.version });
     return;
@@ -729,7 +900,22 @@ app.addEventListener("click", async (event) => {
   }
 });
 
+function selectWifi(key) {
+  const network = wifiPicker.networks.find(item => wifiKey(item) === key) || (wifiPicker.selected && wifiKey(wifiPicker.selected) === key ? wifiPicker.selected : null);
+  if (network?.security === "unsupported") return;
+  const form = app.querySelector?.('[data-form="wifi"]');
+  if (!form) return;
+  if (!wifiPicker.selected || wifiKey(wifiPicker.selected) !== key) { const password = form.querySelector('[name="password"]'); if (password) password.value = ""; }
+  wifiPicker.selected = network;
+  if (!network) { const ssid = form.querySelector('[name="ssid"]'); if (ssid) ssid.value = ""; updateWifiPicker(); return; }
+  const ssid = form.querySelector('[name="ssid"]'); if (ssid) ssid.value = network.ssid;
+  const security = form.querySelector('[name="security"]'); if (security) security.value = network.security;
+  const hidden = form.querySelector('[name="hidden"]'); if (hidden) hidden.checked = false;
+  updateWifiPicker();
+}
 app.addEventListener("change", (event) => {
+  if (event.target.dataset.input === "wifi-network") selectWifi(event.target.value);
+  if (event.target.name === "security") updateWifiPicker();
   if (event.target.dataset.input === "pending-device" && pendingSelection) pendingSelection.deviceId = event.target.value;
 });
 app.addEventListener("toggle", (event) => {
@@ -753,9 +939,22 @@ app.addEventListener("keydown", (event) => {
 app.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (busy) return;
+  if (event.target.dataset.form === "transfer") {
+    event.preventDefault();
+    const generation = marketGeneration;
+    const data = Object.fromEntries(new FormData(event.target));
+    const result = await run("ownership.create", { deviceId: transferDeviceId, targetPhone: String(data.targetPhone || "").trim(), verificationCode: String(data.verificationCode || "").trim(), retainData: data.retainData === "on" });
+    if (result && generation === marketGeneration) {
+      transferDeviceId = null;
+      transferNotice = result.value?.refreshRequired ? "邀请已发送，列表暂未刷新；请客户登录万象接受。" : "邀请已发送，24 小时内请客户登录万象，在“我的盒子”中接受转移。";
+      await refreshTransfers();
+    }
+    return;
+  }
   if (event.target.dataset.form === "wifi") {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
+    if (!wifiPicker.manual && !wifiPicker.selected) return;
     await run("provisioning.wifi", {
       ssid: data.ssid,
       security: data.security,
@@ -801,7 +1000,9 @@ function acceptRemoteState(state) {
     return;
   }
   if (state.route === "auth" || accountChanged) {
+    resetWifiPicker();
     page = "applications";
+    ownershipTransfers = []; transferDeviceId = null; transferNotice = null; transferResendAt = 0;
     selection.reset();
     marketItems = [];
     marketCandidates = new Map();
@@ -825,10 +1026,14 @@ window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
   if (!["applications", "boxes", "settings"].includes(destination)) return;
   page = destination;
+  if (page === "boxes") void refreshTransfers();
   notice = null;
   render(currentState);
 });
 window.wanxSetup?.subscribe((snapshot) => {
+  if (snapshot.pairingSessionId && wifiPicker.sessionId && snapshot.pairingSessionId !== wifiPicker.sessionId) resetWifiPicker();
+  if (snapshot.pairingSessionId) wifiPicker.sessionId = snapshot.pairingSessionId;
+  if (["cancelled", "completed", "terminalError", "restartRequired", "idle"].includes(snapshot.state)) resetWifiPicker();
   setupState = snapshot;
   if (page === "provisioning") render(currentState);
 });

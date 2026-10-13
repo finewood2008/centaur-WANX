@@ -178,13 +178,14 @@ export function createClient({
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
       return gateway.openWebSocket(input);
     },
-    applicationConnection() {
+    applicationConnection(applicationId) {
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
       const lease = gateway;
+      const applicationScope = applicationId === "centaurai.wanx.superadvisors" ? "super-advisory" : undefined;
       const assertLive = () => { if (closed || gateway !== lease) throw new Error("SESSION_CLOSED"); };
       return {
-        request: (input) => { assertLive(); return lease.request(input); },
-        openStream: (input) => { assertLive(); return lease.openWebSocket(input); },
+        request: (input) => { assertLive(); return lease.request({ ...input, applicationScope, applicationExchange: false }); },
+        openStream: (input) => { assertLive(); return lease.openWebSocket({ ...input, applicationScope }); },
       };
     },
     subscribe(listener) {

@@ -32,6 +32,7 @@ const responseTypes = new Set([
   "pairing.challenge.result",
   "pairing.token.result",
   "pairing.cancel.result",
+  "wifi.scan.result",
   "wifi.apply.result",
   "job.status.result",
 ]);

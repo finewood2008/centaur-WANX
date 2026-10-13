@@ -181,3 +181,18 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .tabs { display: flex; gap: 4px; margin: 24px 0 22px; padding: 4px; border-radius: 10px; background: var(--fn-bg-secondary); } .tab { flex: 1; padding: 9px; border: 0; border-radius: 8px; color: var(--fn-text-tertiary); background: transparent; font-weight: 700; } .tab.active { color: var(--fn-color-brand); background: var(--fn-bg-elevated); box-shadow: var(--fn-card-shadow); }
 .code-field { display: flex; gap: 8px; align-items: center; } .code-field input { flex: 1; }
 .notice.success { color: var(--fn-text-success); background: var(--fn-bg-success); }
+
+/* Ownership handoff remains a deliberate form within box management. */
+.device-action { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
+.transfer-form { width: min(480px, 100%); margin: 20px 0; padding: 20px; border: 1px solid var(--fn-border-input); border-radius: 10px; background: var(--fn-bg-elevated); }
+.transfer-form .transfer-consent { display: flex; gap: 9px; align-items: flex-start; margin: 20px 0; }
+.transfer-form .transfer-consent input { flex: 0 0 auto; width: auto; margin: 2px 0 0; accent-color: var(--fn-color-brand); }
+.transfer-form .code-field input { min-width: 0; }
+
+.setup-wifi [hidden] { display: none; }
+.wifi-picker { grid-column: 1 / -1; display: flex; gap: 14px; align-items: end; }
+.wifi-picker label { flex: 1; min-width: 0; }
+.wifi-picker select { width: 100%; }
+.setup-wifi .wifi-status, .setup-wifi .wifi-mode { grid-column: 1 / -1; }
+.setup-wifi .wifi-mode { justify-self: start; margin: 0 0 14px; }
+@media (max-width: 600px) { .wifi-picker { align-items: stretch; flex-direction: column; } }

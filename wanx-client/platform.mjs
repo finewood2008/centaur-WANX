@@ -661,6 +661,25 @@ export function createPlatformClient({
     } else await listing;
     return snapshot();
   }
+  async function ownershipChange(operation) {
+    authenticated();
+    const generation = epoch;
+    const transfer = await operation();
+    if (!current(generation)) throw fail("ACCOUNT_CANCELLED");
+    // The server has committed. Refresh errors must not invite duplicate transfers.
+    const selected = activeLink?.client.snapshot().connection;
+    if (selected?.deviceId === transfer.deviceId) {
+      connectionEpoch++;
+      selectionController?.abort();
+      selectionController = null;
+      await activeLink.client.disconnect();
+    }
+    if (!current(generation)) throw fail("ACCOUNT_CANCELLED");
+    let refreshRequired = false;
+    try { await refreshDevices(); refreshRequired = directory.phase !== "ready"; } catch { refreshRequired = true; }
+    if (!current(generation)) throw fail("ACCOUNT_CANCELLED");
+    return { ...transfer, refreshRequired };
+  }
   return {
     snapshot,
     async applicationContext() {
@@ -687,11 +706,11 @@ export function createPlatformClient({
       if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
       return activeLink.client.openWebSocket(input);
     },
-    async applicationConnection() {
+    async applicationConnection(applicationId) {
       const link = activeLink, generation = connectionEpoch;
       const state = snapshot();
       if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
-      const connection = link.client.applicationConnection();
+      const connection = link.client.applicationConnection(applicationId);
       const assertLive = () => {
         const next = snapshot();
         if (closed || activeLink !== link || generation !== connectionEpoch ||
@@ -744,6 +763,10 @@ export function createPlatformClient({
     register: (input) => afterLogin(() => account.register(input)),
     sendSMS: ({ phone, scene }) => account.sendSMS(phone, scene),
     refreshDevices,
+    listOwnershipTransfers: () => account.listOwnershipTransfers(),
+    sendTransferCode: () => account.sendTransferCode(),
+    createOwnershipTransfer: (input) => ownershipChange(() => account.createOwnershipTransfer(input)),
+    acceptOwnershipTransfer: (input) => ownershipChange(() => account.acceptOwnershipTransfer(input)),
     async networkChanged() {
       if (closed || !enabled || !account.getIdentity()) return snapshot();
       const generation = epoch;

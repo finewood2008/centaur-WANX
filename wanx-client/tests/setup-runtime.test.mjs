@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { createSetupRuntime } from '../shell/setup.mjs';
 import { createProvisioningHost } from '../shell/provisioning-host.cjs';
 const candidate = { candidateId: 'candidate', transport: 'ble-gatt', transportHandle: 'handle', selectionLeaseId: 'lease', advertisedName: 'CentaurOS-Setup', rssi: -40, firstSeenMonotonicMs: 0, lastSeenMonotonicMs: 1 };
-async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 } } = {}) {
+async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 }, scanWifi = async () => [] } = {}) {
   const ipcMain = new EventEmitter(); const handlers = new Map();
   ipcMain.handle = (name, fn) => handlers.set(name, fn);
   ipcMain.removeHandler = (name) => handlers.delete(name);
@@ -32,6 +32,7 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
       const set = (next) => { state = { ...state, state: next }; notify?.(); };
       return { getSnapshot: () => state, subscribe: (fn) => { notify = fn; return () => {}; },
         begin: async () => set('previewReady'), confirmPhysicalDevice: async () => { handshakes++; set('awaitingWifi'); },
+        scanWifi,
         provideWifi: async (wifi) => { assert.equal(wifi.ssid, 'office'); set('awaitingOwnershipConfirmation'); },
         confirmOwnership: async () => set('completed'), cancel: async () => set('cancelled'),
         suspend: async () => {}, dispose: async () => {},
@@ -55,6 +56,39 @@ test('trusted setup IPC completes identity, Wi-Fi and ownership then refreshes o
   assert.equal(h.refreshes(), 1);
   await h.runtime.dispose();
   assert.equal(h.handlers.size, 0); assert.equal(h.pickerDisposed(), 1);
+});
+test('Wi-Fi scan IPC is identity-gated, deduplicated and revoked on logout', async () => {
+  let calls = 0, resolveScan, signal;
+  const h = await harness({ scanWifi: (abort) => { calls++; signal = abort; return new Promise(resolve => { resolveScan = resolve; }); } });
+  try {
+    await h.invoke('begin', candidate);
+    assert.equal((await h.invoke('scanWifi')).code, 'CLAIM_INVALID_STATE');
+    const foreign = await h.handlers.get('wanx:setup:scanWifi')({ ...h.event, senderFrame: { url: h.event.senderFrame.url } });
+    assert.equal(foreign.code, 'IPC_ACCESS_DENIED');
+    await h.invoke('confirmPhysical');
+    const first = h.invoke('scanWifi'), second = h.invoke('scanWifi');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    h.logout();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signal.aborted, true);
+    resolveScan([{ ssid: 'office', signal: 90, security: 'open' }]);
+    assert.equal((await first).ok, false);
+    assert.equal((await second).ok, false);
+  } finally { await h.runtime.dispose(); }
+});
+test('manual Wi-Fi submission cancels scanning before configuring the selected network', async () => {
+  const h = await harness({ scanWifi: (signal) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true });
+  }) });
+  try {
+    await h.invoke('begin', candidate); await h.invoke('confirmPhysical');
+    const scanning = h.invoke('scanWifi');
+    await new Promise(resolve => setImmediate(resolve));
+    const result = await h.invoke('wifi', { ssid: 'office', hidden: false, security: 'open' });
+    assert.equal(result.value.state, 'awaitingOwnershipConfirmation');
+    assert.equal((await scanning).ok, false);
+  } finally { await h.runtime.dispose(); }
 });
 test('setup rejects a foreign renderer and discards account-bound context on logout', async () => {
   const h = await harness();

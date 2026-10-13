@@ -11,6 +11,11 @@ export interface SetupBridge {
     authorizationState: string;
   }>;
   confirmPhysical(): Promise<SetupSnapshot>;
+  scanWifi(): Promise<Array<{
+    ssid: string;
+    signal: number;
+    security: "open" | "wpa_personal" | "unsupported";
+  }>>;
   wifi(input: {
     ssid: string;
     security: "open" | "wpa_personal";

@@ -438,3 +438,22 @@ test("uninstall cancels session preparation and rejects a racing signed installa
   assert.equal(await opening, "APPLICATION_START_CANCELED");
   assert.deepEqual(await manager.listInstalled(), []);
 });
+
+
+test("application requiring scoped Host sessions rejects older 0.1.0 clients before download", async t => {
+  const a = await artifact(await fixture(t));
+  a.descriptor.minWanxVersion = "0.1.1";
+  a.envelope = envelopeFor(a.descriptor);
+  for (const wanxVersion of ["0.1.0", "0.1.1"]) {
+    const market = createApplicationMarket({ wanxVersion, platform: "win32", arch: "x64", trustedKeys,
+      applications: { listInstalled: async () => [] },
+      request: async () => {
+        const descriptor = { ...a.descriptor, os: "universal", arch: "universal" };
+        return candidateFor({ descriptor, envelope: envelopeFor(descriptor) });
+      }, fetch: () => { throw new Error("Candidate validation must not download"); },
+    });
+    if (wanxVersion === "0.1.0") await assert.rejects(market.candidate(applicationId), { code: "MARKET_INCOMPATIBLE" });
+    else assert.equal((await market.candidate(applicationId)).status, "available");
+    await market.close();
+  }
+});

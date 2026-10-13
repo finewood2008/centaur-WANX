@@ -117,7 +117,7 @@ export async function createDashboardGateway({
     return headers;
   }
 
-  function authorize(request, websocket = false) {
+  function authorize(request, websocket = false, applicationExchange = false) {
     if (!session)
       return { path: request.url, headers: upstreamHeaders(request) };
     const endpoint = new URL(request.url, localURL);
@@ -131,7 +131,8 @@ export async function createDashboardGateway({
     if (pathname.includes("\\") || pathname.includes("//")) return null;
     if (
       (pathname === "/api/auth" || pathname.startsWith("/api/auth/")) &&
-      (websocket || !PROFILE_ROUTES.has(`${request.method} ${pathname}`))
+      (websocket || (!PROFILE_ROUTES.has(`${request.method} ${pathname}`) &&
+        !(applicationExchange && request.method === "POST" && pathname === "/api/auth/platform/application")))
     )
       return null;
     const headerToken = request.headers.authorization;
@@ -583,11 +584,50 @@ export async function createDashboardGateway({
     });
   });
   localURL = new URL(`http://127.0.0.1:${server.address().port}`);
+  const applicationTokens = new Map();
+  async function scopedAuthorization(authorized, applicationScope) {
+    if (!applicationScope) return authorized;
+    if (!session || !authorized?.token)
+      throw Object.assign(new Error("BOX_APPLICATION_PLATFORM_SESSION_REQUIRED"), { code: "BOX_APPLICATION_PLATFORM_SESSION_REQUIRED" });
+    if (applicationScope !== "super-advisory")
+      throw Object.assign(new Error("BOX_APPLICATION_SCOPE_FORBIDDEN"), { code: "BOX_APPLICATION_SCOPE_FORBIDDEN" });
+    const parent = authorized.token;
+    let cached = applicationTokens.get(applicationScope);
+    if (!cached || cached.parent !== parent || cached.renewAt <= Date.now()) {
+      const pending = gateway.request({ path: "/api/auth/platform/application", method: "POST",
+        headers: { "content-type": "application/json" }, body: { application_id: applicationScope },
+        applicationExchange: true }).then(response => {
+        let value;
+        try { value = JSON.parse(response.body.toString("utf8")); } catch { /* invalid response */ }
+        if (response.status !== 200 || typeof value?.access_token !== "string" || !value.access_token ||
+            value.token_type !== "Bearer" || !Number.isFinite(value.expires_in) || value.expires_in <= 0 ||
+            value.user?.application_id !== applicationScope) {
+          const code = ["BOX_APPLICATION_RUNTIME_UPDATE_REQUIRED", "BOX_APPLICATION_ACCESS_DENIED", "BOX_APPLICATION_SCOPE_FORBIDDEN"].includes(value?.code)
+            ? value.code : "BOX_APPLICATION_SESSION_INVALID";
+          throw Object.assign(new Error(code), { code });
+        }
+        return { token: value.access_token, expiresAt: Date.now() + value.expires_in * 1000 };
+      });
+      cached = { parent, renewAt: Infinity, pending };
+      applicationTokens.set(applicationScope, cached);
+      pending.then(value => { cached.renewAt = Date.now() + Math.max(1000, (value.expiresAt - Date.now()) / 2); },
+        () => { if (applicationTokens.get(applicationScope) === cached) applicationTokens.delete(applicationScope); });
+    }
+    const value = await cached.pending;
+    if (closed || !session.getToken()) throw new Error("PLATFORM_SESSION_EXPIRED");
+    // Never send a scoped credential obtained while a different parent was current.
+    // This is before the business request; the caller may retry after renewal.
+    if (session.getToken() !== parent) throw Object.assign(new Error("NETWORK_NOT_READY"), { code: "NETWORK_NOT_READY" });
+    const endpoint = new URL(authorized.path, target);
+    for (const field of TOKEN_QUERY_FIELDS) if (endpoint.searchParams.has(field)) endpoint.searchParams.set(field, value.token);
+    return { path: endpoint.pathname + endpoint.search, token: value.token,
+      headers: { ...authorized.headers, authorization: `Bearer ${value.token}` } };
+  }
   let closing;
   const gateway = {
     url: localURL.origin + (bootstrapPath ?? ""),
     origin: localURL.origin,
-    async request({ path, method = "GET", headers = {}, body, signal, stream = false } = {}) {
+    async request({ path, method = "GET", headers = {}, body, signal, stream = false, applicationScope, applicationExchange = false } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
       const request = {
@@ -602,8 +642,9 @@ export async function createDashboardGateway({
       };
       const wasBootstrapped = bootstrapped;
       if (session) bootstrapped = true;
-      const authorized = authorize(request);
+      let authorized = authorize(request, false, applicationExchange);
       bootstrapped = wasBootstrapped;
+      if (authorized) authorized = await scopedAuthorization(authorized, applicationScope);
       if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
       const upstream = transport.request(target, {
         method,
@@ -664,7 +705,7 @@ export async function createDashboardGateway({
         upstream.end();
       });
     },
-    async openWebSocket({ path, headers = {}, protocols = [] } = {}) {
+    async openWebSocket({ path, headers = {}, protocols = [], applicationScope } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
       const request = {
@@ -679,8 +720,9 @@ export async function createDashboardGateway({
       };
       const wasBootstrapped = bootstrapped;
       if (session) bootstrapped = true;
-      const authorized = authorize(request, true);
+      let authorized = authorize(request, true);
       bootstrapped = wasBootstrapped;
+      if (authorized) authorized = await scopedAuthorization(authorized, applicationScope);
       if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
       const endpoint = new URL(target);
       endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";

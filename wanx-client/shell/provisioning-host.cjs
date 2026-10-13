@@ -6,6 +6,7 @@ const METHODS = [
   "begin",
   "resume",
   "confirmPhysical",
+  "scanWifi",
   "redeemClaimCode",
   "wifi",
   "confirmOwnership",
@@ -487,12 +488,26 @@ async function createProvisioningHost({
       beginning = true;
       try {
         if (resetting) await resetting;
-        if (context) await reset();
         rendererActive = true;
         const expected = ++generation;
+        const previous = context;
+        context = undefined;
+        subscriptions.clear();
+        // The new chooser has already issued its one-use selection lease.
+        // Retire only the old coordinator's connections: closeAll also revokes
+        // the renderer's newly selected lease. Late connects are closed by the
+        // existing request-ID cleanup in resultListener.
+        await release(previous, "app_background");
+        if (disposed || disposing || generation !== expected)
+          throw failure("STALE_GENERATION");
         const session = await consumer.current();
         if (disposed || disposing || generation !== expected)
           throw failure("STALE_GENERATION");
+        if (previous && (previous.accountId !== session.accountId ||
+            previous.clientId !== session.clientId)) {
+          await reset();
+          throw failure("AUTH_SESSION_CHANGED");
+        }
         const pairing = await consumer.pairingApi();
         if (disposed || disposing || generation !== expected)
           throw failure("STALE_GENERATION");
@@ -590,12 +605,42 @@ async function createProvisioningHost({
       }
     },
     confirmPhysical: () => invoke("confirmPhysicalDevice"),
+    async scanWifi() {
+      const current = await check(context);
+      if (current.coordinator.getSnapshot().state !== "awaitingWifi")
+        throw failure("CLAIM_INVALID_STATE");
+      if (!current.wifiScan) {
+        const abort = new AbortController();
+        const cancel = () => abort.abort();
+        current.abort.signal.addEventListener("abort", cancel, { once: true });
+        if (current.abort.signal.aborted) cancel();
+        current.wifiScanAbort = abort;
+        current.wifiScan = (async () => {
+          const networks = await current.coordinator.scanWifi(abort.signal);
+          await check(current);
+          if (current.coordinator.getSnapshot().state !== "awaitingWifi")
+            throw failure("CLAIM_INVALID_STATE");
+          return networks;
+        })().finally(() => {
+          current.abort.signal.removeEventListener("abort", cancel);
+          current.wifiScan = undefined;
+          current.wifiScanAbort = undefined;
+        });
+      }
+      return current.wifiScan;
+    },
     async wifi(input) {
       if (!plain(input) || typeof input.ssid !== "string" || input.ssid.length > 32 ||
           !["open", "wpa_personal"].includes(input.security) ||
           (input.password !== undefined && typeof input.password !== "string") ||
           typeof input.hidden !== "boolean")
         throw failure("INVALID_REQUEST");
+      const current = await check(context);
+      if (current.wifiScan) {
+        current.wifiScanAbort.abort();
+        await current.wifiScan.catch(() => {});
+        await check(current);
+      }
       const passwordUtf8 = input.password === undefined
         ? undefined
         : new TextEncoder().encode(input.password);

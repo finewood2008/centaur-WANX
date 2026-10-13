@@ -169,6 +169,25 @@ class OctopAdapter(AdminClient):
                 raise BridgeUpstreamError("BOX_UPSTREAM_ROLE_SYNC_FAILED")
             return {"access_token": token, "user": me, "expires_at": minted_at + ttl}
 
+    async def application_session(self, token: str, application_id: str) -> dict[str, Any]:
+        # Only the upstream extension can mint a scoped JWT. The bridge does not
+        # import upstream modules, inspect its DB, or access its signing secret.
+        response = await self._request(
+            "POST",
+            "/api/auth/application/exchange",
+            headers={"Authorization": "Bearer " + token},
+            json={"application_id": application_id},
+        )
+        if response.status_code == 404:
+            raise BridgeUpstreamError("BOX_APPLICATION_RUNTIME_UPDATE_REQUIRED", 409)
+        if response.status_code in {401, 403}:
+            raise BridgeUpstreamError("BOX_APPLICATION_ACCESS_DENIED", 403)
+        result = self._json(response)
+        ttl = result.get("expires_in")
+        if type(ttl) is not int or ttl <= 0:
+            raise BridgeUpstreamError("BOX_APPLICATION_SESSION_INVALID", 502)
+        return {**result, "expires_at": time.time() + ttl}
+
     async def close(self) -> None:
         self._initialized = False
         await super().close()
