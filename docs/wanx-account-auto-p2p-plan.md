@@ -287,7 +287,7 @@ P2P 关闭时，本机直接连接及 `npm run dev:web` 保持可用，不依赖
 - `nexusaos-admin/admin-backend/module_nexus/entity/do/nexus_consumer_auth_do.py`：账号、客户端、归属和授权模型。
 - `nexusaos-admin/docs/contracts/consumer-session-revocation.md`：会话版本、登出和设备撤权合同。
 - `centuarai-os/scripts/boxlib/enrollment.py`：部署侧注册与访问策略实现参考，不作为产品用户的公开接口。
-- `docs/wanx-project-structure-plan(1).md`：工作区原有项目结构与盒端接入设计。
+- [客户端边界与验收要求](wanx-client.md)：归并后的现行结构与接入约束。
 
 底层技术资料仅面向开发和运维，产品界面统一使用“P2P 网络”：
 

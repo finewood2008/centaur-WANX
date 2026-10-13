@@ -1,16 +1,11 @@
-# Local UI snapshot
+# Local UI
 
-This directory contains the restored local WANX client UI from before the
-remote `dev/uni_deploy_20261010` branch was merged.
+The Electron entrypoint `../shell/entry.mjs` starts `../shell/main.mjs`.
 
-The remote Electron entrypoint now loads this UI through a thin preload
-adapter:
-
-- active entrypoint: `../shell/main.mjs`
-- active product UI: `renderer/`
-- active IPC adapter: `remote-preload.cjs`
-- historical local preload snapshot: `preload.cjs`
-- retained remote test control page: `../fleet/`
+- product UI: `renderer/`
+- product IPC adapter: `remote-preload.cjs`
+- menu bar panel: `panel/`
+- panel IPC adapter: `panel-preload.cjs`
 
 The adapter projects client state and forwards account, device, network, and
 application actions. P2P, credentials, and application sessions stay in the shell.

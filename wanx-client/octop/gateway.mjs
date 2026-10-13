@@ -649,7 +649,8 @@ export async function createDashboardGateway({
       const upstream = transport.request(target, {
         method,
         path: authorized.path,
-        headers: authorized.headers,
+        // Keep the read side alive for a business response during an upload.
+        headers: { ...authorized.headers, connection: "keep-alive" },
         agent: agent ?? false,
         signal,
       });
@@ -663,7 +664,22 @@ export async function createDashboardGateway({
       });
       upstream.once("close", () => clearTimeout(timer));
       return new Promise((resolve, rejectRequest) => {
+        const uploading = body && typeof body.pipe === "function";
+        const stopUpload = () => {
+          if (uploading) {
+            body.unpipe(upstream); body.pause();
+            if (!upstream.destroyed && !upstream.writableEnded) upstream.end();
+          }
+        };
+        const uploadError = error => upstream.destroy(error);
+        if (uploading) body.once("error", uploadError);
+        upstream.once("close", () => {
+          stopUpload();
+          if (uploading) body.removeListener("error", uploadError);
+        });
         upstream.on("response", (response) => {
+          response.once("end", stopUpload);
+          if (response.statusCode >= 400) stopUpload();
           const headers = headersWithoutHop(response.headers);
           delete headers["set-cookie"];
           delete headers["x-octop-access-token"];
@@ -682,6 +698,7 @@ export async function createDashboardGateway({
           response.on("end", () => resolve({ ...result, body: Buffer.concat(chunks) }));
         });
         upstream.on("error", rejectRequest);
+        if (uploading) { body.pipe(upstream); return; }
         if (body !== undefined) upstream.write(
           Buffer.isBuffer(body) || typeof body === "string" ? body : JSON.stringify(body),
         );

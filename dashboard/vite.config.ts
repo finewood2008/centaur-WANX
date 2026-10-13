@@ -90,12 +90,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     build: {
-      outDir: path.resolve(
-        __dirname,
-        mode === "desktop"
-          ? "../wanx-desktop/dist-ui"
-          : "../src/octop/dashboard",
-      ),
+      outDir: path.resolve(__dirname, "../src/octop/dashboard"),
       emptyOutDir: true,
       chunkSizeWarningLimit: 1600,
       // Limit Rollup worker concurrency to prevent OOM on memory-constrained hosts.
@@ -179,7 +174,6 @@ export default defineConfig(({ mode }) => {
       suppressViteDisconnectReload(),
       react(),
       VitePWA({
-        disable: mode === "desktop",
         // prompt: new SW stays in waiting until the user accepts via
         // PwaUpdatePrompt → applyUpdate() → SKIP_WAITING. Avoid autoUpdate
         // skipWaiting + page reload loops (especially Safari/WebKit).

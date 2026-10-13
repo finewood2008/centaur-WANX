@@ -36,7 +36,6 @@ import SidebarNavCustomizer from "./SidebarNavCustomizer";
 import styles from "./Sidebar.module.less";
 import { typeSize } from "../utils/mobileTypeScale";
 import { DESKTOP_DRAG_REGION_CLASS } from "../utils/desktopChrome";
-import { isWanxDesktopClient, withClientTabs } from "../utils/desktopClient";
 
 const NAV_GROUPS_STORAGE_KEY = "octop:sidebar-nav-groups";
 const LEGACY_COLLAPSED_GROUP_IDS: Record<string, string> = {
@@ -398,10 +397,10 @@ export default function Sidebar({
   );
   const [savedLayout, setSavedLayout] = useState<SidebarNavLayout | null>(null);
   const [customizerOpen, setCustomizerOpen] = useState(false);
-  const navSections = useMemo(() => {
-    const sections = sectionsFromLayout(catalog, savedLayout);
-    return isWanxDesktopClient() ? withClientTabs(sections, catalog) : sections;
-  }, [catalog, savedLayout]);
+  const navSections = useMemo(
+    () => sectionsFromLayout(catalog, savedLayout),
+    [catalog, savedLayout],
+  );
   const { toggleGroup, isGroupCollapsed } = useNavGroupCollapse(
     navSections,
     selectedKey,

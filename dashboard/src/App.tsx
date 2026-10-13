@@ -34,8 +34,6 @@ import "./styles/layout.css";
 import "./styles/form-override.css";
 import "./styles/spin-override.css";
 import "./styles/centaur-ui.css";
-import DesktopWorkspace from "./pages/DesktopClient";
-import { isWanxDesktopClient } from "./utils/desktopClient";
 
 const GlobalStyle = createGlobalStyle`
 * {
@@ -64,9 +62,7 @@ function ThemedApp() {
 
   // Set document title based on current language
   useEffect(() => {
-    document.title = t(
-      isWanxDesktopClient() ? "desktopClient.name" : "app.pageTitle",
-    );
+    document.title = t("app.pageTitle");
   }, [t]);
 
   const themeConfig = {
@@ -169,30 +165,24 @@ function ThemedApp() {
             <DesktopWindowControls chrome={desktopChrome} />
           ) : null}
           <Routes>
-            {isWanxDesktopClient() ? (
-              <Route path="/*" element={<DesktopWorkspace />} />
-            ) : (
-              <>
-                <Route path="/login" element={<LoginPage />} />
-                <Route path="/login/oidc/complete" element={<OidcComplete />} />
-                <Route path="/setup" element={<SetupPage />} />
-                <Route path="/invite" element={<InvitePage />} />
-                <Route
-                  path="/*"
-                  element={
-                    <AuthGuard>
-                      <AgentProvider>
-                        <LayoutModeProvider>
-                          <VoiceOutputProvider>
-                            <MainLayout />
-                          </VoiceOutputProvider>
-                        </LayoutModeProvider>
-                      </AgentProvider>
-                    </AuthGuard>
-                  }
-                />
-              </>
-            )}
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/login/oidc/complete" element={<OidcComplete />} />
+            <Route path="/setup" element={<SetupPage />} />
+            <Route path="/invite" element={<InvitePage />} />
+            <Route
+              path="/*"
+              element={
+                <AuthGuard>
+                  <AgentProvider>
+                    <LayoutModeProvider>
+                      <VoiceOutputProvider>
+                        <MainLayout />
+                      </VoiceOutputProvider>
+                    </LayoutModeProvider>
+                  </AgentProvider>
+                </AuthGuard>
+              }
+            />
           </Routes>
         </DesktopChromeProvider>
       </AntdAppProvider>

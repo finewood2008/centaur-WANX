@@ -29,7 +29,6 @@ import {
 import { octopSettingsApi } from "../../../api/modules/settings";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { userCan } from "../../../utils/permissions";
-import { currentBoxScope } from "../../../utils/desktopClient";
 import {
   applicationProjectZip,
   assertCredentialFree,
@@ -249,7 +248,6 @@ function ProductEditor({
   const [sdkHash, setSdkHash] = useState("");
   // A keyed editor unmount plus an abort signal prevents A's reply filling B's form.
   const lifetime = useRef(new AbortController());
-  const desktopSession = useRef(window.wanxDesktop?.sessionToken());
   useEffect(() => {
     lifetime.current = new AbortController();
     return () => lifetime.current.abort();
@@ -407,18 +405,10 @@ function ProductEditor({
                       void run(async () => {
                         const value = definition();
                         assertCredentialFree(value);
-                        if (window.wanxDesktop) {
-                          await window.wanxDesktop.action("draft.put", {
-                            sessionId: desktopSession.current,
-                            applicationId: id || "new",
-                            value,
-                          });
-                        } else {
-                          localStorage.setItem(
-                            draftKey(currentBoxScope(), userId, id || "new"),
-                            json(value),
-                          );
-                        }
+                        localStorage.setItem(
+                          draftKey(window.location.origin, userId, id || "new"),
+                          json(value),
+                        );
                       }, "applications.draftSaved")
                     }
                   >
@@ -428,24 +418,11 @@ function ProductEditor({
                     disabled={busy}
                     onClick={() =>
                       void run(async () => {
-                        let value: ProductDefinition;
-                        if (window.wanxDesktop) {
-                          const draft = (await window.wanxDesktop.action(
-                            "draft.get",
-                            {
-                              sessionId: desktopSession.current,
-                              applicationId: id || "new",
-                            },
-                          )) as { product: ProductDefinition } | null;
-                          if (!draft || lifetime.current.signal.aborted) return;
-                          value = draft.product;
-                        } else {
-                          const raw = localStorage.getItem(
-                            draftKey(currentBoxScope(), userId, id || "new"),
-                          );
-                          if (!raw) return;
-                          value = JSON.parse(raw) as ProductDefinition;
-                        }
+                        const raw = localStorage.getItem(
+                          draftKey(window.location.origin, userId, id || "new"),
+                        );
+                        if (!raw) return;
+                        const value = JSON.parse(raw) as ProductDefinition;
                         assertCredentialFree(value);
                         form.setFieldsValue({
                           ...value,

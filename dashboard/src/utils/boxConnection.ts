@@ -1,58 +1,9 @@
 /** A box switch replaces the document: no mutable global API destination. */
 export const BOX_SESSION_EVENT = "wanx:box-session";
-export const BOX_DIRECTORY_KEY = "wanx:boxes:v1";
-export type BoxAddress = { name: string; url: string };
 let stopped = false;
 let monitored = false;
 const lifetime = new AbortController();
 const sockets = new Set<WebSocket>();
-
-export function normalizeBoxUrl(raw: string): string {
-  const url = new URL(raw.trim());
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    (url.pathname !== "/" && url.pathname !== "")
-  )
-    throw new Error("INVALID_BOX_URL");
-  return url.origin;
-}
-
-export function loadBoxes(): BoxAddress[] {
-  try {
-    const data: unknown = JSON.parse(
-      localStorage.getItem(BOX_DIRECTORY_KEY) || "[]",
-    );
-    if (!Array.isArray(data)) return [];
-    return data.filter((row): row is BoxAddress => {
-      try {
-        return (
-          typeof row.name === "string" && normalizeBoxUrl(row.url) === row.url
-        );
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return [];
-  }
-}
-
-export function saveBoxes(boxes: BoxAddress[]): void {
-  localStorage.setItem(
-    BOX_DIRECTORY_KEY,
-    JSON.stringify(
-      boxes.map((box) => ({
-        name: box.name.trim().slice(0, 80),
-        url: normalizeBoxUrl(box.url),
-      })),
-    ),
-  );
-}
 
 export function stopBoxSession(reason: "offline" | "switch" | "revoked"): void {
   if (stopped) return;
@@ -120,28 +71,6 @@ export function openBoxSocket(url: string): WebSocket {
     once: true,
   });
   return socket;
-}
-
-/** Destination receives only a local UI preference, never the source box token. */
-export function boxDestination(raw: string): string {
-  return `${normalizeBoxUrl(raw)}/boxes?wanx_client=remote`;
-}
-
-export function switchBox(raw: string, clearCredentials: () => void): void {
-  const destination = boxDestination(raw); // validate before destroying the current session
-  stopBoxSession("switch");
-  clearCredentials();
-  window.location.assign(destination);
-}
-
-export function openNativeBoxChooser(): boolean {
-  const invoke = (
-    window as Window & { _wails?: { invoke?: (value: string) => void } }
-  )._wails?.invoke;
-  if (!invoke) return false;
-  stopBoxSession("switch");
-  invoke("wails:event:emit:desktop:boxes");
-  return true;
 }
 
 window.addEventListener("wanx:leave-box", () => stopBoxSession("switch"));

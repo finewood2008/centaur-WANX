@@ -1,8 +1,0 @@
-{
-  "repository": "nexusaos-centuarai-conn-sdks",
-  "commit": "6ff9bfa02f4df9df650a25e7378891d74dbd0b8b",
-  "package": "@nexusaos/device-management-uni",
-  "version": "1.0.1",
-  "source": "packages/device-management-uni/src/index.ts",
-  "sha256": "2ba1abba0cf91d115cb697663c39ced65df136093cdfe9dae08649469183f6ec"
-}

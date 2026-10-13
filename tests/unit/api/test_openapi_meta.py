@@ -19,7 +19,12 @@ async def test_openapi_has_bearer_security_and_descriptions(tmp_octop_home: Path
     try:
         app = build_app(srv)
         with TestClient(app) as c:
+            docs = c.get("/api/docs")
+            assert docs.status_code == 200
+            assert "/api/openapi.json" in docs.text
             spec = c.get("/api/openapi.json").json()
+        assert not any(path.startswith("/api/box-management") for path in spec["paths"])
+        assert not hasattr(app.state, "box_management")
         assert spec["info"]["description"]
         assert "BearerAuth" in spec["components"]["securitySchemes"]
         login = spec["paths"]["/api/auth/login"]["post"]

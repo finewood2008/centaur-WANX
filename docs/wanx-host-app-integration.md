@@ -95,7 +95,7 @@ if (host) {
 }
 ```
 
-业务 HTTP 方法、`/api/...` 路径、JSON、multipart 字节、响应状态和业务数据保持原协议。SDK 返回标准 `Response`，SSE 增量读取；WebSocket 用 `openStream('/api/agents/{id}/chat/ws')` 返回连接中的 `ws`，立即安装 `open/message/error/close` 处理器。支持取消请求；不会自动重放写操作或跟随重定向。上传上限 32 MiB，multipart 的编码与 boundary 由调用方保持。
+业务 HTTP 方法、`/api/...` 路径、JSON、multipart 字节、响应状态和业务数据保持原协议。SDK 返回标准 `Response`，SSE 增量读取；WebSocket 用 `openStream('/api/agents/{id}/chat/ws')` 返回连接中的 `ws`，立即安装 `open/message/error/close` 处理器。支持取消请求；不会自动重放写操作或跟随重定向。HTTP 上传不设 Host 固定大小上限，由盒端业务接口控制大小，盒端 413 响应原样返回。SDK 的 `body` 兼容原有 JSON、字符串和 Buffer/Uint8Array，并支持 Node `Readable` 与 Web `ReadableStream<Uint8Array>`；大文件应使用流，SDK 和网关通过背压转发，避免全量缓存。multipart 的编码与 boundary 由调用方保持。取消、会话失效及盒端提前拒绝会停止上传并释放源流。WebSocket 消息大小限制独立于 HTTP 上传。
 
 不使用 SDK 也可在主进程用 `baseURL + /api/...` 和 `Authorization: Bearer <WANX_HOST_TOKEN>`。`GET /__wanx/context` 读取启动时绑定的用户及盒子；`GET /__wanx/events` 是 SSE，提供 `connection`（ready/recovering）和 `invalidated` 事件。当前 HTTP 网关不按应用 capability 限制访问，持有效启动凭证的应用可使用已有上下文、HTTP/SSE 和聊天 WS 通道；业务权限仍由盒端按当前用户校验。
 

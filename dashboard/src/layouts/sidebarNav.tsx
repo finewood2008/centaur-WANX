@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 import type { OctopUser } from "../api/modules/auth";
 import { navAllowed, userCan } from "../utils/permissions";
-import { isWanxDesktopClient } from "../utils/desktopClient";
 
 export const EXPANDED_WIDTH = 220;
 export const COLLAPSED_WIDTH = 56;
@@ -50,7 +49,6 @@ export interface NavSection {
 
 /** Every nav item key the sidebar can show. Keep in sync with `SIDEBAR_NAV_KEYS` in `octop.infra.users.preferences`. */
 export const SIDEBAR_NAV_KEYS = [
-  "boxes",
   "applications",
   "chat",
   "experts",
@@ -136,19 +134,12 @@ export function isGroupedNavKey(key: string): boolean {
 
 export function buildNavSections(
   user: OctopUser | null,
-  opts?: { mobileEnabled?: boolean; desktopClient?: boolean },
+  opts?: { mobileEnabled?: boolean },
 ): NavSection[] {
-  const desktopClient = opts?.desktopClient ?? isWanxDesktopClient();
   const sections: NavSection[] = [
     {
       items: [
-        {
-          key: "boxes",
-          path: "/boxes",
-          icon: <HardDrive size={iconSize} />,
-          labelKey: "boxes.title",
-        },
-        ...(desktopClient
+        ...(navAllowed(user, "applications")
           ? [
               {
                 key: "applications",

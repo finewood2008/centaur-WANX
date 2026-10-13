@@ -10,7 +10,7 @@ Admin 管理应用资料、发行版本、通用应用包与各平台原生制�
 
 ## 客户端使用与接口接入
 
-在仓库根目录运行 `npm run start:client` 启动包含应用市场的万象。`npm start` 仍启动保留的 `wanx-desktop`。新客户端打包入口为 `npm run package:client:mac`（应用目录）和 `npm run package:client:windows`（NSIS 安装包）。
+在仓库根目录运行 `npm run start:client` 启动包含应用市场的万象。`npm start` 同样启动 `wanx-client`；旧桌面壳已删除。新客户端打包入口为 `npm run package:client:mac`（应用目录）和 `npm run package:client:windows`（NSIS 安装包）。
 
 登录后应用首页自动加载市场目录并检查本机兼容版本；“刷新与检查更新”重新查询。卡片显示版本、通用包或平台标记、包大小和更新说明。点击安装或更新并确认后，由主进程申请短期下载地址，完成签名、哈希和压缩包校验，再更新已安装列表。安装不要求连接盒子，打开应用时仍要求连接。下架、缺少通用或本平台应用包、底座版本过低、签名错误会显示对应原因。
 

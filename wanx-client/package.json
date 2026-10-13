@@ -51,7 +51,6 @@
       "platform.mjs",
       "account/**",
       "shell/**",
-      "fleet/**",
       "local-ui/**",
       "network/**",
       "octop/**",

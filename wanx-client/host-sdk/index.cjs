@@ -30,19 +30,46 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
     const outgoing = new Headers(headers);
     outgoing.set('authorization', `Bearer ${token}`);
     for (const key of ['host', 'connection', 'content-length', 'cookie', 'origin']) outgoing.delete(key);
-    if (body !== undefined && !Buffer.isBuffer(body) && !(body instanceof Uint8Array) && typeof body !== 'string') {
+    // Let the Host return early without resetting an in-flight write. The
+    // one-shot client (agent:false) closes its socket after reading the response.
+    outgoing.set('connection', 'keep-alive');
+    const source = body instanceof Readable ? body
+      : body && typeof body.getReader === 'function' ? Readable.fromWeb(body) : null;
+    if (!source && body !== undefined && !Buffer.isBuffer(body) && !(body instanceof Uint8Array) && typeof body !== 'string') {
       body = JSON.stringify(body);
       if (!outgoing.has('content-type')) outgoing.set('content-type', 'application/json');
     }
+    // Bound writes for already-buffered bodies too: a single large write can
+    // fail with EPIPE before an early business rejection reaches the reader.
+    const upload = source || (body?.length > 65536 ? Readable.from((function* () {
+      const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+      for (let offset = 0; offset < bytes.length; offset += 65536) yield bytes.subarray(offset, offset + 65536);
+    })()) : null);
     return new Promise((resolve, reject) => {
       const req = http.request(target, {method, headers:Object.fromEntries(outgoing), signal, agent:false});
       active.add(req);
-      const timer = setTimeout(() => req.destroy(fail('HOST_REQUEST_TIMEOUT')), timeoutMs);
-      timer.unref();
-      req.once('close', () => { clearTimeout(timer); active.delete(req); });
+      let timer;
+      const timeout = () => req.destroy(fail('HOST_REQUEST_TIMEOUT'));
+      const waitForResponse = () => { timer = setTimeout(timeout, timeoutMs); timer.unref(); };
+      const stopUpload = () => {
+        if (upload) { upload.unpipe(req); upload.destroy(); }
+        if (!req.destroyed && !req.writableEnded) req.end();
+      };
+      // Upload duration is unbounded while data is flowing. Once uploaded,
+      // retain the existing response-header deadline; SSE remains unbounded.
+      if (source) {
+        req.setTimeout(timeoutMs, timeout);
+        req.once('finish', waitForResponse);
+      } else waitForResponse();
+      if (upload) upload.once('error', error => req.destroy(error));
+      req.once('close', () => { clearTimeout(timer); active.delete(req); stopUpload(); });
       req.on('error', error => reject(invalid ? fail('HOST_SESSION_EXPIRED') : error));
       req.once('response', res => {
+        req.removeListener('finish', waitForResponse);
         clearTimeout(timer);
+        req.setTimeout(0);
+        res.once('end', stopUpload);
+        if (res.statusCode >= 400) stopUpload();
         const code = res.headers['x-wanx-error'];
         if (code) {
           res.resume();
@@ -51,7 +78,8 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
         }
         resolve(res);
       });
-      req.end(body);
+      if (upload) upload.pipe(req);
+      else req.end(body);
     });
   }
   async function watch() {

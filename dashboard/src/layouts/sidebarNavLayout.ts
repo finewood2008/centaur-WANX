@@ -124,12 +124,6 @@ export function editorFromCatalog(
       seen.add("memory");
     }
   }
-  // Keep box management discoverable in layouts saved before it was added.
-  // An explicit hidden choice still takes precedence.
-  if (catalogKeys.has("boxes") && !seen.has("boxes")) {
-    ungrouped.unshift("boxes");
-    seen.add("boxes");
-  }
   for (const key of defaultKeyOrder(base)) {
     if (!seen.has(key)) hidden.push(key);
   }

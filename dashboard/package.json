@@ -17,8 +17,7 @@
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview",
     "preview:prod": "vite preview --mode production",
-    "preview:test": "vite preview --mode test",
-    "build:desktop": "tsc -b && vite build --mode desktop"
+    "preview:test": "vite preview --mode test"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "^1.2.4",

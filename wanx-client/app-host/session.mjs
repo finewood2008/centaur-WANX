@@ -4,7 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { WebSocket, WebSocketServer } from "ws";
 
 const fail = (code, status = 401) => Object.assign(new Error(code), { code, status });
-const MAX_BODY = 32 * 1024 * 1024;
+const MAX_WS_PAYLOAD = 32 * 1024 * 1024;
 const TERMINAL = new Set(["NETWORK_CHANGED", "SESSION_CLOSED", "GATEWAY_CLOSED", "PLATFORM_SESSION_EXPIRED", "HOST_SESSION_EXPIRED"]);
 const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"]);
 
@@ -18,7 +18,7 @@ export async function createApplicationSession({
   signal?.throwIfAborted();
   let url, invalid = false, closing, unsubscribe, heartbeat;
   const operations = new Set(), events = new Set(), sockets = new Set();
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY, perMessageDeflate: false,
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false,
     handleProtocols: (_protocols, req) => req.selectedProtocol || false });
   function state() {
     if (invalid) throw fail("HOST_SESSION_EXPIRED");
@@ -69,7 +69,8 @@ export async function createApplicationSession({
   function checkReady() {
     if (state().connection !== "ready") throw fail("NETWORK_NOT_READY", 503);
   }
-  const server = http.createServer(async (req, res) => {
+  // Large uploads must not hit Node's total request-duration deadline.
+  const server = http.createServer({ requestTimeout: 0 }, async (req, res) => {
     let abort, controller;
     try {
       const control = ["/__wanx/context", "/__wanx/events"].includes(req.url);
@@ -89,30 +90,30 @@ export async function createApplicationSession({
       const path = apiPath(req.url, false, req.method);
       checkReady();
       controller = new AbortController();
-      abort = () => { controller.abort(); res.destroy(); };
+      abort = () => {
+        controller.abort();
+        // Destroying an unread incoming socket after sending a rejection can
+        // reset it before the client receives the business response.
+        if (res.writableFinished) req.resume();
+        else { req.destroy(); res.destroy(); }
+      };
       operations.add(abort);
       res.once("close", abort);
-      const chunks = []; let size = 0;
-      for await (const part of req.iterator({ destroyOnReturn: false })) {
-        size += part.length;
-        if (size > MAX_BODY) throw fail("HOST_REQUEST_TOO_LARGE", 413);
-        chunks.push(part);
-      }
-      checkReady();
+      req.once("aborted", abort);
       const result = await connection.request({ path, method: req.method, headers: headersFor(req),
-        body: size ? Buffer.concat(chunks) : undefined, stream: true, signal: controller.signal });
+        body: req, stream: true, signal: controller.signal });
       if (invalid || controller.signal.aborted) { result.body?.destroy?.(); return; }
       if (result.status === 401) {
         result.body?.destroy?.(); operations.delete(abort); res.removeListener("close", abort);
         invalidate(); throw fail("HOST_SESSION_EXPIRED");
       }
+      if (!req.complete && result.status >= 400) req.resume();
       const headers = { ...result.headers };
       for (const key of Object.keys(headers)) if (["set-cookie", "x-octop-access-token", "location", "x-wanx-error"].includes(key.toLowerCase())) delete headers[key];
       res.writeHead(result.status, headers);
       if (result.body?.pipe) await pipeline(result.body, res);
       else res.end(result.body);
     } catch (error) {
-      if (error.code === "HOST_REQUEST_TOO_LARGE") res.setHeader("connection", "close");
       if (TERMINAL.has(error.code || error.message)) {
         operations.delete(abort);
         if (abort) res.removeListener("close", abort);
@@ -121,7 +122,7 @@ export async function createApplicationSession({
       }
       errorResponse(res, error);
     } finally {
-      if (abort) { operations.delete(abort); res.removeListener("close", abort); }
+      if (abort) { operations.delete(abort); res.removeListener("close", abort); req.removeListener("aborted", abort); }
     }
   });
   function track(ws) {

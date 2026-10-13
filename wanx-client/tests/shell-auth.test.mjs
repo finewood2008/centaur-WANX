@@ -4,7 +4,7 @@ import { registerControlActions } from "../shell/control.mjs";
 function harness() {
   const handlers = new Map(),
     calls = [];
-  const controlURL = "file:///client/fleet/index.html",
+  const controlURL = "file:///client/local-ui/renderer/index.html",
     frame = { url: controlURL },
     contents = { mainFrame: frame };
   const client = Object.fromEntries(
