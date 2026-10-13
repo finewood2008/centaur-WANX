@@ -8,14 +8,16 @@ import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+
 from octop.api.deps import decode_token, sign_token
 from octop.api.middleware.jwt_auth import install as install_jwt
+from octop.api.routers.auth_application import router
 from octop.infra.errors import OctopError
 from octop.infra.users.identity import User
 
-from wanx_runtime.application_exchange import EXCHANGE_PATH, install_application_exchange
+EXCHANGE_PATH = "/api/auth/application/exchange"
 
-SECRET = b"runtime-exchange-test-secret-is-not-a-real-key"
+SECRET = b"application-exchange-test-secret-is-not-a-real-key"
 
 
 class Products:
@@ -56,9 +58,8 @@ def environment():
     async def error_handler(request, exc):
         return JSONResponse(status_code=exc.status, content=exc.to_envelope())
 
-    # Represents the upstream dashboard catch-all, already mounted before us.
+    app.include_router(router, prefix="/api/auth", tags=["auth"])
     app.mount("/", FastAPI())
-    install_application_exchange(app)
     return app, server, products, users
 
 
@@ -191,8 +192,13 @@ async def test_route_works_behind_native_middleware_and_scoped_token_is_rejected
     assert (await exchange(app)).status_code == 401
 
 
-def test_extension_is_in_openapi_and_duplicate_registration_fails(environment):
-    app = environment[0]
-    assert "post" in app.openapi()["paths"][EXCHANGE_PATH]
-    with pytest.raises(RuntimeError, match="already registered"):
-        install_application_exchange(app)
+def test_exchange_has_typed_openapi_request_and_response(environment):
+    schema = environment[0].openapi()
+    operation = schema["paths"][EXCHANGE_PATH]["post"]
+    assert operation["summary"]
+    assert operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ApplicationExchangeBody"
+    )
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ApplicationExchangeResponse"
+    )

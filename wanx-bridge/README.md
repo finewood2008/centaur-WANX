@@ -80,18 +80,18 @@ npm run test:bridge
 uv run pytest -c wanx-bridge/pyproject.toml wanx-bridge/tests -q
 ```
 
-测试包含签名与重放、租约、流式代理、OIDC 以及未修改 Octop 的真实公共接口合同。`test_upstream.py` 的真实 Octop fixture 使用仓库测试工具；它是测试依赖，不是 standalone 包运行依赖。单独安装 bridge 包并不包含该完整合同测试环境。
+测试包含签名与重放、租约、流式代理、OIDC 以及 Octop 的真实公共接口合同。`test_upstream.py` 的真实 Octop fixture 使用仓库测试工具；它是测试依赖，不是 standalone 包运行依赖。单独安装 bridge 包并不包含该完整合同测试环境。
 
-进程内扩展 `wanx_runtime` 随同 wheel 分发，但由盒端上游进程加载；HTTP bridge
-不导入它。其测试单独放在 `runtime-tests/`，必须使用 WANX 根目录的 Octop 环境：
+应用会话兑换由 Octop 原生路由 `POST /api/auth/application/exchange` 提供，
+随 `octop run` 启动注册；不需要额外启动器或运行时包。HTTP bridge 继续通过公共
+接口调用，不导入 Octop 内部模块。兑换要求真实 WANX 登录及当前产品授权，
+应用会话保持同一用户，且有效期不超过父会话。根目录验证：
 
 ```sh
-uv run --no-sync pytest -c wanx-bridge/pyproject.toml wanx-bridge/runtime-tests -q
+uv run --no-sync pytest tests/unit/api/test_application_exchange.py -q
 ```
 
-这组测试验证真实 JWT、产品授权及撤权、同用户 scope 兑换、有效期上限，以及上游
-TLS 双监听和后台任务的启动/关闭。仅安装 standalone bridge 的环境不要运行这组测试；
-它不属于 `wanx-bridge/tests/`，不通过跳过缺失 Octop 依赖伪装验证通过。
+bridge 的真实接口测试也验证原生路由注册、应用授权和撤权。
 
 OS 仓库另运行：
 
