@@ -117,7 +117,7 @@ func (a *App) ConnectBox(raw string) error {
 		active = a.boxGeneration == generation && ctx.Err() == nil
 		a.mu.Unlock()
 		if active && a.window != nil {
-			a.showDashboard(base + "/boxes?wanx_client=remote")
+			a.showDashboard(base + "/chat?wanx_client=remote")
 		}
 	}
 	if a.app != nil {

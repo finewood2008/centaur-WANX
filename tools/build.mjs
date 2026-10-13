@@ -32,14 +32,12 @@ const archive = resolve(vendor, packed.filename);
 const hash = createHash("sha256").update(readFileSync(archive)).digest("hex").slice(0, 12);
 const filename = packed.filename.replace(/\.tgz$/, `-${hash}.tgz`);
 renameSync(archive, resolve(vendor, filename));
-for (const project of ["dashboard", "wanx-desktop"]) {
-  const manifest = resolve(root, project, "package.json");
-  const pkg = JSON.parse(readFileSync(manifest, "utf8"));
-  pkg.dependencies["centaurai-wanx"] = `file:../vendor/${filename}`;
-  writeFileSync(manifest, JSON.stringify(pkg, null, 2) + "\n");
-  execFileSync("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
-    "--cache", resolve(root, ".tooling/npm-cache")], {
-    cwd: resolve(root, project), env, stdio: "inherit",
-  });
-}
-execFileSync("npm", ["run", "build"], { cwd: resolve(root, "wanx-desktop"), env, stdio: "inherit" });
+const manifest = resolve(root, "dashboard/package.json");
+const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+pkg.dependencies["centaurai-wanx"] = `file:../vendor/${filename}`;
+writeFileSync(manifest, JSON.stringify(pkg, null, 2) + "\n");
+execFileSync("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+  "--cache", resolve(root, ".tooling/npm-cache")], {
+  cwd: resolve(root, "dashboard"), env, stdio: "inherit",
+});
+execFileSync("npm", ["run", "build"], { cwd: resolve(root, "dashboard"), env, stdio: "inherit" });

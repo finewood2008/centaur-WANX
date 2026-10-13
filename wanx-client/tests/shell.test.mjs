@@ -37,7 +37,7 @@ test("managed application arguments retain userData without inheriting debug por
 });
 
 test("only the exact trusted main frame can invoke shell actions", () => {
-  const url = "file:///client/fleet/index.html";
+  const url = "file:///client/local-ui/renderer/index.html";
   const frame = { url };
   const contents = { mainFrame: frame };
   const control = { webContents: contents, isDestroyed: () => false };

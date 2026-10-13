@@ -156,3 +156,20 @@ def test_clear_preferred_model_keeps_reasoning_defaults() -> None:
     cleared = merge_model_preferences_json(raw, preferred_model=None)
     assert get_preferred_model_from_json(cleared) is None
     assert "token/glm-5" in get_model_reasoning_from_json(cleared)
+
+
+@pytest.mark.parametrize("hidden", [False, True])
+def test_sidebar_nav_removes_retired_boxes_without_resetting_layout(hidden: bool) -> None:
+    layout = {
+        "groups": [{"id": "settings", "name": "配置"}],
+        "items": [
+            {"key": "boxes", "hidden": hidden},
+            {"key": "chat"},
+            {"key": "memory", "group": "settings"},
+        ],
+    }
+    import json
+
+    expected = {"groups": layout["groups"], "items": layout["items"][1:]}
+    assert get_sidebar_nav_from_json(json.dumps({"sidebar_nav": layout})) == expected
+    assert get_sidebar_nav_from_json(merge_sidebar_nav_json("{}", layout)) == expected

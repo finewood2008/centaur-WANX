@@ -132,10 +132,6 @@ def build_app(server: OctopServer) -> FastAPI:
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
 
-    from octop.api.routers.box_management import mount_box_management
-
-    mount_box_management(app)
-
     from octop.infra.setup.tls.challenge import challenge_store
 
     @app.get("/.well-known/acme-challenge/{token}", include_in_schema=False)

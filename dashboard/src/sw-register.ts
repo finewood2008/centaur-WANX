@@ -120,7 +120,6 @@ export async function registerProductionSW(): Promise<void> {
 }
 
 export async function registerSW(): Promise<void> {
-  if (window.wanxDesktop) return;
   if (!("serviceWorker" in navigator)) return;
 
   if (import.meta.env.DEV) {

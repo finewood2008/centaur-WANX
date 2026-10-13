@@ -21,7 +21,6 @@ PREFERENCES_KEY_SIDEBAR_NAV = "sidebar_nav"
 # Keep in sync with dashboard/src/layouts/sidebarNav.tsx SIDEBAR_NAV_KEYS.
 SIDEBAR_NAV_KEYS = frozenset(
     {
-        "boxes",
         "applications",
         "chat",
         "experts",
@@ -254,6 +253,8 @@ def validate_sidebar_nav(value: Any) -> tuple[list[SidebarNavGroup], list[Sideba
         if not isinstance(raw, dict):
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, "invalid sidebar nav item")
         key = str(raw.get("key") or "").strip()
+        if key == "boxes":
+            continue  # Box management moved to wanx-client; preserve the rest of saved layouts.
         if key not in SIDEBAR_NAV_KEYS:
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, "unknown sidebar nav item")
         if key in seen_keys:

@@ -15,9 +15,7 @@ export function useUnauthorizedRedirect(): void {
   useEffect(() => {
     const handler = (event: Event) => {
       event.preventDefault();
-      if (window.wanxDesktop)
-        void window.wanxDesktop.action("connection.disconnect");
-      navigate(window.wanxDesktop ? "/boxes" : "/login", { replace: true });
+      navigate("/login", { replace: true });
     };
     window.addEventListener(UNAUTHORIZED_EVENT, handler);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, handler);
