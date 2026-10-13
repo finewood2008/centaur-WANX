@@ -1,7 +1,7 @@
 import { access, mkdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyEnvelope, marketFailure, validApplicationId } from "./descriptor.mjs";
+import { verifyEnvelope, marketFailure, validApplicationId, matchesApplicationTarget } from "./descriptor.mjs";
 import { validateApplicationManifest } from "./manifest.mjs";
 
 /** Invoked by the shell before acquiring the WANX single-instance lock. */
@@ -19,7 +19,7 @@ export async function runManagedApplication({
   const descriptor = verifyEnvelope(record.envelope, trustedKeys);
   const manifest = validateApplicationManifest(descriptor.manifest, { signed: true });
   const os = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : null;
-  if (manifest.applicationId !== id || descriptor.artifactId !== path.basename(directory) || descriptor.os !== os || descriptor.arch !== process.arch)
+  if (manifest.applicationId !== id || descriptor.artifactId !== path.basename(directory) || !matchesApplicationTarget(descriptor, os, process.arch))
     throw marketFailure("MARKET_INCOMPATIBLE");
   const installed = validateApplicationManifest(JSON.parse(await readFile(path.join(directory, "wanx-app.json"), "utf8")), { signed: true });
   if (JSON.stringify(installed) !== JSON.stringify(manifest)) throw marketFailure("MARKET_PACKAGE_INVALID");

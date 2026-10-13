@@ -2,9 +2,9 @@
 
 ## 范围与责任
 
-Admin 管理应用资料、发行版本、各平台制品、发布指针和操作审计。OSS 只存储文件。WANX 负责识别平台、版本比较、签名与完整文件校验，以及本机安装、启动、更新、回退、卸载；知君是其中一个应用。市场请求复用 Consumer 登录和请求签名，不需要先连盒子；应用启动继续使用既有盒子连接门禁。
+Admin 管理应用资料、发行版本、通用应用包与各平台原生制品、发布指针和操作审计。OSS 只存储文件。WANX 负责识别平台、版本比较、签名与完整文件校验，以及本机安装、启动、更新、回退、卸载；知君是其中一个应用。市场请求复用 Consumer 登录和请求签名，不需要先连盒子；应用启动继续使用既有盒子连接门禁。
 
-首期支持 `macos / windows` × `x64 / arm64`，精确匹配，不跨架构回退。正式渠道只发布稳定版。软件版本按严格 SemVer 比较，`1.10.0 > 1.9.0`，`1.0.0 > 1.0.0-rc.1`，`+build` 不影响排序。同一版本不能借 buildId 或重新上传变成升级。同版本不同制品返回需重新安装，不自动替换；本机版本较新时不降级。
+知君等共享运行时应用默认发布一份通用 `.wanxapp`，签名描述为 `os: "universal"`、`arch: "universal"`，适用于万象支持的 Windows/macOS、x64/ARM64。万象原生安装包仍按系统与架构区分；旧平台专用 `.wanxapp` 保留精确匹配，不跨架构回退。候选在通用与精确目标发布指针之间选择最新版本，同版本优先精确目标。正式渠道只发布稳定版。软件版本按严格 SemVer 比较，`1.10.0 > 1.9.0`，`1.0.0 > 1.0.0-rc.1`，`+build` 不影响排序。同一版本不能借 buildId 或重新上传变成升级。同版本不同制品返回需重新安装，不自动替换；本机版本较新时不降级。
 
 首期可执行安装类型是第一方 Electron ZIP 包 `.wanxapp`。DMG/EXE 可以在 Admin 中登记、验证和发布，当前 WANX 市场不会执行原生安装器，也未接入 WANX 自身的自动更新。灰度、静默更新、断点续传、差分下载和第三方应用沙箱不在本期。
 
@@ -12,7 +12,7 @@ Admin 管理应用资料、发行版本、各平台制品、发布指针和操�
 
 在仓库根目录运行 `npm run start:client` 启动包含应用市场的万象。`npm start` 仍启动保留的 `wanx-desktop`。新客户端打包入口为 `npm run package:client:mac`（应用目录）和 `npm run package:client:windows`（NSIS 安装包）。
 
-登录后应用首页自动加载市场目录并检查本机兼容版本；“刷新与检查更新”重新查询。卡片显示版本、平台、包大小和更新说明。点击安装或更新并确认后，由主进程申请短期下载地址，完成签名、哈希和压缩包校验，再更新已安装列表。安装不要求连接盒子，打开应用时仍要求连接。下架、缺少本平台安装包、底座版本过低、签名错误会显示对应原因。
+登录后应用首页自动加载市场目录并检查本机兼容版本；“刷新与检查更新”重新查询。卡片显示版本、通用包或平台标记、包大小和更新说明。点击安装或更新并确认后，由主进程申请短期下载地址，完成签名、哈希和压缩包校验，再更新已安装列表。安装不要求连接盒子，打开应用时仍要求连接。下架、缺少通用或本平台应用包、底座版本过低、签名错误会显示对应原因。
 
 市场 HTTP 复用 `account.request` 的 Consumer JWT、EC 请求签名和 token 刷新，默认 Base URL 是 `https://boss.nexusaos.qitus.cn/prod-api`。签名中的路径不带 `/prod-api`。
 
@@ -47,7 +47,7 @@ Admin 管理应用资料、发行版本、各平台制品、发布指针和操�
 
 `capabilities` 只能选择现有 Host 协议能力：`identity.read`、`experts.read`、`experts.select`、`http.request`、`chat.stream`、`files.upload`。该字段保留在已签名清单中作为发行元数据，当前 Host 不按 capability 限权；应用接口权限仍由盒端按当前用户校验，不能将此字段视为应用沙箱。应用通过 `WANX_HOST_*` 环境变量连接独立 Host 会话，不读取 WANX 的账号文件。
 
-入口是导入执行的 Electron main 模块，可使用 `app.whenReady()`；资源路径使用 `import.meta.url` 或应用启动目录，不假定 `app.getAppPath()` 指向应用包。WANX 子进程不会再次启动 WANX 网络栈或争抢其单实例锁。需要针对目标平台构建 native Node 依赖，Electron 版本以 WANX 所带版本为准。
+入口是导入执行的 Electron main 模块，可使用 `app.whenReady()`；资源路径使用 `import.meta.url` 或应用启动目录，不假定 `app.getAppPath()` 指向应用包。WANX 子进程不会再次启动 WANX 网络栈或争抢其单实例锁。通用包不得包含平台或架构限制（manifest 不填写 `platform`、`arch`，`launchMode` 缺省或为 `shared`），并应只带跨平台代码和资源。含 native Node 依赖的应用仍需显式按目标平台构建与发布，Electron 版本以 WANX 所带版本为准。
 
 由发行环境生成并保存 Ed25519 私钥（不要提交至代码库）：
 
@@ -63,11 +63,11 @@ openssl pkey -in /secure/wanx-release-private.pem -pubout -out /secure/wanx-rele
 ```sh
 npm ci
 npm run package:application -- --source /build/zhijun --out /release/zhijun \
-  --os macos --arch arm64 --key /secure/wanx-release-private.pem \
+  --key /secure/wanx-release-private.pem \
   --key-id release-2026 --min-wanx-version 0.1.0 --build-id git-commit-id
 ```
 
-输出 `.wanxapp` 和 `.wanxapp.release.json`。输出目录和私钥必须在输入目录之外，现有输出不能覆盖。为 macOS Intel 使用 `--arch x64`，Windows 使用 `--os windows`。原生安装器可用 `--file <file.dmg|exe> --application-id <id> --version <semver>` 代替 `--source/--out` 生成签名旁文件；该签名不能代替 Apple/Windows 平台签名、公证。
+默认输出 `*-universal-universal.wanxapp` 和配套 `.wanxapp.release.json`，同一份文件覆盖四种受支持的电脑目标。输出目录和私钥必须在输入目录之外，现有输出不能覆盖。确有原生依赖时显式同时指定 `--os macos|windows --arch x64|arm64`。原生安装器可用 `--file <file.dmg|exe> --application-id <id> --version <semver>` 代替 `--source/--out`，且必须指定系统和架构；该签名不能代替 Apple/Windows 平台签名、公证。
 
 签名旁文件包含 `{keyId, descriptorBase64, signatureBase64}`。Ed25519 签署原始描述字节；描述绑定应用、版本、系统、架构、SHA256、字节数、Host 协议、最低 WANX 版本和完整清单。签名不包含自身，不使用包内公钥建立信任。
 
@@ -77,7 +77,7 @@ npm run package:application -- --source /build/zhijun --out /release/zhijun \
 
 密钥轮换先发布同时信任新旧公钥的 WANX，再用新私钥发布应用。撤下旧公钥会让旧签名版本无法启动或回退，需先安排应用换签版本和底座升级。
 
-Admin 部署步骤见其仓库 `docs/operations/app-market.md`。操作顺序：创建未上架应用 → 创建版本 → 分别上传各平台的签名旁文件与包 → 等待后端验证成功 → 发布版本 → 编辑应用上架。缺失平台显示不兼容，不会选另一个安装包。
+Admin 部署步骤见其仓库 `docs/operations/app-market.md`。操作顺序：创建未上架应用 → 创建版本 → 上传通用应用包及签名旁文件（原生安装器按平台分别上传） → 等待后端验证成功 → 发布版本 → 编辑应用上架。无通用包且缺失当前平台制品时显示不可安装。旧签名包不能手动修改平台标签；请使用递增的新版本重新生成通用包和签名描述，再上传发布。先部署支持通用包的 Admin 与 WANX 客户端；旧客户端不识别 universal 描述，需要更新。
 
 上传使用 15 分钟 OSS 临时 PUT URL，验证由后台读取整个对象执行，验证成功后将已验证的本地字节提升到独立正式对象。浏览器没有 OSS 密钥或正式目录写权限。临时下载链接短期有效；撤销停止签发新链接，已经签发的链接在到期前仍可能有效。
 
@@ -99,7 +99,7 @@ npm --prefix wanx-client run build:renderer
 make all PYTEST_JOBS=4
 ```
 
-`wanx-client/tests/fixtures/market-contract-v1.json` 与 Admin 中同名 fixture 内容相同，覆盖真实签名包与版本比较的一致性。修改协议需同步更新两份及两端测试。
+`wanx-client/tests/fixtures/market-contract-v1.json`（旧平台包）及 `market-contract-universal-v1.json`（通用包）与 Admin 中同名 fixture 内容相同，覆盖真实签名包与版本比较的一致性。修改协议需同步更新两份及两端测试。
 
 本地验证使用临时目录、测试签名和模拟 OSS，没有执行生产迁移或配置生产公钥。上线前还需用真实私有 OSS、MySQL 和目标系统安装环境完成验收；本次开发不代表 Windows 实机、macOS 签名公证或生产环境已经验收。
 

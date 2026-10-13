@@ -269,7 +269,7 @@ function candidateLabel(candidate) {
   if (["incompatible", "unavailable"].includes(candidate.status)) {
     const reason = {
       application_unlisted: "此应用尚未上架或已下架，请刷新应用市场。",
-      no_published_target: "暂无适用于此电脑平台的安装包，请联系管理员发布对应版本。",
+      no_published_target: "暂无可安装的应用包，请联系管理员发布通用应用包或适用版本。",
       release_unavailable: "此发行版本暂不可用，请刷新应用市场后重试。",
       wanx_version: "请先升级万象，再安装此应用版本。",
       host_protocol: "此应用与当前万象运行协议不兼容，请联系管理员确认兼容版本。",
@@ -290,7 +290,7 @@ function candidateLabel(candidate) {
 
 function candidateDetails(candidate) {
   const artifact = candidate?.artifact;
-  const platforms = { "macos:arm64": "macOS · Apple 芯片", "macos:x64": "macOS · Intel", "windows:arm64": "Windows · ARM64", "windows:x64": "Windows · x64" };
+  const platforms = { "universal:universal": "通用应用包", "macos:arm64": "macOS · Apple 芯片", "macos:x64": "macOS · Intel", "windows:arm64": "Windows · ARM64", "windows:x64": "Windows · x64" };
   const metadata = [];
   if (artifact) {
     const platform = platforms[`${artifact.os}:${artifact.arch}`];
@@ -341,7 +341,7 @@ function applicationsView() {
   const installed = new Set(applications.map((item) => item.applicationId));
   const available = marketItems.filter((item) => !installed.has(item.applicationId));
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用商店")}<div class="page-content">
-    <div class="page-heading"><div><h2>应用商店</h2><p class="muted">发现适合你的 AI 应用。安装与更新无需连接盒子。</p></div><button class="text-button" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div>
+    <div class="page-heading"><div><h2>应用商店</h2><p class="muted">通用应用包支持 Windows 和 macOS。安装与更新无需连接盒子。</p></div><button class="text-button" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div>
     <div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="content-section" aria-label="我的应用"><div class="section-heading"><h3>我的应用 <span class="count">${applications.length}</span></h3></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
@@ -349,6 +349,7 @@ function applicationsView() {
     ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)} <button class="text-button" data-action="market-refresh">刷新重试</button></div>` : ""}
     ${available.length ? `<div class="application-list">${available.map((item) => applicationCard(item, false)).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用商店…" : marketError ? "稍后刷新即可重试。" : marketItems.length ? "商店中的应用均已安装。" : "暂无已上架应用。"}</p>`}</section>
   </div></div>${confirmationView()}`;
+
 }
 
 async function refreshMarket() {

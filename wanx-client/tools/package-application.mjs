@@ -53,12 +53,18 @@ async function envelopeFor(file, metadata, key) {
 }
 
 /** Package a prepared build directory, never a working tree containing secrets. */
-export async function packageApplication({ sourceDir, outputDir, os, arch, keyFile, keyId, minWanxVersion = "0.1.0", buildId }) {
+export async function packageApplication({ sourceDir, outputDir, os = "universal", arch = "universal", keyFile, keyId, minWanxVersion = "0.1.0", buildId }) {
   sourceDir = path.resolve(sourceDir); outputDir = path.resolve(outputDir);
   if (!keyId || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) fail("需要有效的 --key-id。");
   if (inside(sourceDir, outputDir) || inside(sourceDir, path.resolve(keyFile)))
     fail("输出目录和签名私钥必须位于打包目录之外。");
   const manifest = await packageManifest(sourceDir);
+  if (os === "universal" || arch === "universal") {
+    if (os !== "universal" || arch !== "universal") fail("通用应用包的 --os 和 --arch 必须同时为 universal，或同时省略。");
+    if (manifest.launchMode !== "shared" || manifest.platform || manifest.arch) fail("通用应用包必须共享万象运行时，且清单不能限制平台或架构。");
+  } else if (!["macos", "windows"].includes(os) || !["x64", "arm64"].includes(arch)) {
+    fail("应用包平台必须为 macos/windows，架构必须为 x64/arm64；通用应用包可省略这两个参数。");
+  }
   const key = await signingKey(keyFile);
   const fileName = `${manifest.applicationId}-${manifest.version.replaceAll("+", "_")}-${os}-${arch}.wanxapp`;
   await mkdir(outputDir, { recursive: true });
@@ -107,6 +113,7 @@ export async function packageApplication({ sourceDir, outputDir, os, arch, keyFi
 
 export async function signNativePackage({ inputFile, applicationId, version, os, arch, keyFile, keyId, minWanxVersion = "0.1.0", buildId }) {
   if (!keyId || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) fail("需要有效的 --key-id。");
+  if (!["x64", "arm64"].includes(arch)) fail("原生安装包必须指定 --arch x64 或 arm64。");
   const packageType = path.extname(inputFile).slice(1);
   if (!((packageType === "dmg" && os === "macos") || (packageType === "exe" && os === "windows"))) fail("DMG 必须属于 macOS，EXE 必须属于 Windows。");
   const { descriptor, ...envelope } = await envelopeFor(inputFile, {
@@ -123,9 +130,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const { values } = parseArgs({ options: { ...options, help: { type: "boolean" } } });
     if (values.help) {
-      console.log("node tools/package-application.mjs --source <build-dir> --out <output-dir> --os macos|windows --arch x64|arm64 --key <ed25519-private.pem> --key-id <id> [--min-wanx-version 0.1.0] [--build-id <commit>]\n原生安装包签名：将 --source/--out 换为 --file <package.dmg|exe> --application-id <id> --version <semver>");
+      console.log("node tools/package-application.mjs --source <build-dir> --out <output-dir> --key <ed25519-private.pem> --key-id <id> [--min-wanx-version 0.1.0] [--build-id <commit>]\n应用包默认通用（universal/universal），仅平台专用应用需指定 --os macos|windows --arch x64|arm64。\n原生安装包签名：将 --source/--out 换为 --file <package.dmg|exe> --application-id <id> --version <semver>，必须指定 --os 和 --arch。");
     } else {
-      if (!values.key || !values.os || !values.arch || (!values.file && (!values.source || !values.out))) fail("参数不完整，使用 --help 查看用法。");
+      if (!values.key || (values.file && (!values.os || !values.arch)) || (!values.file && (!values.source || !values.out))) fail("参数不完整，使用 --help 查看用法。");
       const input = { sourceDir: values.source, outputDir: values.out, inputFile: values.file, applicationId: values["application-id"], version: values.version, os: values.os, arch: values.arch, keyFile: values.key, keyId: values["key-id"], minWanxVersion: values["min-wanx-version"], buildId: values["build-id"] };
       const result = await (values.file ? signNativePackage(input) : packageApplication(input));
       console.log(JSON.stringify({ package: result.archivePath, signature: result.envelopePath, artifactId: result.descriptor.artifactId, sha256: result.descriptor.sha256 }, null, 2));
