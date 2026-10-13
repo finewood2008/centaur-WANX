@@ -6,7 +6,9 @@ import time
 from dataclasses import replace
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
+from pydantic import BaseModel, ConfigDict
+
 from octop.api.deps import (
     InvalidToken,
     TokenExpired,
@@ -19,10 +21,8 @@ from octop.api.deps import (
 from octop.api.routers.auth import _user_json
 from octop.infra.applications.service import assert_product_login
 from octop.infra.errors import ErrorCode, OctopError
-from pydantic import BaseModel, ConfigDict
 
 router = APIRouter()
-EXCHANGE_PATH = "/api/auth/application/exchange"
 
 
 class ApplicationExchangeBody(BaseModel):
@@ -31,7 +31,28 @@ class ApplicationExchangeBody(BaseModel):
     application_id: Literal["super-advisory"]
 
 
-@router.post(EXCHANGE_PATH, summary="Exchange a WANX login for an authorized application session")
+class ApplicationExchangeUser(BaseModel):
+    id: int
+    username: str
+    role: str
+    application_id: Literal["super-advisory"]
+    display_name: str | None = None
+    locale: str
+    permissions: list[str]
+
+
+class ApplicationExchangeResponse(BaseModel):
+    access_token: str
+    token_type: Literal["Bearer"]
+    expires_in: int
+    user: ApplicationExchangeUser
+
+
+@router.post(
+    "/application/exchange",
+    summary="Exchange a WANX login for an authorized application session",
+    response_model=ApplicationExchangeResponse,
+)
 def exchange_application(
     body: ApplicationExchangeBody,
     request: Request,
@@ -83,18 +104,3 @@ def exchange_application(
         "expires_in": ttl,
         "user": _user_json(scoped, locale=scoped.locale),
     }
-
-
-def install_application_exchange(app: FastAPI) -> None:
-    """Keep the extension ahead of the upstream dashboard's catch-all mount."""
-    if getattr(app.state, "wanx_application_exchange_installed", False) or any(
-        getattr(route, "path", None) == EXCHANGE_PATH for route in app.routes
-    ):
-        raise RuntimeError("Application exchange route is already registered")
-    count = len(app.router.routes)
-    app.include_router(router, tags=["Auth"])
-    additions = app.router.routes[count:]
-    del app.router.routes[count:]
-    app.router.routes[0:0] = additions
-    app.state.wanx_application_exchange_installed = True
-    app.openapi_schema = None
