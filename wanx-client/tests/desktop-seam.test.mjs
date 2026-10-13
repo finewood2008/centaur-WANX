@@ -11,13 +11,14 @@ const ready = {
   connection: { mode: "netbird", deviceId: "box-102", name: "测试盒子 102", gatewayURL: "http://127.0.0.1:41000" },
 };
 
-function harness(platform = "darwin") {
+function harness(platform = "darwin", panelMode = false, options = {}) {
   let state = ready;
-  const opened = [], errors = [], sent = [], images = [], menus = [], trays = [];
+  const opened = [], errors = [], sent = [], images = [], menus = [], trays = [], management = [], hidden = [];
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: false, getVersion: () => "0.1.0", setAboutPanelOptions: (options) => { app.about = options; },
-    dock: { setIcon: (icon) => { app.dockIcon = icon; } },
+    dock: { setIcon: (icon) => { app.dockIcon = icon; }, hide: () => { app.dockHidden = true; } },
+    quitCalls: 0, quit: () => { app.quitCalls++; },
   });
   const control = new EventEmitter();
   Object.assign(control, {
@@ -28,6 +29,22 @@ function harness(platform = "darwin") {
     focus: () => { control.focused = true; },
     webContents: { send: (...args) => sent.push(args) },
   });
+  const panel = new EventEmitter();
+  Object.assign(panel, {
+    hidden: true, focused: false, destroyed: false, bounds: { x: 0, y: 0, width: 400, height: 520 },
+    isDestroyed: () => panel.destroyed, isVisible: () => !panel.hidden,
+    show: () => { panel.hidden = false; }, hide: () => { panel.hidden = true; },
+    focus: () => { panel.focused = true; },
+    getBounds: () => panel.bounds, setBounds: (bounds) => { panel.bounds = { ...panel.bounds, ...bounds }; },
+  });
+  const screen = new EventEmitter();
+  Object.assign(screen, {
+    display: { workArea: { x: 0, y: 24, width: 1440, height: 876 } },
+    cursor: { x: 500, y: 500 },
+    getDisplayMatching: (bounds) => { screen.matched = bounds; return screen.display; },
+    getDisplayNearestPoint: (point) => { screen.nearest = point; return screen.display; },
+    getCursorScreenPoint: () => screen.cursor,
+  });
   const Menu = {
     buildFromTemplate(template) {
       const all = (items) => items.flatMap((item) => [item, ...all(item.submenu || [])]);
@@ -36,19 +53,26 @@ function harness(platform = "darwin") {
     setApplicationMenu: (menu) => menus.push(menu),
   };
   class Tray extends EventEmitter {
-    constructor(icon) { super(); this.icon = icon; trays.push(this); }
+    constructor(icon) { super(); this.icon = icon; this.bounds = { x: 1340, y: 0, width: 22, height: 24 }; trays.push(this); }
     setToolTip(value) { this.tooltip = value; }
     setContextMenu(menu) { this.menu = menu; }
+    popUpContextMenu(menu) { this.poppedMenu = menu; }
+    getBounds() { return this.bounds; }
     destroy() { this.destroyed = true; }
   }
   const client = { snapshot: () => state };
   const desktop = createDesktopIntegration({
     app, Menu, Tray, control, client, platform,
+    ...(panelMode ? {
+      panel, screen, onPanelHidden: () => hidden.push(true),
+      openManagement: (page) => { management.push(page); control.show(); control.focus(); },
+    } : {}),
     nativeImage: { createFromPath(path) { const image = { path, setTemplateImage(value) { this.template = value; } }; images.push(image); return image; } },
     openDashboard: () => openConnectedDashboard(client, { open: (snapshot) => opened.push(snapshot.connection) }),
     onError: (error) => errors.push(error.message),
+    ...options,
   });
-  return { app, control, desktop, menus, trays, images, opened, sent, errors, update(next, publish = true) { state = next; if (publish) desktop.sync(state); } };
+  return { app, control, panel, screen, desktop, menus, trays, images, opened, sent, errors, management, hidden, update(next, publish = true) { state = next; if (publish) desktop.sync(state); } };
 }
 
 test("macOS menus and tray expose the current box, restore the window and revoke stale actions", async () => {
@@ -57,6 +81,7 @@ test("macOS menus and tray expose the current box, restore the window and revoke
   assert.match(h.app.dockIcon, /icon\.png$/);
   assert.equal(h.trays[0].icon.template, true);
   assert.match(h.trays[0].icon.path, /trayTemplate\.png$/);
+  assert.match(h.app.about.credits, /CentaurAI-WanX/);
   assert.match(h.trays[0].menu.getMenuItemById("connection-status").label, /测试盒子 102/);
   h.control.hidden = true;
   h.control.minimized = true;
@@ -94,20 +119,145 @@ test("closing the host keeps its connection alive; Dock activation restores it a
 });
 
 test("Windows uses a color tray and standard editing/window roles", () => {
-  const h = harness("win32");
+  const h = harness("win32", true);
   assert.match(h.trays[0].icon.path, /icon\.ico$/);
   assert.equal(h.trays[0].icon.template, undefined);
   const roles = h.menus[0].items.flatMap((item) => item.submenu || []).map((item) => item.role);
   for (const role of ["copy", "paste", "selectAll", "minimize", "close", "quit"]) assert.ok(roles.includes(role), role);
   assert.ok(!roles.includes("hide"));
+  h.control.hidden = true;
+  h.trays[0].emit("click");
+  assert.equal(h.control.hidden, false);
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.app.dockHidden, undefined);
   h.desktop.dispose();
+});
+
+test("macOS tray toggles a focused panel, hides it on blur and opens its menu only on right click", () => {
+  const h = harness("darwin", true);
+  const tray = h.trays[0];
+  assert.equal(h.app.dockHidden, true);
+  assert.equal(tray.menu, undefined, "a context menu must not consume the left click");
+  tray.emit("click");
+  assert.equal(h.panel.hidden, false);
+  assert.equal(h.panel.focused, true);
+  assert.deepEqual(h.panel.bounds, { x: 1032, y: 32, width: 400, height: 520 });
+  tray.emit("click");
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.hidden.length, 1);
+  tray.emit("click");
+  h.panel.emit("blur");
+  assert.equal(h.panel.hidden, true);
+  tray.emit("click");
+  h.screen.cursor = { x: 1345, y: 10 };
+  h.panel.emit("blur");
+  tray.emit("click");
+  assert.equal(h.panel.hidden, true, "the same tray click must not reopen a panel hidden by blur");
+  h.desktop.show();
+  tray.emit("right-click");
+  assert.equal(h.panel.hidden, true);
+  assert.match(tray.poppedMenu.getMenuItemById("connection-status").label, /测试盒子 102/);
+  h.update({ ...ready, account: { phase: "signed_out" } });
+  assert.equal(tray.poppedMenu.getMenuItemById("dashboard").enabled, false);
+  h.desktop.dispose();
+});
+
+test("panel placement handles negative coordinates, small work areas, Retina-neutral sizes and removed displays", () => {
+  const h = harness("darwin", true);
+  h.screen.display = { scaleFactor: 2, workArea: { x: -1280, y: 0, width: 1280, height: 800 } };
+  h.trays[0].bounds = { x: -90, y: -24, width: 22, height: 24 };
+  h.desktop.resizePanel(900);
+  h.desktop.show();
+  assert.deepEqual(h.panel.bounds, { x: -408, y: 8, width: 400, height: 560 });
+  h.screen.display = { workArea: { x: -1280, y: 0, width: 1280, height: 420 } };
+  h.screen.emit("display-metrics-changed");
+  assert.deepEqual(h.panel.bounds, { x: -408, y: 8, width: 400, height: 404 });
+  h.trays[0].bounds = { x: 0, y: 0, width: 0, height: 0 };
+  h.screen.display = { workArea: { x: 0, y: 24, width: 800, height: 576 } };
+  h.screen.cursor = { x: 650, y: 200 };
+  h.screen.emit("display-removed");
+  assert.deepEqual(h.screen.nearest, h.screen.cursor);
+  assert.deepEqual(h.panel.bounds, { x: 392, y: 32, width: 400, height: 560 });
+  h.desktop.resizePanel(360);
+  assert.equal(h.panel.bounds.height, 360);
+  h.desktop.resizePanel(NaN);
+  assert.equal(h.panel.bounds.height, 360);
+  h.desktop.dispose();
+  assert.equal(h.screen.listenerCount("display-removed"), 0);
+});
+
+test("management navigation preserves its window and both close handlers release on explicit shutdown", () => {
+  const h = harness("darwin", true);
+  h.desktop.show();
+  h.desktop.showManagement("devices");
+  assert.deepEqual(h.management, ["devices"]);
+  assert.equal(h.control.hidden, false);
+  assert.equal(h.panel.hidden, true);
+  let prevented = 0;
+  h.control.emit("close", { preventDefault: () => prevented++ });
+  assert.equal(h.control.hidden, true);
+  h.app.emit("activate");
+  assert.equal(h.panel.hidden, false);
+  assert.equal(h.control.hidden, true);
+  h.panel.emit("close", { preventDefault: () => prevented++ });
+  assert.equal(h.panel.hidden, true);
+  assert.equal(prevented, 2);
+  h.desktop.dispose();
+  h.control.emit("close", { preventDefault: () => prevented++ });
+  h.panel.emit("close", { preventDefault: () => prevented++ });
+  assert.equal(prevented, 2);
+  assert.equal(h.panel.listenerCount("blur"), 0);
+  assert.equal(h.trays[0].destroyed, true);
+});
+
+test("management handoff preserves the pending launch intent despite synchronous and delayed blur events", () => {
+  const h = harness("darwin", true);
+  const hide = h.panel.hide;
+  h.panel.hide = () => {
+    h.panel.emit("blur");
+    hide();
+  };
+  h.desktop.show();
+  h.desktop.showManagement("devices");
+  assert.equal(h.panel.hidden, true);
+  assert.deepEqual(h.management, ["devices"]);
+  assert.equal(h.hidden.length, 0, "moving to setup must retain the selected application");
+  h.panel.emit("blur");
+  assert.equal(h.hidden.length, 0, "a late blur from the hidden panel must not dismiss the intent");
+  h.desktop.show();
+  h.desktop.hidePanel();
+  assert.equal(h.hidden.length, 1, "an explicit dismissal still cancels once, even if hide emits blur");
+  h.desktop.show();
+  h.panel.emit("blur");
+  assert.equal(h.hidden.length, 2, "ordinary focus loss still dismisses the intent");
+  h.desktop.dispose();
+});
+
+test("Mac application and tray menus route quit through the Host confirmation and expose About", () => {
+  let requested = 0;
+  const h = harness("darwin", true, { requestQuit: () => requested++ });
+  const quit = h.menus[0].getMenuItemById("quit");
+  assert.equal(quit.role, undefined, "Electron's built-in quit role would bypass the Host callback");
+  assert.equal(quit.accelerator, "Command+Q");
+  quit.click();
+  h.trays[0].emit("right-click");
+  const trayMenu = h.trays[0].poppedMenu;
+  assert.ok(trayMenu.items.some(item => item.role === "about"));
+  trayMenu.getMenuItemById("quit").click();
+  assert.equal(requested, 2);
+  assert.equal(h.app.quitCalls, 0);
+  h.desktop.dispose();
+  const defaults = harness();
+  defaults.menus[0].getMenuItemById("quit").click();
+  assert.equal(defaults.app.quitCalls, 1);
+  defaults.desktop.dispose();
 });
 
 test("packaging ships readable platform icons and Retina tray artwork", async () => {
   const root = new URL("../", import.meta.url);
   const config = JSON.parse(await readFile(new URL("package.json", root), "utf8")).build;
-  assert.equal(config.productName, "万象");
-  assert.equal(DESKTOP_NAME, "万象");
+  assert.equal(config.productName, "半人马AI-万象");
+  assert.equal(DESKTOP_NAME, "半人马AI-万象");
   assert.ok(config.files.includes("resources/**"));
   const icns = await readFile(new URL(config.mac.icon, root));
   assert.equal(icns.toString("ascii", 0, 4), "icns");
@@ -116,7 +266,7 @@ test("packaging ships readable platform icons and Retina tray artwork", async ()
   assert.equal(ico.readUInt16LE(2), 1);
   const sizes = Array.from({ length: ico.readUInt16LE(4) }, (_, index) => ico[6 + index * 16] || 256);
   for (const size of [16, 32, 48, 256]) assert.ok(sizes.includes(size));
-  for (const [name, size] of [["icon.png", 1024], ["trayTemplate.png", 22], ["trayTemplate@2x.png", 44]]) {
+  for (const [name, size] of [["icon.png", 1024], ["tray.png", 22], ["tray@2x.png", 44], ["trayTemplate.png", 22], ["trayTemplate@2x.png", 44]]) {
     const png = await readFile(new URL(`resources/${name}`, root));
     assert.equal(png.readUInt32BE(16), size);
     assert.equal(png.readUInt32BE(20), size);

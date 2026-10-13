@@ -1,0 +1,164 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { registerControlActions } from "../shell/control.mjs";
+import { createUIState } from "../shell/ui-state.mjs";
+
+const denied = /此页面无权操作万象连接/;
+const ready = {
+  account: { phase: "authenticated", accountId: "alice", clientId: "client-a" },
+  phase: "ready", network: { phase: "ready", enabled: true }, platform: { phase: "ready" },
+  connection: { mode: "netbird", deviceId: "box-a", gatewayURL: "http://127.0.0.1:41000/current" },
+  devices: [{ deviceId: "box-a", accessState: "ready" }],
+};
+function windowFixture(url) {
+  return {
+    destroyed: false,
+    isDestroyed() { return this.destroyed; },
+    webContents: { mainFrame: { url } },
+  };
+}
+function harness(overrides = {}) {
+  const handlers = new Map(), calls = [];
+  const controlURL = "file:///wanx/management.html", panelURL = "file:///wanx/panel.html";
+  const control = windowFixture(controlURL), panel = windowFixture(panelURL);
+  const record = name => (...args) => { calls.push([name, ...args]); return "ok"; };
+  const client = {
+    snapshot: () => structuredClone(ready), subscribe: () => () => {},
+    loginPassword: record("loginPassword"), loginSMS: record("loginSMS"), sendSMS: record("sendSMS"),
+    logout: record("logout"), connectBox: record("connectBox"), disconnect: record("disconnect"),
+    refreshDevices: record("refreshDevices"), connect: record("connect"), setNetworkEnabled: record("setNetworkEnabled"),
+  };
+  const applications = {
+    listInstalled: () => [{ applicationId: "example.app" }],
+    install: record("install"), selectCurrent: record("selectCurrent"), launch: record("launch"), stop: record("stop"),
+  };
+  registerControlActions({
+    ipcMain: { handle: (name, fn) => handlers.set(name, fn) }, control, controlURL, panel, panelURL,
+    client, applications, allowDevelopmentInstall: true,
+    market: Object.fromEntries(["list", "candidate", "install", "uninstall", "rollback"].map(name => [name, record(`market.${name}`)])),
+    dashboards: { open: record("dashboard") },
+    uiState: {
+      requestOpen: record("requestOpen"), confirmOpen: record("confirmOpen"), cancelOpen: record("cancelOpen"),
+      invalidateOpen: record("invalidateOpen"), runApplicationOperation: (_id, _phase, operation) => operation(),
+    },
+    desktop: { showManagement: record("showManagement"), hidePanel: record("hidePanel"), resizePanel: record("resizePanel") },
+    showAbout: record("showAbout"),
+    ...overrides,
+  });
+  const event = which => ({ sender: which.webContents, senderFrame: which.webContents.mainFrame });
+  return { handlers, calls, control, panel, client, applications, event,
+    invoke(name, input, which = control) { return handlers.get(`wanx-client:${name}`)(event(which), input); },
+  };
+}
+
+for (const surface of ["control", "panel"]) {
+  test(`${surface}: every control IPC rejects subframes, foreign contents, forged URLs, and closed windows`, () => {
+    const h = harness(), window = h[surface], trusted = h.event(window);
+    const foreign = windowFixture(window.webContents.mainFrame.url);
+    for (const handler of h.handlers.values()) {
+      assert.throws(() => handler({ ...trusted, senderFrame: { url: trusted.senderFrame.url } }, {}), denied);
+      assert.throws(() => handler({ ...trusted, sender: foreign.webContents }, {}), denied);
+      assert.throws(() => handler(h.event(foreign), {}), denied);
+      const original = window.webContents.mainFrame.url;
+      for (const url of ["https://untrusted.example/", `${original}?trusted=1`, `${original}#spoof`]) {
+        window.webContents.mainFrame.url = url;
+        assert.throws(() => handler(h.event(window), {}), denied);
+      }
+      window.webContents.mainFrame.url = original;
+      window.destroyed = true;
+      assert.throws(() => handler(h.event(window), {}), denied);
+      window.destroyed = false;
+    }
+    assert.deepEqual(h.calls, []);
+  });
+}
+
+test("panel cannot invoke account, market mutation, version selection, or management-only operations", () => {
+  const h = harness();
+  for (const name of [
+    "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open",
+    "applications-install", "applications-launch", "applications-select-current", "applications-stop",
+    "market-list", "market-candidate", "market-install", "market-uninstall", "market-rollback",
+    "desktop-startup-get", "desktop-startup-set", "desktop-quit",
+    "connect-box", "disconnect", "refresh-devices",
+  ]) {
+    assert.throws(() => h.invoke(name, {
+      phone: "13800138000", password: "secret", code: "123456", applicationId: "example.app",
+      version: "1.2.3", mode: "direct", deviceId: "box-a", url: "https://box.example", enabled: true,
+    }, h.panel), denied, name);
+  }
+  assert.deepEqual(h.calls, []);
+  assert.equal([...h.handlers.keys()].some(name => name.startsWith("wanx:setup:")), false,
+    "setup IPC is registered separately against only the management window");
+});
+
+test("management retains account, market, and version selection operations", async () => {
+  const h = harness();
+  await h.invoke("login-password", { phone: "13800138000", password: "secret" });
+  await h.invoke("market-install", { applicationId: "example.app", url: "https://injected.example" });
+  await h.invoke("applications-select-current", { applicationId: "example.app", version: "1.2.3", sourceDir: "injected" });
+  await h.invoke("logout");
+  assert.deepEqual(h.calls, [
+    ["loginPassword", { phone: "13800138000", password: "secret" }],
+    ["market.install", "example.app"], ["selectCurrent", "example.app", "1.2.3"], ["invalidateOpen"], ["logout"],
+  ]);
+});
+
+test("both trusted windows can open the native about panel without changing accounts or boxes", async () => {
+  const h = harness();
+  await h.invoke("desktop-about", undefined, h.panel);
+  await h.invoke("desktop-about", undefined, h.control);
+  assert.deepEqual(h.calls, [["showAbout"], ["showAbout"]]);
+});
+
+for (const surface of ["control", "panel"]) {
+  test(`${surface}: narrow open IPC forwards only validated identifiers`, async () => {
+    const h = harness(), window = h[surface];
+    const injected = { url: "https://injected.example", token: "untrusted", version: "9.9.9", sourceDir: "outside", command: "arbitrary" };
+    await h.invoke("applications-request-open", { applicationId: " example.app ", ...injected }, window);
+    await h.invoke("applications-confirm-open", { intentId: " intent-1 ", deviceId: " box-a ", ...injected }, window);
+    await h.invoke("applications-cancel-open", { intentId: " intent-1 ", ...injected }, window);
+    assert.deepEqual(h.calls, [
+      ["requestOpen", "example.app"], ["confirmOpen", { intentId: "intent-1", deviceId: "box-a" }],
+      ["cancelOpen", { intentId: "intent-1" }],
+    ]);
+  });
+
+  test(`${surface}: malformed open inputs are rejected before reaching the coordinator`, () => {
+    const h = harness(), window = h[surface];
+    for (const invalid of [undefined, null, "", "  ", 12, {}, [], "a".repeat(65)]) {
+      assert.throws(() => h.invoke("applications-request-open", { applicationId: invalid }, window), /invalid_application_id/);
+    }
+    for (const invalid of [undefined, null, "", "  ", 12, {}, [], "a".repeat(129)]) {
+      assert.throws(() => h.invoke("applications-confirm-open", { intentId: invalid, deviceId: "box-a" }, window), /invalid_intent/);
+      assert.throws(() => h.invoke("applications-confirm-open", { intentId: "intent", deviceId: invalid }, window), /invalid_device/);
+      assert.throws(() => h.invoke("applications-cancel-open", { intentId: invalid }, window), /invalid_intent/);
+    }
+    assert.deepEqual(h.calls, []);
+  });
+}
+
+test("both trusted windows still pass identifier syntax and current-directory checks in the real coordinator", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wanx-panel-security-"));
+  const first = harness();
+  const uiState = await createUIState({
+    client: { ...first.client, snapshot: () => ({ ...ready, phase: "disconnected", connection: null }) },
+    account: { snapshot: () => ready.account, getIdentity: () => ready.account, subscribe: () => () => {} },
+    applications: first.applications,
+    preferenceFile: path.join(directory, "preferences.json"), serviceURL: "https://accounts.example",
+  });
+  t.after(async () => { await uiState.dispose(); await rm(directory, { recursive: true, force: true }); });
+  const h = harness({ uiState });
+  for (const surface of ["control", "panel"]) {
+    const window = h[surface];
+    await assert.rejects(h.invoke("applications-request-open", { applicationId: "../application" }, window), { code: "INVALID_APPLICATION_ID" });
+    const intent = await h.invoke("applications-request-open", { applicationId: "example.app" }, window);
+    await assert.rejects(h.invoke("applications-confirm-open", { intentId: intent.id, deviceId: "../box" }, window), { code: "INVALID_DEVICE_ID" });
+    await assert.rejects(h.invoke("applications-confirm-open", { intentId: intent.id, deviceId: "box-foreign" }, window), { code: "NETWORK_DEVICE_ACCESS_DENIED" });
+    await h.invoke("applications-cancel-open", { intentId: intent.id }, window);
+  }
+  assert.deepEqual(first.calls, [], "invalid requests cannot reach the actual connection or launcher");
+});

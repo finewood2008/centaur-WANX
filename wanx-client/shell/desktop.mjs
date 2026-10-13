@@ -1,44 +1,131 @@
 import { fileURLToPath } from "node:url";
 
-export const DESKTOP_NAME = "万象";
+export const DESKTOP_NAME = "半人马AI-万象";
+export const DESKTOP_ENGLISH_NAME = "CentaurAI-WanX";
 const resource = (name) => fileURLToPath(new URL(`../resources/${name}`, import.meta.url));
 export const APP_ICON = resource("icon.png");
 
 export function createDesktopIntegration({
   app, Menu, Tray, nativeImage, control, client, openDashboard, onError,
+  panel, screen, openManagement, onPanelHidden = () => {},
+  requestQuit = () => app.quit(),
   platform = process.platform,
 }) {
   const mac = platform === "darwin";
+  const usesPanel = mac && Boolean(panel);
   app.setAboutPanelOptions({
     applicationName: DESKTOP_NAME,
     applicationVersion: app.getVersion(),
     iconPath: APP_ICON,
-    credits: "CentaurAI · 万象应用与设备连接",
+    credits: `${DESKTOP_ENGLISH_NAME}\n你的 AI 应用底座`,
   });
   if (mac) app.dock.setIcon(APP_ICON);
+  if (usesPanel) app.dock.hide();
   const trayImage = nativeImage.createFromPath(resource(mac ? "trayTemplate.png" : platform === "win32" ? "icon.ico" : "tray.png"));
   if (mac) trayImage.setTemplateImage(true);
   const tray = new Tray(trayImage);
   tray.setToolTip(DESKTOP_NAME);
+  let panelHeight = 520;
+  let trayBlurAt = 0;
+  let hidingPanel = false;
 
-  function show() {
+  function showControl() {
     if (control.isDestroyed()) return;
     if (control.isMinimized()) control.restore();
     control.show();
     control.focus();
   }
-  function navigate(page) {
-    show();
+
+  function positionPanel() {
+    if (!usesPanel || panel.isDestroyed()) return;
+    const bounds = tray.getBounds();
+    const anchored = bounds.width > 0 && bounds.height > 0;
+    const display = anchored
+      ? screen?.getDisplayMatching(bounds)
+      : screen?.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    if (!display) {
+      panel.setBounds({ width: 400, height: panelHeight });
+      return;
+    }
+    const area = display.workArea;
+    const margin = 8;
+    const width = Math.max(1, Math.min(400, area.width - margin * 2));
+    const height = Math.max(1, Math.min(panelHeight, area.height - margin * 2));
+    const left = area.x + margin;
+    const top = area.y + margin;
+    const x = anchored ? bounds.x + bounds.width / 2 - width / 2 : area.x + area.width - width - margin;
+    const y = anchored ? bounds.y + bounds.height + margin : top;
+    panel.setBounds({
+      x: Math.round(Math.max(left, Math.min(x, area.x + area.width - width - margin))),
+      y: Math.round(Math.max(top, Math.min(y, area.y + area.height - height - margin))),
+      width, height,
+    });
+  }
+
+  function hidePanel({ preserveIntent = false } = {}) {
+    if (!usesPanel || panel.isDestroyed() || hidingPanel) return;
+    const visible = panel.isVisible();
+    if (!visible) return;
+    hidingPanel = true;
+    try { panel.hide(); }
+    finally { hidingPanel = false; }
+    if (!preserveIntent) onPanelHidden();
+  }
+
+  function show() {
+    if (!usesPanel) { showControl(); return; }
+    if (panel.isDestroyed()) return;
+    trayBlurAt = 0;
+    positionPanel();
+    panel.show();
+    panel.focus();
+  }
+
+  function showManagement(page = "applications") {
+    hidePanel({ preserveIntent: true });
+    if (openManagement) { openManagement(page); return; }
+    showControl();
     if (!control.isDestroyed() && client.snapshot().account?.phase === "authenticated")
       control.webContents.send("wanx-client:navigate", page);
   }
+
+  function resizePanel(height) {
+    if (!Number.isFinite(height)) return;
+    panelHeight = Math.max(240, Math.min(560, Math.round(height)));
+    positionPanel();
+  }
+
+  function togglePanel() {
+    // Clicking the tray can blur the window before the tray's click arrives.
+    // Keep that same click from reopening the panel that blur just hid.
+    if (trayBlurAt && Date.now() - trayBlurAt < 300) { trayBlurAt = 0; return; }
+    if (panel.isVisible()) hidePanel();
+    else show();
+  }
+
+  function panelBlurred() {
+    if (hidingPanel || panel.isDestroyed() || !panel.isVisible()) return;
+    const point = screen?.getCursorScreenPoint();
+    const bounds = tray.getBounds();
+    if (point && point.x >= bounds.x && point.x < bounds.x + bounds.width &&
+        point.y >= bounds.y && point.y < bounds.y + bounds.height) trayBlurAt = Date.now();
+    else trayBlurAt = 0;
+    hidePanel();
+  }
+
+  function updatePanelPosition() {
+    if (usesPanel && !panel.isDestroyed() && panel.isVisible()) positionPanel();
+  }
+
   const dashboard = () => Promise.resolve().then(openDashboard).catch(onError);
-  const homeItem = () => ({ id: "applications", label: "我的应用", accelerator: "CmdOrCtrl+1", click: () => navigate("applications") });
-  const settingsItem = () => ({ id: "settings", label: "设置…", accelerator: "CmdOrCtrl+,", click: () => navigate("settings") });
+  const homeItem = () => ({ id: "applications", label: "我的应用", accelerator: "CmdOrCtrl+1", click: () => usesPanel ? show() : showManagement("applications") });
+  const settingsItem = () => ({ id: "settings", label: "设置…", accelerator: "CmdOrCtrl+,", click: () => showManagement("settings") });
   const dashboardItem = () => ({ id: "dashboard", label: "打开 Dashboard", accelerator: "CmdOrCtrl+Shift+D", click: dashboard });
   const separator = { type: "separator" };
-  const about = { role: "about", label: `关于${DESKTOP_NAME}` };
-  const quit = { role: "quit", label: `退出${DESKTOP_NAME}` };
+  const about = { role: "about", label: "关于万象" };
+  const quit = mac
+    ? { id: "quit", label: "退出万象", accelerator: "Command+Q", click: requestQuit }
+    : { role: "quit", label: "退出万象" };
   const menu = Menu.buildFromTemplate([
     ...(mac ? [{ label: DESKTOP_NAME, submenu: [
       about, separator, settingsItem(), separator,
@@ -48,7 +135,7 @@ export function createDesktopIntegration({
       { role: "unhide", label: "显示全部" }, separator, quit,
     ] }] : []),
     { label: "应用", submenu: [
-      { label: "显示主窗口", accelerator: "CmdOrCtrl+Shift+M", click: show },
+      { label: usesPanel ? "打开万象" : "显示主窗口", accelerator: "CmdOrCtrl+Shift+M", click: show },
       homeItem(), ...(!mac ? [settingsItem()] : []), dashboardItem(),
       ...(!mac ? [separator, about, quit] : []),
     ] },
@@ -71,8 +158,8 @@ export function createDesktopIntegration({
   Menu.setApplicationMenu(menu);
   const trayMenu = Menu.buildFromTemplate([
     { id: "connection-status", label: "未连接盒子", enabled: false }, separator,
-    { label: "显示主窗口", click: show }, homeItem(), settingsItem(), dashboardItem(),
-    separator, quit,
+    { label: usesPanel ? "打开万象" : "显示主窗口", click: show }, homeItem(), settingsItem(), dashboardItem(),
+    separator, about, quit,
   ]);
 
   let previous;
@@ -96,21 +183,41 @@ export function createDesktopIntegration({
       target.getMenuItemById("dashboard").enabled = connected;
     }
     trayMenu.getMenuItemById("connection-status").label = label;
-    tray.setContextMenu(trayMenu);
+    if (!usesPanel) tray.setContextMenu(trayMenu);
   }
   const hideOnClose = (event) => { event.preventDefault(); control.hide(); };
+  const hidePanelOnClose = (event) => { event.preventDefault(); hidePanel(); };
+  const showTrayMenu = () => { hidePanel(); tray.popUpContextMenu(trayMenu); };
   control.on("close", hideOnClose);
   app.on("activate", show);
-  if (!mac) tray.on("click", show);
-  tray.on("double-click", show);
+  if (usesPanel) {
+    panel.on("close", hidePanelOnClose);
+    panel.on("blur", panelBlurred);
+    tray.on("click", togglePanel);
+    tray.on("right-click", showTrayMenu);
+    for (const event of ["display-added", "display-removed", "display-metrics-changed"])
+      screen?.on(event, updatePanelPosition);
+  } else {
+    if (!mac) tray.on("click", show);
+    tray.on("double-click", show);
+  }
   sync(client.snapshot());
 
   return {
     sync,
     show,
+    showManagement,
+    hidePanel,
+    resizePanel,
     dispose() {
       control.removeListener("close", hideOnClose);
       app.removeListener("activate", show);
+      if (usesPanel) {
+        panel.removeListener("close", hidePanelOnClose);
+        panel.removeListener("blur", panelBlurred);
+        for (const event of ["display-added", "display-removed", "display-metrics-changed"])
+          screen?.removeListener(event, updatePanelPosition);
+      }
       tray.destroy();
     },
   };

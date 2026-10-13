@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { prepareDesktopRuntime } from "../tools/start-desktop.mjs";
 
-test("macOS development bundle presents 万象 while preserving Electron and account identity", { skip: process.platform !== "darwin" }, async (t) => {
+test("macOS development bundle presents 半人马AI-万象 while preserving Electron and account identity", { skip: process.platform !== "darwin" }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wanx-desktop-seam-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = path.join(root, "electron/Electron.app");
@@ -25,11 +25,11 @@ test("macOS development bundle presents 万象 while preserving Electron and acc
   const signed = [];
   const options = { root, electronPath, sign: (bundle) => signed.push(bundle) };
   const executable = await prepareDesktopRuntime(options);
-  const bundle = path.join(root, "release/dev/万象.app");
+  const bundle = path.join(root, "release/dev/半人马AI-万象.app");
   assert.equal(executable, path.join(bundle, "Contents/MacOS/Electron"));
   const plist = JSON.parse(execFileSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", path.join(bundle, "Contents/Info.plist")], { encoding: "utf8" }));
-  assert.equal(plist.CFBundleDisplayName, "万象");
-  assert.equal(plist.CFBundleName, "万象");
+  assert.equal(plist.CFBundleDisplayName, "半人马AI-万象");
+  assert.equal(plist.CFBundleName, "半人马AI-万象");
   assert.equal(plist.CFBundleIdentifier, config.build.appId);
   assert.equal(plist.NSBluetoothAlwaysUsageDescription, config.build.mac.extendInfo.NSBluetoothAlwaysUsageDescription);
   assert.deepEqual(await readFile(path.join(bundle, "Contents/Resources", plist.CFBundleIconFile)), icon);

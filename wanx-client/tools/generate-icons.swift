@@ -1,20 +1,18 @@
-// Vector text icon in the same seal style as 知君; no bitmap logo dependency.
+// Scale the approved CentaurAI artwork; macOS menu-bar templates use its alpha silhouette.
 // Run on macOS: npm run build:icons. Commit the outputs for Windows builds too.
 import AppKit
-import CoreText
 import Foundation
 
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
 let output = root.appendingPathComponent("resources")
 let files = FileManager.default
 try files.createDirectory(at: output, withIntermediateDirectories: true)
-let font = CTFontCreateWithName("STSongti-SC-Bold" as CFString, 1000, nil)
-var character: UniChar = 0x4E07 // 万
-var glyph: CGGlyph = 0
-guard CTFontGetGlyphsForCharacters(font, &character, &glyph, 1),
-      let outline = CTFontCreatePathForGlyph(font, glyph, nil) else { fatalError("Cannot render 万") }
+let source = root.appendingPathComponent("local-ui/renderer/assets/centaurai-mark.png")
+guard let logo = NSImage(contentsOf: source), logo.size.width > 0, logo.size.height > 0 else {
+    fatalError("Cannot read CentaurAI logo at \(source.path)")
+}
 
-func png(_ size: Int, template: Bool = false) -> Data {
+func png(_ size: Int, tray: Bool = false, template: Bool = false) -> Data {
     let bitmap = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -23,32 +21,27 @@ func png(_ size: Int, template: Bool = false) -> Data {
     bitmap.size = NSSize(width: size, height: size)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-    let context = NSGraphicsContext.current!.cgContext
-    context.scaleBy(x: CGFloat(size) / 1024, y: CGFloat(size) / 1024)
-    if !template {
-        NSColor(srgbRed: 164/255, green: 67/255, blue: 44/255, alpha: 1).setFill()
-        NSBezierPath(roundedRect: NSRect(x: 52, y: 52, width: 920, height: 920), xRadius: 165, yRadius: 165).fill()
-        NSColor(srgbRed: 235/255, green: 203/255, blue: 171/255, alpha: 1).setStroke()
-        let border = NSBezierPath(roundedRect: NSRect(x: 120, y: 120, width: 784, height: 784), xRadius: 88, yRadius: 88)
-        border.lineWidth = 18
-        border.stroke()
+    NSGraphicsContext.current!.imageInterpolation = .high
+    let edge = CGFloat(size)
+    let available = edge * (tray ? 0.96 : 0.88)
+    let scale = available / max(logo.size.width, logo.size.height)
+    let width = logo.size.width * scale
+    let height = logo.size.height * scale
+    logo.draw(in: NSRect(x: (edge - width) / 2, y: (edge - height) / 2, width: width, height: height),
+              from: .zero, operation: .sourceOver, fraction: 1)
+    if template {
+        NSColor.black.setFill()
+        NSRect(x: 0, y: 0, width: edge, height: edge).fill(using: .sourceIn)
     }
-    let bounds = outline.boundingBoxOfPath
-    let scale = (template ? 780.0 : 720.0) / max(bounds.width, bounds.height)
-    context.translateBy(x: (1024 - bounds.width * scale) / 2 - bounds.minX * scale,
-                        y: (1024 - bounds.height * scale) / 2 - bounds.minY * scale)
-    context.scaleBy(x: scale, y: scale)
-    context.addPath(outline)
-    context.setFillColor((template ? NSColor.black : NSColor(srgbRed: 255/255, green: 249/255, blue: 238/255, alpha: 1)).cgColor)
-    context.fillPath()
     NSGraphicsContext.restoreGraphicsState()
     return bitmap.representation(using: .png, properties: [:])!
 }
 
 try png(1024).write(to: output.appendingPathComponent("icon.png"))
-try png(32).write(to: output.appendingPathComponent("tray.png"))
-try png(22, template: true).write(to: output.appendingPathComponent("trayTemplate.png"))
-try png(44, template: true).write(to: output.appendingPathComponent("trayTemplate@2x.png"))
+try png(22, tray: true).write(to: output.appendingPathComponent("tray.png"))
+try png(44, tray: true).write(to: output.appendingPathComponent("tray@2x.png"))
+try png(22, tray: true, template: true).write(to: output.appendingPathComponent("trayTemplate.png"))
+try png(44, tray: true, template: true).write(to: output.appendingPathComponent("trayTemplate@2x.png"))
 
 let temporary = files.temporaryDirectory.appendingPathComponent("wanx-icons-\(UUID().uuidString)")
 let iconset = temporary.appendingPathComponent("icon.iconset")

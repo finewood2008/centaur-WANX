@@ -4,7 +4,7 @@ import { registerControlActions } from "../shell/control.mjs";
 import { createMarketSessionGuard } from "../shell/market-session.mjs";
 
 for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
-  test(`market ${method} is control-only and login-only, without requiring a box`, () => {
+  test(`market ${method} is control-only and login-only, without requiring a box`, async () => {
     const handlers = new Map();
     const frame = { url: "file:///control.html" };
     const webContents = { mainFrame: frame };
@@ -20,7 +20,7 @@ for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) 
     const event = { sender: webContents, senderFrame: frame };
     const input = { applicationId: "centaurai.zhijun", url: "https://evil.invalid", sourceDir: "/tmp/evil" };
     assert.throws(() => invoke({ ...event, senderFrame: { url: frame.url } }, input), /无权/);
-    assert.equal(invoke(event, input), "ok");
+    assert.equal(await invoke(event, input), "ok");
     assert.deepEqual(calls, [method === "list" ? [] : ["centaurai.zhijun"]]);
     phase = "signed_out";
     assert.throws(() => invoke(event, input), /ACCOUNT_LOGIN_REQUIRED/);

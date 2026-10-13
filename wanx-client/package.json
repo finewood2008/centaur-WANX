@@ -12,11 +12,12 @@
     "build:icons": "xcrun swift tools/generate-icons.swift",
     "build:network": "node tools/build-network.mjs",
     "build:network:all": "node tools/build-network.mjs --all",
-    "prestart": "node tools/ensure-network.mjs",
+    "build:discovery": "node tools/build-discovery.mjs",
+    "prestart": "node tools/ensure-network.mjs && node tools/build-discovery.mjs",
     "start": "node tools/start-desktop.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:native": "cd native && go test ./...",
-    "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && electron-builder --mac --dir",
+    "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && node tools/build-discovery.mjs darwin-arm64 darwin-x64 && electron-builder --mac --dir",
     "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && electron-builder --win nsis",
     "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js",
     "package:application": "node tools/package-application.mjs"
@@ -40,7 +41,7 @@
   },
   "build": {
     "appId": "ai.centuarai.wanx.client",
-    "productName": "万象",
+    "productName": "半人马AI-万象",
     "directories": {
       "output": "release"
     },
@@ -87,7 +88,8 @@
           "from": "native/bin",
           "to": "network",
           "filter": [
-            "wanx-netbird-darwin-${arch}*"
+            "wanx-netbird-darwin-${arch}*",
+            "wanx-discovery-darwin-${arch}"
           ]
         }
       ],

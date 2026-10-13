@@ -24,7 +24,6 @@ app.whenReady().then(async () => {
     show:true, width:720, height:480, title:'万象应用安装验证',
     webPreferences:{nodeIntegration:false, sandbox:true, contextIsolation:true},
   });
-  window.on('show', () => send({type:'test:shown', visible:window.isVisible()}));
   await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`
     <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>万象应用安装验证</title>
     <style>body{font:18px system-ui;background:#faf7f0;color:#333;padding:36px}h1{font-size:30px;color:#a54f35}p{line-height:1.7}</style>

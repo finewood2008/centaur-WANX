@@ -32,26 +32,48 @@ export function registerControlActions({
   ipcMain,
   control,
   controlURL,
+  panel,
+  panelURL,
   client,
   applications,
   dashboards,
   selectApplicationArchive,
   market,
+  uiState,
+  desktop,
+  getState,
+  publishState = () => {},
+  getDesktopStartup,
+  setDesktopStartup,
+  showAbout,
+  quit,
   allowDevelopmentInstall = false,
 }) {
+  const panelActions = new Set([
+    "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
+    "applications-cancel-open",
+    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about",
+  ]);
+  const reads = new Set(["get-state", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
-      if (!isControlSender(event, control, controlURL))
+      const management = isControlSender(event, control, controlURL);
+      if (!management && !(panelActions.has(name) && isControlSender(event, panel, panelURL)))
         throw new Error("此页面无权操作万象连接。");
-      return action(argument);
+      // Keep validation synchronous; mutations also refresh both trusted windows.
+      const result = action(argument);
+      if (reads.has(name)) return result;
+      return Promise.resolve(result).finally(() => publishState());
     });
   };
   register("get-state", async () => {
+    if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
     return { ...client.snapshot(), applications: installed };
   });
   register("set-network-enabled", (enabled) => {
     if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
+    if (!enabled) uiState?.invalidateOpen();
     return client.setNetworkEnabled(enabled);
   });
   register("login-password", (input) => {
@@ -71,13 +93,16 @@ export function registerControlActions({
     return client.loginSMS({ phone: number, code });
   });
   register("send-sms", (input) => client.sendSMS({ phone: phone(input) }));
-  register("logout", () => client.logout());
+  register("logout", () => { uiState?.invalidateOpen(); return client.logout(); });
   register("refresh-devices", () => client.refreshDevices());
-  register("connect-box", (deviceId) =>
-    client.connectBox(text(deviceId, 128, "invalid_device")),
-  );
+  register("connect-box", (deviceId) => {
+    const id = text(deviceId, 128, "invalid_device");
+    uiState?.invalidateOpen();
+    return client.connectBox(id);
+  });
   register("connect", (input) => {
     if (input?.mode !== "direct") throw new Error("invalid_network_mode");
+    uiState?.invalidateOpen();
     return client.connect({
       mode: "direct",
       deviceId: text(input.deviceId, 128, "invalid_connection"),
@@ -85,7 +110,7 @@ export function registerControlActions({
       url: text(input.url, 2048, "invalid_endpoint"),
     });
   });
-  register("disconnect", () => client.disconnect());
+  register("disconnect", () => { uiState?.invalidateOpen(); return client.disconnect(); });
   register("dashboard-open", () => openConnectedDashboard(client, dashboards));
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
@@ -108,20 +133,53 @@ export function registerControlActions({
   });
   register("applications-select-current", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
-    return applications.selectCurrent(text(input?.applicationId, 64, "invalid_application_id"), text(input?.version, 64, "INVALID_APPLICATION_VERSION"));
+    const id = text(input?.applicationId, 64, "invalid_application_id");
+    const version = text(input?.version, 64, "INVALID_APPLICATION_VERSION");
+    const operation = () => applications.selectCurrent(id, version);
+    return uiState ? uiState.runApplicationOperation(id, "selecting", operation) : operation();
   });
   register("applications-stop", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     return applications.stop(text(input?.applicationId, 64, "invalid_application_id"));
   });
+  register("applications-request-open", (input) => {
+    if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return uiState.requestOpen(text(input?.applicationId, 64, "invalid_application_id"));
+  });
+  register("applications-confirm-open", (input) => {
+    if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return uiState.confirmOpen({ intentId: text(input?.intentId, 128, "invalid_intent"), deviceId: text(input?.deviceId, 128, "invalid_device") });
+  });
+  register("applications-cancel-open", (input) => {
+    if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
+    return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
+  });
+  register("desktop-open", (input) => {
+    if (!["applications", "boxes", "settings"].includes(input?.page)) throw new Error("invalid_page");
+    desktop?.showManagement(input.page);
+  });
+  register("desktop-hide", () => desktop?.hidePanel());
+  register("desktop-resize", (input) => {
+    if (!Number.isFinite(input?.height)) throw new Error("invalid_panel_height");
+    desktop?.resizePanel(Math.max(240, Math.min(560, Math.ceil(input.height))));
+  });
+  register("desktop-startup-get", () => getDesktopStartup?.());
+  register("desktop-startup-set", (input) => {
+    if (typeof input?.enabled !== "boolean") throw new Error("invalid_startup_setting");
+    return setDesktopStartup?.(input.enabled);
+  });
+  register("desktop-about", () => showAbout?.());
+  register("desktop-quit", () => quit?.());
   for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
     register(`market-${method}`, (input) => {
       if (!market) throw new Error("MARKET_UNAVAILABLE");
       if (client.snapshot().account?.phase !== "authenticated")
         throw new Error("ACCOUNT_LOGIN_REQUIRED");
-      return method === "list"
-        ? market.list()
-        : market[method](text(input?.applicationId, 64, "invalid_application_id"));
+      if (method === "list") return market.list();
+      const id = text(input?.applicationId, 64, "invalid_application_id");
+      const operation = () => market[method](id);
+      if (method === "candidate" || !uiState) return operation();
+      return uiState.runApplicationOperation(id, { install: "installing", uninstall: "uninstalling", rollback: "rolling-back" }[method], operation);
     });
   }
 }
