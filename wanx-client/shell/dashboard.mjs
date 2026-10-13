@@ -6,7 +6,6 @@ import { externalHTTPURL, isDashboardURL, sameOrigin } from "./security.mjs";
 export function createDashboardWindows({
   BrowserWindow,
   session,
-  disconnect,
   onError,
   requestMedia,
   openExternal,
@@ -29,18 +28,29 @@ export function createDashboardWindows({
   }
 
   function sync(state) {
-    if (
-      state.phase === "recovering" &&
-      current &&
-      state.connection?.gatewayURL === current.gatewayURL
-    )
-      return;
-    const connection = state.phase === "ready" ? state.connection : null;
+    const connection =
+      ["ready", "recovering"].includes(state.phase) &&
+      (!state.account || state.account.phase === "authenticated") &&
+      state.network?.enabled !== false
+        ? state.connection
+        : null;
     if (current?.gatewayURL === connection?.gatewayURL) return;
     const old = current;
     current = null;
     dispose(old);
-    if (!connection) return;
+  }
+
+  async function open(state) {
+    sync(state);
+    const connection = state.connection;
+    if (state.phase !== "ready" || !connection?.gatewayURL)
+      throw new Error("BOX_CONNECTION_REQUIRED");
+    if (current) {
+      if (current.window.isMinimized()) current.window.restore();
+      current.window.show();
+      current.window.focus();
+      return current.loading;
+    }
 
     const isolatedSession = session.fromPartition(
       `wanx-client-${randomUUID()}`,
@@ -132,16 +142,18 @@ export function createDashboardWindows({
       if (current !== entry) return;
       current = null;
       dispose(entry);
-      Promise.resolve(disconnect()).catch(onError);
     });
-    window.loadURL(connection.gatewayURL).catch((error) => {
+    entry.loading = window.loadURL(connection.gatewayURL).catch(() => {
       if (current !== entry) return;
-      onError(error);
-      Promise.resolve(disconnect()).catch(onError);
+      current = null;
+      dispose(entry);
+      throw new Error("DASHBOARD_OPEN_FAILED");
     });
+    return entry.loading;
   }
 
   return {
+    open,
     sync,
     async close() {
       const old = current;

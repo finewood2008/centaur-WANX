@@ -581,7 +581,9 @@ test("close cancels RPC immediately, sends stop and forcibly bounds shutdown", a
   const result = sidecar.request("login_wait");
   sidecar.close();
   await rejectsCode(result, "network_disabled");
-  assert.match(child.stdin.read().toString(), /"method":"stop"/);
+  let sent = "";
+  for await (const chunk of child.stdin) sent += chunk.toString();
+  assert.match(sent, /"method":"stop"/);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(kills, [undefined, "SIGKILL"]);
 });

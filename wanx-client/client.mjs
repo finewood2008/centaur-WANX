@@ -170,6 +170,23 @@ export function createClient({
 
   return {
     snapshot,
+    async request(input) {
+      if (closed || !gateway) throw new Error("SESSION_CLOSED");
+      return gateway.request(input);
+    },
+    async openWebSocket(input) {
+      if (closed || !gateway) throw new Error("SESSION_CLOSED");
+      return gateway.openWebSocket(input);
+    },
+    applicationConnection() {
+      if (closed || !gateway) throw new Error("SESSION_CLOSED");
+      const lease = gateway;
+      const assertLive = () => { if (closed || gateway !== lease) throw new Error("SESSION_CLOSED"); };
+      return {
+        request: (input) => { assertLive(); return lease.request(input); },
+        openStream: (input) => { assertLive(); return lease.openWebSocket(input); },
+      };
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

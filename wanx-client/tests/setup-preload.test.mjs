@@ -1,0 +1,50 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
+const source = await readFile(new URL('../local-ui/remote-preload.cjs', import.meta.url), 'utf8');
+function harness(rawState = {}) {
+  const exposed = {}, calls = [], listeners = new Map();
+  vm.runInNewContext(source, { require: () => ({
+    contextBridge: { exposeInMainWorld(name, api) { exposed[name] = api; } },
+    ipcRenderer: {
+      invoke: async (name, value) => {
+        calls.push([name, value]);
+        return name === 'wanx-client:get-state' ? rawState : { ok: true, value: { state: 'previewReady' } };
+      },
+      send: (name, value) => calls.push([name, value]),
+      on: (name, fn) => listeners.set(name, fn), removeListener() {},
+    },
+  }) });
+  return { exposed, calls, listeners };
+}
+test('active preload connects discovery, GATT transport and setup actions', async () => {
+  const { exposed, calls } = harness();
+  assert.equal(typeof exposed.wanxSetupTransport?.subscribe, 'function');
+  assert.equal(typeof exposed.wanxDiscovery?.select, 'function');
+  assert.equal(typeof exposed.wanxSetup?.begin, 'function');
+  await exposed.wanxSetup.begin({ candidateId: 'selected' });
+  await exposed.wanxSetup.wifi({ ssid: 'office', security: 'open', hidden: false });
+  await exposed.wanxSetup.confirmOwnership();
+  exposed.wanxDiscovery.select('scan', 'selected');
+  assert.deepEqual(calls.map(([name]) => name), ['wanx:setup:begin', 'wanx:setup:wifi', 'wanx:setup:confirmOwnership', 'nexusaos:discovery:select']);
+});
+
+test('preload reports the main network readiness separately from authorized devices', async () => {
+  const device = { deviceId: 'box-102', displayName: 'CentuarAI-AMD-102', accessState: 'ready' };
+  const base = {
+    account: { phase: 'authenticated', accountId: 'account-1' },
+    phase: 'idle',
+    devices: [device],
+    connection: null,
+  };
+  const preparing = harness({ ...base, platform: { phase: 'enrolling' }, network: { phase: 'checking' } });
+  const preparingState = await preparing.exposed.wanxClient.getLocalState();
+  assert.equal(preparingState.networkReady, false);
+  assert.equal(preparingState.availableDevices[0].deviceId, 'box-102');
+
+  const ready = harness({ ...base, platform: { phase: 'ready' }, network: { phase: 'ready' } });
+  const readyState = await ready.exposed.wanxClient.getLocalState();
+  assert.equal(readyState.networkReady, true);
+  assert.equal(readyState.availableDevices[0].deviceId, 'box-102');
+});

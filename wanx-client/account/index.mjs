@@ -180,7 +180,15 @@ export function createAccount({
     return `${base.origin}${prefix}${path}`;
   }
   async function wire(
-    { method = "GET", path, body, authenticated = true, signal },
+    {
+      method = "GET",
+      path,
+      body,
+      authenticated = true,
+      signal,
+      responseMetadata = false,
+      idempotencyKey,
+    },
     generation,
     auth = record,
   ) {
@@ -198,6 +206,14 @@ export function createAccount({
       Accept: "application/json",
       ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
     };
+    if (idempotencyKey !== undefined) {
+      if (
+        typeof idempotencyKey !== "string" ||
+        !/^[\w-]{1,128}$/.test(idempotencyKey)
+      )
+        throw failure("ACCOUNT_INVALID_INPUT");
+      headers["Idempotency-Key"] = idempotencyKey;
+    }
     if (authenticated) {
       if (!auth?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
       Object.assign(
@@ -250,23 +266,51 @@ export function createAccount({
       let payload;
       const missingNetworkRoute =
         response.status === 404 && path.startsWith("/app-api/network/");
+      const missingMarketRoute =
+        response.status === 404 && path.startsWith("/app-api/market/");
       try {
         payload = JSON.parse(responseText);
       } catch {
         if (missingNetworkRoute)
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+        if (missingMarketRoute)
+          throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         if (missingNetworkRoute)
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
+        if (missingMarketRoute)
+          throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
       assert(generation);
+      let metadata;
+      if (responseMetadata) {
+        if (response.status === 401 || payload.code === 401)
+          throw failure("ACCOUNT_SESSION_EXPIRED", 401);
+        const requestId =
+          response.headers.get("x-request-id") ||
+          response.headers.get("request-id");
+        if (
+          typeof requestId !== "string" ||
+          !requestId ||
+          requestId !== payload.requestId ||
+          typeof payload.serverTime !== "string" ||
+          !Number.isFinite(Date.parse(payload.serverTime))
+        )
+          throw failure("ACCOUNT_INVALID_RESPONSE");
+        metadata = {
+          requestId,
+          serverTime: payload.serverTime,
+          receivedMonotonicMs: Math.floor(performance.now()),
+        };
+      }
       if (
         !response.ok ||
         payload.success === false ||
-        (typeof payload.code === "number" && payload.code !== 200)
+        (typeof payload.code === "number" && payload.code !== 200 &&
+          !(responseMetadata && payload.code === 0 && payload.success === true))
       ) {
         const status =
           response.status === 200 && typeof payload.code === "number"
@@ -278,18 +322,36 @@ export function createAccount({
         const explicitNetworkCode =
           typeof remoteCode === "string" &&
           /^NETWORK_[A-Z0-9_]{1,64}$/.test(remoteCode);
+        const explicitMarketCode =
+          typeof remoteCode === "string" &&
+          (/^MARKET_[A-Z0-9_]{1,64}$/.test(remoteCode) || remoteCode === "APPLICATION_RETIRED");
         const code =
           missingNetworkRoute && !explicitNetworkCode
             ? "NETWORK_SERVICE_NOT_DEPLOYED"
+            : missingMarketRoute && !explicitMarketCode
+            ? "MARKET_SERVICE_NOT_DEPLOYED"
+            : path.startsWith("/app-api/market/") && remoteCode === "APPLICATION_RETIRED"
+            ? remoteCode
             : typeof remoteCode === "string" &&
-              /^(NETWORK|SSO|OMNIA)_[A-Z0-9_]{1,64}$/.test(remoteCode)
+              /^(NETWORK|SSO|OMNIA|MARKET)_[A-Z0-9_]{1,64}$/.test(remoteCode)
             ? remoteCode
             : status === 401
             ? "ACCOUNT_SESSION_EXPIRED"
             : status === 403
             ? "ACCOUNT_ACCESS_DENIED"
             : "ACCOUNT_REQUEST_FAILED";
-        throw failure(code, status);
+        const pairingCode =
+          responseMetadata &&
+          typeof remoteCode === "string" &&
+          /^[A-Z][A-Z0-9_]{1,79}$/.test(remoteCode)
+            ? remoteCode
+            : code;
+        throw Object.assign(failure(pairingCode, status), metadata);
+      }
+      if (responseMetadata) {
+        if (payload.success !== true || payload.errorCode != null)
+          throw failure("ACCOUNT_INVALID_RESPONSE");
+        return { data: payload.data, ...metadata };
       }
       return Object.hasOwn(payload, "data") ? payload.data : payload;
     } catch (error) {

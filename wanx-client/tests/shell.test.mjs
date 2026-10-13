@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
 import { createDashboardWindows } from "../shell/dashboard.mjs";
 import {
   externalHTTPURL,
@@ -8,6 +10,31 @@ import {
   isDashboardURL,
   sameOrigin,
 } from "../shell/security.mjs";
+
+test("managed application arguments retain userData without inheriting debug ports", async () => {
+  const source = await readFile(new URL("../shell/main.mjs", import.meta.url), "utf8");
+  const expression = source.match(/launcherArgs: (\[[\s\S]*?\n        \]),/)[1];
+  const userData = "/isolated profile/万象";
+  for (const isPackaged of [false, true]) {
+    for (const mockKeychain of [false, true]) {
+      const switches = new Set(["remote-debugging-port", "inspect", ...(mockKeychain ? ["use-mock-keychain"] : [])]);
+      const args = vm.runInNewContext(expression, {
+        userData,
+        app: {
+          isPackaged,
+          getAppPath: () => "/source/wanx-client",
+          commandLine: { hasSwitch: (name) => switches.has(name) },
+        },
+      });
+      assert.deepEqual([...args], [
+        ...(isPackaged ? [] : ["/source/wanx-client"]),
+        "--wanx-managed-app",
+        `--user-data-dir=${userData}`,
+        ...(mockKeychain ? ["--use-mock-keychain"] : []),
+      ]);
+    }
+  }
+});
 
 test("only the exact trusted main frame can invoke shell actions", () => {
   const url = "file:///client/fleet/index.html";
@@ -79,6 +106,9 @@ function harness() {
       super();
       this.options = options;
       this.destroyed = false;
+      this.shown = 0;
+      this.focused = 0;
+      this.minimized = false;
       this.webContents = new EventEmitter();
       this.webContents.setWindowOpenHandler = (handler) => {
         this.openHandler = handler;
@@ -89,12 +119,17 @@ function harness() {
     isDestroyed() {
       return this.destroyed;
     }
+    isMinimized() { return this.minimized; }
+    restore() { this.minimized = false; }
+    show() { this.shown += 1; }
+    focus() { this.focused += 1; }
     destroy() {
       this.destroyed = true;
       this.emit("closed");
     }
     async loadURL(url) {
       this.url = url;
+      if (this.options.title === "unavailable") throw new Error("ERR_CONNECTION_REFUSED");
     }
   }
   const controller = createDashboardWindows({
@@ -146,8 +181,14 @@ function harness() {
 test("each connection uses an isolated transient session and cleans previous credentials", async () => {
   const h = harness();
   h.controller.sync(h.ready(41000));
-  h.controller.sync(h.ready(41000));
+  assert.equal(h.windows.length, 0, "connecting alone must not open Dashboard");
+  await h.controller.open(h.ready(41000));
+  h.windows[0].minimized = true;
+  await h.controller.open(h.ready(41000));
   assert.equal(h.windows.length, 1);
+  assert.equal(h.windows[0].minimized, false);
+  assert.equal(h.windows[0].shown, 1);
+  assert.equal(h.windows[0].focused, 1);
   const prefs = h.windows[0].options.webPreferences;
   assert.equal(prefs.nodeIntegration, false);
   assert.equal(prefs.sandbox, true);
@@ -155,6 +196,8 @@ test("each connection uses an isolated transient session and cleans previous cre
   assert.equal(prefs.preload, undefined);
   h.controller.sync(h.ready(42000));
   assert.equal(h.windows[0].destroyed, true);
+  assert.equal(h.windows.length, 1, "switching boxes closes the old Dashboard without opening a new one");
+  await h.controller.open(h.ready(42000));
   assert.equal(
     h.disconnects(),
     0,
@@ -173,22 +216,24 @@ test("each connection uses an isolated transient session and cleans previous cre
   assert.deepEqual(h.errors, []);
 });
 
-test("user closing Dashboard disconnects once; disabled state closes without recursion", async () => {
+test("closing and reopening Dashboard preserves the box connection; disconnect revokes the window", async () => {
   const h = harness();
-  h.controller.sync(h.ready(41000));
+  await h.controller.open(h.ready(41000));
   h.windows[0].destroy();
-  assert.equal(h.disconnects(), 1);
-  h.controller.sync({ phase: "disconnected", connection: null });
-  h.controller.sync(h.ready(42000));
+  assert.equal(h.disconnects(), 0);
+  assert.equal(h.sessions[0].storageCleared, true);
+  await h.controller.open(h.ready(41000));
+  assert.equal(h.windows[1].url, h.ready(41000).connection.gatewayURL);
+  assert.notEqual(h.sessions[0], h.sessions[1]);
   h.controller.sync({ phase: "disconnected", connection: null });
   assert.equal(h.windows[1].destroyed, true);
-  assert.equal(h.disconnects(), 1);
+  assert.equal(h.disconnects(), 0);
   await h.controller.close();
 });
 
 test("Dashboard safely opens external documents and isolates same-origin previews", async () => {
   const h = harness();
-  h.controller.sync(h.ready(41000));
+  await h.controller.open(h.ready(41000));
   assert.deepEqual(h.windows[0].openHandler({ url: "https://example.com" }), {
     action: "deny",
   });
@@ -236,7 +281,7 @@ test("Dashboard safely opens external documents and isolates same-origin preview
 
 test("transient recovery retains the existing isolated dashboard, revocation closes it", async () => {
   const h = harness();
-  h.controller.sync(h.ready(41000));
+  await h.controller.open(h.ready(41000));
   h.controller.sync({ ...h.ready(41000), phase: "recovering" });
   assert.equal(h.windows.length, 1);
   assert.equal(h.windows[0].destroyed, false);
@@ -247,3 +292,29 @@ test("transient recovery retains the existing isolated dashboard, revocation clo
   assert.equal(h.windows[0].destroyed, true);
   await h.controller.close();
 });
+
+test("a failed Dashboard load cleans its session and allows retry without disconnecting apps", async () => {
+  const h = harness();
+  const state = h.ready(41000);
+  state.connection.name = "unavailable";
+  await assert.rejects(h.controller.open(state), /DASHBOARD_OPEN_FAILED/);
+  assert.equal(h.windows[0].destroyed, true);
+  assert.equal(h.sessions[0].storageCleared, true);
+  assert.equal(h.disconnects(), 0);
+  await h.controller.open(h.ready(41000));
+  assert.equal(h.windows[1].destroyed, false);
+  await h.controller.close();
+});
+
+for (const [label, override] of [
+  ["logout", { account: { phase: "signed_out" } }],
+  ["disabled network", { network: { enabled: false } }],
+]) {
+  test(`${label} closes Dashboard even if a stale gateway is still present`, async () => {
+    const h = harness();
+    await h.controller.open(h.ready(41000));
+    h.controller.sync({ ...h.ready(41000), ...override });
+    assert.equal(h.windows[0].destroyed, true);
+    await h.controller.close();
+  });
+}

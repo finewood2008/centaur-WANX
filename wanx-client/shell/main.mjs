@@ -1,12 +1,15 @@
 import {
   app,
   BrowserWindow,
-  dialog,
   ipcMain,
-  session,
-  shell,
   safeStorage,
   powerMonitor,
+  session,
+  shell,
+  Menu,
+  Tray,
+  nativeImage,
+  dialog,
 } from "electron";
 import { createHash } from "node:crypto";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
@@ -16,23 +19,33 @@ import os from "node:os";
 import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
 import { createSidecar } from "../network/sidecar.mjs";
+import { registerControlActions, openConnectedDashboard } from "./control.mjs";
 import { createDashboardWindows } from "./dashboard.mjs";
-import { registerControlActions } from "./control.mjs";
+import { APP_ICON, DESKTOP_NAME, createDesktopIntegration } from "./desktop.mjs";
 import { claimSingleInstance } from "./instance.mjs";
-import { createAccount } from "../account/index.mjs";
+import { registerShutdown } from "./shutdown.mjs";
+import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
+import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createPlatformClient } from "../platform.mjs";
+import { createApplicationManager } from "../applications/manager.mjs";
+import { createApplicationMarket } from "../applications/market.mjs";
+import { runManagedApplication } from "../applications/runtime.mjs";
+import { createMarketSessionGuard } from "./market-session.mjs";
 import { monitorNetworkChanges } from "./network-monitor.mjs";
 import { createTimingRecorder } from "./timings.mjs";
 import { createDashboardGateway } from "../octop/gateway.mjs";
 import { createStaticAssetCache } from "../octop/static-cache.mjs";
 
-const controlURL = new URL("../fleet/index.html", import.meta.url).href;
+const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 let control;
 let client;
-let dashboards;
 let unsubscribe;
-let quitting = false;
+let setupRuntime;
+let applications;
+let marketSession;
+let dashboards;
+let desktop;
 let stopNetworkMonitor;
 let timings;
 
@@ -45,9 +58,25 @@ function reportError(error) {
   console.error("[wanx-client]", error.message);
 }
 
+async function marketTrustedKeys() {
+  const trust = JSON.parse(await readFile(new URL("../applications/market-trust.json", import.meta.url), "utf8"));
+  return trust.keys;
+}
+
 // Do not await readiness at ESM top level: Electron waits for the entry module
 // to finish evaluating before emitting ready.
-if (claimSingleInstance(app, () => control))
+// Keep Electron's existing name/data/keychain identity; branding lives in the
+// bundle, About panel and menus. Match the installer identity on Windows.
+if (process.platform === "win32") app.setAppUserModelId("ai.centuarai.wanx.client");
+if (process.argv.includes("--wanx-managed-app")) {
+  marketTrustedKeys().then(trustedKeys => runManagedApplication({
+    applicationRoot: path.join(app.getPath("userData"), "applications"), trustedKeys, app,
+  })).catch(error => {
+    reportError(error);
+    process.send?.({ type: "wanx:application-failed", launchId: process.env.WANX_HOST_LAUNCH_ID }, () => {});
+    app.exit(1);
+  });
+} else if (claimSingleInstance(app, () => control))
   app
     .whenReady()
     .then(async () => {
@@ -168,35 +197,44 @@ if (claimSingleInstance(app, () => control))
           };
         },
       });
-      dashboards = createDashboardWindows({
-        BrowserWindow,
-        session,
-        disconnect: () => client.disconnect(),
-        onError: reportError,
-        openExternal: (url) => shell.openExternal(url),
-        async requestMedia(window, mediaTypes) {
-          const devices = mediaTypes.includes("video")
-            ? "摄像头或麦克风"
-            : "麦克风";
-          const { response } = await dialog.showMessageBox(window, {
-            type: "question",
-            title: "万象设备权限",
-            message: `允许当前万象页面使用${devices}吗？`,
-            buttons: ["不允许", "允许"],
-            defaultId: 0,
-            cancelId: 0,
-          });
-          return response === 1;
-        },
+      const trustedKeys = await marketTrustedKeys();
+      applications = await createApplicationManager({
+        applicationRoot: path.join(userData, "applications"),
+        runtimeArgs: process.defaultApp ? [app.getAppPath()] : [],
+        applicationId: "wanx-host",
+        context: () => client.applicationContext(),
+        request: (input) => client.applicationRequest(input),
+        stream: (input) => client.applicationStream(input),
+        createConnection: () => client.applicationConnection(),
+        trustedKeys,
+        launcherArgs: [
+          ...(app.isPackaged ? [] : [app.getAppPath()]),
+          "--wanx-managed-app",
+          `--user-data-dir=${userData}`,
+          ...(app.commandLine.hasSwitch("use-mock-keychain") ? ["--use-mock-keychain"] : []),
+        ],
+      });
+      marketSession = createMarketSessionGuard(account);
+      const market = createApplicationMarket({
+        request: (input) => account.request(input),
+        applications,
+        wanxVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        trustedKeys,
+        captureSession: () => marketSession.captureSession(),
       });
       control = new BrowserWindow({
-        width: 720,
-        height: 820,
-        minWidth: 540,
-        minHeight: 660,
-        title: "万象 · 连接",
+        width: 1180,
+        height: 760,
+        minWidth: 900,
+        minHeight: 620,
+        title: DESKTOP_NAME,
+        icon: APP_ICON,
         webPreferences: {
-          preload: fileURLToPath(new URL("./preload.cjs", import.meta.url)),
+          preload: fileURLToPath(
+            new URL("../local-ui/remote-preload.cjs", import.meta.url),
+          ),
           nodeIntegration: false,
           contextIsolation: true,
           sandbox: true,
@@ -211,32 +249,85 @@ if (claimSingleInstance(app, () => control))
         event.preventDefault(),
       );
 
+      dashboards = createDashboardWindows({
+        BrowserWindow,
+        session,
+        openExternal: (url) => shell.openExternal(url),
+        onError: reportError,
+      });
+      desktop = createDesktopIntegration({
+        app, Menu, Tray, nativeImage, control, client,
+        openDashboard: () => openConnectedDashboard(client, dashboards),
+        onError: () => {
+          desktop.show();
+          void dialog.showMessageBox(control, {
+            type: "error", title: DESKTOP_NAME,
+            message: "暂时无法打开 Dashboard",
+            detail: "请在设置中确认网络和盒子已连接，然后重试。",
+          });
+        },
+      });
       registerControlActions({
         ipcMain,
         control,
         controlURL,
         client,
-        openExternal: (url) => shell.openExternal(url),
+        applications,
+        dashboards,
+        market,
+        allowDevelopmentInstall: !app.isPackaged && process.env.WANX_ALLOW_DEVELOPMENT_INSTALL === "1",
+        selectApplicationArchive: async () => {
+          const result = await dialog.showOpenDialog(control, {
+            title: "选择应用安装包",
+            buttonLabel: "安装",
+            filters: [{ name: "应用压缩包", extensions: ["zip"] }],
+            properties: ["openFile"],
+          });
+          return result.canceled ? null : result.filePaths[0];
+        },
       });
-      unsubscribe = client.subscribe((state) => {
-        dashboards.sync(state);
-        if (!control.isDestroyed())
-          control.webContents.send("wanx-client:state", state);
+      unsubscribe = client.subscribe(async () => {
+        dashboards.sync(client.snapshot());
+        desktop.sync(client.snapshot());
+        if (!control.isDestroyed()) {
+          const applicationsState = applications ? await applications.listInstalled() : [];
+          if (!control.isDestroyed()) control.webContents.send("wanx-client:state", { ...client.snapshot(), applications: applicationsState });
+        }
       });
 
-      app.on("before-quit", (event) => {
-        if (quitting) return;
-        event.preventDefault();
-        quitting = true;
-        unsubscribe();
-        stopNetworkMonitor?.();
-        Promise.allSettled([dashboards.close(), client.close()])
-          .then(() => timings.flush())
-          .finally(() => app.quit());
+      registerShutdown({
+        app,
+        async closeApplications() {
+          marketSession?.close();
+          await Promise.all([market.close(), applications?.close()]);
+        },
+        async closeHost() {
+          desktop.dispose();
+          unsubscribe();
+          stopNetworkMonitor?.();
+          await Promise.resolve(setupRuntime?.dispose()).catch(() => {});
+          await Promise.allSettled([dashboards.close(), client.close()]);
+          await timings.flush();
+        },
+        onError(error) {
+          reportError(error);
+          dialog.showErrorBox("无法退出万象", "应用尚未完全退出。请关闭应用后再次退出万象。");
+        },
       });
       control.on("closed", () => app.quit());
       app.on("window-all-closed", () => app.quit());
       await control.loadURL(controlURL);
+      setupRuntime = await createSetupRuntime({
+        control, controlURL, ipcMain, account, client, safeStorage, userData,
+        consumerBaseUrl: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        onError: reportError,
+      }).catch((error) => {
+        reportError(error);
+        control.webContents.send("wanx:setup:state", {
+          state: "terminalError", errorCode: "SETUP_START_FAILED",
+        });
+        return null;
+      });
       stopNetworkMonitor = monitorNetworkChanges({
         powerMonitor,
         onChange: () => client.networkChanged(),

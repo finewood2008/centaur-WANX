@@ -663,6 +663,55 @@ export function createPlatformClient({
   }
   return {
     snapshot,
+    async applicationContext() {
+      const state = snapshot();
+      if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
+      const response = await activeLink.client.request({ path: "/api/auth/me" });
+      if (response.status < 200 || response.status >= 300) throw fail("BOX_IDENTITY_UNAVAILABLE");
+      let user;
+      try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
+      return {
+        protocolVersion: 1,
+        accountId: state.account.accountId,
+        clientId: state.account.clientId,
+        boxId: state.connection.deviceId,
+        user,
+        connection: "ready",
+      };
+    },
+    async applicationRequest(input) {
+      if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
+      return activeLink.client.request(input);
+    },
+    async applicationStream(input) {
+      if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
+      return activeLink.client.openWebSocket(input);
+    },
+    async applicationConnection() {
+      const link = activeLink, generation = connectionEpoch;
+      const state = snapshot();
+      if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
+      const connection = link.client.applicationConnection();
+      const assertLive = () => {
+        const next = snapshot();
+        if (closed || activeLink !== link || generation !== connectionEpoch ||
+            !["ready", "recovering"].includes(next.phase) || next.account.phase !== "authenticated") throw fail("NETWORK_CHANGED");
+        return next.phase;
+      };
+      const assertReady = () => { if (assertLive() !== "ready") throw fail("NETWORK_NOT_READY"); };
+      const response = await connection.request({ path: "/api/auth/me" });
+      assertLive();
+      if (response.status !== 200) throw fail("BOX_IDENTITY_UNAVAILABLE");
+      let user;
+      try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
+      const context = { protocolVersion: 1, accountId: state.account.accountId, clientId: state.account.clientId, boxId: state.connection.deviceId, user, connection: "ready" };
+      return {
+        context: () => ({ ...context, connection: assertLive() }),
+        request: (input) => { assertReady(); return connection.request(input); },
+        openStream: (input) => { assertReady(); return connection.openStream(input); },
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      };
+    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

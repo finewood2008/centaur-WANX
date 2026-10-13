@@ -587,6 +587,116 @@ export async function createDashboardGateway({
   const gateway = {
     url: localURL.origin + (bootstrapPath ?? ""),
     origin: localURL.origin,
+    async request({ path, method = "GET", headers = {}, body, signal, stream = false } = {}) {
+      if (closed) throw new Error("GATEWAY_CLOSED");
+      if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
+      const request = {
+        method,
+        url: path,
+        headers: {
+          host: localURL.host,
+          origin: localURL.origin,
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"].includes(key))),
+          ...(session ? { authorization: `Bearer ${marker}` } : {}),
+        },
+      };
+      const wasBootstrapped = bootstrapped;
+      if (session) bootstrapped = true;
+      const authorized = authorize(request);
+      bootstrapped = wasBootstrapped;
+      if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
+      const upstream = transport.request(target, {
+        method,
+        path: authorized.path,
+        headers: authorized.headers,
+        agent: agent ?? false,
+        signal,
+      });
+      requests.add(upstream);
+      upstream.once("close", () => requests.delete(upstream));
+      const timer = setTimeout(() => upstream.destroy(new Error("CONNECT_TIMEOUT")), 10_000);
+      timer.unref();
+      upstream.on("socket", (socket) => {
+        if (!socket.connecting) clearTimeout(timer);
+        else socket.once(target.protocol === "https:" ? "secureConnect" : "connect", () => clearTimeout(timer));
+      });
+      upstream.once("close", () => clearTimeout(timer));
+      return new Promise((resolve, rejectRequest) => {
+        upstream.on("response", (response) => {
+          const headers = headersWithoutHop(response.headers);
+          delete headers["set-cookie"];
+          delete headers["x-octop-access-token"];
+          // Redirects may carry credentials in their destination. Apps never follow them.
+          delete headers.location;
+          const result = { status: response.statusCode || 502, headers };
+          response.on("error", rejectRequest);
+          if (stream) return resolve({ ...result, body: response });
+          const chunks = [];
+          let size = 0;
+          response.on("data", (chunk) => {
+            size += chunk.length;
+            if (size > 32 * 1024 * 1024) return response.destroy(new Error("RESPONSE_TOO_LARGE"));
+            chunks.push(chunk);
+          });
+          response.on("end", () => resolve({ ...result, body: Buffer.concat(chunks) }));
+        });
+        upstream.on("error", rejectRequest);
+        if (body !== undefined) upstream.write(
+          Buffer.isBuffer(body) || typeof body === "string" ? body : JSON.stringify(body),
+        );
+        upstream.end();
+      });
+    },
+    async openWebSocket({ path, headers = {}, protocols = [] } = {}) {
+      if (closed) throw new Error("GATEWAY_CLOSED");
+      if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
+      const request = {
+        method: "GET",
+        url: path,
+        headers: {
+          host: localURL.host,
+          origin: localURL.origin,
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id"].includes(key))),
+          ...(session ? { authorization: `Bearer ${marker}` } : {}),
+        },
+      };
+      const wasBootstrapped = bootstrapped;
+      if (session) bootstrapped = true;
+      const authorized = authorize(request, true);
+      bootstrapped = wasBootstrapped;
+      if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
+      const endpoint = new URL(target);
+      endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+      const upstreamPath = new URL(authorized.path, target);
+      if (authorized.token && !upstreamPath.searchParams.has("token") && !upstreamPath.searchParams.has("access_token"))
+        upstreamPath.searchParams.set("token", authorized.token);
+      const socket = new WebSocket(endpoint.origin + upstreamPath.pathname + upstreamPath.search, protocols, {
+        headers: authorized.headers,
+        origin: target.origin,
+        handshakeTimeout: 10_000,
+        maxPayload: MAX_SOCKET_BYTES,
+        perMessageDeflate: false,
+        followRedirects: false,
+        agent: agent ?? false,
+      });
+      track(socket);
+      await new Promise((resolve, rejectSocket) => {
+        const failSocket = (error) => {
+          socket.terminate();
+          rejectSocket(error);
+        };
+        socket.once("open", () => {
+          // Consumers attach handlers after awaiting this method. Preserve frames
+          // delivered in the same TCP packet as the upgrade response.
+          socket.pause();
+          resolve();
+          setImmediate(() => { if (socket.readyState === WebSocket.OPEN) socket.resume(); });
+        });
+        socket.once("error", failSocket);
+        socket.once("close", () => rejectSocket(new Error("BOX_STREAM_CLOSED")));
+      });
+      return socket;
+    },
     close() {
       if (closing) return closing;
       closed = true;
