@@ -741,7 +741,8 @@ export function createPlatformClient({
     },
     loginPassword: (input) => afterLogin(() => account.loginPassword(input)),
     loginSMS: (input) => afterLogin(() => account.loginSMS(input)),
-    sendSMS: ({ phone }) => account.sendSMS(phone),
+    register: (input) => afterLogin(() => account.register(input)),
+    sendSMS: ({ phone, scene }) => account.sendSMS(phone, scene),
     refreshDevices,
     async networkChanged() {
       if (closed || !enabled || !account.getIdentity()) return snapshot();

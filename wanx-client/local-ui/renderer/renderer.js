@@ -10,6 +10,9 @@ let marketAccount = null;
 let marketConfirmation = null;
 let authMode = "login";
 let authUsername = "";
+let resendAt = 0;
+let resendTimer;
+let codeSent = false;
 let notice = null;
 let busy = false;
 let provisioningTargetId = null;
@@ -21,6 +24,7 @@ let discoverySessionId = null;
 let selectionPromise;
 let retainedDiscovery;
 let discoveryExpiry;
+window.addEventListener?.("pagehide", () => clearTimeout(resendTimer), { once: true });
 const stageLabels = {
   discover: "发现盒子",
   identity: "读取设备身份",
@@ -105,6 +109,21 @@ function shellHeader(title, eyebrow = "") {
     ${eyebrow ? `<div class="section-label">${eyebrow}</div>` : ""}`;
 }
 
+function resendSeconds() {
+  return Math.max(0, Math.ceil((resendAt - Date.now()) / 1000));
+}
+
+function updateResendButton() {
+  clearTimeout(resendTimer);
+  const remaining = resendSeconds();
+  const button = document.querySelector('[data-action="send-registration-code"]');
+  if (button) {
+    button.disabled = busy || remaining > 0;
+    button.textContent = remaining ? `${remaining} 秒后重新获取` : "获取验证码";
+  }
+  if (remaining) resendTimer = setTimeout(updateResendButton, 1000);
+}
+
 function authView() {
   const register = authMode === "register";
   return `
@@ -120,16 +139,16 @@ function authView() {
         <div class="card-kicker">${register ? "创建平台账号" : "欢迎回来"}</div>
         <h2>${register ? "注册万象平台" : "登录万象平台"}</h2>
         <p class="muted">使用万象平台账号进入应用首页。</p>
-        <div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login">登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register">注册</button></div>
-        <form id="auth-form" data-form="auth">
+        <div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>
+        <form id="auth-form" data-form="auth" data-mode="${authMode}">
           <label for="account-name">手机号</label>
           <input id="account-name" name="username" value="${escapeHTML(authUsername)}" required pattern="1[0-9]{10}" autocomplete="username" placeholder="13800138000" />
           <label for="account-password">密码</label>
-          <input id="account-password" name="password" type="password" required minlength="8" autocomplete="${register ? "new-password" : "current-password"}" placeholder="输入密码" />
-          ${register ? '<label for="account-code">短信验证码</label><div class="code-field"><input id="account-code" name="code" required pattern="[0-9]{6}" placeholder="输入 6 位验证码" /><button class="button small" type="button" data-action="send-registration-code">获取验证码</button></div>' : ""}
+          <input id="account-password" name="password" type="password" required autocomplete="${register ? "new-password" : "current-password"}" placeholder="${register ? "设置登录密码" : "输入密码"}" />
+          ${register ? `<label for="account-confirm-password">确认密码</label><input id="account-confirm-password" name="confirmPassword" type="password" required autocomplete="new-password" placeholder="再次输入密码" /><label for="account-code">短信验证码</label><div class="code-field"><input id="account-code" name="code" required pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" placeholder="输入 6 位验证码" /><button class="button small" type="button" data-action="send-registration-code" ${busy || resendSeconds() ? "disabled" : ""}>${resendSeconds() ? `${resendSeconds()} 秒后重新获取` : "获取验证码"}</button></div>` : ""}
           <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? "处理中…" : register ? "创建账号并进入" : "登录并进入"}</button>
         </form>
-        ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
+        ${notice ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
       </section>
     </div>`;
 }
@@ -406,16 +425,32 @@ function provisioningView() {
 }
 
 function render(state) {
+  const form = document.querySelector('#auth-form');
+  const auth = state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
+  // Keep in-progress credentials and focus through IPC replies and background polling.
+  // Restore input properties, never interpolate passwords into HTML.
+  const draft = auth && form?.dataset.mode === authMode ? Object.fromEntries(new FormData(form)) : null;
+  const focused = draft && form.contains(document.activeElement) ? document.activeElement : null;
+  const cursor = focused ? [focused.selectionStart, focused.selectionEnd] : null;
+  if (auth && form) authUsername = form.elements.username.value.trim();
   currentState = state;
-  if (state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating") app.innerHTML = authView();
+  if (auth) app.innerHTML = authView();
   else if (page === "provisioning") app.innerHTML = provisioningView();
   else if (page === "settings") app.innerHTML = settingsView();
   else app.innerHTML = applicationsView();
+  if (draft) {
+    const next = document.querySelector('#auth-form');
+    for (const [name, value] of Object.entries(draft)) if (next?.elements[name]) next.elements[name].value = value;
+    const input = focused && next?.elements[focused.name];
+    input?.focus();
+    if (input?.setSelectionRange && cursor[0] !== null) input.setSelectionRange(...cursor);
+  }
   if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
 }
 
 async function run(action, input = {}) {
   notice = null;
+  codeSent = false;
   const holdBusy = !action.startsWith("provisioning.start");
   if (holdBusy) busy = true;
   render(currentState);
@@ -438,6 +473,16 @@ async function run(action, input = {}) {
     return response;
   } catch (error) {
     const messages = {
+      SMS_CODE_INVALID: "验证码错误或已过期，请重新获取。",
+      SMS_RATE_LIMITED: "验证码发送过于频繁，请稍后重试。",
+      SMS_DAILY_LIMIT: "该手机号今日验证码发送次数已达上限，请明日再试。",
+      PASSWORD_ALREADY_SET: "该手机号已注册，请使用密码登录。",
+      PASSWORD_WEAK: "密码需为 8–72 字节，且不能包含换行符。",
+      PASSWORD_INVALID: "手机号或密码不正确，请重新输入。",
+      PASSWORD_NOT_SET: "该账号尚未设置密码，请先完成注册。",
+      ACCOUNT_NETWORK_ERROR: "无法连接账号服务，请检查网络后重试。",
+      ACCOUNT_REQUEST_FAILED: "账号请求失败，请稍后重试。",
+      ACCOUNT_INVALID_INPUT: "请检查手机号、密码和验证码格式。",
       ACCOUNT_LOGIN_REQUIRED: "请先登录万象。",
       NETWORK_NOT_READY: "网络尚未连接，请在设置中检查网络状态。",
       BOX_CONNECTION_REQUIRED: "请先在设置中连接一台盒子，再打开应用或 Dashboard。",
@@ -467,6 +512,10 @@ async function run(action, input = {}) {
       APPLICATION_INSTALL_FAILED: "应用安装失败，请检查磁盘空间和目录权限后重试。",
     };
     const code = Object.keys(messages).find(value => error.message.includes(value));
+    if (action === "auth.send-code" && code === "SMS_RATE_LIMITED") {
+      resendAt = Date.now() + 60000;
+      updateResendButton();
+    }
     notice = messages[code] || marketErrorMessage(error);
     render(currentState);
     return null;
@@ -559,14 +608,22 @@ app.addEventListener("click", async (event) => {
     if (result) await refreshMarket();
     return;
   }
-  if (action === "auth-login") { authMode = "login"; notice = null; render(currentState); return; }
-  if (action === "auth-register") { authMode = "register"; notice = null; render(currentState); return; }
+  if (busy && ["auth-login", "auth-register", "send-registration-code"].includes(action)) return;
+  if (action === "auth-login") { authMode = "login"; notice = null; codeSent = false; render(currentState); return; }
+  if (action === "auth-register") { authMode = "register"; notice = null; codeSent = false; render(currentState); return; }
   if (action === "send-registration-code") {
+    if (authMode !== "register" || resendSeconds()) return;
     const input = document.querySelector("#account-name");
     authUsername = input?.value.trim() || "";
-    if (!authUsername) { notice = "请先填写手机号"; render(currentState); return; }
+    codeSent = false;
+    if (!/^1\d{10}$/.test(authUsername)) { notice = "请输入有效的 11 位手机号"; render(currentState); return; }
     const response = await run("auth.send-code", { username: authUsername });
-    if (response) notice = "验证码已发送，请查收短信";
+    if (response) {
+      resendAt = Date.now() + 60000;
+      codeSent = true;
+      notice = "验证码已发送，5 分钟内有效，请查收短信";
+      updateResendButton();
+    }
     render(currentState);
     return;
   }
@@ -677,10 +734,27 @@ app.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.target));
   authUsername = String(data.username || "").trim();
-  await run(authMode === "register" ? "auth.register" : "auth.login", data);
+  codeSent = false;
+  if (!/^1\d{10}$/.test(authUsername)) notice = "请输入有效的 11 位手机号";
+  else if (authMode === "register" && (
+    new TextEncoder().encode(data.password || "").length < 8 ||
+    new TextEncoder().encode(data.password || "").length > 72 || /[\r\n\0]/.test(data.password)
+  )) notice = "密码需为 8–72 字节，且不能包含换行符。";
+  else if (authMode === "register" && data.password !== data.confirmPassword) notice = "两次输入的密码不一致";
+  else if (authMode === "register" && !/^\d{6}$/.test(data.code || "")) notice = "请输入 6 位短信验证码";
+  else {
+    await run(authMode === "register" ? "auth.register" : "auth.login", { username: authUsername, password: data.password, ...(authMode === "register" ? { code: data.code } : {}) });
+    return;
+  }
+  render(currentState);
 });
 
 function acceptRemoteState(state) {
+  if (state.route !== "auth") {
+    clearTimeout(resendTimer);
+    resendAt = 0;
+    codeSent = false;
+  }
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
   const accountChanged = account !== marketAccount;
   // Page selection belongs to the UI; network polling only updates its data.

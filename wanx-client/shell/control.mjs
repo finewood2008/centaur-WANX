@@ -71,6 +71,16 @@ export function registerControlActions({
     return client.loginSMS({ phone: number, code });
   });
   register("send-sms", (input) => client.sendSMS({ phone: phone(input) }));
+  register("send-registration-code", (input) => client.sendSMS({ phone: phone(input), scene: "consumer_register" }));
+  register("register", (input) => {
+    const number = phone(input);
+    if (typeof input.password !== "string" || Buffer.byteLength(input.password, "utf8") < 8 ||
+      Buffer.byteLength(input.password, "utf8") > 72 || /[\r\n\0]/.test(input.password))
+      throw new Error("invalid_credentials");
+    const code = text(input.code, 12, "invalid_sms_code");
+    if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
+    return client.register({ phone: number, password: input.password, code });
+  });
   register("logout", () => client.logout());
   register("refresh-devices", () => client.refreshDevices());
   register("connect-box", (deviceId) =>

@@ -64,7 +64,9 @@ const actions = {
       password: input?.password,
     }),
   "auth.send-code": (input) =>
-    ipcRenderer.invoke("wanx-client:send-sms", { phone: input?.username }),
+    ipcRenderer.invoke("wanx-client:send-registration-code", { phone: input?.username }),
+  "auth.register": (input) =>
+    ipcRenderer.invoke("wanx-client:register", { phone: input?.username, password: input?.password, code: input?.code }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.connect": (input) =>
@@ -85,9 +87,6 @@ const actions = {
 };
 
 async function action(name, input = {}) {
-  if (name === "auth.register") {
-    return { ok: false, code: "ACCOUNT_REGISTRATION_UNAVAILABLE", state: await getLocalState() };
-  }
   const handler = actions[name];
   if (!handler)
     return { ok: false, code: "UNKNOWN_CLIENT_ACTION", state: await getLocalState() };
