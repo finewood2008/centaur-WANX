@@ -1,4 +1,4 @@
-"""Real platform OIDC → scoped runtime exchange → native brainstorm boundary."""
+"""Real platform OIDC → native application exchange → native brainstorm boundary."""
 
 import httpx
 from test_auth import issue
@@ -12,10 +12,7 @@ pytest_plugins = ["test_auth", "test_upstream"]
 async def test_real_platform_application_exchange_and_product_revocation(
     real_octop, oidc_server, setup_auth
 ):
-    from wanx_runtime.application_exchange import install_application_exchange
-
     upstream, _, credentials = real_octop
-    install_application_exchange(upstream._octop_app)
     auth, key, _ = setup_auth
     transport = httpx.ASGITransport(app=upstream._octop_app)
     adapter = OctopAdapter("http://127.0.0.1:18088", oidc_server, credentials, transport=transport)
