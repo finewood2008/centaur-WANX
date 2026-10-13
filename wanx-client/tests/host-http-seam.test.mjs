@@ -2,9 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { createApplicationGateway } from "../app-host/http-gateway.mjs";
+import os from "node:os";
+import path from "node:path";
+import { createApplicationSession } from "../app-host/session.mjs";
 import { createDashboardGateway } from "../octop/gateway.mjs";
-import { createHostClient } from "../host-sdk/index.cjs";
+import { fromEnvironment } from "../host-sdk/index.cjs";
+
+const openSession = (connection, options = {}) => createApplicationSession({
+  hostApplicationId: "wanx-host", applicationId: "test.application",
+  installPath: path.join(os.tmpdir(), "wanx-session", "test.application"),
+  createConnection: () => connection, ...options,
+});
 
 async function fixture(t, handler) {
   const box = http.createServer(handler);
@@ -25,13 +33,14 @@ async function fixture(t, handler) {
     openStream: (input) => upstream.openWebSocket(input),
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };
-  const gateway = await createApplicationGateway({ connection, token: "app-secret" });
-  const client = createHostClient({ baseURL: gateway.url, token: "app-secret" });
+  const session = await openSession(connection);
+  const client = fromEnvironment(session.environment);
+  const url = session.environment.WANX_HOST_BASE_URL, token = session.environment.WANX_HOST_TOKEN;
   t.after(async () => {
-    client.close(); await gateway.close(); await upstream.close();
+    client.close(); await session.close(); await upstream.close();
     box.closeAllConnections(); await new Promise(r => box.close(r));
   });
-  return { box, gateway, client, change(value) { if (value === "invalid") live = false; else phase = value; for (const fn of listeners) fn(); } };
+  return { box, session, url, token, client, change(value) { if (value === "invalid") live = false; else phase = value; for (const fn of listeners) fn(); } };
 }
 
 test("Host HTTP preserves business paths, JSON and binary; box credentials stay in the Host", async t => {
@@ -66,7 +75,7 @@ test('Host streams SSE incrementally and revokes open responses on a box switch'
   assert.equal((await invalidated).code, 'HOST_SESSION_EXPIRED');
   await assert.rejects(reader.read());
   await assert.rejects(f.client.request('/api/anything'), {code:'HOST_SESSION_EXPIRED'});
-  const raw = await fetch(f.gateway.url + '/api/anything', {headers:{authorization:'Bearer app-secret'}});
+  const raw = await fetch(f.url + '/api/anything', {headers:{authorization:`Bearer ${f.token}`}});
   assert.equal(raw.status, 401);
   assert.equal(raw.headers.get('x-wanx-error'), 'HOST_SESSION_EXPIRED');
 });
@@ -99,13 +108,17 @@ test('network recovery is retryable but never resurrects an invalidated launch',
   const f = await fixture(t, (_req,res) => {calls++; res.end('{}');});
   await f.client.context();
   f.change('recovering');
+  assert.equal(f.session.assertLive().connection, 'recovering');
+  assert.equal((await f.client.context()).connection, 'recovering');
   await assert.rejects(f.client.request('/api/test'), {code:'NETWORK_NOT_READY'});
   assert.equal(calls, 0);
   f.change('ready');
+  assert.equal(f.session.assertLive().connection, 'ready');
   assert.equal((await f.client.request('/api/test')).status, 200);
   const invalidated = expired(f.client);
   f.change('invalid'); await invalidated;
   f.change('ready');
+  assert.throws(() => f.session.assertLive(), {code:'HOST_SESSION_EXPIRED'});
   await assert.rejects(f.client.context(), {code:'HOST_SESSION_EXPIRED'});
 });
 
@@ -113,7 +126,7 @@ test('gateway validates credentials, browser origins and paths before reaching t
   let calls = 0;
   const f = await fixture(t, (_req,res) => {calls++;res.end('{}');});
   const raw = (path, headers = {}) => new Promise((resolve, reject) => {
-    const req = http.get(f.gateway.url, {path, headers:{authorization:'Bearer app-secret', ...headers}}, res => {res.resume();resolve(res.statusCode);});
+    const req = http.get(f.url, {path, headers:{authorization:`Bearer ${f.token}`, ...headers}}, res => {res.resume();resolve(res.statusCode);});
     req.on('error', reject);
   });
   assert.equal(await raw('/api/test', {authorization:'Bearer wrong'}), 401);
@@ -151,23 +164,63 @@ test('aborting one HTTP stream cancels the box operation without ending the appl
   assert.equal((await f.client.request('/api/test')).status,200);
 });
 
-test('a response arriving after revocation is discarded, including transports that ignore abort', {timeout:3000}, async t => {
+for (const ending of ['revocation', 'close']) {
+test(`a response arriving after ${ending} is discarded, including transports that ignore abort`, {timeout:3000}, async t => {
   let complete, started;
   const waiting=new Promise(resolve=>{started=resolve;});
-  const gateway=await createApplicationGateway({token:'slow',connection:{
-    context:()=>({boxId:'102',connection:'ready'}),
+  let live = true, changed;
+  const session=await openSession({
+    context:()=>{if (!live) throw Error('NETWORK_CHANGED'); return {boxId:'102',connection:'ready'};},
+    subscribe(fn) { changed = fn; return () => {}; },
     request:()=>{started();return new Promise(resolve=>{complete=resolve;});},
-  }});
-  const client=createHostClient({baseURL:gateway.url,token:'slow'});
-  t.after(async()=>{client.close();await gateway.close();});
+  });
+  const client=fromEnvironment(session.environment);
+  t.after(async()=>{client.close();await session.close();});
   await client.context();
   const request=client.request('/api/slow');
   const rejected=assert.rejects(request);await waiting;
-  gateway.revoke();
+  if (ending === 'revocation') { live = false; changed(); }
+  else await session.close(); // Local cleanup must not wait for an uncooperative box promise.
   const {PassThrough}=await import('node:stream');
   const late=new PassThrough();complete({status:200,headers:{},body:late});
   await rejected;await new Promise(resolve=>setImmediate(resolve));
   assert.equal(late.destroyed,true);
+});
+}
+
+test('a WebSocket arriving after final close is terminated without completing the application handshake', {timeout:3000}, async t => {
+  const {WebSocket, WebSocketServer} = await import('ws');
+  const box = new WebSocketServer({port:0, host:'127.0.0.1'});
+  await once(box, 'listening');
+  t.after(async () => {
+    for (const ws of box.clients) ws.terminate();
+    await new Promise(resolve => box.close(resolve));
+  });
+  let complete, started;
+  const waiting = new Promise(resolve => { started = resolve; });
+  const session = await openSession({
+    context: () => ({boxId:'102', connection:'ready'}),
+    openStream: () => { started(); return new Promise(resolve => { complete = resolve; }); },
+  });
+  t.after(() => session.close());
+  const client = fromEnvironment(session.environment);
+  t.after(() => client.close());
+  await client.context();
+  const ws = await client.openStream('/api/agents/a/chat/ws');
+  let opened = false;
+  ws.once('open', () => { opened = true; });
+  const clientClosed = new Promise(resolve => ws.once('close', resolve));
+  await waiting;
+  await session.close();
+  await clientClosed;
+  const late = new WebSocket(`ws://127.0.0.1:${box.address().port}`);
+  t.after(() => late.terminate());
+  await once(late, 'open');
+  const lateClosed = once(late, 'close');
+  complete(late);
+  await lateClosed;
+  assert.equal(opened, false);
+  assert.equal(late.readyState, WebSocket.CLOSED);
 });
 
 test('oversized uploads return a bounded error without revoking the session or contacting the box', {timeout:3000}, async t => {

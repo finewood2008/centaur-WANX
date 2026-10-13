@@ -18,14 +18,14 @@ function projectState(raw) {
     ? source.devices.map((device) => ({
         ...device,
         name: device.displayName || device.deviceId,
-        lifecycle: device.accessState === "ready" ? "ready" : "discovered",
+        lifecycle: device.accessState === "ready" ? "ready" : "unavailable",
         initialized: device.accessState === "ready",
-        platformOnline: source.platform?.phase === "ready",
       }))
     : [];
 
   return {
     ...source,
+    connectionPhase: source.phase || "disconnected",
     route: authenticated ? "applications" : "auth",
     phase: !authenticated
       ? account.phase === "authenticating"
@@ -36,7 +36,7 @@ function projectState(raw) {
         : "idle",
     account: {
       ...account,
-      displayName: account.accountId || "万象用户",
+      displayName: "万象用户",
     },
     devices,
     networkReady,
@@ -64,7 +64,9 @@ const actions = {
       password: input?.password,
     }),
   "auth.send-code": (input) =>
-    ipcRenderer.invoke("wanx-client:send-sms", { phone: input?.username }),
+    ipcRenderer.invoke("wanx-client:send-registration-code", { phone: input?.username }),
+  "auth.register": (input) =>
+    ipcRenderer.invoke("wanx-client:register", { phone: input?.username, password: input?.password, code: input?.code }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.connect": (input) =>
@@ -80,14 +82,18 @@ const actions = {
   "market.uninstall": (input) => ipcRenderer.invoke("wanx-client:market-uninstall", { applicationId: input?.applicationId }),
   "market.rollback": (input) => ipcRenderer.invoke("wanx-client:market-rollback", { applicationId: input?.applicationId }),
   "applications.launch": (input) => ipcRenderer.invoke("wanx-client:applications-launch", input),
+  "applications.request-open": (input) => ipcRenderer.invoke("wanx-client:applications-request-open", input),
+  "applications.confirm-open": (input) => ipcRenderer.invoke("wanx-client:applications-confirm-open", input),
+  "applications.cancel-open": (input) => ipcRenderer.invoke("wanx-client:applications-cancel-open", input),
+  "desktop.startup.get": () => ipcRenderer.invoke("wanx-client:desktop-startup-get"),
+  "desktop.startup.set": (input) => ipcRenderer.invoke("wanx-client:desktop-startup-set", input),
+  "desktop.about": () => ipcRenderer.invoke("wanx-client:desktop-about"),
+  "desktop.quit": () => ipcRenderer.invoke("wanx-client:desktop-quit"),
   "applications.select-current": (input) => ipcRenderer.invoke("wanx-client:applications-select-current", input),
   "applications.stop": (input) => ipcRenderer.invoke("wanx-client:applications-stop", input),
 };
 
 async function action(name, input = {}) {
-  if (name === "auth.register") {
-    return { ok: false, code: "ACCOUNT_REGISTRATION_UNAVAILABLE", state: await getLocalState() };
-  }
   const handler = actions[name];
   if (!handler)
     return { ok: false, code: "UNKNOWN_CLIENT_ACTION", state: await getLocalState() };
@@ -120,7 +126,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "applications" || page === "settings") listener(page);
+        if (page === "applications" || page === "boxes" || page === "settings") listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);

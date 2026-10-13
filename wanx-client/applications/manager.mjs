@@ -1,8 +1,6 @@
 import path from "node:path";
 import { verifyEnvelope } from "./descriptor.mjs";
-import { randomUUID } from "node:crypto";
-import { createApplicationHost } from "../app-host/server.mjs";
-import { createApplicationGateway } from "../app-host/http-gateway.mjs";
+import { createApplicationSession } from "../app-host/session.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
 
@@ -21,7 +19,7 @@ export async function createApplicationManager({
 } = {}) {
   const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys });
   await installer.recover();
-  const sessions = new Map(), mutations = new Map();
+  const mutations = new Map();
   function assertOpen() {
     if (closed) throw Object.assign(new Error("APPLICATIONS_CLOSED"), { code: "APPLICATIONS_CLOSED" });
   }
@@ -44,49 +42,18 @@ export async function createApplicationManager({
   }
   const installing = new Set(), controller = new AbortController();
   let closed = false, closing;
-  const host = await createApplicationHost({
-    applicationId,
-    context: (id, launchId) => sessions.get(launchId)?.connection?.context?.() || context(),
-    request: (input, id, launchId) => sessions.get(launchId)?.connection?.request?.(input) || request(input),
-    openStream: (input, id, launchId) => sessions.get(launchId)?.connection?.openStream?.(input) || stream(input),
-    isApplicationAllowed: (id, launchId, sessionToken) => {
-      const session = sessions.get(launchId);
-      return session?.applicationId === id && session.token === sessionToken;
-    },
-    closeSession: (_id, launchId) => sessions.get(launchId)?.gateway?.revoke(),
-  });
   const launcher = createApplicationLauncher({
     resolveRecord: installer.resolveCurrent,
     onStarted: record => installer.prune(record.applicationId, record.version),
     host: {
-      async createSession(record, { signal }) {
-        const launchId = randomUUID();
-        const token = randomUUID() + randomUUID();
-        const connection = await createConnection?.() || { context, request, openStream: stream };
-        signal.throwIfAborted();
-        const gateway = await createApplicationGateway({
-          connection, token,
-          onInvalidated: () => { sessions.delete(launchId); host.revoke(launchId); },
+      createSession(record, { signal }) {
+        return createApplicationSession({
+          hostApplicationId: applicationId,
+          applicationId: record.applicationId,
+          installPath: record.installPath,
+          createConnection: async () => await createConnection?.() || { context, request, openStream: stream },
+          signal,
         });
-        try { signal.throwIfAborted(); gateway.assertLive(); }
-        catch (error) { await gateway.close(); throw error; }
-        sessions.set(launchId, { ...record, token, connection, gateway });
-        return {
-          launchId,
-          assertLive: gateway.assertLive,
-          environment: {
-            WANX_HOST_SOCKET: host.endpoint,
-            WANX_HOST_TOKEN: token,
-            WANX_HOST_APPLICATION_ID: applicationId,
-            WANX_HOST_CLIENT_APPLICATION_ID: record.applicationId,
-            WANX_HOST_LAUNCH_ID: launchId,
-            WANX_HOST_PROTOCOL_VERSION: "1",
-            WANX_HOST_INSTALL_ROOT: record.installPath,
-            WANX_HOST_TRANSPORT: "http-v1",
-            WANX_HOST_BASE_URL: gateway.url,
-          },
-          async close() { sessions.delete(launchId); host.revoke(launchId); await gateway.close(); },
-        };
       },
     },
     spawn,
@@ -95,7 +62,6 @@ export async function createApplicationManager({
     launcherArgs,
   });
   return Object.freeze({
-    host,
     async install(input) {
       assertOpen();
       if (mutations.size) throw Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" });
@@ -124,10 +90,8 @@ export async function createApplicationManager({
       closed = true;
       controller.abort();
       return closing ||= (async () => {
-        try {
-          const results = await Promise.allSettled([launcher.close(), ...installing]);
-          if (results[0].status === "rejected") throw results[0].reason;
-        } finally { await host.close(); }
+        const results = await Promise.allSettled([launcher.close(), ...installing]);
+        if (results[0].status === "rejected") throw results[0].reason;
       })().catch(error => { closing = null; throw error; });
     },
     installRoot: path.resolve(applicationRoot),
