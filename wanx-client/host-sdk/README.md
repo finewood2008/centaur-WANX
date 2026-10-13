@@ -13,7 +13,21 @@ if (host) {
 }
 ```
 
-`request(path, {method, headers, body, signal})` 返回标准 `Response`，支持 JSON 对象、字符串、Buffer/Uint8Array 和增量 SSE。multipart 调用方编码为 Buffer 并保留 boundary。不会自动重放请求或跟随重定向；15 秒默认超时仅约束响应头，SSE 不受此期限限制。`openStream(path)` 返回连接中的 `ws` 对象，调用方立即订阅 `open/message/close/error`；目前允许 `/api/agents/{id}/chat/ws`。
+`request(path, {method, headers, body, signal})` 返回标准 `Response`，保留 JSON 对象、字符串、Buffer/Uint8Array 调用，并支持 Node `Readable`（如文件流）和 Web `ReadableStream<Uint8Array>` 请求体。SDK 和 Host 按背压流式转发，不设置 HTTP 请求体的固定大小上限；文件大小由盒端业务接口校验，盒端 413 的状态码和响应体原样返回。multipart 由调用方编码为流或 Buffer，并设置匹配的 `Content-Type` boundary。
+
+```js
+const {createReadStream} = require('node:fs');
+const controller = new AbortController();
+const response = await host.request('/api/your-upload-endpoint', {
+  method: 'POST',
+  headers: {'content-type': 'application/octet-stream'},
+  body: createReadStream('/path/to/large-file.bin'),
+  signal: controller.signal,
+});
+// 上例适用于接收原始字节的接口；multipart 接口需使用相应编码流。
+```
+
+流只消费一次。调用 `controller.abort()`、关闭 SDK、会话失效或盒端提前拒绝时，SDK 会销毁 Node 源流或取消 Web 源流，并停止上传，不自动重放请求或跟随重定向。流式上传期间默认 15 秒为连接空闲超时，持续传输不受总上传时长限制；上传完成后默认等待响应头最多 15 秒。收到响应头后，响应流（包括 SSE）不受该期限限制。已有非流请求的响应头超时保持不变。`openStream(path)` 返回连接中的 `ws` 对象，调用方立即订阅 `open/message/close/error`；目前允许 `/api/agents/{id}/chat/ws`。
 
 Host 注入 `WANX_HOST_TRANSPORT=http-v1`、`WANX_HOST_BASE_URL=http://127.0.0.1:<临时端口>`、`WANX_HOST_TOKEN`。令牌只用于本地网关，每次启动重新生成，只存在主进程内存。不可传给 renderer、持久化、记录日志或拼进 URL。SDK 在存在不完整或旧版 Host 环境时明确报错，不降级到 LAN。
 

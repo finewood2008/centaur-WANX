@@ -25,7 +25,11 @@ export interface HostContext {
 export interface HostClient {
   context(): Promise<HostContext>;
   request(path: string, options?: {
-    method?: string; headers?: HeadersInit; body?: unknown; signal?: AbortSignal;
+    method?: string; headers?: HeadersInit;
+    /** JSON, string, Uint8Array/Buffer, Node Readable, or Web ReadableStream<Uint8Array>.
+     * Streams are consumed once and destroyed/cancelled when the request stops. */
+    body?: unknown;
+    signal?: AbortSignal;
   }): Promise<Response>;
   openStream(path: string, options?: { headers?: HeadersInit; protocols?: string[] }): Promise<HostStream>;
   onSessionInvalidated(listener: (event: {code: 'HOST_SESSION_EXPIRED'}) => void): () => void;
