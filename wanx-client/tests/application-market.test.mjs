@@ -7,7 +7,7 @@ import os from "node:os";
 import { generateKeyPairSync, randomUUID, createHash, sign } from "node:crypto";
 import { ZipFile } from "yazl";
 import { compareVersions, validateVersion } from "../applications/version.mjs";
-import { verifyEnvelope } from "../applications/descriptor.mjs";
+import { verifyEnvelope, matchesApplicationTarget } from "../applications/descriptor.mjs";
 import { createApplicationInstaller } from "../applications/installer.mjs";
 import { createApplicationMarket } from "../applications/market.mjs";
 
@@ -57,6 +57,73 @@ test("descriptor keys must be independently trusted and signed exact bytes", asy
   assert.throws(() => verifyEnvelope(a.envelope, {}), { code: "MARKET_UNTRUSTED_KEY" });
   const edited = { ...a.envelope, descriptorBase64: Buffer.from(JSON.stringify({ ...a.descriptor, arch: "x64" })).toString("base64") };
   assert.throws(() => verifyEnvelope(edited, trustedKeys), { code: "MARKET_INVALID_SIGNATURE" });
+});
+
+test("one signed universal application installs on all supported host targets", async t => {
+  const root = await fixture(t), a = await artifact(root);
+  Object.assign(a.descriptor, { os: "universal", arch: "universal" });
+  a.envelope = envelopeFor(a.descriptor);
+  for (const platform of ["darwin", "win32"]) for (const arch of ["x64", "arm64"]) {
+    const installer = createApplicationInstaller({ rootDir: path.join(root, platform, arch), trustedKeys });
+    const market = createApplicationMarket({ wanxVersion: "0.1.0", platform, arch, trustedKeys,
+      applications: { ...installer, listInstalled: installer.list },
+      request: async input => input.path.endsWith("/candidate") ? candidateFor(a)
+        : { artifactId: a.descriptor.artifactId, url: "https://example.test/app", expiresAt: new Date(Date.now() + 300000).toISOString() },
+      fetch: async () => new Response(a.bytes),
+    });
+    assert.equal((await market.candidate(applicationId)).status, "available");
+    await market.install(applicationId);
+    assert.equal((await installer.resolveCurrent(applicationId)).artifactId, a.descriptor.artifactId);
+    assert.equal((await market.candidate(applicationId)).status, "up_to_date");
+    await market.close();
+  }
+});
+
+test("universal signatures cannot conceal native or manifest platform restrictions", async t => {
+  const a = await artifact(await fixture(t));
+  const universal = { ...a.descriptor, os: "universal", arch: "universal" };
+  for (const changed of [
+    { os: "macos" }, { arch: "arm64" },
+    { packageType: "dmg", fileName: "app.dmg" }, { packageType: "exe", fileName: "app.exe" },
+    { manifest: { ...manifest, platform: "darwin" } },
+    { manifest: { ...manifest, arch: "x64" } },
+    { manifest: { ...manifest, launchMode: "bundled", platform: "darwin", arch: "arm64" } },
+  ]) assert.throws(() => verifyEnvelope(envelopeFor({ ...universal, ...changed }), trustedKeys), { code: "MARKET_INVALID_DESCRIPTOR" });
+  assert.equal(matchesApplicationTarget(universal, "windows", "x64"), true);
+  assert.equal(matchesApplicationTarget(universal, "linux", "x64"), false);
+  assert.equal(matchesApplicationTarget(a.descriptor, "macos", "arm64"), true);
+  assert.equal(matchesApplicationTarget(a.descriptor, "macos", "x64"), false);
+  assert.equal(matchesApplicationTarget(a.descriptor, "windows", "arm64"), false);
+  for (const restriction of [
+    { launchMode: "bundled", platform: "darwin", arch: "arm64" },
+    { platform: "win32" }, { arch: "x64" },
+  ]) assert.throws(() => verifyEnvelope(envelopeFor({ ...a.descriptor, manifest: { ...manifest, ...restriction } }), trustedKeys), { code: "MARKET_INVALID_DESCRIPTOR" });
+  const relabeled = { ...a.envelope, descriptorBase64: Buffer.from(JSON.stringify(universal)).toString("base64") };
+  assert.throws(() => verifyEnvelope(relabeled, trustedKeys), { code: "MARKET_INVALID_SIGNATURE" });
+});
+
+test("managed runtime accepts a signed universal application", {
+  skip: !["darwin", "win32"].includes(process.platform),
+}, async t => {
+  const { runManagedApplication } = await import("../applications/runtime.mjs");
+  const root = await fixture(t), a = await artifact(root), applicationRoot = path.join(root, "applications");
+  Object.assign(a.descriptor, { os: "universal", arch: "universal" });
+  a.envelope = envelopeFor(a.descriptor);
+  const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys });
+  const installed = await installer.installVerifiedPackage(a);
+  const env = { WANX_HOST_CLIENT_APPLICATION_ID: applicationId, WANX_HOST_TOKEN: "test",
+    WANX_HOST_SOCKET: "test", WANX_HOST_LAUNCH_ID: "test", WANX_HOST_INSTALL_ROOT: installed.installPath };
+  const saved = Object.fromEntries([...Object.keys(env), "WANX_HOST_APPLICATION_DATA"].map(key => [key, process.env[key]]));
+  t.after(() => { for (const [key, value] of Object.entries(saved)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  Object.assign(process.env, env);
+  let name;
+  const app = { setName(value) { name = value; }, setPath() {}, on() {}, once() {} };
+  const listeners = new Set(process.listeners("message"));
+  t.after(() => { for (const listener of process.listeners("message")) if (!listeners.has(listener)) process.off("message", listener); });
+  await runManagedApplication({ applicationRoot, trustedKeys, app });
+  assert.equal(name, "知君");
 });
 
 test("signed install switches current atomically, rejects downgrade, supports explicit rollback and preserves data", async (t) => {

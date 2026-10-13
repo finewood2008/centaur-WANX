@@ -534,9 +534,18 @@ test("missing artifacts and blank release notes do not create empty detail secti
   assert.doesNotMatch(h.app.innerHTML, /class="market-metadata"|class="market-notes"|undefined|NaN/);
 });
 
+test("universal application cards show a shared package and allow installation", async () => {
+  const h = await harness(state(), [], { candidate: async () => ({
+    status: "available", release: { version: "0.5.0" },
+    artifact: { os: "universal", arch: "universal", size: 2568392 },
+  }) });
+  assert.match(h.app.innerHTML, /通用应用包 · 2.4 MB/);
+  assert.match(h.app.innerHTML, /data-action="market-install"/);
+});
+
 for (const [reason, label] of [
   ["application_unlisted", "此应用尚未上架或已下架"],
-  ["no_published_target", "暂无适用于此电脑平台的安装包"],
+  ["no_published_target", "暂无可安装的应用包.*通用应用包"],
   ["release_unavailable", "此发行版本暂不可用"],
   ["wanx_version", "请先升级万象"],
   ["host_protocol", "当前万象运行协议不兼容"],

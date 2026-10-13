@@ -18,7 +18,7 @@ function message(child, type) {
   });
 }
 
-test("real Electron signed package reports readiness, reactivates, upgrades and exits", {
+test("real Electron universal signed package reports readiness, reactivates, upgrades and exits", {
   skip: process.platform !== "darwin" || !process.env.WANX_ELECTRON_APP, timeout: 60000,
 }, async t => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wanx-market-electron-")));
@@ -55,7 +55,9 @@ test("real Electron signed package reports readiness, reactivates, upgrades and 
   });
   async function install(version) {
     await writeFile(path.join(sourceDir, "wanx-app.json"), JSON.stringify({ applicationId, name: "Signed window", version, protocolVersion: 1, runtime: "electron", entrypoint: "main.cjs" }));
-    const result = await packageApplication({ sourceDir, outputDir: path.join(root, "packages"), os: "macos", arch: process.arch, keyFile, keyId: "test" });
+    const result = await packageApplication({ sourceDir, outputDir: path.join(root, "packages"), keyFile, keyId: "test" });
+    assert.equal(result.descriptor.os, "universal");
+    assert.equal(result.descriptor.arch, "universal");
     return manager.installVerifiedPackage({ archivePath: result.archivePath, envelope: JSON.parse(await readFile(result.envelopePath, "utf8")) });
   }
   async function inspect(child) { const result = message(child, "inspected"); child.send({ type: "inspect" }); return result; }

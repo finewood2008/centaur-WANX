@@ -224,7 +224,7 @@ function candidateLabel(candidate) {
   if (["incompatible", "unavailable"].includes(candidate.status)) {
     const reason = {
       application_unlisted: "此应用尚未上架或已下架，请刷新应用市场。",
-      no_published_target: "暂无适用于此电脑平台的安装包，请联系管理员发布对应版本。",
+      no_published_target: "暂无可安装的应用包，请联系管理员发布通用应用包或适用版本。",
       release_unavailable: "此发行版本暂不可用，请刷新应用市场后重试。",
       wanx_version: "请先升级万象，再安装此应用版本。",
       host_protocol: "此应用与当前万象运行协议不兼容，请联系管理员确认兼容版本。",
@@ -245,7 +245,7 @@ function candidateLabel(candidate) {
 
 function candidateDetails(candidate) {
   const artifact = candidate?.artifact;
-  const platforms = { "macos:arm64": "macOS · Apple 芯片", "macos:x64": "macOS · Intel", "windows:arm64": "Windows · ARM64", "windows:x64": "Windows · x64" };
+  const platforms = { "universal:universal": "通用应用包", "macos:arm64": "macOS · Apple 芯片", "macos:x64": "macOS · Intel", "windows:arm64": "Windows · ARM64", "windows:x64": "Windows · x64" };
   const metadata = [];
   if (artifact) {
     const platform = platforms[`${artifact.os}:${artifact.arch}`];
@@ -315,7 +315,7 @@ function applicationsView() {
     ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="content-section applications-section" aria-label="已安装应用"><div class="section-heading"><h2 class="small-heading">已安装应用</h2><span class="count">${applications.length} 个应用</span></div>${applications.length ? `<div class="application-grid">${applications.map(applicationCard).join("")}</div>` : '<div class="empty-state"><div class="empty-icon">＋</div><h3>安装你的第一个应用</h3><p>浏览下方应用市场，无需连接盒子即可安装。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><p class="eyebrow">APPLICATION MARKET</p><h2 id="market-heading" class="small-heading">应用市场</h2></div><button class="button small" data-action="market-refresh" ${marketLoading || busy ? "disabled" : ""}>${marketLoading ? "正在检查…" : "刷新与检查更新"}</button></div>
-    <p class="muted">显示适用于当前电脑的应用版本。安装和更新无需连接盒子。</p>
+    <p class="muted">应用共享万象运行环境，通用应用包支持 Windows 和 macOS。安装和更新无需连接盒子。</p>
     ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)}</div>` : ""}
     ${available.length ? `<div class="application-grid">${available.map(marketCard).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用市场…" : marketError ? "加载未完成，可稍后刷新重试。" : marketItems.length ? "市场中的应用均已安装。" : "暂无已上架应用。"}</p>`}
     </section>

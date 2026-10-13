@@ -6,20 +6,29 @@ export const marketFailure = (code) => Object.assign(new Error(code), { code });
 export const MAX_PACKAGE_BYTES = 1024 * 1024 * 1024;
 export const validApplicationId = (value) => typeof value === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(value);
 
+export function matchesApplicationTarget(descriptor, os, arch) {
+  if (!["macos", "windows"].includes(os) || !["x64", "arm64"].includes(arch)) return false;
+  return (descriptor.packageType === "wanxapp" && descriptor.os === "universal" && descriptor.arch === "universal") ||
+    (descriptor.os === os && descriptor.arch === arch);
+}
+
 export function validateDescriptor(value) {
   try {
     if (!value || value.schemaVersion !== 1 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.artifactId) ||
-      !validApplicationId(value.applicationId) || !["macos", "windows"].includes(value.os) || !["arm64", "x64"].includes(value.arch) ||
+      !validApplicationId(value.applicationId) ||
       !["wanxapp", "dmg", "exe"].includes(value.packageType) || value.hostProtocol !== 1 ||
       typeof value.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value.fileName) ||
       !value.fileName.endsWith(`.${value.packageType}`) || !/^[a-f0-9]{64}$/.test(value.sha256) ||
       !Number.isSafeInteger(value.size) || value.size < 1 || value.size > MAX_PACKAGE_BYTES)
       throw new Error();
+    const universal = value.packageType === "wanxapp" && value.os === "universal" && value.arch === "universal";
+    if (!universal && (!["macos", "windows"].includes(value.os) || !["arm64", "x64"].includes(value.arch))) throw new Error();
     if ((value.packageType === "dmg" && value.os !== "macos") || (value.packageType === "exe" && value.os !== "windows")) throw new Error();
     validateVersion(value.version);
     validateVersion(value.minWanxVersion);
     if (value.packageType === "wanxapp") {
       const manifest = validateApplicationManifest(value.manifest, { signed: true });
+      if (universal && (manifest.platform !== undefined || manifest.arch !== undefined)) throw new Error();
       if (manifest.applicationId !== value.applicationId || manifest.version !== value.version || manifest.launchMode !== "shared" ||
           manifest.platform && manifest.platform !== ({ macos: "darwin", windows: "win32" })[value.os] ||
           manifest.arch && manifest.arch !== value.arch && manifest.arch !== "universal") throw new Error();

@@ -2,7 +2,7 @@ import { mkdtemp, open, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { verifyEnvelope, marketFailure, validApplicationId } from "./descriptor.mjs";
+import { verifyEnvelope, marketFailure, validApplicationId, matchesApplicationTarget } from "./descriptor.mjs";
 import { isComparableApplicationVersion } from "./manifest.mjs";
 import { compareVersions, validateVersion } from "./version.mjs";
 
@@ -46,7 +46,7 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
       throw marketFailure("MARKET_INVALID_RESPONSE");
     if (result.status !== "available") return result;
     const descriptor = verifyEnvelope(result.artifact?.envelope, trustedKeys);
-    if (descriptor.applicationId !== id || descriptor.os !== targetOS || descriptor.arch !== arch ||
+    if (descriptor.applicationId !== id || !matchesApplicationTarget(descriptor, targetOS, arch) ||
       descriptor.packageType !== "wanxapp" || descriptor.hostProtocol !== 1 || compareVersions(wanxVersion, descriptor.minWanxVersion) < 0 ||
       descriptor.artifactId !== result.artifact.artifactId || descriptor.version !== result.release?.version ||
       descriptor.sha256 !== result.artifact.sha256 || descriptor.size !== result.artifact.size ||
