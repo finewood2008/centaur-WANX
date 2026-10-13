@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createSecureChannel, createClaimCoordinator, stableJson, ProtocolError } from '@nexusaos/local-provisioning-core';
 
 const utf8 = (value) => new TextEncoder().encode(value);
@@ -102,4 +103,56 @@ test('coordinator forbids scanning before verified pairing and leaves the existi
   const coordinator = createClaimCoordinator({ clock: { monotonicMs: () => 0 } });
   await assert.rejects(coordinator.scanWifi(), { code: 'CLAIM_INVALID_STATE' });
   assert.equal(coordinator.getSnapshot().state, 'idle');
+});
+
+// Exercise the shipped coordinator's operation lock and scan implementation at
+// an already verified session boundary. Only setup state and secure transport
+// are substituted; real AEAD envelope validation is covered above.
+async function pairedCoordinator(secure) {
+  const coreUrl = import.meta.resolve('@nexusaos/local-provisioning-core');
+  let source = await readFile(new URL('./coordinator.js', coreUrl), 'utf8');
+  source = source.replace('let snapshot = { flowId: "", state: "idle" };',
+    'let snapshot = { flowId: "verified-test-session", state: "awaitingWifi" };');
+  const start = source.indexOf('    const secure = async (type, payload, signal) => {');
+  const end = source.indexOf('    const refreshPreviewAfterContextChange =', start);
+  assert.ok(start > 0 && end > start);
+  source = source.slice(0, start) + '    const secure = deps.testSecure;\n' + source.slice(end);
+  for (const name of ['@nexusaos/consumer-contracts', '@nexusaos/local-provisioning-contracts']) {
+    source = source.replace(`from "${name}"`, `from ${JSON.stringify(import.meta.resolve(name))}`);
+  }
+  source = source.replace('from "./index.js"', `from ${JSON.stringify(coreUrl)}`);
+  const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  return module.createClaimCoordinator({ clock: { monotonicMs: () => performance.now() }, testSecure: secure });
+}
+
+test('verified coordinator polls, pages and returns networks through the real operation lock', async () => {
+  const calls = [];
+  const coordinator = await pairedCoordinator(async (type, input, signal) => {
+    assert.equal(type, 'wifi.scan'); assert.ok(signal instanceof AbortSignal);
+    calls.push(input);
+    if (calls.length === 1) return { scan_state: 'scanning', networks: [], next_offset: null };
+    if (calls.length === 2) return { scan_state: 'ready', networks: [network], next_offset: 1 };
+    return { scan_state: 'ready', networks: [{ ssid: 'Guest', signal: 40, security: 'open' }], next_offset: null };
+  });
+  const scanning = coordinator.scanWifi();
+  assert.equal(coordinator.scanWifi(), scanning, 'same in-flight operation is deduplicated');
+  await assert.rejects(coordinator.provideWifi({ ssid: 'manual', security: 'open', hidden: false }),
+    { code: 'CLAIM_OPERATION_IN_PROGRESS' });
+  assert.deepEqual(await scanning, [network, { ssid: 'Guest', signal: 40, security: 'open' }]);
+  assert.deepEqual(calls, [{ offset: 0, refresh: true }, { offset: 0, refresh: false }, { offset: 1, refresh: false }]);
+  assert.equal(coordinator.getSnapshot().state, 'awaitingWifi');
+  await coordinator.provideWifi({ ssid: 'Guest', security: 'open', hidden: false });
+  assert.equal(coordinator.getSnapshot().state, 'awaitingOwnershipConfirmation');
+});
+
+test('aborting a scan releases operation lock while keeping verified Wi-Fi entry usable', async () => {
+  const controller = new AbortController();
+  const coordinator = await pairedCoordinator(async () => {
+    controller.abort();
+    return { scan_state: 'scanning', networks: [], next_offset: null };
+  });
+  await assert.rejects(coordinator.scanWifi(controller.signal), { name: 'AbortError' });
+  assert.equal(coordinator.getSnapshot().state, 'awaitingWifi');
+  await coordinator.provideWifi({ ssid: 'hidden', security: 'open', hidden: true });
+  assert.equal(coordinator.getSnapshot().state, 'awaitingOwnershipConfirmation');
 });
