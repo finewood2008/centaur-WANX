@@ -12,6 +12,7 @@ function harness() {
       "snapshot",
       "loginPassword",
       "loginSMS",
+      "register",
       "sendSMS",
       "logout",
       "refreshDevices",
@@ -56,6 +57,22 @@ test("every account/device IPC rejects remote windows, same-url subframes and na
       /无权/,
     );
   assert.deepEqual(h.calls, []);
+});
+
+test("registration IPC validates credentials and pins the SMS scene", () => {
+  const h = harness();
+  const input = { phone: " 13800138000 ", password: " password ", code: "000001", role: "admin", clientId: "injected" };
+  h.invoke("register", input);
+  h.invoke("send-registration-code", { phone: input.phone, scene: "consumer_login" });
+  assert.deepEqual(h.calls, [
+    ["register", { phone: "13800138000", password: input.password, code: "000001" }],
+    ["sendSMS", { phone: "13800138000", scene: "consumer_register" }],
+  ]);
+  for (const password of [null, "short", "密".repeat(25), "password\n", "password\0"])
+    assert.throws(() => h.invoke("register", { ...input, password }), /invalid_credentials/);
+  for (const code of [null, "12345", "1234567", "abcdef"])
+    assert.throws(() => h.invoke("register", { ...input, code }), /invalid_sms_code/);
+  assert.equal(h.calls.length, 2);
 });
 test("account IPC validates and forwards only allowed fields preserving password whitespace", () => {
   const h = harness();

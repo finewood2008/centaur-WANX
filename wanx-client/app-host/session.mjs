@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { WebSocket, WebSocketServer } from "ws";
 
@@ -7,9 +8,15 @@ const MAX_BODY = 32 * 1024 * 1024;
 const TERMINAL = new Set(["NETWORK_CHANGED", "SESSION_CLOSED", "GATEWAY_CLOSED", "PLATFORM_SESSION_EXPIRED", "HOST_SESSION_EXPIRED"]);
 const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"]);
 
-// One listener and credential per launch. The connection is an immutable box lease.
-export async function createApplicationGateway({ connection, token, onInvalidated } = {}) {
-  let url, invalid = false, closing, unsubscribe;
+// Own the launch's credentials and local resources, but borrow its fixed box connection.
+export async function createApplicationSession({
+  hostApplicationId, applicationId, installPath, createConnection, signal,
+} = {}) {
+  signal?.throwIfAborted();
+  const launchId = randomUUID(), token = randomUUID() + randomUUID();
+  const connection = await createConnection();
+  signal?.throwIfAborted();
+  let url, invalid = false, closing, unsubscribe, heartbeat;
   const operations = new Set(), events = new Set(), sockets = new Set();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY, perMessageDeflate: false,
     handleProtocols: (_protocols, req) => req.selectedProtocol || false });
@@ -21,12 +28,16 @@ export async function createApplicationGateway({ connection, token, onInvalidate
   function invalidate() {
     if (invalid) return;
     invalid = true;
-    unsubscribe?.();
+    unsubscribeConnection();
     for (const res of events) res.end('data: {"type":"invalidated","code":"HOST_SESSION_EXPIRED"}\n\n');
     events.clear();
     for (const abort of operations) abort();
     for (const ws of sockets) ws.terminate();
-    onInvalidated?.();
+  }
+  function unsubscribeConnection() {
+    const stop = unsubscribe;
+    unsubscribe = undefined;
+    stop?.();
   }
   function authorize(req) {
     if (req.headers.host !== new URL(url).host || req.headers.origin ||
@@ -158,22 +169,47 @@ export async function createApplicationGateway({ connection, token, onInvalidate
       if (!socket.destroyed) socket.end(`HTTP/1.1 ${error.status || 503} Rejected\r\nConnection: close\r\nContent-Length: 0\r\nX-Wanx-Error: ${error.status ? error.code : "HOST_UPSTREAM_UNAVAILABLE"}\r\n\r\n`);
     } finally { operations.delete(abort); }
   });
-  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  url = `http://127.0.0.1:${server.address().port}`;
-  unsubscribe = connection.subscribe?.(() => {
-    try {
-      const current = state();
-      for (const res of events) res.write(`data: ${JSON.stringify({ type: "connection", connection: current.connection })}\n\n`);
-    } catch { /* state() already revoked the lease. */ }
-  });
-  const heartbeat = setInterval(() => { for (const res of events) res.write(": alive\n\n"); }, 10_000);
-  heartbeat.unref();
-  return Object.freeze({ url, revoke: invalidate, assertLive: state,
-    close() {
-      if (closing) return closing;
-      invalidate(); unsubscribe?.(); clearInterval(heartbeat);
-      closing = new Promise(resolve => { server.close(resolve); server.closeAllConnections(); wss.close(); });
-      return closing;
-    },
-  });
+  function close() {
+    if (closing) return closing;
+    // Revoke before returning, so the launcher can terminate the child independently.
+    invalidate(); unsubscribeConnection(); clearInterval(heartbeat);
+    closing = Promise.all([
+      new Promise(resolve => server.close(resolve)),
+      new Promise(resolve => wss.close(resolve)),
+    ]).then(() => {});
+    server.closeAllConnections();
+    return closing;
+  }
+  try {
+    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    url = `http://127.0.0.1:${server.address().port}`;
+    unsubscribe = connection.subscribe?.(() => {
+      try {
+        const current = state();
+        for (const res of events) res.write(`data: ${JSON.stringify({ type: "connection", connection: current.connection })}\n\n`);
+      } catch { /* state() already revoked the lease. */ }
+    });
+    signal?.throwIfAborted();
+    state();
+    heartbeat = setInterval(() => { for (const res of events) res.write(": alive\n\n"); }, 10_000);
+    heartbeat.unref();
+    return Object.freeze({
+      launchId,
+      environment: Object.freeze({
+        WANX_HOST_TOKEN: token,
+        WANX_HOST_APPLICATION_ID: hostApplicationId,
+        WANX_HOST_CLIENT_APPLICATION_ID: applicationId,
+        WANX_HOST_LAUNCH_ID: launchId,
+        WANX_HOST_PROTOCOL_VERSION: "1",
+        WANX_HOST_INSTALL_ROOT: installPath,
+        WANX_HOST_TRANSPORT: "http-v1",
+        WANX_HOST_BASE_URL: url,
+      }),
+      assertLive: state,
+      close,
+    });
+  } catch (error) {
+    await close();
+    throw error;
+  }
 }

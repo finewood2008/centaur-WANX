@@ -326,7 +326,9 @@ export function createAccount({
           typeof remoteCode === "string" &&
           (/^MARKET_[A-Z0-9_]{1,64}$/.test(remoteCode) || remoteCode === "APPLICATION_RETIRED");
         const code =
-          missingNetworkRoute && !explicitNetworkCode
+          path === "/app-api/auth/sms/send" && payload.code === 602
+            ? "SMS_DAILY_LIMIT"
+            : missingNetworkRoute && !explicitNetworkCode
             ? "NETWORK_SERVICE_NOT_DEPLOYED"
             : missingMarketRoute && !explicitMarketCode
             ? "MARKET_SERVICE_NOT_DEPLOYED"
@@ -334,6 +336,8 @@ export function createAccount({
             ? remoteCode
             : typeof remoteCode === "string" &&
               /^(NETWORK|SSO|OMNIA|MARKET)_[A-Z0-9_]{1,64}$/.test(remoteCode)
+            ? remoteCode
+            : path.startsWith("/app-api/auth/") && ["SMS_RATE_LIMITED", "SMS_DAILY_LIMIT", "SMS_CODE_INVALID", "PASSWORD_ALREADY_SET", "PASSWORD_WEAK", "PASSWORD_INVALID", "PASSWORD_NOT_SET"].includes(remoteCode)
             ? remoteCode
             : status === 401
             ? "ACCOUNT_SESSION_EXPIRED"
@@ -454,6 +458,10 @@ export function createAccount({
           Buffer.byteLength(input.password) > 72)
     )
       throw failure("ACCOUNT_INVALID_INPUT");
+    if (mode === "register" && (
+      !/^\d{6}$/.test(input.code || "") ||
+      Buffer.byteLength(input.password, "utf8") < 8 || /[\r\n\0]/.test(input.password)
+    )) throw failure("ACCOUNT_INVALID_INPUT");
     if (closed) throw failure("ACCOUNT_CANCELLED");
     if (record?.session) throw failure("ACCOUNT_ALREADY_SIGNED_IN");
     cancel();
@@ -469,13 +477,14 @@ export function createAccount({
       const data = await wire(
         {
           method: "POST",
-          path: `/app-api/auth/${mode}/login`,
+          path: mode === "register" ? "/app-api/auth/password/register" : `/app-api/auth/${mode}/login`,
           authenticated: false,
           body: {
             phone: input.phone,
             ...(mode === "sms"
               ? { code: input.code }
               : { password: input.password }),
+            ...(mode === "register" ? { code: input.code } : {}),
             clientId: identity.clientId,
             clientPublicKey: identity.publicKey,
             platform:
@@ -533,14 +542,15 @@ export function createAccount({
         : null,
     loginPassword: (input) => login(input, "password"),
     loginSMS: (input) => login(input, "sms"),
-    async sendSMS(phone) {
-      if (!/^1\d{10}$/.test(phone || ""))
+    register: (input) => login(input, "register"),
+    async sendSMS(phone, scene = "consumer_login") {
+      if (!/^1\d{10}$/.test(phone || "") || !["consumer_login", "consumer_register"].includes(scene))
         throw failure("ACCOUNT_INVALID_INPUT");
       const result = await wire(
         {
           method: "POST",
           path: "/app-api/auth/sms/send",
-          body: { phone, scene: "consumer_login" },
+          body: { phone, scene },
           authenticated: false,
         },
         epoch,

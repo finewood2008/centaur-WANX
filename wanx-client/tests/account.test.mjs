@@ -32,7 +32,7 @@ function fixture(extra = {}) {
     fetch: async (url, options) => {
       const body = options.body ? JSON.parse(options.body) : null;
       calls.push({ url, options, body });
-      if (url.endsWith("/login")) {
+      if (url.endsWith("/login") || url.endsWith("/register")) {
         currentClient = body.clientId;
         return reply({
           accountId: "account-one",
@@ -69,6 +69,59 @@ function fixture(extra = {}) {
   });
   return { account, calls, store, refreshCount: () => refreshCount };
 }
+
+test("registration returns a persisted Consumer session and uses the registration SMS scene", async t => {
+  const { account, calls, store } = fixture();
+  t.after(() => account.close());
+  await account.sendSMS("13800138000", "consumer_register");
+  assert.deepEqual(calls[0].body, { phone: "13800138000", scene: "consumer_register" });
+  const password = " 密码密码 ";
+  await account.register({ phone: "13800138000", code: "000001", password });
+  assert.equal(calls[1].url.endsWith("/app-api/auth/password/register"), true);
+  assert.equal(calls[1].body.code, "000001");
+  assert.equal(calls[1].body.password, password);
+  assert.equal(calls[1].body.clientId, account.getIdentity().clientId);
+  assert.match(calls[1].body.clientPublicKey, /PUBLIC KEY/);
+  assert.equal(account.snapshot().phase, "authenticated");
+  assert.equal((await store.load()).active.session.accountId, "account-one");
+  assert.doesNotMatch(JSON.stringify(await store.load()), /密码|000001/);
+});
+
+test("registration validates SMS and UTF-8 password bounds before any request", async t => {
+  const { account, calls } = fixture();
+  t.after(() => account.close());
+  for (const input of [
+    { phone: "bad", code: "123456", password: "password" },
+    { phone: "13800138000", code: "12345", password: "password" },
+    ...["short", "密".repeat(25), "password\n", "password\0"].map(password => ({ phone: "13800138000", code: "123456", password })),
+  ]) await assert.rejects(account.register(input), /ACCOUNT_INVALID_INPUT/);
+  await assert.rejects(account.sendSMS("13800138000", "admin"), /ACCOUNT_INVALID_INPUT/);
+  assert.equal(calls.length, 0);
+});
+
+test("registration failures preserve safe auth codes and never persist a session", async t => {
+  for (const code of ["SMS_CODE_INVALID", "PASSWORD_ALREADY_SET", "PASSWORD_WEAK", "UNTRUSTED_SECRET"]) {
+    const store = memoryStore();
+    const account = createAccount({ store, fetch: async () => new Response(JSON.stringify({ code: 400, data: { errorCode: code }, msg: "private detail" })) });
+    t.after(() => account.close());
+    await assert.rejects(account.register({ phone: "13800138000", password: "password", code: "000001" }),
+      { code: code === "UNTRUSTED_SECRET" ? "ACCOUNT_REQUEST_FAILED" : code });
+    assert.equal(account.snapshot().phase, "signed_out");
+    assert.equal((await store.load()).active, null);
+  }
+});
+
+test("SMS errors include the platform numeric daily-limit response", async t => {
+  for (const [payload, expected] of [
+    [{ code: 602 }, "SMS_DAILY_LIMIT"],
+    [{ code: 400, data: { errorCode: "SMS_RATE_LIMITED" } }, "SMS_RATE_LIMITED"],
+    [{ code: 400, data: { errorCode: "SMS_DAILY_LIMIT" } }, "SMS_DAILY_LIMIT"],
+  ]) {
+    const account = createAccount({ store: memoryStore(), fetch: async () => new Response(JSON.stringify(payload)) });
+    t.after(() => account.close());
+    await assert.rejects(account.sendSMS("13800138000", "consumer_register"), { code: expected });
+  }
+});
 
 test("Consumer DER signature matches Python canonical request, excluding deployment prefix", () => {
   const { publicKey, privateKey } = generateKeyPairSync("ec", {

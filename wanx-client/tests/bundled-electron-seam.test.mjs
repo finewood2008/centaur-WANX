@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createWriteStream } from "node:fs";
+import { constants, createWriteStream } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { pipeline } from "node:stream/promises";
@@ -69,7 +69,7 @@ test("real Electron installs, opens and reactivates all four installation combin
 
   const bundle = path.join(bundledSource, "Test.app");
   await mkdir(bundledSource);
-  await cp(electronApp, bundle, { recursive: true, verbatimSymlinks: true });
+  await cp(electronApp, bundle, { recursive: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE });
   await rename(path.join(bundle, "Contents/MacOS/Electron"), path.join(bundle, "Contents/MacOS/WanxTest"));
   await promisify(execFile)("plutil", ["-replace", "CFBundleExecutable", "-string", "WanxTest", path.join(bundle, "Contents/Info.plist")]);
   const resources = path.join(bundle, "Contents/Resources");
@@ -133,9 +133,13 @@ test("real Electron installs, opens and reactivates all four installation combin
         assert.ok((await stat(view.screenshot)).size > 1000);
         const hidden = messageFrom(child, "test:hidden"); child.send({ type: "test:hide" });
         assert.equal((await hidden).visible, false);
-        const shown = messageFrom(child, "test:shown");
         assert.equal((await manager.launch(manifest.applicationId, version)).launchId, launch.launchId);
-        assert.equal((await shown).visible, true);
+        // macOS can make an existing window visible without another `show`
+        // event. Inspect the resulting window, as the signed-package seam does.
+        const reactivated = messageFrom(child, "test:inspected"); child.send({ type: "test:inspect" });
+        const reactivatedView = await reactivated;
+        assert.equal(reactivatedView.visible, true);
+        assert.equal(reactivatedView.windowCount, 1);
         assert.equal(children.length, before + 1);
         const revoked = messageFrom(child, "test:invalidated");
         live = false; for (const listener of listeners) listener(); await revoked;
