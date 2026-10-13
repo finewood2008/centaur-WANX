@@ -15,6 +15,25 @@ const adminUser = {
 } as OctopUser;
 
 describe("sidebarNav", () => {
+  it("keeps application navigation permission-gated without a desktop bridge", () => {
+    const keys = (user: OctopUser) =>
+      buildNavSections(user).flatMap((section) =>
+        section.items.map((item) => item.key),
+      );
+    expect(keys(adminUser)).toContain("applications");
+    expect(keys({ ...adminUser, role: "user", permissions: [] })).not.toContain(
+      "applications",
+    );
+    expect(
+      keys({
+        ...adminUser,
+        role: "user",
+        permissions: ["applications_develop"],
+      }),
+    ).toContain("applications");
+    expect(keys(adminUser)).not.toContain("boxes");
+  });
+
   it("marks catalog keys as grouped", () => {
     for (const key of SIDEBAR_GROUPED_NAV_KEYS) {
       expect(isGroupedNavKey(key)).toBe(true);
@@ -47,7 +66,6 @@ describe("sidebarNav", () => {
   it("covers every catalog key from the admin nav", () => {
     const keys = buildNavSections(adminUser, {
       mobileEnabled: true,
-      desktopClient: true,
     }).flatMap((section) => section.items.map((item) => item.key));
     expect(new Set(keys)).toEqual(new Set(SIDEBAR_NAV_KEYS));
     const grouped = buildNavSections(adminUser, { mobileEnabled: true }).filter(

@@ -30,7 +30,6 @@ const AdminStoragePage = lazy(() => import("../pages/Admin/Storage"));
 const AdminPluginsPage = lazy(() => import("../pages/Admin/Plugins"));
 const AgentConfigPage = lazy(() => import("../pages/Agent/Config"));
 
-const BoxesPage = lazy(() => import("../pages/Boxes"));
 const ApplicationsPage = lazy(() => import("../pages/Admin/Applications"));
 
 // Misc
@@ -50,7 +49,6 @@ export interface RouteConfig {
 }
 
 export const pathToKey: Record<string, string> = {
-  "/boxes": "boxes",
   "/admin/applications": "applications",
   "/applications": "applications",
   "/chat": "chat",
@@ -149,7 +147,6 @@ export function resolveSelectedKey(pathname: string): string {
 }
 
 export const routeConfigs: RouteConfig[] = [
-  { path: "/boxes", element: <BoxesPage /> },
   { path: "/admin/applications", element: <ApplicationsPage /> },
   { path: "/applications", element: <ApplicationsPage /> },
   // Chat (handled via ChatWithKey wrapper in MainLayout)

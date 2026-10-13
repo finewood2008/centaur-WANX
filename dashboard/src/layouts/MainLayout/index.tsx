@@ -2,7 +2,6 @@ import { Layout } from "antd";
 import { lazy, Suspense, useEffect, useState, useCallback } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
 import Sidebar from "../Sidebar";
-import BoxConnectionBar from "../../components/BoxConnectionBar";
 import Header from "../Header";
 import RailEdgeControl from "../../components/RailEdgeControl";
 import PageLoading from "../../components/PageLoading";
@@ -274,7 +273,6 @@ export default function MainLayout() {
                 />
               )}
 
-            <BoxConnectionBar />
             <Layout
               style={{
                 background: "transparent",

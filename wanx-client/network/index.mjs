@@ -126,7 +126,7 @@ export function createNetwork({
       : {}),
   });
   const publish = (next) => {
-    // Fast status reads must not rebuild the fleet UI when nothing changed.
+    // Fast status reads must not rebuild the control UI when nothing changed.
     if (JSON.stringify(state) === JSON.stringify(next)) return;
     state = next;
     for (const listener of listeners) listener(snapshot());

@@ -90,7 +90,6 @@ export function setAuthToken(token: string, remember: boolean = true) {
 
 /** Get JWT token from localStorage or (session-only) sessionStorage. */
 export function getAuthToken(): string {
-  if (window.wanxDesktop) return window.wanxDesktop.sessionToken();
   return (
     localStorage.getItem(AUTH_TOKEN_KEY) ||
     sessionStorage.getItem(AUTH_TOKEN_KEY) ||

@@ -1,69 +1,89 @@
 # 万象电脑端
 
-当前客户端是 `wanx-desktop/` 中独立运行的 Electron 应用。它复用原 Dashboard 的组件和功能页面，加载自己随安装包交付的界面，通过 SDK 连接盒子里的 WANX 服务端。盒子连接与应用中心是电脑端导航中的两个同级入口；服务端 Web 控制台保留盒子管理入口，通过平台管理与已有地址连接两个页签管理盒子；桌面模式仍显示独立客户端连接页。
+当前客户端位于 `wanx-client/`。盒子管理、连接、切换和蓝牙配网统一在该客户端中完成；Dashboard 提供盒端业务控制台，不再提供盒子管理或 `/boxes` 路由。旧 `wanx-desktop/` 和 `wanx-admin-desktop/` 已删除。
 
-## 账号与盒子连接
+## 启动与打包
 
-1. **登录电脑端平台账号**：使用 SDK Consumer 手机号/密码或短信登录。平台账号决定可访问的设备目录。
-2. **选择授权盒子**：使用 SDK 返回的 `deviceId` UUID，展示在线状态、设备角色和授权范围。不能手工编造 `centauros-*` 代替 Consumer 设备 UUID。
-3. **建立 SDK 连接**：SDK 完成签票、P2P Direct 和 WANX 统一身份交换，应用只调用 `host.connection.connect({deviceId})`。
-4. **核验盒子权限**：连接后读取原生 `/api/auth/me`。设备访问权不自动产生 WANX 管理权限；应用中心和系统操作仍由盒子服务端逐次校验。
-5. **切盒或断开**：关闭原会话和数据流，再进入另一台盒子的独立会话。权限撤销或连接失效会退回本机盒子页。
-
-平台账号与盒子本地账号不是同一组凭据。需要关联已有本地管理员时，在可选关联表单提供该盒子的原账号；SDK 的 `linkExisting` 同时验证平台身份与本地凭据，不自动提升角色。本机现有 `finewood` 是 WANX 本地账号，不能当作平台手机号。
-
-主进程保管 SDK Host、签名密钥、JWT 和原生连接，页面只获得公开状态及本机随机会话标识。现有 HTTP、SSE、上传下载和七类 WebSocket 通过本机网关调用 SDK 冻结的操作表。网关拒绝未知接口、跨源调用、服务器凭据覆盖和过期会话；保持原生错误状态及流式响应。
-
-## 正式网络发行配置
-
-发行方在 `wanx-desktop/deployment.json` 配置批准的主机名单，结构见 [deployment.example.json](../wanx-desktop/deployment.example.json)。Consumer 默认是 SDK 文档中的 `https://boss.nexusaos.qitus.cn/prod-api`，不能追加 `app-api`。Gateway 和 ICE 名单必须来自公司批准的配置，不能从设备票据动态学习或使用通配信任。标准电脑端使用 SDK 已定义的 `omnia-desktop` 连接身份。
-
-目前源码没有该生产主机配置，平台/P2P 入口因此禁用。SDK 主进程链路已实现，模拟验证不能替代正式账号、Core、签票与真实盒子验收。新建产品仍需要独立登记连接身份。
-
-## 兼容入口与浏览器
-
-电脑端保留已有可信 HTTPS 服务的兼容接入，通过 SDK HTTP 适配器和盒子本地账号登录；仅本机开发可使用回环 HTTP。地址不能含账号、路径、查询参数或片段。服务开启外部验证时，需要服务端原验证流程提供的证明，兼容入口不绕过该验证。
-
-浏览器直接打开盒子的 HTTPS 地址，使用的是服务端 Web 控制台。纯浏览器不能运行当前 SDK 的 Node/Go P2P 宿主；如需独立浏览器电脑端，需要另行提供正式 HTTPS 网关。旧 `desktop/src/` Go/Wails 远程网页壳与 `wanx-admin-desktop/` 原型保留作历史参考，均不代表本次独立电脑端入口。
-
-## 应用中心
-
-持有 `applications_manage` 或 `applications_develop` 才显示应用中心。前者管理全部产品，后者只管理自己创建的产品；服务端逐次验证权限。使用设备访问权或普通用户账号不能绕过管理权限。
-
-1. 创建应用：填写产品标识、名称，选择对话、记忆、知识、上传、语音能力。模板 JSON 支持 `name`、`description`、`default_model`、`system_prompt`、`welcome_message`。
-2. 配置资源：例如要求 `{"chatModel":{"kind":"model","required":true}}`，在盒子部署中绑定 `{"chatModel":"openai/gpt-4o"}`。所需模型、存储、插件等先在原 WANX 配置页面登记；凭据仍在原有安全设置中。
-3. 检查并启用：服务端确认资源引用存在。停用立即撤销产品访问，不删除用户实例；模板变更只影响新建实例。
-4. 用户访问：输入已有 WANX 用户 ID，开通或撤销产品访问。用户自身 Agent、记忆和对话仍由 WANX 原生模块管理。
-5. 登记客户端版本：先在外部构建、托管安装包，再填写 HTTPS 下载地址、SHA-256、系统架构和最低 WANX/SDK 版本。推荐版本按操作系统与架构分别管理，客户端自己检查兼容性并提示安装。
-6. 开发与导出：导出清单，在另一盒子导入后默认停用。选择下方 SDK 包并输入交付 SHA-256，生成 TypeScript / React / Electron 工程 ZIP。在外部工具实现业务与界面，然后登记安装包版本。
-
-应用管理只返回产品、授权及版本元数据，不提供私人记忆、聊天正文或用户工作区浏览。电脑端草稿保存在应用用户数据目录的 `product-drafts.json`，按盒子身份、WANX 用户 ID 和产品隔离，读写前重验管理权限，不受本机网关端口变化影响。包含凭据的 JSON 不允许保存或导出。操作系统维护权限仍属于系统级信任边界。
-
-当前新建私人实例会应用模板及模型绑定。存储、技能、插件等其他资源绑定完成存在性校验并保存为部署记录，尚未自动装配到每个用户实例；这些资源继续通过原 WANX 设置维护。
-
-当前客户端固定适配层包：[centaurai-wanx-0.1.0-wanx.1-585a760033fa.tgz](../vendor/centaurai-wanx-0.1.0-wanx.1-585a760033fa.tgz)。SHA-256：`585a760033fafc8838553b3b1945e8e3949b53fbdedbf3580a477d900462026b`。源码位于 `packages/wanx-client-adapter/`，使用标准 Go SDK；旧 `dashboard/vendor/centaurai-wanx-0.1.0-alpha.3.tgz` 仅保留作历史参考。
-
-## 构建与检查
+在仓库根目录执行：
 
 ```sh
-npm ci --prefix sdk-box-management
-npm run build --prefix sdk-box-management
-cd dashboard
-npm ci
-cd ../wanx-desktop
-npm ci
-npm run build
+npm ci --prefix wanx-client
 npm test
 npm start
-# Mac 打包前按 SNAPSHOT.md 构建 remote-connect 网络进程
 npm run package:mac
 # Windows 发布主机：npm run package:windows
 ```
 
-`npm run build` 构建独立 `dist-ui/` 并保存依赖许可证通知。Electron 包解包 SDK 原生可执行文件目录。服务端按仓库要求运行 `make all` 和 `make build-frontend`，服务端 Web 资源与电脑端分别构建。界面验收脚本是 `wanx-desktop/tests/check-electron-ui.mjs`，使用 `WANX_TEST_ELECTRON` 指向未封装的 Electron 运行时，`WANX_TEST_PLAYWRIGHT` 指向本机 Playwright 包；脚本仅使用合成账号与本机模拟服务。
+上述入口分别转发到 wanx-client 的测试、启动和打包脚本。原有 `start:client`、`test:client`、`package:client:mac` 与 `package:client:windows` 入口仍可使用。
 
-## 当前交付边界
+账号、网络、盒端免登录、应用市场和平台配置以 [wanx-client 使用说明](../wanx-client/README.md) 为准。生产部署要求见 [自动入网与免登录部署说明](wanx-auto-p2p-deployment.md)，应用发布见 [应用市场说明](wanx-application-market.md)。
 
-已完成电脑端架构、SDK Host 接入及模拟服务流程验证，不能等同真实盒子验收。批准的 Gateway／ICE 发行配置仍缺失；真实账号、签票、统一身份、跨网络 P2P、桌面采集控制、Windows 真机安装、正式系统签名需单独验收。macOS 开发预览包使用本机临时签名。
+## Dashboard 与 SDK 依赖
 
-这是公司私有产品；基础框架和第三方组件保留其原许可证说明。详细结果见 [电脑端验证记录](verification/wanx-computer-client/README.md) 和 [此前产品管理验证](verification/wanx-admin-v1/README.md)。
+`make build-frontend` 将 Dashboard 构建到 `src/octop/dashboard/`；不再提供独立桌面构建模式。
+
+顶层 `vendor/centaurai-wanx-0.1.0-wanx.1-585a760033fa.tgz` 仍是 Dashboard 的本地依赖。`dashboard/src/api/modules/applications.ts` 和 `dashboard/src/pages/Admin/Applications/project.ts` 使用其 `centaurai-wanx/browser` 导出，负责应用管理协议和工程生成，因此不能随旧桌面端删除。SHA-256：`585a760033fafc8838553b3b1945e8e3949b53fbdedbf3580a477d900462026b`。
+
+适配层源码位于 `packages/wanx-client-adapter/`。wanx-client 的运行依赖位于自己的 `wanx-client/vendor/`。
+
+### 重建 Dashboard SDK
+
+需要 Node.js 22+、Go 1.24+、Python 3 和标准 SDK 私库读取权限。根目录 `npm run build` 会重建当前平台原生宿主、生成带摘要的 SDK 包、更新 Dashboard 的依赖和锁文件，并构建 Web 控制台；普通 Dashboard 构建直接使用已经提交的 SDK 包即可。
+
+```sh
+git clone --no-checkout --filter=blob:none --sparse https://codeup.aliyun.com/667637d76d5f7b05cc5d9ed7/nexusaos/nexusaos-centuarai-conn-sdks.git standard-sdk
+git -C standard-sdk sparse-checkout set go release/go-connectivity-sdk-0.2.0
+git -C standard-sdk checkout 6ff9bfa02f4df9df650a25e7378891d74dbd0b8b
+npm install --prefix packages/wanx-client-adapter
+npm ci --prefix dashboard
+npm run build
+npm test --prefix packages/wanx-client-adapter
+```
+
+该固定提交对应 Go SDK `0.2.0`、Core `0.1.1`，是私有适配层的来源基线，不是 wanx-client 内置 NetBird 引擎的版本。已提交包中的原生宿主为 macOS arm64；其他目标需分别构建和验收。第三方声明见 [适配层许可说明](../packages/wanx-client-adapter/THIRD_PARTY_NOTICES.md)。
+
+### SDK 来源与兼容性约束
+
+2026-10-08 的源码核对记录保存在 Git 提交 `daa4751` 中：当时标准 SDK 源码未修改，Go SDK `v0.2.0` 与 `p2p-core-go v0.1.1` 的 module ZIP 摘要与交付记录一致；该次核对未运行 SDK 测试或连接真实盒子。私有适配层不是标准 SDK 的正式发布。导入的 UI 基于 `7d84a9973a2e18b7083d4b21d68fe6332123765c`，包含当时已有的本地修改，不能据此视为纯净 Octop 上游快照。
+
+以下限制适用于该固定 SDK 基线及其适配层，不代表当前 wanx-client 的 NetBird、Host SDK 或 bridge 采用相同协议与限制：
+
+- 使用标准 SDK 的公开 HTTP、`OpenHTTPStream` 和 `OpenMessageStream` 接口，不修改内部身份或凭据函数以绕过兼容性问题。WebSocket 的 Bearer 请求头与服务端 query/首帧 token 认证必须逐版本核对，通过受支持的接口衔接。
+- 该版普通请求整体上限为 2 MiB，Go 路线当时没有上传流；不能由接口名称推断流式能力，也不能套用知君产品的大文件合同。当前 Host 上传与流式能力以 [Host 应用接入](wanx-host-app-integration.md) 为准。
+- 旧 Electron 通用包 `2.0.0` 声明 `stream:false`；知君 Electron 包使用 `zhijun-desktop / zhijun.workspace` 合同，不能直接替代万象通用客户端。
+- 固定 Go SDK 的 `OmniaBinding` 使用 `omnia-desktop`、`desktop_native`、`omnia.use` / `remote.p2p`、`nexusaos.p2p-app.v2` 与 `SOVEREIGN_DIRECT_ONLY`。这些产品身份和网络策略不能与知君或当前 NetBird 合同混用。知君交接文档中的 Gateway/ICE 主机只是环境线索，不能直接当作万象批准的发行配置。
+- 按固定提交配套的交付包、本地 module 安装器和摘要重建；当时交付文档声明远端 Go tag 未发布，不能假设 `go get` 能取得对应版本。源码核对、构建成功和模拟测试均不替代真实账号、设备、目标平台及发布验收。
+- 平台设备访问权不自动授予盒端管理员权限；UI 管理能力仍须由对应盒端身份、权限及路由许可判定。
+
+## 产品范围与模块边界
+
+完整功能范围继续遵循 [CLIENT_SCOPE.md](../CLIENT_SCOPE.md)。Octop 原有服务端、CLI、Dashboard、Wails 桌面壳、发布流程和测试保留；不能因 WANX 客户端没有调用就删除。
+
+- `wanx-client/` 管理平台账号、设备目录、发现、配网、认领、连接和应用生命周期。Electron 主进程以 `shell/entry.mjs` → `shell/main.mjs` 启动，加载 `local-ui/renderer/` 与 `local-ui/panel/`；renderer 只通过受限 preload 调用主进程。
+- 网络使用现有 NetBird/P2P runtime，不创建第二套网络客户端或账号会话。产品连接路径不得失败后回退系统 TCP 或未经验证的直连。设备身份按完整稳定 ID 核验，地址、名称及名称后缀不能代替身份和授权。
+- Dashboard 页面和资源由盒端提供。当前客户端经本机临时网关访问独立 `wanx-bridge`，应用通过 Host SDK 使用公开协议；旧规划中的“无代理、无应用网关、无应用商店”不再描述当前架构。现行协议见 [Host 应用接入](wanx-host-app-integration.md)。
+- 平台账号、设备总表、蓝牙与配网逻辑不进入 Octop 领域层；bridge 通过公共 HTTP/OIDC 接口衔接。不得读取 Octop 私有数据库或复制其业务逻辑。新专家应用缺少公开接口时应明确记录能力缺口，不能把 UI 定制当作后端能力已具备。
+- 原有 HTTP、WebSocket、SSE、Agent、工作区和业务权限保持边界。网络可达、平台登录、设备授权与 Octop 业务身份是不同验证步骤；平台密码不得下发盒子或复制平台用户表到 Octop。
+
+## 身份、隔离与交付约束
+
+- 平台私钥、刷新凭据和票据留在受保护的主进程/系统存储；Octop JWT 由 bridge 私有持有。长期 token 不放入 URL，不通过关闭证书校验、CORS 或浏览器安全机制解决接入问题。
+- 盒子 ID、Octop 用户、应用和 Agent 实例分别建立上下文；专家模板 ID 不等于 Agent 实例 ID。切盒、退出、撤权和会话失效应关闭旧流与 WebSocket、取消请求并隔离迟到响应；已有应用不能静默转向新盒子。
+- 用户的设备目录来自 Owner/Grant 授权，网络 peer 列表不能代替归属关系。撤权需要同时验证客户端入口、网络策略、bridge 会话及长连接失效，不能只隐藏按钮；未完成撤销应明确报告。
+- 发现、配网、认领和初始化属于独立流程。重复提交、超时、取消与恢复必须可观察；具体协议以 [设备发现研究](research-zhijun-device-discovery.md) 及当前 SDK 为依据，不保留 demo adapter 作为生产路径，也不宣称所有目标平台已验证。
+- 客户 Owner 的 Octop `admin` 身份不等于公司员工运维资格；独立运维授权链仍待实现，要求见 [公司运维与客户身份边界](wanx-admin-v1.md)。
+
+## 验收要求
+
+| 边界 | 必须验证的结果 |
+| --- | --- |
+| 账号与设备 | 登录/刷新/退出、设备目录和授权一致；发现身份、证书、网络可达与健康状态分开诊断。 |
+| 首次接入 | 发现、受验证身份、Wi-Fi、认领、初始化、取消和恢复流程有对应 SDK/平台证据；不凭扫描名称猜设备。 |
+| 传输与隔离 | HTTP、上传下载、SSE、WS 保持原协议，取消生效；盒子/用户/Agent 切换无旧响应串写。 |
+| Dashboard 与应用 | 正确身份和权限打开盒端页面；应用在正确上下文调用公开 API 并展示流式结果，缺失能力明确报告。 |
+| 撤权与部署 | 策略、短租约和会话失效联动；监听地址、证书、ACL、版本升级及公开接口兼容经过验证。 |
+| 发行 | 合成测试、构建、真实账号盒子、公网直连/relay、Windows 运行、签名与公证分别记录，不能相互替代。 |
+
+执行 `make all`、Dashboard TypeScript 检查及 `make build-frontend`；客户端执行 `npm test`，bridge 执行 `npm run test:bridge`。接口、设备与发布环境的验收依照当前部署文档，不沿用旧快照的测试数字作为完成证据。
+
+旧客户端快照、阶段规格和迁移过程可从 Git 的 `daa4751`、`3ea65fa` 查看；有效边界已归并到本文，当前操作说明以本文、wanx-client README 和对应专题文档为准。

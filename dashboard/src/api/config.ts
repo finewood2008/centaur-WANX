@@ -2,7 +2,6 @@ import {
   LAYOUT_MODE_KEY,
   MINIMAL_NAV_PANE_KEY,
 } from "../layouts/layoutModeStorage";
-import { isWanxDesktopClient } from "../utils/desktopClient";
 declare const BASE_URL: string;
 // Set before AuthGuard, so even the first login request targets this box.
 if (
@@ -23,9 +22,7 @@ if (
  */
 export function getApiUrl(path: string): string {
   const base =
-    isWanxDesktopClient() || localStorage.getItem("wanx:remote-client") === "1"
-      ? ""
-      : BASE_URL || "";
+    localStorage.getItem("wanx:remote-client") === "1" ? "" : BASE_URL || "";
   const apiPrefix = "/api";
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${base}${apiPrefix}${normalizedPath}`;
@@ -40,9 +37,7 @@ export function getApiUrl(path: string): string {
  */
 export function getWsUrl(path: string): string {
   const base =
-    isWanxDesktopClient() || localStorage.getItem("wanx:remote-client") === "1"
-      ? ""
-      : BASE_URL || "";
+    localStorage.getItem("wanx:remote-client") === "1" ? "" : BASE_URL || "";
   const apiPrefix = "/api";
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   const httpUrl = `${base}${apiPrefix}${normalizedPath}`;

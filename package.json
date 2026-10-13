@@ -1,5 +1,5 @@
 {
-  "name": "wanx-desktop-workspace",
+  "name": "wanx-workspace",
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
@@ -11,9 +11,9 @@
     "package:client:windows": "npm --prefix wanx-client run package:windows",
     "test:bridge": "uv run pytest -c wanx-bridge/pyproject.toml wanx-bridge/tests -q",
     "build": "node tools/build.mjs",
-    "test": "npm --prefix packages/wanx-client-adapter test && npm --prefix wanx-desktop test",
-    "start": "npm --prefix wanx-desktop start",
-    "package:mac": "npm --prefix wanx-desktop run package:mac",
-    "package:windows": "npm --prefix wanx-desktop run package:windows"
+    "test": "npm run test:client",
+    "start": "npm run start:client",
+    "package:mac": "npm run package:client:mac",
+    "package:windows": "npm run package:client:windows"
   }
 }

@@ -35,7 +35,7 @@ describe("sidebarNavLayout", () => {
     expect(sectionsFromLayout(sections, null)).toBe(sections);
     const editor = editorFromCatalog(sections, null);
     expect(editor.ungrouped).toEqual([
-      "boxes",
+      "applications",
       "chat",
       "experts",
       "tasks",
@@ -69,10 +69,7 @@ describe("sidebarNavLayout", () => {
       "settings",
       "control",
     ]);
-    expect(applied[0]?.items.map((item) => item.key)).toEqual([
-      "boxes",
-      "chat",
-    ]);
+    expect(applied[0]?.items.map((item) => item.key)).toEqual(["chat"]);
     expect(applied[1]?.title).toBe("配置");
     expect(applied[1]?.items.map((item) => item.key)).toEqual([
       "personalization",
@@ -81,20 +78,21 @@ describe("sidebarNavLayout", () => {
     expect(applied[2]?.groupKey).toBe("nav.control");
   });
 
-  it("adds box management to older layouts while respecting an explicit hidden choice", () => {
-    const oldLayout = { groups: [], items: [{ key: "chat" }] };
-    expect(editorFromCatalog(catalog(), oldLayout).ungrouped).toEqual([
-      "boxes",
-      "chat",
-    ]);
-    const hiddenLayout = {
-      groups: [],
-      items: [{ key: "chat" }, { key: "boxes", hidden: true }],
-    };
-    const editor = editorFromCatalog(catalog(), hiddenLayout);
-    expect(editor.ungrouped).toEqual(["chat"]);
-    expect(editor.hidden).toContain("boxes");
-  });
+  it.each([false, true])(
+    "drops retired box entries from saved layouts (hidden=%s)",
+    (hidden) => {
+      const layout = {
+        groups: [],
+        items: [{ key: "chat" }, { key: "boxes", hidden }],
+      };
+      const editor = editorFromCatalog(catalog(), layout);
+      expect(editor.ungrouped).toEqual(["chat"]);
+      expect(editor.hidden).not.toContain("boxes");
+      expect(
+        layoutFromEditor(editor).items.some((item) => item.key === "boxes"),
+      ).toBe(false);
+    },
+  );
 
   it("keeps an explicitly hidden memory entry hidden", () => {
     const editor = editorFromCatalog(catalog(), {
@@ -113,7 +111,7 @@ describe("sidebarNavLayout", () => {
       groups: [{ id: "settings" }],
       items: [{ key: "chat" }],
     });
-    expect(editor.ungrouped).toEqual(["boxes", "chat"]);
+    expect(editor.ungrouped).toEqual(["chat"]);
     expect(editor.hidden).toContain("experts");
     expect(editor.hidden).toContain("personalization");
     expect(
@@ -142,7 +140,7 @@ describe("sidebarNavLayout", () => {
     const editor = editorFromCatalog(catalog(), null);
     const moved = placeItem(editor, "tasks", { kind: "ungrouped" }, "chat");
     expect(moved.ungrouped.slice(0, 4)).toEqual([
-      "boxes",
+      "applications",
       "tasks",
       "chat",
       "experts",

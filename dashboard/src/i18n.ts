@@ -69,7 +69,6 @@ async function hydrateSkillLabels(lng: string) {
 }
 
 async function hydrateServerLabels(lng: string) {
-  if (window.wanxDesktop && !window.wanxDesktop.sessionToken()) return;
   if (await isSetupRequired()) return;
   await Promise.all([hydrateToolLabels(lng), hydrateSkillLabels(lng)]);
 }

@@ -58,7 +58,7 @@ wanx-client/
 ├── network/            内置进程管理、NDJSON 控制、专用 CONNECT Agent
 ├── native/             Go P2P 用户态引擎、设备授权、受限隧道服务
 ├── shell/              Electron、受限 IPC、独立临时浏览器会话
-├── fleet/              万象账号、P2P 开关、我的盒子和开发连接
+├── local-ui/           应用首页、菜单栏面板、账号与盒子设置
 ├── octop/              盒端会话兑换、健康检查与 HTTP/SSE/WebSocket 代理
 ├── tools/              引擎编译、首次源码启动检查
 └── tests/              网络、生命周期、代理、授权及窗口回归
@@ -118,7 +118,7 @@ npm --prefix wanx-client run package:windows
 
 引擎输出到忽略版本控制的 `native/bin/`；electron-builder 按目标平台/架构把对应引擎复制到应用的 `resources/network/`。构建同时收集模块版本与许可证文件。没有发布签名证书时，本机验证产物不等同于已签名、公证的正式安装包。
 
-网络引擎依赖基线为 `0.80.0`、Electron `37.10.3`；具体第三方模块与许可证随构建产物保留。WANX 基线 `6563103` / Octop `1.0.2b4`。不会读取 Octop 数据库、导入 Python 私有模块，或依赖即将退役的 `nexusaos-app`。旧 `wanx-desktop/`、`wanx-admin-desktop/` 和共享 Dashboard 保留原实现。
+网络引擎依赖基线为 `0.80.0`、Electron `37.10.3`；具体第三方模块与许可证随构建产物保留。WANX 基线 `6563103` / Octop `1.0.2b4`。不会读取 Octop 数据库、导入 Python 私有模块，或依赖即将退役的 `nexusaos-app`。旧 `wanx-desktop/`、`wanx-admin-desktop/` 已删除；Dashboard 作为盒端控制台保留，盒子管理统一在本客户端完成。
 
 ## 验证边界
 
