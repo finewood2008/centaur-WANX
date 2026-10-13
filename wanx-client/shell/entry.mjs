@@ -1,6 +1,6 @@
 import { app } from "electron";
 import path from "node:path";
-import { launchInstalledApplication } from "./installed-application.mjs";
+import { launchInstalledApplication } from "../applications/runtime.mjs";
 
 // A packaged executable always loads its own package.main. Dispatch hosted
 // applications before the Host claims its single-instance lock or starts P2P.

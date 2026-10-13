@@ -78,7 +78,7 @@ const host = fromEnvironment(); // 后续业务通过 host.context/request/openS
 | `WANX_HOST_LAUNCH_ID` | 每次启动的新会话 ID |
 | `WANX_HOST_USER_DATA_DIR` | 独立运行时应用的数据目录，由 Electron helper 在启动早期设置 |
 
-迁移期间 Host 同时保留 `WANX_HOST_SOCKET` 和旧 NDJSON IPC。新版知君只使用 `http-v1`；旧 Host 启动新版知君会报协议不支持，不能降级到 LAN。令牌只在应用主进程使用，不传入 URL、renderer、磁盘、日志或打包配置。
+应用 Host 通道仅使用 `http-v1`，不再提供 `WANX_HOST_SOCKET` 或旧应用 Host NDJSON。应用启动的 ready / failed / activate 子进程 IPC、控制页面 IPC 和网络 sidecar 的私有 NDJSON 保留。旧 Host 启动新版知君会报协议不支持，不能降级到 LAN。令牌只在应用主进程使用，不传入 URL、renderer、磁盘、日志或打包配置。
 
 ## HTTP 协议与轻量 SDK
 
@@ -97,7 +97,7 @@ if (host) {
 
 业务 HTTP 方法、`/api/...` 路径、JSON、multipart 字节、响应状态和业务数据保持原协议。SDK 返回标准 `Response`，SSE 增量读取；WebSocket 用 `openStream('/api/agents/{id}/chat/ws')` 返回连接中的 `ws`，立即安装 `open/message/error/close` 处理器。支持取消请求；不会自动重放写操作或跟随重定向。上传上限 32 MiB，multipart 的编码与 boundary 由调用方保持。
 
-不使用 SDK 也可在主进程用 `baseURL + /api/...` 和 `Authorization: Bearer <WANX_HOST_TOKEN>`。`GET /__wanx/context` 读取启动时绑定的用户及盒子；`GET /__wanx/events` 是 SSE，提供 `connection`（ready/recovering）和 `invalidated` 事件。当前 HTTP 网关与旧 NDJSON IPC 均不按应用 capability 限制访问，持有效启动凭证的应用可使用已有上下文、HTTP/SSE 和聊天 WS 通道；业务权限仍由盒端按当前用户校验。
+不使用 SDK 也可在主进程用 `baseURL + /api/...` 和 `Authorization: Bearer <WANX_HOST_TOKEN>`。`GET /__wanx/context` 读取启动时绑定的用户及盒子；`GET /__wanx/events` 是 SSE，提供 `connection`（ready/recovering）和 `invalidated` 事件。当前 HTTP 网关不按应用 capability 限制访问，持有效启动凭证的应用可使用已有上下文、HTTP/SSE 和聊天 WS 通道；业务权限仍由盒端按当前用户校验。
 
 网关只绑定 loopback，校验 Host、拒绝浏览器 Origin 和跨站请求，不提供 CORS。只允许盒端 `/api/` 和当前聊天 WS 路径；应用不能指定其他目标、提交 URL token 或注入盒端认证头。Host 使用既有盒端会话替换认证，并移除 cookie、access-token、redirect 等敏感响应头。它是可信桌面应用的接入通道，并非对任意本机恶意进程的操作系统沙箱。
 
@@ -109,9 +109,11 @@ if (host) {
 | 切换盒子、断开、关闭网络、退出账号 | 撤销旧 launch，取消 HTTP/SSE/WS，通知失效 | 清空当前身份与业务会话，回万象重新打开 |
 | 盒端会话过期或返回 401 | `HOST_SESSION_EXPIRED` / HTTP 401，撤销整个 launch | 同上 |
 | Host 退出或事件通道中断 | SDK 将会话标记失效并停止请求 | 同上 |
-| 应用退出 | launcher 回收网关、token 和旧 IPC | 无凭证持久化 |
+| 应用退出 | launcher 关闭启动会话，回收 HTTP listener、token 和流 | 无凭证持久化 |
 
 网关错误用 `X-Wanx-Error` 标识，SDK 转为带 `code` 的 Error；其余业务响应仍是 `Response`。安全隔离由 Host 强制执行，应用不处理通知也无法继续访问。重连同一台盒子也不能恢复旧 launch；不能把旧请求自动转给新盒子。
+
+Host 的启动会话由 `wanx-client/app-host/session.mjs` 管理，公开 `launchId`、`environment`、`assertLive()` 和 `close()`。自然失效只撤销权限、取消操作并通知 SDK，保留本地监听器，使后续持原凭证的请求收到 `401 HOST_SESSION_EXPIRED`；launcher 最终调用 `close()` 时先同步撤销，再异步关闭本地监听器、流和心跳。会话不负责结束应用进程或关闭共享盒子连接，关闭完成也不意味着盒端已执行的远端操作被撤回。SDK 自身的 `close()` 只清理客户端资源，不撤销 Host 会话。
 
 ## 知君接入
 

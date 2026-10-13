@@ -62,6 +62,8 @@ wanx-client/
 └── tests/              网络、生命周期、代理、授权及窗口回归
 ```
 
+`local-ui/renderer/discovery-selection.js` 管理设备发现与选择，提供 `start / choose / reset / dispose`；通过回调交付展示快照、提示和选中的候选。扫描与重选在点击调用栈内同步触发蓝牙 chooser，12 秒扫描超时仍由现有 transport/picker 处理；非空结果保留 2 分钟，重选失败不续期，到期会取消仍在进行的重选。`reset` 清理选择并隔离迟到结果，`dispose` 额外解除 Discovery 订阅，不关闭共享 GATT transport。页面、Wi-Fi 表单及 `wanxSetup` 配网编排仍由 renderer 和现有主进程实现负责；返回设置只清理选择，显式取消才调用配网取消。
+
 `createNetwork()` 提供 `snapshot / subscribe / setEnabled / refresh / resolveEndpoint / login / enroll / close`。默认 disabled，不启动子进程。内置引擎使用应用自己的配置目录、peer 私钥和随机网络端口，不读取或控制系统网络客户端 服务。
 
 启用后每 1 秒通过本地 IPC 读取引擎状态，状态不变时不通知界面，关闭后停止轮询。这会将原来最多约 15 秒的状态显示滞后缩短到约 1 秒，不增加平台接口请求频率。该时间不包含切换 Wi-Fi/手机热点后的隧道重建、网络检测和重试耗时，不能视为跨网络连接的总恢复时间。源码修改后须重新启动客户端；已安装版本需要更新客户端包，单独更新盒子不会生效。

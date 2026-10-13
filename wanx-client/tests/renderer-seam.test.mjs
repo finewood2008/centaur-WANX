@@ -6,7 +6,11 @@ import { EventEmitter } from "node:events";
 import { installElectronBluetoothPicker } from "@nexusaos/device-discovery-electron/main";
 import { registerControlActions } from "../shell/control.mjs";
 
-const source = await readFile(new URL("../local-ui/renderer/renderer.js", import.meta.url), "utf8");
+const indexURL = new URL("../local-ui/renderer/index.html", import.meta.url);
+const html = await readFile(indexURL, "utf8");
+const rendererScripts = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)]
+  .map(match => match[1]).filter(src => src !== "./device-setup.bundle.js");
+const source = (await Promise.all(rendererScripts.map(src => readFile(new URL(src, indexURL), "utf8")))).join("\n");
 const preload = await readFile(new URL("../local-ui/remote-preload.cjs", import.meta.url), "utf8");
 const transportBundle = await readFile(new URL("../local-ui/renderer/device-setup.bundle.js", import.meta.url), "utf8");
 const application = { applicationId: "centaurai.wanx.zhijun", name: "知君", version: "0.4.3", description: "你的私人空间" };
@@ -118,6 +122,7 @@ async function harness(initial = state(), installed = [application], options = {
   return {
     app, calls, launches, dashboards,
     nearby(value) { nearby = value; },
+    chooser() { return chooser; },
     failLaunch(code) { launchError = code; },
     navigate(page) { listeners.get("wanx-client:navigate")({}, page); },
     window,
@@ -440,6 +445,50 @@ test("a missing retained target never selects a different box with the same name
   assert.match(h.app.innerHTML, /确认设备身份/);
 });
 
+test("failed reselection keeps the first result expiry in the rendered flow", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning"); await h.click("start-provisioning");
+  await new Promise(resolve => setImmediate(resolve));
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  t.mock.timers.tick(12000);
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(60000);
+  h.nearby([]);
+  await h.click("select-candidate", { candidateId });
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(12000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /未能连接所选盒子/);
+  assert.match(h.app.innerHTML, /Test box/);
+  t.mock.timers.tick(48000);
+  assert.match(h.app.innerHTML, /扫描结果已过期/);
+  assert.doesNotMatch(h.app.innerHTML, /Test box/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+});
+
+test("result expiry cancels in-progress reselection without starting setup", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning"); await h.click("start-provisioning");
+  await new Promise(resolve => setImmediate(resolve));
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  t.mock.timers.tick(12000);
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(119999);
+  h.nearby([]);
+  await h.click("select-candidate", { candidateId });
+  await new Promise(resolve => setImmediate(resolve));
+  const lateChooser = h.chooser();
+  assert.match(h.app.innerHTML, /data-candidate-id="[^"]+" disabled/);
+  t.mock.timers.tick(1);
+  lateChooser("provider-1");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /扫描结果已过期/);
+  assert.doesNotMatch(h.app.innerHTML, /Test box|未能连接所选盒子/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+});
+
 for (const leave of ["back-devices", "logout"]) {
   test(`${leave} revokes scan results and a late chooser cannot start setup`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
@@ -447,8 +496,10 @@ for (const leave of ["back-devices", "logout"]) {
     await h.click("provisioning");
     await h.click("start-provisioning");
     await new Promise((resolve) => setImmediate(resolve));
+    const lateChooser = h.chooser();
     if (leave === "logout") h.update({ account: { phase: "signed_out" } });
     else await h.click(leave);
+    lateChooser("provider-1");
     await new Promise((resolve) => setImmediate(resolve));
     t.mock.timers.tick(132000);
     assert.doesNotMatch(h.app.innerHTML, /Test box|扫描结果已过期/);
