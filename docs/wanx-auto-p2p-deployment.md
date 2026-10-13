@@ -4,6 +4,43 @@
 
 ## 1. 部署范围与依赖
 
+### 知识库随盒子镜像预装
+
+知识库默认配置由 WANX 独立部署层负责，不修改 Octop 的源码、上游 Dockerfile、
+数据库或运行时函数。正式盒子发行链路 `centuarai-os/scripts/box.sh` 使用 OS 仓库的
+`deployment/docker/wanx.Dockerfile`；需要同时使用本次 WANX bridge 和 OS 构建配方。
+
+镜像构建安装 `local-embedding` 依赖，调用
+`python -m wanx_bridge.knowledge_bundle prefetch --cache-dir /app/embedding_models`，
+预装 `BAAI/bge-small-zh-v1.5` 文本向量模型。随后以实际运行用户 UID 10003，
+在 `RUN --network=none` 中执行真实编码校验；模型不完整或不能离线编码时构建失败。
+模型与依赖属于盒子镜像，不加入知君 `.wanxapp` 或电脑端安装包。
+
+镜像用 `WANX_BUNDLED_EMBEDDING_MODELS_DIR` 指定预装目录，挂载空 `/data` 不会遮蔽它。
+WANX 入口在 Octop 初始化完成后，把完整模型缓存原子复制到
+`OCTOP_HOME/embedding_models`，供未修改的 Octop 按原有逻辑读取；已有同名模型不覆盖。
+复制过程中断或校验失败不会留下可见的半成品目录。
+
+新安装时，WANX 在自己的数据目录创建 `.wanx-knowledge-pending` 标记。启动 Octop 后，
+独立的 `wanx_bridge.knowledge_bootstrap` 通过 loopback 上的现有公开 API 检查依赖、
+测试模型、启用知识库、回读确认可用，成功后删除标记，才继续启动公共 bridge。
+失败保留标记并使容器启动失败，以便排查、重试。SSO 关闭的部署也走同样的初始化流程。
+初始化外部标记用于识别首次建库中断；凭据尚未保存的异常情况要求恢复，不重置密码。
+
+已有安装没有 pending 标记，升级不会自动启用知识库，也不覆盖运维保存的关闭状态、
+远程配置、模型或 OCR 参数。已有盒子仍需运维通过现有知识库 API 显式配置。
+本次默认包含文本向量模型，图片/扫描件 OCR 仍为独立可选能力。
+
+构建和部署后核对：
+
+```bash
+python -m wanx_bridge.knowledge_bundle verify --cache-dir /app/embedding_models
+```
+
+在真实登录会话读取 `GET /api/knowledge-bases/capability`，新安装应返回
+`feature_enabled=true`、`prerequisites_ok=true`、`usable=true`，默认模型为上述 BGE 模型。
+`POST /api/knowledge-bases/onnx-test` 应返回 `ok=true`、`dim=512`。
+
 整条链路依赖以下部分：
 
 | 位置           | 实现                                                                                   | 必需条件                                                                          |
