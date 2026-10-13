@@ -82,6 +82,17 @@ uv run pytest -c wanx-bridge/pyproject.toml wanx-bridge/tests -q
 
 测试包含签名与重放、租约、流式代理、OIDC 以及未修改 Octop 的真实公共接口合同。`test_upstream.py` 的真实 Octop fixture 使用仓库测试工具；它是测试依赖，不是 standalone 包运行依赖。单独安装 bridge 包并不包含该完整合同测试环境。
 
+进程内扩展 `wanx_runtime` 随同 wheel 分发，但由盒端上游进程加载；HTTP bridge
+不导入它。其测试单独放在 `runtime-tests/`，必须使用 WANX 根目录的 Octop 环境：
+
+```sh
+uv run --no-sync pytest -c wanx-bridge/pyproject.toml wanx-bridge/runtime-tests -q
+```
+
+这组测试验证真实 JWT、产品授权及撤权、同用户 scope 兑换、有效期上限，以及上游
+TLS 双监听和后台任务的启动/关闭。仅安装 standalone bridge 的环境不要运行这组测试；
+它不属于 `wanx-bridge/tests/`，不通过跳过缺失 Octop 依赖伪装验证通过。
+
 OS 仓库另运行：
 
 ```sh

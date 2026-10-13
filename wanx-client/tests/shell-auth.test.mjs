@@ -16,6 +16,7 @@ function harness() {
       "sendSMS",
       "logout",
       "refreshDevices",
+      "listOwnershipTransfers", "sendTransferCode", "createOwnershipTransfer", "acceptOwnershipTransfer",
       "connectBox",
       "connect",
       "disconnect",
@@ -169,4 +170,18 @@ test("IPC matches Consumer phone, six-digit SMS and UTF-8 password byte limits",
   assert.equal(h.calls[0][1].password, password);
   h.invoke("login-sms", { phone: "13800000000", code: "000001" });
   assert.equal(h.calls[1][1].code, "000001");
+});
+
+
+test("ownership IPC requires explicit retention and excludes forged owner identity", () => {
+  const h = harness();
+  const input = { deviceId: "box-one", targetPhone: "13900139000", verificationCode: "012345", retainData: true, ownerPhone: "forged" };
+  h.invoke("ownership-create", input);
+  h.invoke("ownership-accept", { transferId: "transfer-one", retainData: true, deviceId: "forged" });
+  assert.deepEqual(h.calls, [
+    ["createOwnershipTransfer", { deviceId: input.deviceId, targetPhone: input.targetPhone, verificationCode: input.verificationCode, retainData: true }],
+    ["acceptOwnershipTransfer", { transferId: "transfer-one", retainData: true }],
+  ]);
+  assert.throws(() => h.invoke("ownership-create", { ...input, retainData: false }), /ACCOUNT_INVALID_INPUT/);
+  assert.throws(() => h.invoke("ownership-accept", { transferId: "transfer-one" }), /ACCOUNT_INVALID_INPUT/);
 });

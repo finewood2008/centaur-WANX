@@ -105,6 +105,22 @@ export function registerControlActions({
   });
   register("logout", () => { uiState?.invalidateOpen(); return client.logout(); });
   register("refresh-devices", () => client.refreshDevices());
+  register("ownership-list", () => client.listOwnershipTransfers());
+  register("ownership-send-code", () => client.sendTransferCode());
+  register("ownership-create", (input) => {
+    if (input?.retainData !== true) throw new Error("ACCOUNT_INVALID_INPUT");
+    const verificationCode = text(input?.verificationCode, 6, "invalid_sms_code");
+    if (!/^\d{6}$/.test(verificationCode)) throw new Error("invalid_sms_code");
+    uiState?.invalidateOpen();
+    return client.createOwnershipTransfer({ deviceId: text(input?.deviceId, 128, "invalid_device"),
+      targetPhone: phone({ phone: input?.targetPhone }), verificationCode, retainData: true });
+  });
+  register("ownership-accept", (input) => {
+    if (input?.retainData !== true) throw new Error("ACCOUNT_INVALID_INPUT");
+    uiState?.invalidateOpen();
+    return client.acceptOwnershipTransfer({ transferId: text(input?.transferId, 128, "ACCOUNT_INVALID_INPUT"), retainData: true });
+  });
+
   register("connect-box", (deviceId) => {
     const id = text(deviceId, 128, "invalid_device");
     uiState?.invalidateOpen();

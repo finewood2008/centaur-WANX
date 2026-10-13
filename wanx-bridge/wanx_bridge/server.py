@@ -250,6 +250,17 @@ def create_app(
             await _call(auth.exchange, grant, adapter), headers={"Cache-Control": "no-store"}
         )
 
+    @app.post("/api/auth/platform/application")
+    async def application_session(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        body = await _body(request)
+        if set(body) != {"application_id"} or not isinstance(body["application_id"], str):
+            raise _error("BOX_PLATFORM_INVALID_REQUEST", 400)
+        return JSONResponse(
+            await _call(auth.application_session, marker, body["application_id"], adapter),
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/api/platform/assets/manifest")
     async def asset_manifest(request: Request) -> JSONResponse:
         marker = _credentials(request.headers, request.query_params, required=True)

@@ -59,6 +59,17 @@ export function consumerSignature({
   };
 }
 
+const ownershipId = (value) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(value);
+function transferView(value) {
+  if (!value || !ownershipId(value.transferId) || !ownershipId(value.deviceId) ||
+      !["incoming", "outgoing"].includes(value.direction) ||
+      !["pending_target", "completed", "expired", "cancelled", "revoked"].includes(value.state) ||
+      typeof value.retainData !== "boolean" || !Number.isSafeInteger(value.ownershipEpoch) ||
+      value.ownershipEpoch < 1 || !Number.isFinite(Date.parse(value.expiresAt)))
+    throw failure("ACCOUNT_INVALID_RESPONSE");
+  return Object.fromEntries(["transferId", "deviceId", "direction", "state", "retainData", "ownershipEpoch", "expiresAt", "createdAt", "completedAt"].map(key => [key, value[key]]));
+}
+
 function newIdentity() {
   const keys = generateKeyPairSync("ec", {
     namedCurve: "prime256v1",
@@ -335,7 +346,9 @@ export function createAccount({
             : path.startsWith("/app-api/market/") && remoteCode === "APPLICATION_RETIRED"
             ? remoteCode
             : typeof remoteCode === "string" &&
-              /^(NETWORK|SSO|OMNIA|MARKET)_[A-Z0-9_]{1,64}$/.test(remoteCode)
+              /^(NETWORK|SSO|OMNIA|MARKET|OWNERSHIP)_[A-Z0-9_]{1,64}$/.test(remoteCode)
+            ? remoteCode
+            : path.includes("/ownership/") && remoteCode === "SMS_CODE_INVALID"
             ? remoteCode
             : path.startsWith("/app-api/auth/") && ["SMS_RATE_LIMITED", "SMS_DAILY_LIMIT", "SMS_CODE_INVALID", "PASSWORD_ALREADY_SET", "PASSWORD_WEAK", "PASSWORD_INVALID", "PASSWORD_NOT_SET"].includes(remoteCode)
             ? remoteCode
@@ -556,6 +569,51 @@ export function createAccount({
         epoch,
       );
       return { expiresIn: Number(result?.expiresIn) || 300 };
+    },
+    async listOwnershipTransfers() {
+      const data = await request({ path: "/app-api/ownership/transfers" });
+      if (!Array.isArray(data)) throw failure("ACCOUNT_INVALID_RESPONSE");
+      return data.map(transferView);
+    },
+    async sendTransferCode() {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      return wire({ method: "POST", path: "/app-api/auth/sms/send",
+        body: { phone: record.phone, scene: "consumer_login" }, authenticated: false }, epoch).then(() => ({ expiresIn: 300 }));
+    },
+    async createOwnershipTransfer({ deviceId, targetPhone, verificationCode, retainData } = {}) {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (!ownershipId(deviceId) || !/^1\d{10}$/.test(targetPhone || "") ||
+          !/^\d{6}$/.test(verificationCode || "") || retainData !== true)
+        throw failure("ACCOUNT_INVALID_INPUT");
+      if (targetPhone === record.phone) throw failure("OWNERSHIP_TARGET_SELF");
+      const generation = epoch, ownerPhone = record.phone;
+      const owned = await request({ path: "/app-api/devices" });
+      assert(generation);
+      if (!Array.isArray(owned)) throw failure("ACCOUNT_INVALID_RESPONSE");
+      if (!owned.some(item => item.deviceId === deviceId && item.role === "owner" && item.status === "active"))
+        throw failure("OWNERSHIP_OWNER_REQUIRED");
+      const value = transferView(await request({ method: "POST",
+        path: `/app-api/devices/${deviceId}/ownership/transfer`,
+        body: { ownerPhone, verificationCode, targetPhone, retainData: true } }));
+      assert(generation);
+      if (value.deviceId !== deviceId || value.direction !== "outgoing" || !value.retainData)
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      return value;
+    },
+    async acceptOwnershipTransfer({ transferId, retainData } = {}) {
+      if (!ownershipId(transferId) || retainData !== true) throw failure("ACCOUNT_INVALID_INPUT");
+      const generation = epoch;
+      const data = await request({ path: "/app-api/ownership/transfers" });
+      assert(generation);
+      if (!Array.isArray(data)) throw failure("ACCOUNT_INVALID_RESPONSE");
+      const transfer = data.map(transferView).find(item => item.transferId === transferId);
+      if (!transfer || transfer.direction !== "incoming" || transfer.state !== "pending_target" ||
+          !transfer.retainData || Date.parse(transfer.expiresAt) <= now()) throw failure("OWNERSHIP_TRANSFER_UNAVAILABLE");
+      const value = transferView(await request({ method: "POST", path: `/app-api/ownership/transfers/${transferId}/accept` }));
+      assert(generation);
+      if (value.transferId !== transferId || value.deviceId !== transfer.deviceId || value.direction !== "incoming" ||
+          value.state !== "completed" || !value.retainData) throw failure("ACCOUNT_INVALID_RESPONSE");
+      return value;
     },
     async listDevices() {
       const generation = epoch;

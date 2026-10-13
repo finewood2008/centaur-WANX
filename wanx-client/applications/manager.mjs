@@ -51,7 +51,7 @@ export async function createApplicationManager({
           hostApplicationId: applicationId,
           applicationId: record.applicationId,
           installPath: record.installPath,
-          createConnection: async () => await createConnection?.() || { context, request, openStream: stream },
+          createConnection: async () => await createConnection?.(record.applicationId) || { context, request, openStream: stream },
           signal,
         });
       },

@@ -229,6 +229,60 @@ class PlatformAuthService:
             "user": user,
         }
 
+    async def application_session(
+        self, marker: str, application_id: str, adapter: Any
+    ) -> dict[str, Any]:
+        """Derive an opaque application token under the same revocable platform lease."""
+        parent = self.authorize(marker)
+        if (
+            application_id != "super-advisory"
+            or parent.user.get("application_id", "wanx") != "wanx"
+        ):
+            raise BridgeAuthError("BOX_APPLICATION_SCOPE_FORBIDDEN", 403)
+        # Bound concurrent issuance and memory without extending the parent authority.
+        async with self._exchange_lock:
+            self.authorize(marker)
+            self.sessions = {k: v for k, v in self.sessions.items() if v.expires_at > time.time()}
+            if len(self.sessions) >= 4096:
+                raise BridgeAuthError("BOX_PLATFORM_BUSY", 429)
+            upstream = await adapter.application_session(parent.upstream_token, application_id)
+            user, token, expires_at = (
+                upstream.get("user"),
+                upstream.get("access_token"),
+                upstream.get("expires_at"),
+            )
+            if (
+                not isinstance(user, dict)
+                or type(user.get("id")) is not int
+                or user.get("id") != parent.user.get("id")
+                or user.get("role") != parent.user.get("role")
+                or user.get("application_id") != application_id
+                or not isinstance(token, str)
+                or not token
+                or type(expires_at) not in (int, float)
+                or not math.isfinite(expires_at)
+            ):
+                raise BridgeAuthError("BOX_APPLICATION_SESSION_INVALID", 502)
+            self.authorize(marker)
+            expires_at = min(parent.expires_at, parent.upstream_expires_at, expires_at)
+            if expires_at <= time.time():
+                raise BridgeAuthError("BOX_PLATFORM_SESSION_EXPIRED")
+            opaque = secrets.token_urlsafe(48)
+            self.sessions[hashlib.sha256(opaque.encode()).hexdigest()] = Session(
+                token,
+                user,
+                parent.sid,
+                parent.key,
+                expires_at,
+                min(parent.upstream_expires_at, upstream["expires_at"]),
+            )
+            return {
+                "access_token": opaque,
+                "token_type": "Bearer",
+                "expires_in": max(1, int(expires_at - time.time())),
+                "user": user,
+            }
+
     def authorize(self, token: str) -> Session:
         if not isinstance(token, str) or len(token) > 256:
             raise BridgeAuthError()

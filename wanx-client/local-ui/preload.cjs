@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
   begin: (candidate) => setupCall("begin", candidate),
   resume: (input = {}) => setupCall("resume", input),
   confirmPhysical: () => setupCall("confirmPhysical"),
+  scanWifi: () => setupCall("scanWifi"),
   wifi: (input) => setupCall("wifi", input),
   confirmOwnership: () => setupCall("confirmOwnership"),
   refresh: () => setupCall("refresh"),

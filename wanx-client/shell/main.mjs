@@ -217,7 +217,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         context: () => client.applicationContext(),
         request: (input) => client.applicationRequest(input),
         stream: (input) => client.applicationStream(input),
-        createConnection: () => client.applicationConnection(),
+        createConnection: (applicationId) => client.applicationConnection(applicationId),
         trustedKeys,
         launcherArgs: [
           ...(app.isPackaged ? [] : [app.getAppPath()]),

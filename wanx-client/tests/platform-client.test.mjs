@@ -1265,3 +1265,44 @@ test('application connection seam: box-session expiry cannot be revived by recon
   assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
   assert.equal((await h.client.applicationConnection()).context().boxId,'box-1');
 });
+
+test("ownership transfer closes the selected box and refreshes authoritative access", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  await h.client.connectBox("box-1");
+  h.account.createOwnershipTransfer = async input => ({ deviceId: input.deviceId, state: "pending_target", direction: "outgoing" });
+  const result = await h.client.createOwnershipTransfer({ deviceId: "box-1" });
+  assert.equal(result.state, "pending_target");
+  assert.equal(result.refreshRequired, false);
+  assert.equal(h.sessions[0].closed, true);
+  assert.notEqual(h.client.snapshot().phase, "ready");
+  assert.equal(h.client.snapshot().devices.length, 1, "owner remains owner while recipient has not accepted");
+});
+
+test("accepting ownership refreshes newly owned boxes even with P2P disabled", async t => {
+  const h = harness(t, { enabled: false });
+  h.catalog([]);
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  h.account.acceptOwnershipTransfer = async () => {
+    h.catalog([{ ...device, ownershipEpoch: 2 }]);
+    return { deviceId: "box-1", state: "completed", ownershipEpoch: 2 };
+  };
+  const value = await h.client.acceptOwnershipTransfer({ transferId: "transfer-1", retainData: true });
+  assert.equal(value.state, "completed");
+  assert.equal(value.refreshRequired, false);
+  assert.equal(h.client.snapshot().devices[0].deviceId, "box-1");
+});
+
+test("late ownership completion cannot refresh or disconnect a newly logged-in account", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  const pending = deferred();
+  h.account.acceptOwnershipTransfer = () => pending.promise;
+  const accepting = h.client.acceptOwnershipTransfer({ transferId: "transfer-1" });
+  await h.client.logout();
+  await h.client.loginPassword({ phone: "13800000002", password: "test" });
+  await h.client.connectBox("box-1");
+  pending.resolve({ deviceId: "box-1", state: "completed" });
+  await assert.rejects(accepting, { code: "ACCOUNT_CANCELLED" });
+  assert.equal(h.client.snapshot().phase, "ready");
+});

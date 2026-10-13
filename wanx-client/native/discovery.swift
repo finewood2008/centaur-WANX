@@ -45,6 +45,7 @@ private final class DiscoveredBox {
     var disconnecting = false
     var reading = false
     var timeout: DispatchWorkItem?
+    var timeoutGeneration = 0
 
     init(_ peripheral: CBPeripheral) { self.peripheral = peripheral }
 }
@@ -130,11 +131,23 @@ private final class BoxDiscovery: NSObject, CBCentralManagerDelegate, CBPeripher
             guard let box = boxes[id] else { continue }
             active.insert(id)
             box.peripheral.delegate = self
-            let timeout = DispatchWorkItem { [weak self] in self?.disconnect(id) }
-            box.timeout = timeout
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timeout)
+            armTimeout(box, seconds: 5)
             central.connect(box.peripheral)
         }
+    }
+
+    private func armTimeout(_ box: DiscoveredBox, seconds: Double) {
+        box.timeout?.cancel()
+        box.timeoutGeneration += 1
+        let generation = box.timeoutGeneration
+        let id = box.peripheral.identifier
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, let current = self.boxes[id],
+                  current.timeoutGeneration == generation else { return }
+            self.disconnect(id)
+        }
+        box.timeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: timeout)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -144,6 +157,10 @@ private final class BoxDiscovery: NSObject, CBCentralManagerDelegate, CBPeripher
             central.cancelPeripheralConnection(peripheral)
             return
         }
+        // Connection establishment can consume several seconds by itself.
+        // Give service discovery and the public read their own bounded budget;
+        // the scan-wide deadline still bounds the entire operation.
+        armTimeout(box, seconds: 3)
         peripheral.discoverServices([CBUUID(string: serviceId)])
     }
 

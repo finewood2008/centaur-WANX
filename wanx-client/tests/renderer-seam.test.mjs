@@ -57,10 +57,25 @@ async function harness(initial = state(), installed = [application], options = {
       markup = value; renderCount++;
       forms = new Map([...value.matchAll(/<form\b[^>]*data-form="([^"]+)"[^>]*>/g)].map(([, name]) => {
         const submit = { disabled: false, textContent: "" };
+        const wifiNodes = new Map();
         const form = { dataset: { mode: value.match(/data-mode="([^"]+)"/)?.[1] }, values: {}, contains: () => false,
-          querySelector: () => submit,
+          querySelector: (selector) => name === "wifi" ? wifiNodes.get(selector) : submit,
           replaceWith: (retained) => forms.set(name, retained),
         };
+        if (name === "wifi") {
+          wifiNodes.set('button[type="submit"]', submit);
+          for (const fieldName of ["ssid", "password", "security", "hidden"]) {
+            const label = { hidden: false };
+            wifiNodes.set(`[name="${fieldName}"]`, {
+              get value() { return form.values[fieldName] ?? (fieldName === "security" ? "wpa_personal" : ""); },
+              set value(value) { form.values[fieldName] = value; },
+              set checked(value) { if (value) form.values[fieldName] = "on"; else delete form.values[fieldName]; },
+              closest: () => label,
+            });
+          }
+          for (const selector of ['[data-input="wifi-network"]', '[data-wifi-status]', '[data-action="wifi-refresh"]', '[data-wifi-list]', '[data-action="wifi-manual"]']) wifiNodes.set(selector, {});
+          form.reset = () => { form.values = {}; };
+        }
         return [name, form];
       }));
     },
@@ -80,6 +95,10 @@ async function harness(initial = state(), installed = [application], options = {
     connectBox: async (deviceId) => { rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
     refreshDevices: async () => {},
+    listOwnershipTransfers: async () => options.transfers ? options.transfers() : [],
+    sendTransferCode: async () => ({ expiresIn: 300 }),
+    createOwnershipTransfer: async input => { calls.push(["ownership-created", input]); return { ...input, state: "pending_target" }; },
+    acceptOwnershipTransfer: async input => { calls.push(["ownership-accepted", input]); if (options.acceptFailure) throw new Error(options.acceptFailure); return { ...input, state: "completed" }; },
     setNetworkEnabled: async (enabled) => {
       rawState = { ...state(enabled ? "enrolling" : "idle", enabled ? "checking" : "disabled"), network: { enabled, phase: enabled ? "checking" : "disabled" } };
     },
@@ -127,6 +146,7 @@ async function harness(initial = state(), installed = [application], options = {
       send(name, payload) { calls.push([name, payload]); ipcMain.emit(name, ipcEvent, payload); },
     },
   }) });
+  window.wanxSetup = { ...window.wanxSetup, scanWifi: async () => { calls.push(["scan-wifi"]); return options.scanWifi ? options.scanWifi() : []; } };
   let advertisementListener;
   let chooser, nearby = [{ deviceId: "provider-1", deviceName: "Test box" }];
   if (discoveryTest) {
@@ -175,6 +195,8 @@ async function harness(initial = state(), installed = [application], options = {
     },
     keydown(key) { return events.get("keydown")({ key, preventDefault() {} }); },
     setup(snapshot) { listeners.get("wanx:setup:state")({}, snapshot); },
+    changeWifi(value) { return events.get("change")({ target: { dataset: { input: "wifi-network" }, value } }); },
+    changeSecurity(value) { const form = forms.get("wifi"); form.values.security = value; return events.get("change")({ target: { dataset: {}, name: "security", value } }); },
     changePendingDevice(value) { return events.get("change")({ target: { dataset: { input: "pending-device" }, value } }); },
     submit(form, values) { return events.get("submit")({ preventDefault() {}, target: { dataset: { form }, values } }); },
   };
@@ -853,6 +875,24 @@ test("missing box names are explicit and identifiers never become names or suffi
   assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
 });
 
+test("numeric box display names remain visible during discovery and identity preview", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const deviceId = "centauros-e8c61ed41ade3ac92c486856";
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-486856",
+    displayIdentity: { deviceId, displayName: "CentaurOS-22" } });
+  assert.match(h.app.innerHTML, /<strong>CentaurOS-22<\/strong>/);
+  assert.doesNotMatch(h.app.innerHTML, /未获取到盒子名称/);
+  h.setup({ state: "previewReady", preview: { device_id: deviceId, display_name: "CentaurOS-22",
+    cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 0 } });
+  assert.match(h.app.innerHTML, /<dt>设备名称<\/dt><dd>CentaurOS-22<\/dd>/);
+  assert.match(h.app.innerHTML, /盒子尚未开启配网模式/);
+  assert.doesNotMatch(h.app.innerHTML, /PROTOCOL_CHANGED/);
+});
+
 test("registry and public identifier fallbacks stay labelled as identifiers", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const deviceId = "centauros-727f68e96c972c5bcf0553d6";
@@ -949,4 +989,163 @@ test("discovery escapes public names and broadcast hints and stops claiming to r
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未读取到名称 · 蓝牙配网/);
   assert.doesNotMatch(h.app.innerHTML, /正在读取盒子名称/);
+});
+
+
+test("box ownership UI is owner-only and explicitly retains data", async () => {
+  const initial = state();
+  initial.devices = initial.devices.map((item, index) => ({ ...item, deviceRole: index ? "member" : "owner" }));
+  const h = await harness(initial);
+  await h.click("show-boxes");
+  assert.equal((h.app.innerHTML.match(/data-action="transfer-open"/g) || []).length, 1);
+  await h.click("transfer-open", { deviceId: "box-102" });
+  assert.match(h.app.innerHTML, /客户万象账号手机号/);
+  assert.match(h.app.innerHTML, /我同意保留盒内数据并转移所有权/);
+  assert.match(h.app.innerHTML, /需要清空交付时/);
+});
+
+test("recipient explicitly confirms incoming ownership without a connected box", async () => {
+  const incoming = { transferId: "t-1", deviceId: "customer-box", direction: "incoming", state: "pending_target", retainData: true, expiresAt: "2099-01-01T00:00:00Z" };
+  const h = await harness(state(), [], { transfers: async () => [incoming] });
+  await h.click("show-boxes");
+  await h.click("transfer-refresh");
+  assert.match(h.app.innerHTML, /待你接受/);
+  await h.click("transfer-accept", { transferId: "t-1" });
+  assert.match(h.app.innerHTML, /接受盒子所有权/);
+  assert.equal(h.calls.some(item => item[0] === "ownership-accepted"), false);
+  await h.click("market-confirm");
+  assert.equal(h.calls.filter(item => item[0] === "ownership-accepted").length, 1);
+  assert.match(h.app.innerHTML, /已接受所有权/);
+});
+
+test("stale incoming invitations cannot reappear after switching account", async () => {
+  let release;
+  const late = new Promise(resolve => { release = resolve; });
+  const h = await harness(state(), [], { transfers: () => late });
+  await h.click("show-boxes");
+  h.update({ account: { phase: "signed_out" } });
+  const other = state(); other.account.accountId = "other-account";
+  h.update(other);
+  release([{ transferId: "t-old", deviceId: "private-box", direction: "incoming", state: "pending_target", retainData: true, expiresAt: "2099-01-01T00:00:00Z" }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(h.app.innerHTML, /private-box/);
+});
+
+test("older transfer list response cannot replace a newer invitation refresh", async () => {
+  let release;
+  const late = new Promise(resolve => { release = resolve; });
+  let requests = 0;
+  const invitation = { transferId: "t-new", deviceId: "new-customer-box", direction: "incoming", state: "pending_target", retainData: true, expiresAt: "2099-01-01T00:00:00Z" };
+  const h = await harness(state(), [], { transfers: () => ++requests === 1 ? late : Promise.resolve([invitation]) });
+  await h.click("show-boxes");
+  await h.click("transfer-refresh");
+  assert.match(h.app.innerHTML, /new-customer-box/);
+  release([]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /new-customer-box/);
+});
+
+test("revoked recipient client explains reauthentication instead of reporting transfer success", async () => {
+  const incoming = { transferId: "t-1", deviceId: "customer-box", direction: "incoming", state: "pending_target", retainData: true, expiresAt: "2099-01-01T00:00:00Z" };
+  const h = await harness(state(), [], { transfers: async () => [incoming], acceptFailure: "OWNERSHIP_CLIENT_INACTIVE" });
+  await h.click("show-boxes");
+  await h.click("transfer-refresh");
+  await h.click("transfer-accept", { transferId: "t-1" });
+  await h.click("market-confirm");
+  assert.match(h.app.innerHTML, /当前客户端登录已失效，请重新登录万象后再接受转移/);
+  assert.doesNotMatch(h.app.innerHTML, /已接受所有权/);
+});
+
+
+const flushWifi = () => new Promise(resolve => setImmediate(resolve));
+const wifiChoice = network => JSON.stringify([network.ssid, network.security]);
+const officeWifi = { ssid: "Office", signal: 90, security: "wpa_personal" };
+
+test("Wi-Fi picker automatically scans the box once, sorts by signal and escapes names", async () => {
+  const h = await harness(state(), [application], { scanWifi: async () => [
+    { ssid: '<unsafe>"', signal: 10, security: "unsupported" }, officeWifi,
+    { ssid: "Guest", signal: 50, security: "open" },
+  ] });
+  await h.click("provisioning");
+  h.setup({ state: "awaitingWifi", pairingSessionId: "session-1" });
+  await flushWifi();
+  const form = h.form("wifi"), picker = form.querySelector('[data-input="wifi-network"]');
+  assert.ok(picker.innerHTML.indexOf("Office") < picker.innerHTML.indexOf("Guest"));
+  assert.ok(picker.innerHTML.indexOf("Guest") < picker.innerHTML.indexOf("&lt;unsafe&gt;"));
+  assert.match(picker.innerHTML, /disabled[^>]*>.*暂不支持此安全类型/);
+  assert.match(form.querySelector('[data-wifi-status]').textContent, /来自盒子附近/);
+  h.setup({ state: "awaitingWifi", pairingSessionId: "session-1" });
+  await flushWifi();
+  assert.equal(h.calls.filter(([name]) => name === "scan-wifi").length, 1);
+  h.changeWifi(wifiChoice(officeWifi));
+  assert.equal(form.values.ssid, "Office");
+  assert.equal(form.values.security, "wpa_personal");
+  assert.equal(form.querySelector('[name="password"]').required, true);
+  form.values.password = "existing-password";
+  h.changeWifi(wifiChoice({ ssid: "Guest", security: "open" }));
+  assert.equal(form.values.security, "open");
+  assert.equal(form.values.password, "");
+  assert.equal(form.querySelector('[name="password"]').disabled, true);
+  h.changeWifi(wifiChoice({ ssid: '<unsafe>"', security: "unsupported" }));
+  assert.equal(form.values.ssid, "Guest", "unsupported networks must not become selected");
+  await h.submit("wifi", form.values);
+  const [, submitted] = h.calls.find(([name]) => name === "wanx:setup:wifi");
+  assert.equal(submitted.ssid, "Guest");
+  assert.equal(submitted.security, "open");
+  assert.equal(Object.hasOwn(submitted, "password"), false);
+});
+
+test("Wi-Fi refresh deduplicates requests and preserves password and selection through empty/error results", async () => {
+  let resolveScan, rejectScan, initial = true;
+  const h = await harness(state(), [application], { scanWifi: () => initial ? (initial = false, Promise.resolve([officeWifi])) : new Promise((resolve, reject) => { resolveScan = resolve; rejectScan = reject; }) });
+  await h.click("provisioning");
+  h.setup({ state: "awaitingWifi" });
+  await flushWifi();
+  const form = h.form("wifi");
+  h.changeWifi(wifiChoice(officeWifi)); form.values.password = "typed-secret";
+  const refreshing = h.click("wifi-refresh"), duplicate = h.click("wifi-refresh");
+  await flushWifi();
+  assert.equal(h.calls.filter(([name]) => name === "scan-wifi").length, 2);
+  assert.match(form.querySelector('[data-wifi-status]').textContent, /正在扫描/);
+  resolveScan([]); await Promise.all([refreshing, duplicate]);
+  assert.equal(form.values.password, "typed-secret");
+  assert.equal(form.querySelector('[data-input="wifi-network"]').value, wifiChoice(officeWifi));
+  assert.match(form.querySelector('[data-wifi-status]').textContent, /未发现/);
+  const failing = h.click("wifi-refresh"); await flushWifi(); rejectScan(new Error("radio")); await failing;
+  assert.equal(h.form("wifi"), form);
+  assert.equal(form.values.password, "typed-secret");
+  assert.match(form.querySelector('[data-wifi-status]').textContent, /无法扫描/);
+  await h.click("wifi-manual");
+  assert.equal(form.querySelector('[data-wifi-list]').hidden, true);
+  assert.equal(form.querySelector('[name="ssid"]').closest("label").hidden, false);
+  assert.equal(form.values.password, "typed-secret");
+  h.changeSecurity("open");
+  assert.equal(form.querySelector('[name="password"]').required, false);
+});
+
+test("a late Wi-Fi scan cannot overwrite a new pairing session", async () => {
+  const completions = [];
+  const h = await harness(state(), [application], { scanWifi: () => new Promise(resolve => completions.push(resolve)) });
+  await h.click("provisioning"); h.setup({ state: "awaitingWifi", pairingSessionId: "old" }); await flushWifi();
+  h.form("wifi").values.password = "old-secret";
+  h.setup({ state: "awaitingWifi", pairingSessionId: "new" }); await flushWifi();
+  assert.equal(h.form("wifi").values.password, "");
+  completions[1]([officeWifi]); await flushWifi();
+  completions[0]([{ ssid: "Old secret network", security: "open", signal: 99 }]); await flushWifi();
+  const options = h.form("wifi").querySelector('[data-input="wifi-network"]').innerHTML;
+  assert.match(options, /Office/); assert.doesNotMatch(options, /Old secret/);
+});
+
+for (const action of ["cancel-provisioning", "logout", "back-devices"]) test(`leaving Wi-Fi through ${action} clears secrets and ignores scan completion`, async () => {
+  let complete;
+  const h = await harness(state(), [application], { scanWifi: () => new Promise(resolve => { complete = resolve; }) });
+  await h.click("provisioning"); h.setup({ state: "awaitingWifi", pairingSessionId: "old" }); await flushWifi();
+  const form = h.form("wifi"); form.values.password = "old-secret";
+  await h.click(action);
+  assert.equal(form.values.password, "");
+  assert.equal(h.form("wifi"), undefined);
+  const renderCount = h.renderCount;
+  complete([officeWifi]); await flushWifi();
+  assert.equal(h.renderCount, renderCount);
+  assert.equal(h.calls.filter(([name]) => name === "scan-wifi").length, 1);
 });
