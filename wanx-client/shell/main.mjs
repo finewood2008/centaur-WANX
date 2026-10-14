@@ -58,7 +58,7 @@ let desktop;
 let stopNetworkMonitor;
 let timings;
 
-// Local timings contain fixed step names only; console output remains opt-in.
+// Local diagnostics contain fixed steps and allowlisted codes; console output is opt-in.
 async function timed(step, operation) {
   return timings ? timings.run(step, operation) : operation();
 }
@@ -182,8 +182,8 @@ if (process.argv.includes("--wanx-managed-app")) {
               return {
                 ...sidecar,
                 request(method, ...args) {
-                  return method === "start"
-                    ? timed("engine.start", () =>
+                  return ["start", "recover"].includes(method)
+                    ? timed(`engine.${method}`, () =>
                         sidecar.request(method, ...args),
                       )
                     : sidecar.request(method, ...args);
@@ -193,6 +193,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             configDir: path.join(userData, "network", scope),
             deviceName: `wanx-${os.hostname()}`,
           });
+          if (identity) network.subscribe(state => timings.state("network", state));
           return {
             network,
             client: createClient({
@@ -356,6 +357,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       unsubscribe = client.subscribe(() => {
+        timings.state("platform", client.snapshot().platform);
         dashboards.sync(client.snapshot());
         desktop.sync(client.snapshot());
         void broadcast.publish();

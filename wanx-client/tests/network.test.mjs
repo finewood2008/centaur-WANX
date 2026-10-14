@@ -828,3 +828,59 @@ test("connected target resolves during control-plane recovery but missing/discon
   status.peers = [];
   await rejectsCode(network.resolveEndpoint(input), "netbird_peer_unknown");
 });
+
+for (const code of ["engine_exited", "engine_timeout"]) {
+  test(`${code} automatically starts a replacement engine without manual refresh`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const { network, instances } = harness(t);
+    await network.setEnabled(true);
+    instances[0].fail(code);
+    assert.equal(network.snapshot().phase, "unavailable");
+    t.mock.timers.tick(4_999);
+    await tick();
+    assert.equal(instances.length, 1);
+    t.mock.timers.tick(1);
+    await tick();
+    assert.equal(instances.length, 2);
+    assert.equal(network.snapshot().phase, "ready");
+  });
+}
+
+for (const stop of ["disable", "close"]) {
+  test(`engine restart is cancelled by ${stop}`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const { network, instances } = harness(t);
+    await network.setEnabled(true);
+    instances[0].fail("engine_timeout");
+    if (stop === "disable") await network.setEnabled(false);
+    else await network.close();
+    t.mock.timers.tick(60_000);
+    await tick();
+    assert.equal(instances.length, 1);
+    assert.equal(network.snapshot().enabled, false);
+  });
+}
+
+test("engine startup failures back off and stop retrying on authorization denial", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let code = "start_failed";
+  const { network, calls } = harness(t, () => { throw error(code); });
+  await network.setEnabled(true);
+  for (const delay of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+    const count = calls.length;
+    t.mock.timers.tick(delay - 1);
+    await tick();
+    assert.equal(calls.length, count);
+    t.mock.timers.tick(1);
+    await tick();
+    assert.equal(calls.length, count + 1);
+  }
+  code = "auth_required";
+  t.mock.timers.tick(60_000);
+  await tick();
+  const count = calls.length;
+  t.mock.timers.tick(120_000);
+  await tick();
+  assert.equal(calls.length, count);
+  assert.equal(network.snapshot().phase, "auth_required");
+});
