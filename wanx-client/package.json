@@ -1,6 +1,6 @@
 {
   "name": "centuarai-wanx-client",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -18,10 +18,11 @@
     "test": "node --test tests/*.test.mjs",
     "test:native": "cd native && go test ./...",
     "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && node tools/build-discovery.mjs darwin-arm64 darwin-x64 && electron-builder --mac --dir",
-    "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && electron-builder --win nsis",
+    "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && node tools/build-discovery.mjs win32-x64 && electron-builder --win nsis",
     "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js",
     "package:application": "node tools/package-application.mjs",
-    "patch:provisioning-sdk": "node tools/patch-provisioning-display-name.mjs"
+    "patch:provisioning-sdk": "node tools/patch-provisioning-display-name.mjs",
+    "package:windows:x64:internal": "node shell/package-win.mjs"
   },
   "dependencies": {
     "@nexusaos/consumer-contracts": "file:vendor/nexusaos-consumer-contracts-1.0.0.tgz",
@@ -114,7 +115,8 @@
           "from": "native/bin",
           "to": "network",
           "filter": [
-            "wanx-netbird-win32-${arch}*"
+            "wanx-netbird-win32-${arch}*",
+            "wanx-discovery-win32-x64.exe"
           ]
         }
       ]

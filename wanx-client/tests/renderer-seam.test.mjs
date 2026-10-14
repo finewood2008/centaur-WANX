@@ -151,7 +151,7 @@ async function harness(initial = state(), installed = [application], options = {
     subscribe(fn) { bluetoothListener = fn; fn(bluetoothStatus); return () => {}; },
     refresh: async () => bluetoothStatus,
   } };
-  vm.runInNewContext(preload, { require: () => ({
+  vm.runInNewContext(preload, { process: { platform: options.platform || "darwin" }, require: () => ({
     contextBridge: { exposeInMainWorld: (name, api) => { window[name] = api; } },
     ipcRenderer: {
       invoke: async (name, input) => {
@@ -170,7 +170,9 @@ async function harness(initial = state(), installed = [application], options = {
   let chooser, nearby = [{ deviceId: "provider-1", deviceName: "Test box" }];
   if (discoveryTest) {
     const clock = { monotonicMs: () => Date.now() };
-    discoveryTest.after(installElectronBluetoothPicker({ webContents: contents, ipcMain, documentUrl: controlURL, clock, scanTimeoutMs: 12000, advertisementNames: { subscribe: (listener) => { advertisementListener = listener; return () => { advertisementListener = undefined; }; } } }));
+    discoveryTest.after(installElectronBluetoothPicker({ webContents: contents, ipcMain, documentUrl: controlURL, clock,
+      scanTimeoutMs: options.platform === "win32" ? 60000 : 12000,
+      advertisementNames: { subscribe: (listener) => { advertisementListener = listener; return () => { advertisementListener = undefined; }; } } }));
     const bluetooth = {
       getAvailability: async () => options.bluetoothStatus !== "unavailable",
       requestDevice: () => new Promise((resolve, reject) => {
@@ -188,6 +190,7 @@ async function harness(initial = state(), installed = [application], options = {
   }
   vm.runInNewContext(source, {
     window,
+    Date,
     setTimeout, clearTimeout, TextEncoder,
     document: { querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
@@ -470,7 +473,7 @@ test("device setup retains its wizard across polling and returns to boxes", asyn
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
 });
 
-test("box scanning disables repeat starts until the scan finishes", async (t) => {
+test("box scanning disables repeat clicks, then allows a new scan after timeout", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
   await h.click("provisioning");
@@ -489,9 +492,11 @@ test("box scanning disables repeat starts until the scan finishes", async (t) =>
   assert.match(scanButton(), /disabled/);
   t.mock.timers.tick(12000);
   await new Promise(resolve => setImmediate(resolve));
-  assert.doesNotMatch(scanButton(), /disabled|正在扫描|scan-spinner/);
-  assert.match(scanButton(), /aria-busy="false"/);
+  assert.match(scanButton(), /重新扫描/);
+  assert.doesNotMatch(scanButton(), /disabled/);
   await h.click("start-provisioning");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(h.chooser(), chooser);
   assert.match(scanButton(), /disabled/);
 });
 
@@ -512,6 +517,34 @@ test("discovered boxes remain selectable after the scan times out", async (t) =>
   assert.doesNotMatch(h.app.innerHTML, /scan-spinner|正在扫描…/);
   assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:reselect"));
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 1);
+});
+
+test("Windows discovery keeps the chooser and renderer lease open for late box names", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], { after: t.after.bind(t), platform: "win32" });
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
+  assert.doesNotMatch(h.app.innerHTML, /role="progressbar"/);
+  t.mock.timers.tick(20000);
+  assert.doesNotMatch(h.app.innerHTML, /扫描已结束/);
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-000FE1",
+    displayIdentity: { deviceId: "centauros-727f68e96c972c5bcf000fe1", displayName: "CentaurAI-AMD-102" } });
+  assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
+  t.mock.timers.tick(40000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /扫描已结束/);
+  assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
+  const scanButton = h.app.innerHTML.match(/<button[^>]*data-action="start-provisioning"[^>]*>[\s\S]*?<\/button>/)?.[0];
+  assert.match(scanButton, /重新扫描/);
+  assert.doesNotMatch(scanButton, /disabled/);
+  const oldChooser = h.chooser();
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(h.chooser(), oldChooser, "repeat scan must start a fresh Bluetooth chooser");
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
 });
 
 test("selection during a live scan still opens device identity", async (t) => {
@@ -627,7 +660,7 @@ for (const leave of ["back-devices", "logout"]) {
   });
 }
 
-test("an empty scan gives an actionable retry message", async (t) => {
+test("an empty scan allows retry after reporting no nearby box", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
   h.nearby([]);
@@ -638,11 +671,16 @@ test("an empty scan gives an actionable retry message", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未发现可用盒子/);
   assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
-  const scanButton = h.app.innerHTML.match(/<button[^>]*data-action="start-provisioning"[^>]*>/)[0];
-  assert.doesNotMatch(scanButton, /disabled/);
-  assert.match(scanButton, /aria-busy="false"/);
+  assert.match(actionButton(h, "start-provisioning"), /开始扫描盒子/);
+  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+  const oldChooser = h.chooser();
   await h.click("start-provisioning");
-  assert.match(h.app.innerHTML, /data-action="start-provisioning"[^>]*disabled/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(h.chooser(), oldChooser);
+  assert.match(actionButton(h, "start-provisioning"), /disabled/);
+  await h.click("back-devices");
+  await h.click("provisioning");
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
 });
 
 test("native menu navigation reaches settings and home while preserving login and setup boundaries", async () => {
@@ -953,12 +991,14 @@ test("registry and public identifier fallbacks stay labelled as identifiers", as
   await h.click("provisioning");
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
-  for (const displayName of [deviceId, "CentaurOS-Setup-0553D6", "CentaurOS-", "CentaurAI Box"]) {
+  for (const displayName of [deviceId, "centauros-box-0553D6", "CentaurOS-Setup-0553D6", "CentaurOS-", "CentaurAI Box"]) {
     h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0553D6", displayIdentity: { deviceId, displayName } });
     assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
     assert.doesNotMatch(h.app.innerHTML, /<strong>centauros-|<strong>CentaurOS-|<strong>CentaurAI Box/);
     assert.match(h.app.innerHTML, /设备编号：centauros-727f68e96c972c5bcf0553d6/);
   }
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0553D6", displayIdentity: { deviceId, displayName: "CentaurOS-99" } });
+  assert.match(h.app.innerHTML, /<strong>CentaurOS-99<\/strong>/);
   h.update({ ...state(), devices: [{ ...devices[0], deviceId, displayName: "办公室盒子" }] });
   assert.match(h.app.innerHTML, /<strong>办公室盒子<\/strong>/);
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
@@ -1008,13 +1048,17 @@ for (const retained of [false, true]) {
     await h.click("provisioning");
     await h.click("start-provisioning");
     await new Promise((resolve) => setImmediate(resolve));
+    assert.match(h.app.innerHTML, /class="scan-spinner"/);
+    assert.doesNotMatch(h.app.innerHTML, /role="progressbar"/);
     h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0102", displayIdentity: { deviceId: "box-102", displayName: "CentaurAI Box" } });
+    assert.match(h.app.innerHTML, /class="scan-spinner"/);
     const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
     assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
     if (retained) {
       t.mock.timers.tick(12000);
       await new Promise((resolve) => setImmediate(resolve));
       assert.match(h.app.innerHTML, /扫描已结束/);
+      assert.doesNotMatch(h.app.innerHTML, /class="scan-spinner"/);
     }
     h.update(state());
     assert.match(h.app.innerHTML, /<strong>CentuarAI-AMD-102<\/strong>/);
@@ -1239,8 +1283,7 @@ for (const fails of [false, true]) test(`identity loading prevents another scan 
   if (fails) {
     assert.match(h.app.innerHTML, /蓝牙连接|连接盒子超时/);
     assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
-    await h.click("start-provisioning"); await flushActions();
-    assert.notEqual(h.chooser(), chooser);
+    assert.match(actionButton(h, "start-provisioning"), /开始扫描盒子/);
   } else assert.match(h.app.innerHTML, /确认设备身份/);
 });
 
@@ -1257,7 +1300,8 @@ for (const fails of [false, true]) test(`setup cancellation deduplicates clicks 
   else cancel.resolve({ state: "cancelled" });
   await Promise.all([first, second]);
   assert.doesNotMatch(h.app.innerHTML, /正在取消/);
-  assert.doesNotMatch(actionButton(h, fails ? "cancel-provisioning" : "start-provisioning"), /disabled/);
+  if (fails) assert.doesNotMatch(actionButton(h, "cancel-provisioning"), /disabled/);
+  else assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
 });
 
 for (const cancelFirst of [false, true]) test(`cancelled setup ignores the original result when cancellation finishes ${cancelFirst ? "first" : "last"}`, async () => {

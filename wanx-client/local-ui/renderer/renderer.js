@@ -364,7 +364,18 @@ function operationBusy(id) {
 function operationMessage(operation) {
   if (!operation) return "";
   if (operation.error) return /[\u3400-\u9fff]/.test(String(operation.error)) ? String(operation.error) : operationErrorMessage(operation.error);
-  return { installing: "正在安装…", updating: "正在更新…", uninstalling: "正在卸载…", rolling_back: "正在恢复版本…", rollback: "正在恢复版本…", selecting: "正在选择版本…", "rolling-back": "正在恢复版本…", opening: "正在打开…", connecting: "正在连接盒子…" }[operation.phase] || "";
+  return { installing: "正在安装…", updating: "正在更新…", uninstalling: "正在卸载…", rolling_back: "正在恢复版本…", rollback: "正在恢复版本…", selecting: "正在选择版本…", "rolling-back": "正在恢复版本…", opening: "正在打开…", connecting: "正在连接盒子…", running: "已打开" }[operation.phase] || "";
+}
+
+function showOpenedStatus(applicationId) {
+  const operation = { phase: "running" };
+  localOperations.set(applicationId, operation);
+  setTimeout(() => {
+    if (localOperations.get(applicationId) === operation) {
+      localOperations.delete(applicationId);
+      render(currentState);
+    }
+  }, 4000);
 }
 
 function pendingOpenView() {
@@ -495,7 +506,7 @@ function applicationCard(item, installed = true) {
   const status = operationMessage(operation);
   const actions = item.selectionRequired
     ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => `<button class="button small" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" ${disabled}>使用 ${escapeHTML(version)}</button>`).join("")}</div>`
-    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : "打开"}</button>` : ""}</div>`;
+    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
   return `<article class="application-card" data-application="${id}">${applicationIcon(item)}<div class="application-main">
     <div class="application-title"><h3>${escapeHTML(item.name)}</h3>${installed && item.version ? `<span class="muted">v${escapeHTML(item.version)}</span>` : ""}</div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
@@ -566,7 +577,8 @@ function discoveryCard(candidate) {
   const boxName = (value) => {
     const name = typeof value === "string" ? value.trim() : "";
     return name && name !== deviceId && !/^CentaurAI\s+Box$/i.test(name) &&
-      !/^CentaurOS-(?:Setup-[0-9a-f]*|[0-9a-f]{24})?$/i.test(name) ? name : "";
+      !/^CentaurOS-(?:Setup-[0-9a-f]*|[0-9a-f]{6}|[0-9a-f]{24})?$/i.test(name) &&
+      !/^centauros-box-[0-9a-f]+$/i.test(name) ? name : "";
   };
   const knownName = boxName(known?.name) || boxName(known?.displayName);
   const specificName = deviceId && boxName(hint?.displayName);
@@ -633,7 +645,7 @@ function provisioningView() {
   }[setupPhase] || "请让设备进入配置模式后开始扫描。";
   const previewBlock = preview ? `<dl class="setup-preview"><dt>设备名称</dt><dd>${escapeHTML(preview.display_name)}</dd><dt>设备 ID</dt><dd>${escapeHTML(preview.device_id)}</dd><dt>型号</dt><dd>${escapeHTML(preview.model)}</dd><dt>身份公钥指纹</dt><dd>${escapeHTML(preview.identity_public_key_sha256)}</dd></dl>` : "";
   const { candidates, selecting, retained } = discoveryView;
-  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(discoveryCard).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
+  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，本轮结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(candidate => discoveryCard(candidate)).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
   const controls = setupPhase === "previewReady"
     ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? "盒子尚未准备好配网" : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
@@ -901,6 +913,7 @@ async function run(action, input = {}) {
   } finally {
     if (isAppOperation && actionAccount === marketAccount) {
       if (failure) localOperations.set(applicationId, { phase: "failed", error: failure });
+      else if (action === "applications.request-open" && !currentState.ui?.pendingOpen) showOpenedStatus(applicationId);
       else localOperations.delete(applicationId);
     }
     if (holdBusy && busyRequest === operation) { busy = false; busyRequest = null; }
@@ -1005,7 +1018,7 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
-  if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && currentState.networkReady && !["connecting", "opening"].includes(pending.phase)) await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); return; }
+  if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && currentState.networkReady && !["connecting", "opening"].includes(pending.phase)) { const opened = await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); if (opened) { showOpenedStatus(pending.applicationId); render(currentState); } } return; }
   if (action === "desktop-about") { await run("desktop.about"); return; }
   if (busy && action !== "cancel-provisioning") return;
   if (action === "startup-toggle") { if (currentState.desktopStartup?.supported) await run("desktop.startup.set", { enabled: !currentState.desktopStartup.enabled }); return; }

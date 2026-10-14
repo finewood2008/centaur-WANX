@@ -32,7 +32,8 @@ export async function createSetupRuntime({
     disposePicker = installPicker({
       webContents: control.webContents, ipcMain, documentUrl: controlURL,
       advertisementNames,
-      scanTimeoutMs: 12000, clock: { monotonicMs: () => performance.now() },
+      scanTimeoutMs: process.platform === 'win32' ? 60000 : 12000,
+      clock: { monotonicMs: () => performance.now() },
     });
     unsubscribeHost = host.subscribe((state) => {
       if (!disposed && state.state === 'completed' && completedFlow !== state.flowId) {

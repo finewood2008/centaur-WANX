@@ -62,6 +62,8 @@ function fixture(extra = {}) {
             privateToken: "must-not-expose",
           },
         ]);
+      if (url.includes("/v1/device-names?ids="))
+        return reply({ names: [{ deviceId: "centauros-3ca0e31374f7508677bd42de", deviceName: "CentaurAI-AMD-102" }] });
       if (url.endsWith("/send"))
         return reply({ expiresIn: 300, debugCode: "do-not-expose" });
       return reply({});
@@ -69,6 +71,18 @@ function fixture(extra = {}) {
   });
   return { account, calls, store, refreshCount: () => refreshCount };
 }
+
+test("discovery resolves an exact registry ID to the admin inventory device name", async () => {
+  const h = fixture();
+  await h.account.loginPassword({ phone: "13800138000", password: "password" });
+  const deviceId = "centauros-3ca0e31374f7508677bd42de";
+  assert.equal(await h.account.lookupDeviceName(deviceId), "CentaurAI-AMD-102");
+  const lookup = h.calls.find((call) => call.url.includes("/v1/device-names"));
+  assert.equal(new URL(lookup.url).searchParams.get("ids"), deviceId);
+  assert.equal(lookup.options.method, "GET");
+  assert.ok(lookup.options.headers.Authorization.startsWith("Bearer "));
+  await assert.rejects(h.account.lookupDeviceName("centauros-box-000FE1"), { code: "ACCOUNT_INVALID_INPUT" });
+});
 
 test("registration returns a persisted Consumer session and uses the registration SMS scene", async t => {
   const { account, calls, store } = fixture();

@@ -85,6 +85,7 @@ export async function createApplicationManager({
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
       return launcher.launch(id);
     },
+    activate: launcher.activate,
     stop: launcher.stop,
     close() {
       closed = true;

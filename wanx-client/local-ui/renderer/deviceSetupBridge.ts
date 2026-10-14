@@ -40,6 +40,7 @@ export interface SetupTransportRequest {
   args: unknown[];
 }
 export interface SetupTransportBridge {
+  scanTimeoutMs?: number;
   subscribe(listener: (request: SetupTransportRequest) => void): () => void;
   reply(result: {
     requestId: string;

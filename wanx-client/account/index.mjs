@@ -699,6 +699,18 @@ export function createAccount({
       publish({ devices });
       return structuredClone(devices);
     },
+    async lookupDeviceName(deviceId) {
+      if (typeof deviceId !== "string" || !/^centauros-[0-9a-f]{24,32}$/.test(deviceId))
+        throw failure("ACCOUNT_INVALID_INPUT");
+      const data = await request({ path: `/app-api/v1/device-names?ids=${encode(deviceId)}` });
+      if (!Array.isArray(data?.names) || data.names.length > 1) throw failure("ACCOUNT_INVALID_RESPONSE");
+      const item = data.names[0];
+      if (!item) return null;
+      if (item.deviceId !== deviceId || typeof item.deviceName !== "string" ||
+        !item.deviceName.trim() || item.deviceName.length > 128 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(item.deviceName)) throw failure("ACCOUNT_INVALID_RESPONSE");
+      return item.deviceName.trim();
+    },
     async restore() {
       const generation = epoch;
       await loadVault(generation);

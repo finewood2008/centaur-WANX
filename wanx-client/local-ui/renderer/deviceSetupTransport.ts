@@ -89,6 +89,7 @@ export interface DeviceSetupTransport {
 export function createDeviceSetupTransport(options: {
   bridge: SetupTransportBridge;
   bluetooth: BluetoothNavigatorLike;
+  selectionTimeoutMs?: number;
   clock?: ReassemblyClock;
   /** Integration seams for transport lifecycle tests. */
   selectionFactory?: (input: {
@@ -349,7 +350,7 @@ export function createDeviceSetupTransport(options: {
         const timer = setTimeout(() => {
           finish(failure("LOCAL_SELECTION_TIMEOUT"));
           cancelSelection();
-        }, 12000);
+        }, options.selectionTimeoutMs ?? 12000);
         selectionCancel = cancel;
         try {
           void current.requestDeviceFromUserGesture().then(

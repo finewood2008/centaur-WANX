@@ -13,6 +13,7 @@ import {
   screen,
 } from "electron";
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -41,9 +42,15 @@ import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
 import { createStartupSettings } from "./startup.mjs";
 import { createAdvertisementNames } from "./discovery-names.mjs";
+import { protectPrivateDirectory } from "./private-storage.mjs";
 
 const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 const panelURL = new URL("../local-ui/panel/index.html", import.meta.url).href;
+if (process.env.WANX_SMOKE_USER_DATA) {
+  const isolated = path.resolve(process.env.WANX_SMOKE_USER_DATA);
+  mkdirSync(isolated, { recursive: true });
+  app.setPath("userData", isolated);
+}
 let control;
 let panel;
 let uiState;
@@ -96,6 +103,22 @@ if (process.argv.includes("--wanx-managed-app")) {
         process.platform === "win32" ? ".exe" : ""
       }`;
       const userData = app.getPath("userData");
+      await protectPrivateDirectory(userData, { packaged: app.isPackaged });
+      if (process.argv.includes("--wanx-smoke-safe-storage")) {
+        const smokeFile = path.join(userData, "smoke-account.enc");
+        const smokeStore = createSecureAccountStore({ filePath: smokeFile, safeStorage });
+        const marker = { smoke: "wanx-dpapi-roundtrip" };
+        try {
+          await smokeStore.save(marker);
+          if (JSON.stringify(await smokeStore.load()) !== JSON.stringify(marker))
+            throw new Error("WANX_SMOKE_STORAGE_MISMATCH");
+          await writeFile(path.join(userData, "smoke-storage-ready.marker"), "ready");
+        } finally {
+          await smokeStore.clear();
+          app.quit();
+        }
+        return;
+      }
       timings = createTimingRecorder({
         filePath: path.join(userData, "logs", "connection-timings.jsonl"),
         consoleOutput: process.env.WANX_CONNECTION_TIMINGS === "1",
@@ -238,12 +261,16 @@ if (process.argv.includes("--wanx-managed-app")) {
         captureSession: () => marketSession.captureSession(),
       });
       const startup = createStartupSettings({ app });
+      try { startup.initializeDefault(); } catch (error) { reportError(error); }
       uiState = await createUIState({
         client, account, applications,
         preferenceFile: path.join(userData, "ui-preferences.json"),
         serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onChanged: () => { void broadcast?.publish(); },
-        onOpened: () => desktop?.hidePanel(),
+        onOpened: ({ applicationId }) => {
+          desktop?.hidePanel();
+          applications.activate(applicationId);
+        },
       });
       control = new BrowserWindow({
         width: 860,
@@ -266,7 +293,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           backgroundThrottling: false,
         },
       });
-      if (process.platform === "darwin") {
+      if (["darwin", "win32"].includes(process.platform)) {
         panel = new BrowserWindow({
           width: 400, height: 320, show: false, frame: false, acceptFirstMouse: true,
           resizable: false, maximizable: false, minimizable: false,
@@ -278,7 +305,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
           },
         });
-        panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+        if (process.platform === "darwin") panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
       }
       for (const window of [control, panel].filter(Boolean)) {
         window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -388,12 +415,16 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       app.on("window-all-closed", () => app.quit());
       await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
+      if (process.env.WANX_SMOKE_USER_DATA)
+        await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
       setupRuntime = await createSetupRuntime({
         control, controlURL, ipcMain, account, client, safeStorage, userData,
         advertisementNames: createAdvertisementNames({
+          lookupName: (deviceId) => account.lookupDeviceName(deviceId),
+          cacheScope: () => account.getIdentity()?.accountId || null,
           helperPath: app.isPackaged
-            ? path.join(process.resourcesPath, "network", `wanx-discovery-${process.platform}-${process.arch}`)
-            : fileURLToPath(new URL(`../native/bin/wanx-discovery-${process.platform}-${process.arch}`, import.meta.url)),
+            ? path.join(process.resourcesPath, "network", `wanx-discovery-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`)
+            : fileURLToPath(new URL(`../native/bin/wanx-discovery-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`, import.meta.url)),
         }),
         consumerBaseUrl: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onError: reportError,
@@ -417,5 +448,5 @@ if (process.argv.includes("--wanx-managed-app")) {
     })
     .catch((error) => {
       reportError(error);
-      app.quit();
+      app.exit(1);
     });
