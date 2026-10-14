@@ -12,6 +12,7 @@ const reply = data => new Response(JSON.stringify({ code: 200, data }));
 async function verifyRegistration() {
 try {
   await app.whenReady();
+  ipcMain.handle("wanx:discovery:bluetooth-state", () => ({ status: "available" }));
   const account = createAccount({
     store: { load: async () => saved, save: async value => { saved = structuredClone(value); }, clear: async () => { saved = null; } },
     fetch: async (url, options) => {

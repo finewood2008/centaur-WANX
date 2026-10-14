@@ -42,6 +42,9 @@ export function createPlatformClient({
   let directory = { phase: "idle", reason: null };
   let directoryRevision = 0,
     prepareNeeded = true;
+  let authorizationTimer, authorizationController, authorizationWork;
+  let authorizationDeadline = 0;
+  let authorizationEndpointsPending = false;
   let platform = { phase: "idle", reason: null };
   let epoch = 0,
     closed = false,
@@ -147,7 +150,19 @@ export function createPlatformClient({
   const assertCurrent = (generation) => {
     if (!current(generation)) throw fail("NETWORK_CANCELLED");
   };
+  function stopAuthorizationPolling({ reset = false } = {}) {
+    clearTimeout(authorizationTimer);
+    authorizationTimer = null;
+    authorizationController?.abort();
+    authorizationController = null;
+    authorizationWork = null;
+    if (reset) {
+      authorizationDeadline = 0;
+      authorizationEndpointsPending = false;
+    }
+  }
   function cancel() {
+    stopAuthorizationPolling({ reset: true });
     retryActivation = false;
     retryDelay = 5000;
     epoch++;
@@ -178,13 +193,20 @@ export function createPlatformClient({
     );
     return closing;
   }
-  async function retireDirect() {
+  function retireDirect() {
     unsubscribeDirect?.();
     unsubscribeDirect = null;
     const old = directTransport;
     directTransport = null;
     if (activeLink === old) activeLink = null;
-    await old?.client.close();
+    if (!old) return Promise.resolve();
+    const closing = Promise.resolve(old.client.close());
+    draining.add(closing);
+    closing.then(
+      () => draining.delete(closing),
+      () => draining.delete(closing),
+    );
+    return closing;
   }
   function ensureTransport(identity, sessionId, generation) {
     const key = identity
@@ -272,6 +294,54 @@ export function createPlatformClient({
     );
     timer.unref?.();
   }
+  function scheduleAuthorizationPolling(generation) {
+    clearTimeout(authorizationTimer);
+    authorizationTimer = null;
+    if (!current(generation) || !enabled || !usableLease() || platform.phase !== "ready") return;
+    if (!authorizationEndpointsPending && !boxes.some(box => box.accessState === "authorization_pending")) {
+      authorizationDeadline = 0;
+      return;
+    }
+    // Device acknowledgement is asynchronous. Observe it promptly without
+    // repeating preparation, network enrollment, or lease renewal.
+    authorizationDeadline ||= Date.now() + 60_000;
+    if (Date.now() >= authorizationDeadline) return;
+    authorizationTimer = setTimeout(() => {
+      authorizationTimer = null;
+      if (!current(generation) || !enabled || !usableLease() || Date.now() >= authorizationDeadline) return;
+      if (activeWork || authorizationWork) {
+        scheduleAuthorizationPolling(generation);
+        return;
+      }
+      const controller = new AbortController();
+      authorizationController = controller;
+      const work = (async () => {
+        const waiting = new Set(boxes.filter(box => box.accessState === "authorization_pending").map(box => box.deviceId));
+        const loaded = await loadDirectory(generation, { signal: controller.signal });
+        if (!loaded || !current(generation) || !usableLease() || controller.signal.aborted) return;
+        if (boxes.some(box => waiting.has(box.deviceId) && box.accessState === "ready"))
+          authorizationEndpointsPending = true;
+        if (authorizationEndpointsPending) {
+          const target = transport;
+          await target.network.refresh();
+          assertCurrent(generation);
+          controller.signal.throwIfAborted();
+          await loadNetworkDevices(generation, controller.signal);
+          authorizationEndpointsPending = false;
+        }
+      })().catch((error) => {
+        if (current(generation) && !controller.signal.aborted && !transientError(error))
+          authorizationEndpointsPending = false;
+        // The regular renewal path owns error recovery and lease expiry.
+      }).finally(() => {
+        if (authorizationWork === work) authorizationWork = null;
+        if (authorizationController === controller) authorizationController = null;
+        if (current(generation)) scheduleAuthorizationPolling(generation);
+      });
+      authorizationWork = work;
+    }, Math.min(2000, authorizationDeadline - Date.now()));
+    authorizationTimer.unref?.();
+  }
   async function loadDirectory(generation, { prepare = false, signal } = {}) {
     const revision = prepare ? directoryRevision : ++directoryRevision;
     const retain = directory.phase === "ready" && usableLease();
@@ -290,7 +360,7 @@ export function createPlatformClient({
         generation,
         signal,
       );
-      if (revision !== directoryRevision) return false;
+      if (signal?.aborted || revision !== directoryRevision) return false;
       if (!Array.isArray(result?.boxes)) throw fail("NETWORK_INVALID_RESPONSE");
       const seen = new Set();
       const entries = result.boxes.map((box) => {
@@ -338,7 +408,7 @@ export function createPlatformClient({
       if (current(generation)) emit();
       return true;
     } catch (error) {
-      if (!current(generation) || revision !== directoryRevision) return false;
+      if (signal?.aborted || !current(generation) || revision !== directoryRevision) return false;
       if (retain && usableLease() && transientError(error)) {
         directory = {
           phase: "ready",
@@ -564,6 +634,7 @@ export function createPlatformClient({
     await target.network.refresh();
     assertCurrent(generation);
     await loadNetworkDevices(generation, signal);
+    authorizationEndpointsPending = false;
     platform = { phase: "ready", reason: null };
     void persistResume({
       version: 1,
@@ -574,6 +645,7 @@ export function createPlatformClient({
     });
     retryDelay = 5000;
     schedule(generation);
+    scheduleAuthorizationPolling(generation);
     return emit();
   }
   function activate() {
@@ -581,6 +653,7 @@ export function createPlatformClient({
     // A manual/system-triggered attempt replaces any previously scheduled retry.
     clearTimeout(timer);
     const generation = epoch;
+    stopAuthorizationPolling();
     const controller = new AbortController();
     activeController = controller;
     const work = activateImpl(generation, controller.signal)
@@ -616,6 +689,7 @@ export function createPlatformClient({
         return snapshot();
       })
       .finally(() => {
+        if (current(generation)) scheduleAuthorizationPolling(generation);
         if (activeWork === work) {
           activeWork = null;
           activeController = null;
@@ -625,12 +699,13 @@ export function createPlatformClient({
     return work;
   }
   let accountKey = account.getIdentity()?.accountId || null;
+  let accountPhase = account.snapshot().phase;
   const unsubscribeAccount = account.subscribe((state) => {
     if (closed) return;
     const nextAccountKey =
       state.phase === "authenticated" ? state.accountId : null;
     if (
-      state.phase === "signed_out" ||
+      (state.phase === "signed_out" && accountPhase !== "signed_out") ||
       (accountKey && nextAccountKey && accountKey !== nextAccountKey)
     ) {
       cancel();
@@ -643,7 +718,10 @@ export function createPlatformClient({
       platform = { phase: "idle", reason: null };
       void retireTransport().catch(() => {});
     }
+    if (state.phase === "signed_out" && accountPhase !== "signed_out")
+      void retireDirect().catch(() => {});
     accountKey = nextAccountKey;
+    accountPhase = state.phase;
     emit();
   });
   async function afterLogin(action) {
@@ -658,6 +736,7 @@ export function createPlatformClient({
   }
   async function refreshDevices() {
     authenticated();
+    authorizationDeadline = 0;
     const generation = epoch;
     const listing = loadDirectory(generation);
     if (enabled) {
@@ -774,6 +853,10 @@ export function createPlatformClient({
     loginSMS: (input) => afterLogin(() => account.loginSMS(input)),
     register: (input) => afterLogin(() => account.register(input)),
     sendSMS: ({ phone, scene }) => account.sendSMS(phone, scene),
+    sendResetCode: (input) => account.sendResetCode(input),
+    resetPassword: (input) => account.resetPassword(input),
+    sendChangeCode: () => account.sendChangeCode(),
+    changePassword: (input) => account.changePassword(input),
     refreshDevices,
     listOwnershipTransfers: () => account.listOwnershipTransfers(),
     sendTransferCode: () => account.sendTransferCode(),
@@ -925,25 +1008,11 @@ export function createPlatformClient({
       prepareNeeded = true;
       void persistResume(null);
       platform = { phase: "idle", reason: null };
-      const stopping = Promise.all([retireTransport(), retireDirect()]);
+      // Detach the old gateway immediately. Network process shutdown can take
+      // seconds; ensureTransport already drains it before creating a new one.
+      void Promise.allSettled([retireTransport(), retireDirect()]);
       emit();
-      let reason;
-      try {
-        if (account.getIdentity())
-          await account.request({
-            method: "DELETE",
-            path: "/app-api/network/current",
-          });
-      } catch (error) {
-        reason = safeReason(error);
-      }
-      try {
-        await account.logout();
-      } catch (error) {
-        reason ||= safeReason(error);
-      }
-      await stopping;
-      if (reason) platform = { phase: "unavailable", reason };
+      await account.logout({ revokeNetwork: true });
       return emit();
     },
     async close() {

@@ -95,14 +95,17 @@ class NativeStore:
                 for row in cur.fetchall()
             ]
 
-    def snapshot(self, kind: str, target: str) -> dict[str, list[dict[str, Any]]]:
+    def snapshot(
+        self, kind: str, target: str, *, raw_ids: set[str] | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
         rows = {name: self.rows(name) for name in TABLES}
         table = TARGETS[kind]
         chosen: dict[str, list[dict[str, Any]]] = {name: [] for name in TABLES}
-        chosen[table] = [r for r in rows[table] if r["id"] == target]
+        targets = raw_ids if kind == "raw" and raw_ids is not None else {target}
+        chosen[table] = [r for r in rows[table] if r["id"] in targets]
         if not chosen[table]:
             raise OctopError.localized(ErrorCode.NOT_FOUND)
-        raw = {target} if kind == "raw" else set()
+        raw = targets if kind == "raw" else set()
         entity = {target} if kind == "entity" else set()
         # An atom's promoted candidate must also leave the active store, otherwise
         # re-promotion could recreate the removed conclusion from the same draft.
@@ -130,6 +133,8 @@ class NativeStore:
                 or r["quote_event_id"] in raw
             )
         ]
+        candidate.update(r["candidate_id"] for r in chosen["atoms"])
+        chosen["candidates"] = [r for r in rows["candidates"] if r["id"] in candidate]
         atoms = {r["id"] for r in chosen["atoms"]}
         chosen["episodes"] = [
             r
@@ -167,6 +172,25 @@ class NativeStore:
             for row in snapshot.get(name, []):
                 self.delete_row(name, row)
         self.refresh_entities(snapshot)
+
+    def thread_snapshot(self, thread_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Collect this thread's sources and derived records within this namespace.
+
+        A mixed-source conclusion must be removed in full: retaining its text
+        after merely trimming the evidence IDs could retain the deleted content.
+        The other threads' original sources are never selected by that cascade.
+        """
+        raw_ids = {
+            event["id"]
+            for event in self.rows("raw_events")
+            if event.get("thread_id") == thread_id
+            or (not event.get("thread_id") and event.get("session_id") == thread_id)
+        }
+        selected = self.snapshot("raw", next(iter(raw_ids)), raw_ids=raw_ids) if raw_ids else {}
+        active = [r for r in self.rows("thread_active_entities") if r["thread_id"] == thread_id]
+        if active:
+            selected["thread_active_entities"] = active
+        return selected
 
     def delete_row(self, name: str, row: dict[str, Any]) -> None:
         keys = KEYS.get(name, ("id",))

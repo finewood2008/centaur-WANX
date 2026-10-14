@@ -103,6 +103,19 @@ export function registerControlActions({
     if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
     return client.register({ phone: number, password: input.password, code });
   });
+  register("send-reset-code", (input) => client.sendResetCode({ phone: phone(input) }));
+  register("send-change-code", () => client.sendChangeCode());
+  for (const [action, method] of [["reset-password", "resetPassword"], ["change-password", "changePassword"]]) {
+    register(action, (input) => {
+      const number = action === "reset-password" ? phone(input) : undefined;
+      if (typeof input?.password !== "string" || Buffer.byteLength(input.password, "utf8") < 8 ||
+          Buffer.byteLength(input.password, "utf8") > 72 || /[\r\n\0]/.test(input.password))
+        throw new Error("invalid_credentials");
+      const code = text(input?.code, 6, "invalid_sms_code");
+      if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
+      return client[method]({ ...(number ? { phone: number } : {}), code, password: input.password });
+    });
+  }
   register("logout", () => { uiState?.invalidateOpen(); return client.logout(); });
   register("refresh-devices", () => client.refreshDevices());
   register("ownership-list", () => client.listOwnershipTransfers());

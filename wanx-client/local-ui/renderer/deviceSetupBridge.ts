@@ -58,6 +58,15 @@ export interface DeviceSetupTransport {
 
 declare global {
   interface Window {
+    wanxDiscovery?: {
+      bluetoothState(): Promise<{ status: string }>;
+    };
+    wanxBluetooth?: {
+      snapshot(): { status: "checking" | "available" | "unavailable" | "permission-denied" | "unsupported" | "error" };
+      refresh(): Promise<{ status: string }>;
+      reportError(error: unknown): void;
+      subscribe(listener: (state: { status: string }) => void): () => void;
+    };
     wanxSetup?: SetupBridge;
     wanxSetupTransport?: SetupTransportBridge;
     wanxDeviceSetupTransport?: DeviceSetupTransport;

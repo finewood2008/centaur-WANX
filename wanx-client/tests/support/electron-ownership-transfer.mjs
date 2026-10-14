@@ -15,6 +15,7 @@ async function verify() {
   const reply = data => new Response(JSON.stringify({ code: 200, data }));
   try {
     await app.whenReady();
+    ipcMain.handle("wanx:discovery:bluetooth-state", () => ({ status: "available" }));
     const account = createAccount({ store: { load: async () => saved, save: async value => { saved = value; } }, fetch: async (url, options) => {
       const body = options.body && JSON.parse(options.body);
       calls.push({ path: new URL(url).pathname, body });

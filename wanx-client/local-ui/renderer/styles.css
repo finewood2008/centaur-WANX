@@ -146,7 +146,8 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wizard-copy > p { color: var(--fn-text-secondary); font-size: 12px; }
 .wizard-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
 .scan-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 132px; }
-.scan-button[aria-busy="true"] { cursor: progress; opacity: .8; }
+.scan-button:disabled { opacity: 1; background: var(--fn-bg-secondary); color: var(--fn-text-tertiary); border-color: var(--fn-border-input); }
+.scan-button[aria-busy="true"] { cursor: progress; }
 .scan-spinner { width: 13px; height: 13px; flex: 0 0 auto; border: 2px solid #ffffff50; border-top-color: currentColor; border-radius: 50%; animation: scan-spin .8s linear infinite, scan-appear .18s ease-out both; }
 @keyframes scan-spin { to { transform: rotate(360deg); } }
 @keyframes scan-appear { from { opacity: 0; } to { opacity: 1; } }
@@ -204,3 +205,9 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .setup-wifi .wifi-status, .setup-wifi .wifi-mode { grid-column: 1 / -1; }
 .setup-wifi .wifi-mode { justify-self: start; margin: 0 0 14px; }
 @media (max-width: 600px) { .wifi-picker { align-items: stretch; flex-direction: column; } }
+
+.auth-help { margin-top: 16px; }
+.password-panel { padding: 24px 0; border-bottom: 1px solid var(--fn-border-primary); }
+.password-panel form { max-width: 480px; }
+.password-panel .code-field input { min-width: 0; }
+.password-panel form .settings-actions { margin-top: 8px; }

@@ -20,13 +20,22 @@ let authUsername = "";
 let resendAt = 0;
 let resendTimer;
 let codeSent = false;
+let passwordEditing = false;
+let resetResendAt = 0;
+let changeResendAt = 0;
+let passwordResendTimer;
 let notice = null;
 const localOperations = new Map();
 let pendingSelection = null;
 const expandedDetails = new Set();
 let busy = false;
+let busyRequest = null;
+let renderedMarkup = null;
+let activeInteraction = false;
+let interactionTimer;
 let setupState = { state: "idle" };
 let setupReady = false;
+let bluetoothState = window.wanxBluetooth?.snapshot() || { status: "unsupported" };
 let setupRequest = null;
 let wifiPicker = newWifiPicker();
 function newWifiPicker() { return { scanned: false, pending: null, networks: [], selected: null, manual: false, error: null, sessionId: null }; }
@@ -110,7 +119,7 @@ const selection = createDiscoverySelection({
   onSelected(candidate) { void run("provisioning.start", { candidate }); },
 });
 window.addEventListener?.("pagehide", () => { resetWifiPicker(); selection.dispose(); }, { once: true });
-window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); }, { once: true });
+window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); clearTimeout(passwordResendTimer); }, { once: true });
 const stageLabels = {
   discover: "发现盒子",
   identity: "读取设备身份",
@@ -133,7 +142,7 @@ function statusLabel(device) {
   if (currentState.activeDeviceId === device.deviceId) return "当前连接";
   const accessLabel = {
     service_unavailable: "账号服务待更新", access_denied: "未获访问权限",
-    authorization_unavailable: "盒子授权组件待更新", authorization_pending: "访问权限待就绪",
+    authorization_unavailable: "盒子授权组件待更新", authorization_pending: "正在同步访问权限",
     network_unconfigured: "盒子尚未接入网络", identity_unavailable: "盒子身份待就绪",
   }[device.accessState];
   if (accessLabel) return accessLabel;
@@ -152,6 +161,12 @@ function deviceCanConnect(device) {
   return device.canOpen !== false && device.networkReady !== false && (device.canOpen === true || device.accessState === "ready");
 }
 
+function authorizationHint() {
+  return currentState.network?.enabled === false
+    ? "开启万象网络后将同步此电脑的访问权限。"
+    : "请保持电脑和盒子联网，授权同步完成后会自动更新；长时间未完成可点击刷新。";
+}
+
 function deviceCard(device) {
   const selected = currentState.activeDeviceId === device.deviceId;
   const available = deviceCanConnect(device);
@@ -166,8 +181,8 @@ function deviceCard(device) {
           : `<span class="muted">${escapeHTML(statusLabel(device))}</span>`;
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
-    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${escapeHTML(statusLabel(device))}</p></div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
@@ -217,21 +232,48 @@ function updateTransferCodeButton() {
   if (remaining) transferResendTimer = setTimeout(updateTransferCodeButton, 1000);
 }
 
+function authSubmitLabel() {
+  return authMode === "register" ? "创建账号并进入" : authMode === "reset" ? "重置密码" : "登录并进入";
+}
+
+function passwordFields(prefix, action, until) {
+  const remaining = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  return `<label for="${prefix}-confirm-password">确认密码</label><input id="${prefix}-confirm-password" name="confirmPassword" type="password" required autocomplete="new-password" placeholder="再次输入密码" /><label for="${prefix}-code">短信验证码</label><div class="code-field"><input id="${prefix}-code" name="code" required pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" placeholder="输入 6 位验证码" /><button class="button small" type="button" data-action="${action}" ${busy || remaining ? "disabled" : ""}>${remaining ? `${remaining} 秒后重新获取` : "获取验证码"}</button></div>`;
+}
+
+function updatePasswordCodeButtons() {
+  clearTimeout(passwordResendTimer);
+  let waiting = false;
+  for (const [action, until] of [["send-reset-code", resetResendAt], ["send-change-code", changeResendAt]]) {
+    const remaining = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    const button = document.querySelector(`[data-action="${action}"]`);
+    if (button) {
+      button.disabled = busy || remaining > 0;
+      button.textContent = remaining ? `${remaining} 秒后重新获取` : "获取验证码";
+      waiting ||= remaining > 0;
+    }
+  }
+  if (waiting) passwordResendTimer = setTimeout(updatePasswordCodeButtons, 1000);
+}
+
 function authView() {
   const register = authMode === "register";
+  const reset = authMode === "reset";
+  const newPassword = register || reset;
   return `<div class="auth-layout"><section class="auth-card">
     <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
-    <h1>${register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
-        <div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>
-        <form id="auth-form" data-form="auth" data-mode="${authMode}">
+    <h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
+        ${reset ? `<p class="muted">通过账号绑定的手机号验证身份，重置后请用新密码登录。</p>` : `<div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>`}
+        <form id="auth-form" data-form="auth" data-mode="${authMode}" novalidate>
           <label for="account-name">手机号</label>
           <input id="account-name" name="username" value="${escapeHTML(authUsername)}" required pattern="1[0-9]{10}" autocomplete="username" placeholder="13800138000" />
-          <label for="account-password">密码</label>
-          <input id="account-password" name="password" type="password" required autocomplete="${register ? "new-password" : "current-password"}" placeholder="${register ? "设置登录密码" : "输入密码"}" />
-          ${register ? `<label for="account-confirm-password">确认密码</label><input id="account-confirm-password" name="confirmPassword" type="password" required autocomplete="new-password" placeholder="再次输入密码" /><label for="account-code">短信验证码</label><div class="code-field"><input id="account-code" name="code" required pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" placeholder="输入 6 位验证码" /><button class="button small" type="button" data-action="send-registration-code" ${busy || resendSeconds() ? "disabled" : ""}>${resendSeconds() ? `${resendSeconds()} 秒后重新获取` : "获取验证码"}</button></div>` : ""}
-          <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? "处理中…" : register ? "创建账号并进入" : "登录并进入"}</button>
+          <label for="account-password">${reset ? "新密码" : "密码"}</label>
+          <input id="account-password" name="password" type="password" required autocomplete="${newPassword ? "new-password" : "current-password"}" placeholder="${newPassword ? "设置 8–72 字节的新密码" : "输入密码"}" />
+          ${newPassword ? passwordFields("account", reset ? "send-reset-code" : "send-registration-code", reset ? resetResendAt : resendAt) : ""}
+          <div data-auth-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div>
+          <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? authBusyLabel() : authSubmitLabel()}</button>
         </form>
-        ${notice ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
+        <button class="text-button auth-help" data-action="${reset ? "auth-login" : "auth-reset"}" ${busy ? "disabled" : ""}>${reset ? "返回登录" : "忘记密码？"}</button>
     </section></div>`;
 }
 
@@ -241,9 +283,10 @@ function settingsView() {
   const startup = currentState.desktopStartup || { supported: false, enabled: false };
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("设置")}<div class="page-content">
     <div class="page-heading"><h2>设置</h2><p class="muted">让万象在需要时，安静地为你准备好。</p></div>
-    ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    ${notice && !passwordEditing ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="settings-panel"><div><h3>盒子</h3><p class="muted">${currentState.activeDeviceId ? `${escapeHTML(activeDeviceName())} · 已连接` : "尚未连接盒子"}</p></div><button class="button small" data-action="show-boxes">管理与切换盒子</button></section>
-    <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><button class="button small" data-action="logout" ${busy ? "disabled" : ""}>退出当前账号</button></section>
+    <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small" data-action="logout" ${busy ? "disabled" : ""}>退出当前账号</button></div></section>
+    ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
     <section class="settings-panel"><div><h3>万象网络</h3><p class="muted">${network.label} · ${network.detail}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
     <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted">${escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
     <section class="settings-panel"><div><h3>关于万象</h3><p class="muted">半人马AI-万象 · CentaurAI-WanX</p></div><button class="button small" data-action="desktop-about">关于</button></section>
@@ -265,7 +308,7 @@ function boxesView() {
 function ownershipView() {
   const device = currentState.devices?.find(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner"));
   const pending = ownershipTransfers.filter(item => item.state === "pending_target" && Date.parse(item.expiresAt) > Date.now());
-  return `<section class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
+  return `<section hidden class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
     <p class="muted">将盒子交给另一个万象账号。此操作保留盒内数据；需要清空交付时，请由管理员执行盒子清除。</p>
     ${transferNotice ? `<p role="status">${escapeHTML(transferNotice)}</p>` : ""}
     ${device ? `<form data-form="transfer" data-device-id="${escapeHTML(device.deviceId)}" class="auth-card transfer-form"><h3>转移 ${escapeHTML(device.name || device.displayName || device.deviceId)}</h3>
@@ -332,8 +375,10 @@ function pendingOpenView() {
   if (!devices.some((device) => device.deviceId === pendingSelection.deviceId)) pendingSelection.deviceId = devices[0]?.deviceId;
   const application = currentState.applications?.find((item) => item.applicationId === pending.applicationId);
   const processing = ["connecting", "opening"].includes(pending.phase);
+  const authorizing = !devices.length && currentState.devices?.some(device => device.accessState === "authorization_pending");
   return `<section class="pending-open" aria-label="连接盒子并打开应用" role="status"><div><h3>${processing ? pending.phase === "connecting" ? "正在连接盒子…" : "正在打开应用…" : "连接盒子并打开应用"}</h3><p class="muted">${escapeHTML(application?.name || "此应用")}需要一台盒子提供服务。</p></div>
     ${pending.error ? `<p class="inline-error">${escapeHTML(operationErrorMessage(pending.error))}</p>` : ""}
+    ${authorizing ? `<p class="muted">正在同步盒子访问权限。${authorizationHint()}</p>` : ""}
     <div class="pending-open-actions">${devices.length ? `<select aria-label="用于打开应用的盒子" data-input="pending-device" ${processing ? "disabled" : ""}>${devices.map((device) => `<option value="${escapeHTML(device.deviceId)}" ${pendingSelection.deviceId === device.deviceId ? "selected" : ""}>${escapeHTML(device.name || device.displayName || "万象盒子")}</option>`).join("")}</select><button class="button primary small" data-action="pending-confirm" ${processing || !currentState.networkReady ? "disabled" : ""}>${processing ? "处理中…" : "连接并打开"}</button>` : '<button class="button small" data-action="show-boxes">发现或管理盒子</button>'}<button class="text-button" data-action="pending-cancel">取消</button></div>
     ${!currentState.networkReady ? `<p class="muted">${networkStatus().label}。<button class="text-button" data-action="show-settings">检查网络</button></p>` : ""}</section>`;
 }
@@ -535,7 +580,20 @@ function discoveryCard(candidate) {
     : [advertisedName, !deviceId ? reading ? "正在读取盒子名称…" : "未读取到名称" : "", "蓝牙配网"].filter(Boolean).join(" · ");
   const identityDetail = deviceId && !resolvedName
     ? `<span>设备编号：${escapeHTML(deviceId)}（用于核对，不是名称）</span>` : "";
-  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong>${identityDetail}<span>${escapeHTML(detail)}</span></button>`;
+  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong>${identityDetail}<span>${escapeHTML(detail)}</span></button>`;
+}
+
+function bluetoothNotice() {
+  const status = bluetoothState.status;
+  if (status === "available") return "";
+  const message = {
+    checking: "正在检查电脑蓝牙状态…",
+    unavailable: "电脑蓝牙尚不可用。请先开启蓝牙；若电脑没有蓝牙适配器，请连接适配器后重试。",
+    "permission-denied": "万象尚未获得蓝牙访问权限。请在系统设置中允许万象访问蓝牙，再重新检查。",
+    unsupported: "当前运行环境不支持蓝牙发现。请使用支持蓝牙的万象桌面客户端。",
+    error: "暂时无法读取电脑蓝牙状态，请确认蓝牙已开启后重新检查。",
+  }[status];
+  return `<div class="notice bluetooth-notice" role="status"><p>${escapeHTML(message)}</p>${!["checking", "unsupported"].includes(status) ? `<div class="wizard-actions"><button class="button small" data-action="bluetooth-settings">${status === "permission-denied" ? "打开蓝牙权限设置" : "打开蓝牙设置"}</button><button class="text-button" data-action="bluetooth-refresh">重新检查</button></div>` : ""}</div>`;
 }
 
 function provisioningView() {
@@ -588,8 +646,8 @@ function provisioningView() {
       ${shellHeader("发现并配置盒子")}<div class="page-content">
       <div class="page-heading"><div><h2>发现新盒子</h2><p class="muted">核对身份，连接网络，然后绑定到你的账号。</p></div></div>
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
-        <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${discoveryBlock}${previewBlock}${controls}</div>
-        <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
+        <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${bluetoothNotice()}${discoveryBlock}${previewBlock}${controls}</div>
+        <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || bluetoothState.status !== "available" || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
         ${setupPhase === "attentionRequired" ? `<button class="button" data-action="provisioning-refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? "正在刷新…" : "刷新授权状态"}</button>` : ""}
         ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
         ${!setupReady ? '<p class="hint">正在准备蓝牙配网服务…</p>' : ""}
@@ -597,11 +655,39 @@ function provisioningView() {
     </div>`;
 }
 
+function authBusyLabel() {
+  return currentState?.account?.logoutPending ? "正在完成退出…" : "处理中…";
+}
+
+// State broadcasts must not detach the pressed control before Chromium emits click.
+function releaseInteraction() {
+  clearTimeout(interactionTimer);
+  activeInteraction = false;
+}
+function finishInteraction() {
+  clearTimeout(interactionTimer);
+  interactionTimer = setTimeout(() => { releaseInteraction(); if (currentState) render(currentState); }, 0);
+}
+app.addEventListener("pointerdown", event => {
+  if (!event.target.closest?.('button, input, select, textarea, summary, a')) return;
+  clearTimeout(interactionTimer);
+  activeInteraction = true;
+});
+window.addEventListener?.("pointerup", finishInteraction);
+window.addEventListener?.("pointercancel", finishInteraction);
+window.addEventListener?.("keyup", finishInteraction);
+window.addEventListener?.("blur", finishInteraction);
+
 function render(state) {
   const auth = state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
   const previousAuth = app.querySelector?.('[data-form="auth"]');
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
+  if (activeInteraction) return;
+  const markup = auth ? authView() : page === "provisioning" ? provisioningView()
+    : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+  if (markup === renderedMarkup) { syncFormState(); return; }
+  renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
   // selection and focus; network polling does not rebuild active setup forms.
   const wifiForm = page === "provisioning" && setupState.state === "awaitingWifi" ? app.querySelector?.('[data-form="wifi"]') : null;
@@ -611,13 +697,12 @@ function render(state) {
   const scanButton = !auth && page === "provisioning" && discoveryView.selecting
     ? app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]') : null;
   const scanAnimations = new Map(scanButton?.querySelector('.scan-spinner').getAnimations().map(animation => [animation.animationName, animation.currentTime]));
-  const retainedForm = wifiForm || authForm || transferForm;
+  const passwordForm = !auth && page === "settings" && passwordEditing ? app.querySelector?.('[data-form="password-change"]') : null;
+  const retainedForm = wifiForm || authForm || transferForm || passwordForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
-  if (state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating") app.innerHTML = authView();
-  else if (page === "provisioning") app.innerHTML = provisioningView();
-  else if (page === "boxes") app.innerHTML = boxesView();
-  else if (page === "settings") app.innerHTML = settingsView();
-  else app.innerHTML = applicationsView();
+  const scroller = document.scrollingElement;
+  const scroll = retainedForm && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+  app.innerHTML = markup;
   if (scanButton) {
     app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]')?.replaceWith(scanButton);
     for (const animation of scanButton.querySelector('.scan-spinner').getAnimations()) {
@@ -625,22 +710,47 @@ function render(state) {
     }
   }
   if (retainedForm) {
-    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : "auth";
+    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : "auth";
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
       submit.disabled = busy;
-      if (authForm) submit.textContent = busy ? "处理中…" : authMode === "register" ? "创建账号并进入" : "登录并进入";
+      if (authForm) submit.textContent = busy ? authBusyLabel() : authSubmitLabel();
+      if (passwordForm) submit.textContent = busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改";
     }
-    focused?.focus();
+    focused?.focus({ preventScroll: true });
   }
+  syncFormState();
+  // Reattaching a focused form must not pull the user back after they scroll away.
+  if (scroll) {
+    scroller.scrollTop = scroll.top;
+    scroller.scrollLeft = scroll.left;
+  }
+  if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
+}
+
+function syncFormState() {
   updateResendButton();
+  updatePasswordCodeButtons();
+  const authNotice = app.querySelector?.('[data-form="auth"]')?.querySelector('[data-auth-notice]');
+  if (authNotice) {
+    authNotice.textContent = notice || "";
+    authNotice.hidden = !notice;
+    authNotice.className = `notice ${codeSent ? "success" : "error"}`;
+  }
+  const passwordNotice = app.querySelector?.('[data-form="password-change"]')?.querySelector('[data-password-notice]');
+  if (passwordNotice) {
+    passwordNotice.textContent = notice || "";
+    passwordNotice.hidden = !notice;
+    passwordNotice.className = `notice ${codeSent ? "success" : "error"}`;
+  }
+  const passwordCancel = document.querySelector('[data-action="password-cancel"]');
+  if (passwordCancel) passwordCancel.disabled = busy;
   updateTransferCodeButton();
   if (page === "provisioning" && setupState.state === "awaitingWifi") {
     updateWifiPicker();
     if (!busy && !wifiPicker.scanned) void scanWifi();
   }
-  if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
 }
 
 function setupErrorMessage(error) {
@@ -692,6 +802,8 @@ function operationErrorMessage(error) {
       SMS_CODE_INVALID: "验证码错误或已过期，请重新获取。",
       SMS_RATE_LIMITED: "验证码发送过于频繁，请稍后重试。",
       SMS_DAILY_LIMIT: "该手机号今日验证码发送次数已达上限，请明日再试。",
+      AUTH_RATE_LIMITED: "登录失败次数过多，已被暂时限制。请稍后重试，并确认使用最新密码。",
+      PASSWORD_RESET_RATE_LIMITED: "密码重置尝试过于频繁，请稍后再试。",
       PASSWORD_ALREADY_SET: "该手机号已注册，请使用密码登录。",
       PASSWORD_WEAK: "密码需为 8–72 字节，且不能包含换行符。",
       PASSWORD_INVALID: "手机号或密码不正确，请重新输入。",
@@ -749,7 +861,8 @@ async function run(action, input = {}) {
   if (isAppOperation && operationBusy(applicationId)) return null;
   const holdBusy = !isAppOperation && !["applications.confirm-open", "applications.cancel-open", "desktop.about"].includes(action);
   if (isAppOperation) localOperations.set(applicationId, { phase: { "market.install": "installing", "market.uninstall": "uninstalling", "market.rollback": "rolling_back", "applications.select-current": "selecting" }[action] || "opening" });
-  if (holdBusy) busy = true;
+  const operation = { action };
+  if (holdBusy) { busy = true; busyRequest = operation; }
   render(currentState);
   let failure;
   try {
@@ -768,14 +881,19 @@ async function run(action, input = {}) {
       return { ok: true };
     }
     const response = await window.wanxClient.action(action, input);
+    if (holdBusy && busyRequest !== operation) return null;
     if (response.state) acceptRemoteState(response.state);
     if (!response.ok) throw new Error(response.code);
     return response;
   } catch (error) {
-    if (request && setupRequest !== request) return null;
+    if (request && setupRequest !== request || holdBusy && busyRequest !== operation) return null;
     if (action === "auth.send-code" && error.message.includes("SMS_RATE_LIMITED")) {
       resendAt = Date.now() + 60000;
       updateResendButton();
+    }
+    if (["auth.send-reset-code", "auth.send-change-code"].includes(action) && error.message.includes("SMS_RATE_LIMITED")) {
+      if (action === "auth.send-reset-code") resetResendAt = Date.now() + 60000;
+      else changeResendAt = Date.now() + 60000;
     }
     failure = action.startsWith("provisioning.") ? setupErrorMessage(error) : operationErrorMessage(error);
     if (!isAppOperation && actionAccount === marketAccount) notice = failure;
@@ -785,13 +903,15 @@ async function run(action, input = {}) {
       if (failure) localOperations.set(applicationId, { phase: "failed", error: failure });
       else localOperations.delete(applicationId);
     }
-    if (holdBusy && (!request || setupRequest === request)) busy = false;
+    if (holdBusy && busyRequest === operation) { busy = false; busyRequest = null; }
     if (request && setupRequest === request) setupRequest = null;
     render(currentState);
   }
 }
 
 app.addEventListener("click", async (event) => {
+  activeInteraction = false;
+  finishInteraction();
   const target = event.target.closest("[data-action]");
   if (!target || target.disabled) return;
   const action = target.dataset.action;
@@ -810,9 +930,30 @@ app.addEventListener("click", async (event) => {
     if (result && confirmation.action.startsWith("market.")) await refreshMarket();
     return;
   }
-  if (busy && ["auth-login", "auth-register", "send-registration-code"].includes(action)) return;
+  if (busy && ["auth-login", "auth-register", "auth-reset", "send-registration-code", "send-reset-code", "send-change-code", "password-open", "password-cancel"].includes(action)) return;
   if (action === "auth-login") { authMode = "login"; notice = null; codeSent = false; render(currentState); return; }
   if (action === "auth-register") { authMode = "register"; notice = null; codeSent = false; render(currentState); return; }
+  if (action === "auth-reset") { authMode = "reset"; notice = null; codeSent = false; render(currentState); return; }
+  if (action === "password-open" || action === "password-cancel") {
+    passwordEditing = action === "password-open";
+    notice = null; codeSent = false; render(currentState); return;
+  }
+  if (action === "send-reset-code" || action === "send-change-code") {
+    const change = action === "send-change-code";
+    if (change ? !passwordEditing || currentState.route === "auth" : authMode !== "reset") return;
+    if (Date.now() < (change ? changeResendAt : resetResendAt)) return;
+    if (!change) {
+      authUsername = document.querySelector("#account-name")?.value.trim() || "";
+      if (!/^1\d{10}$/.test(authUsername)) { notice = "请输入有效的 11 位手机号"; codeSent = false; render(currentState); return; }
+    }
+    const response = await run(change ? "auth.send-change-code" : "auth.send-reset-code", change ? {} : { username: authUsername });
+    if (response) {
+      if (change) changeResendAt = Date.now() + 60000;
+      else resetResendAt = Date.now() + 60000;
+      codeSent = true; notice = "验证码已发送，5 分钟内有效，请查收短信";
+    }
+    render(currentState); return;
+  }
   if (action === "send-registration-code") {
     if (authMode !== "register" || resendSeconds()) return;
     const input = document.querySelector("#account-name");
@@ -897,15 +1038,23 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "refresh") { if (page === "provisioning") page = "boxes"; await run("devices.refresh"); if (page === "boxes") await refreshTransfers({ force: true }); return; }
   if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
+  if (action === "bluetooth-refresh") { await window.wanxBluetooth?.refresh(); return; }
+  if (action === "bluetooth-settings") {
+    try { await window.wanxDiscovery.openBluetoothSettings(bluetoothState.status === "permission-denied" ? "privacy" : "bluetooth"); }
+    catch { notice = "无法自动打开系统设置，请手动打开电脑的蓝牙设置并开启蓝牙、允许万象访问。"; render(currentState); }
+    return;
+  }
   if (action === "provisioning") {
     resetWifiPicker();
     selection.reset();
     page = "provisioning";
-    busy = true;
+    void window.wanxBluetooth?.refresh();
+    const operation = { action: "provisioning.reset" };
+    busy = true; busyRequest = operation;
     render(currentState);
-    try { setupState = await window.wanxSetup.reset(); }
-    catch (error) { notice = error.message; }
-    finally { busy = false; render(currentState); }
+    try { const snapshot = await window.wanxSetup.reset(); if (busyRequest === operation) setupState = snapshot; }
+    catch (error) { if (busyRequest === operation) notice = error.message; }
+    finally { if (busyRequest === operation) { busy = false; busyRequest = null; render(currentState); } }
     return;
   }
   if (action === "wifi-refresh") { await scanWifi(); return; }
@@ -916,10 +1065,10 @@ app.addEventListener("click", async (event) => {
     updateWifiPicker(); return;
   }
   if (action === "start-provisioning") {
-    if (busy || !setupReady || discoveryView.selecting) return;
+    if (busy || !setupReady || bluetoothState.status !== "available" || discoveryView.selecting) return;
     resetWifiPicker(); selection.start(); return;
   }
-  if (action === "select-candidate") { selection.choose(target.dataset.candidateId); return; }
+  if (action === "select-candidate") { if (bluetoothState.status === "available") selection.choose(target.dataset.candidateId); return; }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
   if (action === "provisioning-owner") { await run("provisioning.owner"); return; }
@@ -972,6 +1121,7 @@ app.addEventListener("toggle", (event) => {
 }, true);
 
 app.addEventListener("keydown", (event) => {
+  if (event.key === " " && event.target?.closest?.("button")) { clearTimeout(interactionTimer); activeInteraction = true; }
   if (!marketConfirmation) return;
   if (event.key === "Escape") { marketConfirmation = null; render(currentState); }
   if (event.key === "Tab") {
@@ -983,6 +1133,16 @@ app.addEventListener("keydown", (event) => {
     }
   }
 });
+
+function validateNewPassword(data) {
+  if (!data.password) return "请输入新密码";
+  const length = new TextEncoder().encode(data.password || "").length;
+  if (length < 8 || length > 72 || /[\r\n\0]/.test(data.password)) return "密码需为 8–72 字节，且不能包含换行符。";
+  if (!data.confirmPassword) return "请再次输入新密码";
+  if (data.password !== data.confirmPassword) return "两次输入的密码不一致";
+  if (!/^\d{6}$/.test(data.code || "")) return "请输入 6 位短信验证码";
+  return null;
+}
 
 app.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1011,33 +1171,44 @@ app.addEventListener("submit", async (event) => {
     });
     return;
   }
+  if (event.target.dataset.form === "password-change") {
+    const data = Object.fromEntries(new FormData(event.target));
+    codeSent = false;
+    notice = validateNewPassword(data);
+    if (notice) { render(currentState); return; }
+    await run("auth.change-password", { password: data.password, code: data.code });
+    return;
+  }
   if (event.target.dataset.form !== "auth") return;
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.target));
   authUsername = String(data.username || "").trim();
   codeSent = false;
   if (!/^1\d{10}$/.test(authUsername)) notice = "请输入有效的 11 位手机号";
-  else if (authMode === "register" && (
-    new TextEncoder().encode(data.password || "").length < 8 ||
-    new TextEncoder().encode(data.password || "").length > 72 || /[\r\n\0]/.test(data.password)
-  )) notice = "密码需为 8–72 字节，且不能包含换行符。";
-  else if (authMode === "register" && data.password !== data.confirmPassword) notice = "两次输入的密码不一致";
-  else if (authMode === "register" && !/^\d{6}$/.test(data.code || "")) notice = "请输入 6 位短信验证码";
+  else if (authMode === "login" && !data.password) notice = "请输入密码";
+  else if (authMode !== "login" && validateNewPassword(data)) notice = validateNewPassword(data);
   else {
-    await run(authMode === "register" ? "auth.register" : "auth.login", { username: authUsername, password: data.password, ...(authMode === "register" ? { code: data.code } : {}) });
+    const reset = authMode === "reset";
+    const result = await run(reset ? "auth.reset-password" : authMode === "register" ? "auth.register" : "auth.login", { username: authUsername, password: data.password, ...(authMode !== "login" ? { code: data.code } : {}) });
+    if (reset && result) { authMode = "login"; codeSent = true; notice = "密码重置成功，请使用新密码登录。"; render(currentState); }
     return;
   }
   render(currentState);
 });
 
 function acceptRemoteState(state) {
-  if (state.route !== "auth") {
-    clearTimeout(resendTimer);
-    resendAt = 0;
-    codeSent = false;
-  }
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
   const accountChanged = account !== marketAccount;
+  if (accountChanged) {
+    const passwordChanged = state.account?.reason === "password_reset" && busyRequest?.action === "auth.change-password";
+    releaseInteraction(); busy = false; busyRequest = null;
+    passwordEditing = false; changeResendAt = 0;
+    clearTimeout(resendTimer); resendAt = 0; codeSent = false;
+    if (passwordChanged) {
+      authMode = "login"; codeSent = true;
+      notice = "密码修改成功，请使用新密码重新登录。";
+    }
+  }
   // Page selection belongs to the UI; network polling only updates its data.
   // Do not discard in-progress Wi-Fi input or the selected BLE device.
   if (page === "provisioning" && state.route !== "auth" && !accountChanged) {
@@ -1072,6 +1243,11 @@ function acceptRemoteState(state) {
     void refreshMarket();
   }
 }
+window.wanxBluetooth?.subscribe(state => {
+  bluetoothState = state;
+  if (state.status === "unavailable" && discoveryView.selecting) selection.reset();
+  if (page === "provisioning" && currentState) render(currentState);
+});
 window.wanxClient.onLocalState(acceptRemoteState);
 window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
