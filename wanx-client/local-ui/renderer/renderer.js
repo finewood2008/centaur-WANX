@@ -793,7 +793,15 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (busy && action.startsWith("transfer-")) return;
-  if (action === "transfer-open") { transferDeviceId = target.dataset.deviceId; transferNotice = null; render(currentState); return; }
+  if (action === "transfer-open") {
+    transferDeviceId = target.dataset.deviceId;
+    transferNotice = null;
+    render(currentState);
+    const form = app.querySelector('[data-form="transfer"]');
+    form?.scrollIntoView({ block: "center", behavior: "instant" });
+    form?.querySelector('[name="targetPhone"]')?.focus({ preventScroll: true });
+    return;
+  }
   if (action === "transfer-cancel") { transferDeviceId = null; render(currentState); return; }
   if (action === "transfer-refresh") { await refreshTransfers(); return; }
   if (action === "transfer-code") {

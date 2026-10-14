@@ -57,9 +57,11 @@ async function harness(initial = state(), installed = [application], options = {
       markup = value; renderCount++;
       forms = new Map([...value.matchAll(/<form\b[^>]*data-form="([^"]+)"[^>]*>/g)].map(([, name]) => {
         const submit = { disabled: false, textContent: "" };
+        const transferPhone = { focus: () => calls.push(["focus-transfer-phone"]) };
         const wifiNodes = new Map();
         const form = { dataset: { mode: value.match(/data-mode="([^"]+)"/)?.[1] }, values: {}, contains: () => false,
-          querySelector: (selector) => name === "wifi" ? wifiNodes.get(selector) : submit,
+          querySelector: (selector) => name === "wifi" ? wifiNodes.get(selector) : name === "transfer" && selector === '[name="targetPhone"]' ? transferPhone : submit,
+          scrollIntoView: (options) => calls.push(["scroll-form", name, options.block]),
           replaceWith: (retained) => forms.set(name, retained),
         };
         if (name === "wifi") {
@@ -1002,6 +1004,11 @@ test("box ownership UI is owner-only and explicitly retains data", async () => {
   assert.match(h.app.innerHTML, /客户万象账号手机号/);
   assert.match(h.app.innerHTML, /我同意保留盒内数据并转移所有权/);
   assert.match(h.app.innerHTML, /需要清空交付时/);
+  assert.deepEqual(h.calls.filter(item => item[0] === "scroll-form"), [["scroll-form", "transfer", "center"]]);
+  assert.equal(h.calls.filter(item => item[0] === "focus-transfer-phone").length, 1);
+  h.update(initial);
+  assert.equal(h.calls.filter(item => item[0] === "scroll-form").length, 1, "background refresh must not scroll again");
+  assert.equal(h.calls.filter(item => item[0] === "focus-transfer-phone").length, 1, "background refresh must not steal focus");
 });
 
 test("recipient explicitly confirms incoming ownership without a connected box", async () => {
