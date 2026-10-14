@@ -38,6 +38,14 @@ Web 默认 `http://localhost:5173`，现有 Vite 将 `/api` 和 API WebSocket �
 
 万象账号服务默认 `https://boss.nexusaos.qitus.cn/prod-api`，部署时可通过 `WANX_CONSUMER_URL` 指定 HTTPS 服务地址。网络管理地址默认 `https://p2p.qeeshu.com`。管理 API 凭据只配置在服务端，不能分发给客户端。
 
+## 桌面入口与登录启动
+
+0.1.2 变更、验证结果及 Windows 验收步骤见 [分支说明](../docs/wanx-client-0.1.2-tray-startup.md)。
+
+macOS 菜单栏与 Windows 系统托盘均以快捷面板作为日常入口：单击图标打开或收起面板，直接查看盒子状态、打开已安装应用；点击「设置」或「浏览应用商店」再进入管理窗口。点击其他位置收起面板，关闭管理窗口继续后台运行。Windows 弹窗适配顶部、底部和侧边任务栏以及多屏工作区。
+
+安装版 macOS 和 Windows 首次启动默认开启「登录电脑时启动」，登录时只在后台运行，不自动弹出管理窗口。用户在应用或系统设置中关闭后，后续启动保留选择。Windows 注册实际安装程序路径与静默启动参数；普通 Electron 源码调试进程不会注册为登录项。
+
 ## 账号、设备与权限
 
 平台复用现有 Consumer 账号、AppClient、Owner/Grant 和成员授权。新网络控制面校验这些事实，登记当前客户端 peer，并维护该客户端到已授权盒子 TCP 8088 的精确策略。不会把所有账号加入同一共享访问组，网络节点列表也不代表盒子归属。
