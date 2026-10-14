@@ -3,6 +3,7 @@ import { createClaimResumeStore } from './claim-resume-store.cjs';
 import { createPairingConsumer } from '../account/pairing.mjs';
 import { installElectronBluetoothPicker } from '@nexusaos/device-discovery-electron/main';
 import { readFile } from 'node:fs/promises';
+import { installBluetoothSettings } from './bluetooth-settings.mjs';
 
 // Composition seam: the existing BLE coordinator borrows the P2P account identity.
 export async function createSetupRuntime({
@@ -13,7 +14,7 @@ export async function createSetupRuntime({
   onError = () => {},
 }) {
   const consumer = createPairingConsumer(account);
-  let host, disposePicker, unsubscribeHost, unsubscribeAccount;
+  let host, disposePicker, disposeBluetoothSettings, unsubscribeHost, unsubscribeAccount;
   let disposed = false;
   let completedFlow;
   const ready = () => {
@@ -24,6 +25,9 @@ export async function createSetupRuntime({
       webContents: control.webContents, ipcMain, documentUrl: controlURL, consumer,
       resumeStore: makeStore({ directory: userData, safeStorage, consumerBaseUrl }),
       ...JSON.parse(await readFile(new URL('./provisioning-trust.json', import.meta.url), 'utf8')),
+    });
+    disposeBluetoothSettings = installBluetoothSettings({
+      webContents: control.webContents, ipcMain, documentUrl: controlURL,
     });
     disposePicker = installPicker({
       webContents: control.webContents, ipcMain, documentUrl: controlURL,
@@ -56,6 +60,7 @@ export async function createSetupRuntime({
         unsubscribeAccount?.();
         unsubscribeHost?.();
         disposePicker?.();
+        disposeBluetoothSettings?.();
         await host.dispose();
         consumer.dispose();
       },
@@ -64,6 +69,7 @@ export async function createSetupRuntime({
     unsubscribeAccount?.();
     unsubscribeHost?.();
     disposePicker?.();
+    disposeBluetoothSettings?.();
     await host?.dispose();
     consumer.dispose();
     throw error;

@@ -110,8 +110,9 @@ function harness(t, options = {}) {
       }
       throw Error(`unexpected route ${input.path}`);
     },
-    logout: async () => {
-      calls.push({ path: "logout" });
+    logout: async (options) => {
+      calls.push({ path: "logout", options });
+      serverSession = null;
       return publish({ phase: "signed_out", accountId: null, clientId: null });
     },
     close: async () => {},
@@ -168,6 +169,7 @@ function harness(t, options = {}) {
           request: options.gatewayRequest,
           close: async () => {
             item.gatewayClosed = true;
+            await options.onGatewayClose?.();
             await session?.close();
           },
         }),
@@ -190,6 +192,7 @@ function harness(t, options = {}) {
   return {
     client,
     account,
+    publishAccount: publish,
     calls,
     transports,
     sessions,
@@ -236,10 +239,9 @@ test("one product login automatically enrolls and opens only a server-authorized
   assert.equal(h.client.snapshot().account.phase, "signed_out");
   assert.equal(h.sessions[0].closed, true);
   assert.equal(h.transports[0].closed, true);
-  assert.deepEqual(
-    h.calls.slice(-2).map((c) => c.path),
-    ["/app-api/network/current", "logout"],
-  );
+  assert.deepEqual(h.calls.at(-1), {
+    path: "logout", options: { revokeNetwork: true },
+  });
 });
 
 test("P2P-off login preserves local development and never requests enrollment", async (t) => {
@@ -1414,4 +1416,221 @@ test("an old account retry cannot restart after signing into another account", a
   assert.equal(h.calls.length, calls);
   assert.equal(h.client.snapshot().account.accountId, "account-2");
   assert.equal(h.client.snapshot().platform.phase, "ready");
+});
+
+
+test("logout completes locally while old gateway drains without changing the next login", async t => {
+  const stopped = deferred();
+  t.after(() => stopped.resolve());
+  const h = harness(t, {
+    onGatewayClose: () => stopped.promise,
+    gatewayRequest: async () => ({ status: 200, body: Buffer.from('{"id":4}') }),
+  });
+  await h.client.loginPassword({ phone: "account-1" });
+  await h.client.connectBox("box-1");
+  const lease = await h.client.applicationConnection();
+  const loggingOut = h.client.logout();
+  assert.throws(() => lease.context(), { code: "NETWORK_CHANGED" });
+  await loggingOut;
+  assert.equal(h.client.snapshot().account.phase, "signed_out");
+  assert.equal(h.client.snapshot().connection, null);
+  assert.equal(h.sessions[0].closed, false);
+  const login = h.client.loginPassword({ phone: "account-2" });
+  await tick();
+  assert.equal(h.transports.length, 1, "new transport must wait for the old process to stop");
+  stopped.resolve();
+  await login;
+  assert.equal(h.client.snapshot().account.accountId, "account-2");
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  assert.equal(h.transports[0].closed, true);
+});
+
+
+test("logout cleanup status cannot cancel the next login's network activation", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-1" });
+  await h.client.logout();
+  const resume = deferred();
+  const loginPassword = h.account.loginPassword;
+  h.account.loginPassword = async input => {
+    await resume.promise;
+    return loginPassword(input);
+  };
+  const login = h.client.loginPassword({ phone: "account-1" });
+  h.publishAccount({ phase: "signed_out", accountId: null, clientId: null, logoutPending: false });
+  resume.resolve();
+  await login;
+  assert.equal(h.client.snapshot().account.phase, "authenticated");
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  assert.equal(h.client.snapshot().devices.length, 1);
+});
+
+test("password reset sign-out retires the selected box without remote logout and supports fresh login", async t => {
+  const h = harness(t);
+  h.account.changePassword = async () => {
+    h.publishAccount({ phase: "signed_out", accountId: null, clientId: null, reason: "password_reset" });
+    return { passwordReset: true };
+  };
+  await h.client.initialize();
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  await h.client.connectBox("box-1");
+  assert.equal(h.client.snapshot().phase, "ready");
+  assert.deepEqual(await h.client.changePassword({ code: "000001", password: "new-password" }), { passwordReset: true });
+  const state = h.client.snapshot();
+  assert.equal(state.account.reason, "password_reset");
+  assert.equal(state.connection, null);
+  assert.deepEqual(state.devices, []);
+  assert.equal(state.platform.phase, "idle");
+  await tick();
+  assert.equal(h.sessions[0].closed, true);
+  assert.equal(h.transports[0].closed, true);
+  assert.equal(h.calls.some(call => call.path === "logout" || call.path === "/app-api/network/current"), false);
+  await h.client.loginPassword({ phone: "13800000001", password: "new-password" });
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+});
+
+test("pending authorization is observed after two seconds without renewing or preparing again", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  const published = [];
+  h.client.subscribe(state => published.push(state));
+  let pending = true;
+  h.override(input => input.path.startsWith("/app-api/network/boxes")
+    ? { boxes: [{ ...device, accessState: pending ? "authorization_pending" : "ready" }] } : undefined);
+  await h.client.loginPassword({ phone: "account-1" });
+  const initialCalls = h.calls.length;
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  pending = false;
+  t.mock.timers.tick(1999);
+  await tick();
+  assert.equal(h.calls.length, initialCalls);
+  t.mock.timers.tick(1);
+  await tick();
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  assert.deepEqual(h.calls.slice(initialCalls).map(call => call.path), ["/app-api/network/boxes", "/app-api/network/devices"]);
+  assert.equal(published.at(-1).devices[0].canOpen, true);
+  const afterReady = h.calls.length;
+  t.mock.timers.tick(4000);
+  await tick();
+  assert.equal(h.calls.length, afterReady);
+});
+
+test("another box awaiting authorization never disconnects the ready selected box", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  h.override(input => input.path.startsWith("/app-api/network/boxes")
+    ? { boxes: [{ ...device, accessState: "ready" }, { ...device, deviceId: "box-2", accessState: "authorization_pending" }] } : undefined);
+  await h.client.loginPassword({ phone: "account-1" });
+  await h.client.connectBox("box-1");
+  t.mock.timers.tick(2000);
+  await tick();
+  assert.equal(h.client.snapshot().connection.deviceId, "box-1");
+  assert.equal(h.client.snapshot().phase, "ready");
+  assert.equal(h.sessions[0].closed, false);
+  assert.equal(h.calls.filter(call => call.path.endsWith("/prepare")).length, 1);
+});
+
+test("fast authorization polling is bounded to one minute and normal renewal continues", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t, { renewIntervalMs: 120_000 });
+  h.override(input => input.path.startsWith("/app-api/network/boxes")
+    ? { boxes: [{ ...device, accessState: "authorization_pending" }] } : undefined);
+  await h.client.loginPassword({ phone: "account-1" });
+  const count = () => h.calls.filter(call => call.path === "/app-api/network/boxes").length;
+  const initial = count();
+  for (let i = 0; i < 30; i++) {
+    t.mock.timers.tick(2000);
+    await tick();
+  }
+  assert.equal(count() - initial, 29);
+  t.mock.timers.tick(4000);
+  await tick();
+  assert.equal(count() - initial, 29);
+  t.mock.timers.tick(56000);
+  await tick();
+  assert.equal(count() - initial, 30);
+  t.mock.timers.tick(2000);
+  await tick();
+  assert.equal(count() - initial, 30, "renewal must not restart an endless fast polling loop");
+  assert.equal(h.calls.filter(call => call.path.endsWith("/prepare")).length, 1);
+});
+
+for (const stop of ["disable", "logout", "close"]) {
+  test(`authorization polling cancels a late directory response on ${stop}`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const h = harness(t);
+    h.override(input => input.path.startsWith("/app-api/network/boxes")
+      ? { boxes: [{ ...device, accessState: "authorization_pending" }] } : undefined);
+    await h.client.loginPassword({ phone: "account-1" });
+    const waiting = deferred();
+    h.override(input => input.path === "/app-api/network/boxes" ? waiting.promise : undefined);
+    t.mock.timers.tick(2000);
+    await tick();
+    h.override(undefined);
+    if (stop === "disable") await h.client.setNetworkEnabled(false);
+    if (stop === "logout") await h.client.logout();
+    if (stop === "close") await h.client.close();
+    const callCount = h.calls.length;
+    waiting.resolve({ boxes: [{ ...device, deviceId: "stale-box", accessState: "ready" }] });
+    await tick();
+    t.mock.timers.tick(10000);
+    await tick();
+    assert.equal(h.calls.length, callCount);
+    assert.equal(h.client.snapshot().devices.some(box => box.deviceId === "stale-box"), false);
+    assert.equal(h.client.snapshot().devices.some(box => box.canOpen), false);
+  });
+}
+
+test("authorization ACK retries a temporary endpoint failure without repeating preparation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  let pending = true, endpointFailed = false;
+  h.override(input => {
+    if (input.path.startsWith("/app-api/network/boxes"))
+      return { boxes: [{ ...device, accessState: pending ? "authorization_pending" : "ready" }] };
+    if (input.path === "/app-api/network/devices") {
+      if (pending) return { networkSessionId: "enrollment-1", devices: [] };
+      if (!endpointFailed) { endpointFailed = true; throw fail("ACCOUNT_NETWORK_ERROR"); }
+    }
+  });
+  await h.client.loginPassword({ phone: "account-1" });
+  pending = false;
+  t.mock.timers.tick(2000);
+  await tick();
+  assert.equal(h.client.snapshot().devices[0].accessState, "ready");
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  t.mock.timers.tick(2000);
+  await tick();
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  assert.equal(h.calls.filter(call => call.path.endsWith("/prepare")).length, 1);
+  assert.equal(h.calls.filter(call => call.path.endsWith("/restore")).length, 1);
+});
+
+test("lease expiry cancels pending authorization reads and cannot reauthorize a late response", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  h.override(input => {
+    if (input.path.startsWith("/app-api/network/boxes"))
+      return { boxes: [{ ...device, accessState: "authorization_pending" }] };
+    if (input.path === "/app-api/network/enrollments/enrollment-1")
+      return { enrollmentId: "enrollment-1", networkSessionId: "enrollment-1", phase: "ready",
+        managementUrl: "https://p2p.qeeshu.com", leaseExpiresAt: Date.now() / 1000 + 5 };
+  });
+  await h.client.loginPassword({ phone: "account-1" });
+  const waiting = deferred(), renewal = deferred();
+  h.override(input => input.path === "/app-api/network/boxes" ? waiting.promise
+    : input.path === "/app-api/network/restore" ? renewal.promise : undefined);
+  t.mock.timers.tick(2000);
+  await tick();
+  t.mock.timers.tick(3000);
+  await tick();
+  assert.equal(h.client.snapshot().platform.reason, "NETWORK_LEASE_EXPIRED");
+  const callCount = h.calls.length;
+  waiting.resolve({ boxes: [{ ...device, deviceId: "stale-box", accessState: "ready" }] });
+  renewal.resolve({});
+  await tick();
+  t.mock.timers.tick(10000);
+  await tick();
+  assert.equal(h.calls.length, callCount);
+  assert.equal(h.client.snapshot().devices.some(box => box.canOpen || box.deviceId === "stale-box"), false);
 });

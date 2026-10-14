@@ -14,8 +14,10 @@ function harness() {
       "loginSMS",
       "register",
       "sendSMS",
+      "sendResetCode", "resetPassword", "sendChangeCode", "changePassword",
       "logout",
       "refreshDevices",
+      "lookupDeviceDiscovery",
       "listOwnershipTransfers", "sendTransferCode", "createOwnershipTransfer", "acceptOwnershipTransfer",
       "connectBox",
       "connect",
@@ -58,6 +60,16 @@ test("every account/device IPC rejects remote windows, same-url subframes and na
       /无权/,
     );
   assert.deepEqual(h.calls, []);
+});
+
+test("discovery IPC forwards only a bounded list of exact device IDs", () => {
+  const h = harness();
+  const deviceId = "centauros-0123456789abcdef01234567";
+  h.invoke("discovery-devices", { deviceIds: [deviceId], ownerAccountId: "injected", token: "injected" });
+  assert.deepEqual(h.calls, [["lookupDeviceDiscovery", [deviceId]]]);
+  for (const deviceIds of [null, [], [deviceId, deviceId], ["box-1"], [deviceId + "a"], Array(17).fill(deviceId)])
+    assert.throws(() => h.invoke("discovery-devices", { deviceIds }), /ACCOUNT_INVALID_INPUT/);
+  assert.equal(h.calls.length, 1);
 });
 
 test("registration IPC validates credentials and pins the SMS scene", () => {
@@ -184,4 +196,26 @@ test("ownership IPC requires explicit retention and excludes forged owner identi
   ]);
   assert.throws(() => h.invoke("ownership-create", { ...input, retainData: false }), /ACCOUNT_INVALID_INPUT/);
   assert.throws(() => h.invoke("ownership-accept", { transferId: "transfer-one" }), /ACCOUNT_INVALID_INPUT/);
+});
+
+test("password IPC validates secret fields and never accepts a change target phone", () => {
+  const h = harness();
+  const input = { phone: "13800138000", code: "000001", password: " password ", scene: "admin", accessToken: "injected" };
+  h.invoke("send-reset-code", input);
+  h.invoke("reset-password", input);
+  h.invoke("send-change-code", input);
+  h.invoke("change-password", input);
+  assert.deepEqual(h.calls, [
+    ["sendResetCode", { phone: input.phone }],
+    ["resetPassword", { phone: input.phone, code: input.code, password: input.password }],
+    ["sendChangeCode", undefined],
+    ["changePassword", { code: input.code, password: input.password }],
+  ]);
+  for (const action of ["reset-password", "change-password"]) {
+    for (const password of [null, "short", "密".repeat(25), "password\n", "password\0"])
+      assert.throws(() => h.invoke(action, { ...input, password }), /invalid_credentials/);
+    for (const code of [null, "12345", "1234567", "abcdef"])
+      assert.throws(() => h.invoke(action, { ...input, code }), /invalid_sms_code/);
+  }
+  assert.equal(h.calls.length, 4);
 });

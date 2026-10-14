@@ -50,3 +50,27 @@ test('preload reports the main network readiness separately from authorized devi
   assert.equal(readyState.networkReady, true);
   assert.equal(readyState.availableDevices[0].deviceId, 'box-102');
 });
+
+
+test('preload only delegates Bluetooth settings opening to its dedicated IPC', async () => {
+  const { exposed, calls } = harness();
+  await exposed.wanxDiscovery.openBluetoothSettings();
+  await exposed.wanxDiscovery.openBluetoothSettings('privacy');
+  assert.deepEqual(calls, [
+    ['wanx:discovery:open-bluetooth-settings', 'bluetooth'],
+    ['wanx:discovery:open-bluetooth-settings', 'privacy'],
+  ]);
+});
+
+test('password preload restricts change requests to code and password', async () => {
+  const { exposed, calls } = harness();
+  const input = { username: '13800138000', phone: '13900139000', code: '000001', password: ' password ', token: 'secret' };
+  for (const action of ['auth.send-reset-code', 'auth.reset-password', 'auth.send-change-code', 'auth.change-password'])
+    assert.equal((await exposed.wanxClient.action(action, input)).ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.filter(([name]) => name !== 'wanx-client:get-state'))), [
+    ['wanx-client:send-reset-code', { phone: input.username }],
+    ['wanx-client:reset-password', { phone: input.username, code: input.code, password: input.password }],
+    ['wanx-client:send-change-code', null],
+    ['wanx-client:change-password', { code: input.code, password: input.password }],
+  ]);
+});

@@ -621,3 +621,158 @@ test("network 404 distinguishes an undeployed API from a missing enrollment", as
     /ACCOUNT_INVALID_RESPONSE/,
   );
 });
+
+
+test("logout clears local credentials immediately and drains old revocations before a new login", async t => {
+  const store = memoryStore();
+  const calls = [], releases = new Map();
+  let loginCount = 0;
+  const account = createAccount({ store, fetch: async (url, options) => {
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url, options, body });
+    if (url.endsWith("/login")) {
+      loginCount++;
+      return reply({ accountId: "account-one", clientId: body.clientId,
+        accessToken: `access-${loginCount}`, refreshToken: `refresh-${loginCount}`, expiresIn: 3600 });
+    }
+    return new Promise(resolve => releases.set(new URL(url).pathname, resolve));
+  } });
+  t.after(async () => {
+    for (const resolve of releases.values()) resolve(reply({}));
+    await account.close();
+  });
+  await account.loginPassword({ phone: "13800138000", password: "password-test" });
+  await account.logout({ revokeNetwork: true });
+  assert.equal(account.snapshot().phase, "signed_out");
+  assert.equal(account.snapshot().logoutPending, true);
+  assert.equal(account.getIdentity(), null);
+  assert.equal((await store.load()).active, null);
+  assert.deepEqual(calls.slice(1).map(call => call.options.method), ["DELETE"]);
+  assert.equal(calls[1].options.headers.Authorization, "Bearer access-1");
+  assert.ok(calls[1].options.headers["X-Nexus-Signature"]);
+  await account.logout(); // A repeated logout must not abort the captured cleanup.
+  assert.ok(calls.slice(1).every(call => !call.options.signal.aborted));
+  const login = account.loginPassword({ phone: "13800138000", password: "password-test" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(loginCount, 1, "a late server logout can revoke a newly created session");
+  releases.get("/prod-api/app-api/network/current")(reply({}, 503));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(loginCount, 1, "authentication revocation must finish before issuing a new session");
+  assert.equal(calls[2].options.headers.Authorization, "Bearer access-1");
+  assert.ok(calls[2].options.headers["X-Nexus-Signature"]);
+  assert.equal(calls[2].body.refreshToken, "refresh-1");
+  releases.get("/prod-api/app-api/auth/logout")(reply({}));
+  await login;
+  assert.equal(account.snapshot().logoutPending, false);
+  assert.equal(account.snapshot().phase, "authenticated");
+  assert.equal((await store.load()).active.session.accessToken, "access-2");
+});
+
+test("password recovery uses reset SMS and endpoint without authenticating or storing secrets", async t => {
+  const { account, calls, store } = fixture();
+  t.after(() => account.close());
+  await account.sendResetCode({ phone: "13800138000" });
+  assert.deepEqual(calls[0].body, { phone: "13800138000", scene: "consumer_reset_password" });
+  assert.deepEqual(await account.resetPassword({ phone: "13800138000", code: "000001", password: " password " }), { passwordReset: true });
+  assert.equal(calls[1].url.endsWith("/app-api/auth/password/reset"), true);
+  assert.deepEqual(calls[1].body, { phone: "13800138000", code: "000001", password: " password " });
+  assert.equal(calls[1].options.headers.Authorization, undefined);
+  assert.equal(account.snapshot().phase, "signed_out");
+  assert.equal(await store.load(), null);
+  await assert.rejects(account.sendChangeCode(), /ACCOUNT_LOGIN_REQUIRED/);
+  await assert.rejects(account.changePassword({ code: "000001", password: "password" }), /ACCOUNT_LOGIN_REQUIRED/);
+});
+
+test("password change pins the current phone, clears local session and masks account display", async t => {
+  const { account, calls, store } = fixture();
+  t.after(() => account.close());
+  await account.loginPassword({ phone: "13800138000", password: "password" });
+  assert.equal(account.snapshot().maskedPhone, "138****8000");
+  assert.doesNotMatch(JSON.stringify(account.snapshot()), /13800138000/);
+  await assert.rejects(account.sendResetCode({ phone: "13900139000" }), /ACCOUNT_ALREADY_SIGNED_IN/);
+  await assert.rejects(account.resetPassword({ phone: "13900139000", code: "000001", password: "password" }), /ACCOUNT_ALREADY_SIGNED_IN/);
+  await account.sendChangeCode({ phone: "13900139000" });
+  assert.deepEqual(calls.at(-1).body, { phone: "13800138000", scene: "consumer_reset_password" });
+  assert.deepEqual(await account.changePassword({ phone: "13900139000", code: "000001", password: "new-password" }), { passwordReset: true });
+  assert.deepEqual(calls.at(-1).body, { phone: "13800138000", code: "000001", password: "new-password" });
+  assert.equal(account.snapshot().phase, "signed_out");
+  assert.equal(account.snapshot().reason, "password_reset");
+  assert.equal(account.snapshot().maskedPhone, null);
+  assert.equal(account.getIdentity(), null);
+  assert.equal((await store.load()).active, null);
+  assert.equal(calls.some(call => call.url.endsWith('/logout')), false);
+  assert.doesNotMatch(JSON.stringify(await store.load()), /new-password|000001/);
+});
+
+test("password recovery validates UTF8 bounds and SMS code before network requests", async t => {
+  const { account, calls } = fixture();
+  t.after(() => account.close());
+  for (const password of [null, "short", "密".repeat(25), "password\n", "password\0"])
+    await assert.rejects(account.resetPassword({ phone: "13800138000", code: "000001", password }), /ACCOUNT_INVALID_INPUT/);
+  for (const code of [123456, null, "12345", "1234567", "abcdef"])
+    await assert.rejects(account.resetPassword({ phone: "13800138000", code, password: "password" }), /ACCOUNT_INVALID_INPUT/);
+  assert.equal(calls.length, 0);
+});
+
+test("failed password change preserves credentials and safe backend error", async t => {
+  const base = fixture();
+  await base.account.loginPassword({ phone: "13800138000", password: "password" });
+  const account = createAccount({ store: base.store, fetch: async (url) => {
+    if (url.endsWith('/refresh')) {
+      const saved = await base.store.load();
+      return reply({ ...saved.active.session, expiresIn: 3600 });
+    }
+    return new Response(JSON.stringify({ code: 400, data: { errorCode: "SMS_CODE_INVALID" }, msg: "secret" }));
+  } });
+  t.after(async () => { await base.account.close(); await account.close(); });
+  await account.restore();
+  await assert.rejects(account.changePassword({ code: "000001", password: "new-password" }), { code: "SMS_CODE_INVALID" });
+  assert.equal(account.snapshot().phase, "authenticated");
+  assert.notEqual((await base.store.load()).active, null);
+});
+
+test("new login waits for password reset so late reset cannot revoke its new session", async t => {
+  let releaseReset, logins = 0;
+  const account = createAccount({ store: memoryStore(), fetch: async (url, options) => {
+    if (url.endsWith('/reset')) return new Promise(resolve => { releaseReset = () => resolve(reply({})); });
+    const body = JSON.parse(options.body);
+    logins++;
+    return reply({ clientId: body.clientId, accountId: "account-one", accessToken: "access", refreshToken: "refresh", expiresIn: 3600 });
+  } });
+  t.after(() => account.close());
+  const reset = account.resetPassword({ phone: "13800138000", code: "000001", password: "password" });
+  const login = account.loginPassword({ phone: "13800138000", password: "password" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(logins, 0);
+  await assert.rejects(account.resetPassword({ phone: "13800138000", code: "000001", password: "password" }), /ACCOUNT_REQUEST_IN_PROGRESS/);
+  releaseReset();
+  await reset;
+  await login;
+  assert.equal(logins, 1);
+  assert.equal(account.snapshot().phase, "authenticated");
+});
+
+
+test("password login preserves rate-limit code and can retry when the server lifts it", async t => {
+  const store = memoryStore();
+  let limited = true;
+  const account = createAccount({ store, fetch: async (_url, options) => {
+    if (limited) return new Response(JSON.stringify({ code: 601, data: { errorCode: "AUTH_RATE_LIMITED" }, msg: "private server detail" }));
+    const body = JSON.parse(options.body);
+    return reply({ accountId: "account-one", clientId: body.clientId, accessToken: "access-secret", refreshToken: "refresh-secret", expiresIn: 3600 });
+  } });
+  t.after(() => account.close());
+  const input = { phone: "13800138000", password: "valid-password" };
+  await assert.rejects(account.loginPassword(input), { code: "AUTH_RATE_LIMITED" });
+  assert.equal(account.snapshot().phase, "signed_out");
+  assert.equal((await store.load()).active, null);
+  limited = false;
+  await account.loginPassword(input);
+  assert.equal(account.snapshot().phase, "authenticated");
+});
+
+test("password reset preserves its safe rate-limit code from the service warning envelope", async t => {
+  const account = createAccount({ store: memoryStore(), fetch: async () => new Response(JSON.stringify({ code: 601, data: { errorCode: "PASSWORD_RESET_RATE_LIMITED" }, msg: "private server detail" })) });
+  t.after(() => account.close());
+  await assert.rejects(account.resetPassword({ phone: "13800138000", password: "valid-password", code: "123456" }), { code: "PASSWORD_RESET_RATE_LIMITED", message: "PASSWORD_RESET_RATE_LIMITED" });
+});

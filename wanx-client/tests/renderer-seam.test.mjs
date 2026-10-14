@@ -59,8 +59,10 @@ async function harness(initial = state(), installed = [application], options = {
         const submit = { disabled: false, textContent: "" };
         const transferPhone = { focus: () => calls.push(["focus-transfer-phone"]) };
         const wifiNodes = new Map();
+        const passwordNotice = {};
+        const authNotice = {};
         const form = { dataset: { mode: value.match(/data-mode="([^"]+)"/)?.[1] }, values: {}, contains: () => false,
-          querySelector: (selector) => name === "wifi" ? wifiNodes.get(selector) : name === "transfer" && selector === '[name="targetPhone"]' ? transferPhone : submit,
+          querySelector: (selector) => name === "auth" && selector === '[data-auth-notice]' ? authNotice : name === "password-change" && selector === '[data-password-notice]' ? passwordNotice : name === "wifi" ? wifiNodes.get(selector) : name === "transfer" && selector === '[name="targetPhone"]' ? transferPhone : submit,
           scrollIntoView: (options) => calls.push(["scroll-form", name, options.block]),
           replaceWith: (retained) => forms.set(name, retained),
         };
@@ -92,11 +94,25 @@ async function harness(initial = state(), installed = [application], options = {
   const client = {
     snapshot: () => structuredClone(rawState),
     subscribe: (fn) => { clientListeners.add(fn); return () => clientListeners.delete(fn); },
-    loginPassword: async () => { if (options.loginFailure) throw new Error(options.loginFailure); rawState = state("enrolling", "checking"); notify(); },
-    logout: async () => { rawState = { account: { phase: "signed_out" } }; notify(); },
+    loginPassword: async () => { await options.loginRequest?.(); if (options.loginFailure) throw new Error(options.loginFailure); rawState = state("enrolling", "checking"); notify(); },
+    sendResetCode: async () => { await options.passwordCodeRequest?.(); },
+    resetPassword: async () => { await options.passwordRequest?.(); return { passwordReset: true }; },
+    sendChangeCode: async () => { await options.passwordCodeRequest?.(); },
+    changePassword: async () => {
+      await options.passwordRequest?.();
+      rawState = { account: { phase: "signed_out", reason: "password_reset" } }; notify(); publish();
+      return { passwordReset: true };
+    },
+    logout: async () => { rawState = { account: { phase: "signed_out", logoutPending: true } }; notify(); await options.logoutRequest?.(); },
     connectBox: async (deviceId) => { rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
     refreshDevices: async () => {},
+    lookupDeviceDiscovery: async (deviceIds) => {
+      calls.push(["lookup-device-discovery", [...deviceIds]]);
+      return options.lookupDeviceDiscovery ? options.lookupDeviceDiscovery(deviceIds) : {
+        devices: deviceIds.map(deviceId => ({ deviceId, deviceName: null, claimStatus: "unknown" })),
+      };
+    },
     listOwnershipTransfers: async () => options.transfers ? options.transfers() : [],
     sendTransferCode: async () => ({ expiresIn: 300 }),
     createOwnershipTransfer: async input => { calls.push(["ownership-created", input]); return { ...input, state: "pending_target" }; },
@@ -135,12 +151,19 @@ async function harness(initial = state(), installed = [application], options = {
     },
     applications, uiState, getState: snapshot, publishState: publish,
   });
-  const window = {};
+  let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
+  const window = { wanxBluetooth: {
+    snapshot: () => bluetoothStatus,
+    subscribe(fn) { bluetoothListener = fn; fn(bluetoothStatus); return () => {}; },
+    refresh: async () => bluetoothStatus,
+  } };
   vm.runInNewContext(preload, { process: { platform: options.platform || "darwin" }, require: () => ({
     contextBridge: { exposeInMainWorld: (name, api) => { window[name] = api; } },
     ipcRenderer: {
       invoke: async (name, input) => {
         calls.push([name, input]);
+        if (name === "wanx:discovery:bluetooth-state") return { status: options.bluetoothStatus || "available" };
+        if (name === "wanx:discovery:open-bluetooth-settings") return { ok: true };
         if (name.startsWith("wanx:setup:")) return { ok: true, value: await options.setupRequest?.(name) ?? { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
         return handlers.get(name)({ sender: contents, senderFrame: frame }, input);
       },
@@ -157,6 +180,7 @@ async function harness(initial = state(), installed = [application], options = {
       scanTimeoutMs: options.platform === "win32" ? 60000 : 12000,
       advertisementNames: { subscribe: (listener) => { advertisementListener = listener; return () => { advertisementListener = undefined; }; } } }));
     const bluetooth = {
+      getAvailability: async () => options.bluetoothStatus !== "unavailable",
       requestDevice: () => new Promise((resolve, reject) => {
         chooser = (id) => id ? resolve({ id, name: "Test box" }) : reject(Object.assign(new Error("User cancelled the requestDevice() chooser."), { name: "NotFoundError" }));
         queueMicrotask(() => contents.emit("select-bluetooth-device", { preventDefault() {} }, nearby, chooser));
@@ -173,8 +197,8 @@ async function harness(initial = state(), installed = [application], options = {
   vm.runInNewContext(source, {
     window,
     Date,
-    setTimeout, clearTimeout,
-    document: { querySelector: (selector) => selector === "#app" ? app : null },
+    setTimeout, clearTimeout, TextEncoder,
+    document: { querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -183,6 +207,7 @@ async function harness(initial = state(), installed = [application], options = {
     await new Promise((resolve) => setImmediate(resolve));
   }
   return {
+    bluetooth(status) { bluetoothStatus = { status }; bluetoothListener?.(bluetoothStatus); },
     app, calls, launches, dashboards, form: (name) => forms.get(name), get renderCount() { return renderCount; },
     nearby(value) { nearby = value; },
     chooser() { return chooser; },
@@ -454,7 +479,7 @@ test("device setup retains its wizard across polling and returns to boxes", asyn
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
 });
 
-test("box scanning shows the spinner and does not offer a repeat scan", async (t) => {
+test("box scanning disables repeat clicks, then allows a new scan after timeout", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
   await h.click("provisioning");
@@ -473,9 +498,12 @@ test("box scanning shows the spinner and does not offer a repeat scan", async (t
   assert.match(scanButton(), /disabled/);
   t.mock.timers.tick(12000);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(scanButton(), undefined);
+  assert.match(scanButton(), /重新扫描/);
+  assert.doesNotMatch(scanButton(), /disabled/);
   await h.click("start-provisioning");
-  assert.equal(h.chooser(), chooser);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(h.chooser(), chooser);
+  assert.match(scanButton(), /disabled/);
 });
 
 test("discovered boxes remain selectable after the scan times out", async (t) => {
@@ -515,7 +543,14 @@ test("Windows discovery keeps the chooser and renderer lease open for late box n
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /扫描已结束/);
   assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
-  assert.doesNotMatch(h.app.innerHTML, /data-action="start-provisioning"/);
+  const scanButton = h.app.innerHTML.match(/<button[^>]*data-action="start-provisioning"[^>]*>[\s\S]*?<\/button>/)?.[0];
+  assert.match(scanButton, /重新扫描/);
+  assert.doesNotMatch(scanButton, /disabled/);
+  const oldChooser = h.chooser();
+  await h.click("start-provisioning");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(h.chooser(), oldChooser, "repeat scan must start a fresh Bluetooth chooser");
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
 });
 
 test("selection during a live scan still opens device identity", async (t) => {
@@ -631,7 +666,7 @@ for (const leave of ["back-devices", "logout"]) {
   });
 }
 
-test("an empty scan offers no repeat button", async (t) => {
+test("an empty scan allows retry after reporting no nearby box", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
   h.nearby([]);
@@ -642,9 +677,13 @@ test("an empty scan offers no repeat button", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未发现可用盒子/);
   assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
-  assert.doesNotMatch(h.app.innerHTML, /data-action="start-provisioning"/);
+  assert.match(actionButton(h, "start-provisioning"), /开始扫描盒子/);
+  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+  const oldChooser = h.chooser();
   await h.click("start-provisioning");
-  assert.doesNotMatch(h.app.innerHTML, /data-action="start-provisioning"/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(h.chooser(), oldChooser);
+  assert.match(actionButton(h, "start-provisioning"), /disabled/);
   await h.click("back-devices");
   await h.click("provisioning");
   assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
@@ -841,7 +880,8 @@ test("box permission and transport states stay distinct from provisioning", asyn
   await h.click("show-boxes");
   assert.match(h.app.innerHTML, /未获访问权限/);
   assert.match(h.app.innerHTML, /当前不可达/);
-  assert.match(h.app.innerHTML, /访问权限待就绪/);
+  assert.match(h.app.innerHTML, /正在同步访问权限/);
+  assert.match(h.app.innerHTML, /授权同步完成后会自动更新/);
   assert.doesNotMatch(h.app.innerHTML, /开始初始化|配置盒子|data-action="connect"/);
   await h.click("connect", { deviceId: "box-102" });
   assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
@@ -930,6 +970,185 @@ test("missing box names are explicit and identifiers never become names or suffi
   assert.match(h.app.innerHTML, /<strong>Office box<\/strong>/);
   h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0102", displayIdentity: { deviceId: "other-box-102", displayName: "   " } });
   assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
+});
+
+const discoveryId = index => `centauros-${index.toString(16).padStart(24, "0")}`;
+const settleDiscovery = () => new Promise(resolve => setImmediate(resolve));
+async function startDiscovery(h) {
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await settleDiscovery();
+}
+function discoveryIdentity(h, deviceId, provider = "provider-1", displayName = "CentaurAI Box") {
+  h.advertisement({ deviceId: provider, advertisedName: "CentaurOS-Setup-0102", displayIdentity: { deviceId, displayName } });
+}
+
+test("discovery resolves another user's claimed box name without changing its opaque selection", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(1);
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async ids => ({ devices: ids.map(deviceId => ({ deviceId,
+      deviceName: '<客户盒子 "A">', claimStatus: "claimed" })) }),
+  });
+  await startDiscovery(h);
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(h.app.innerHTML, /认领状态待确认/);
+  assert.equal(h.calls.filter(([name]) => name === "lookup-device-discovery").length, 0);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>&lt;客户盒子 &quot;A&quot;&gt;<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  assert.doesNotMatch(h.app.innerHTML, /<客户盒子|认领状态待确认/);
+  assert.equal(h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1], candidateId);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+  assert.deepEqual(h.calls.find(([name]) => name === "lookup-device-discovery")[1], [id]);
+  await h.click("select-candidate", { candidateId });
+  await settleDiscovery();
+  assert.equal(h.calls.find(([name]) => name === "nexusaos:discovery:select")[1].candidateId, candidateId);
+  const selected = h.calls.find(([name]) => name === "wanx:setup:begin")[1];
+  assert.ok(selected.transportHandle);
+  assert.equal(selected.deviceId, undefined);
+  assert.equal(selected.claimStatus, undefined);
+});
+
+test("unclaimed inventory names are visible and discovery queries stay batched and event driven", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ids = Array.from({ length: 18 }, (_, index) => discoveryId(index + 1));
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async values => ({ devices: values.map(deviceId => ({ deviceId,
+      deviceName: `库存盒子 ${ids.indexOf(deviceId) + 1}`, claimStatus: "unclaimed" })) }),
+  });
+  h.nearby(ids.map((_, index) => ({ deviceId: `provider-${index + 1}`, deviceName: "Test box" })));
+  await startDiscovery(h);
+  for (const [index, id] of ids.entries()) discoveryIdentity(h, id, `provider-${index + 1}`);
+  await settleDiscovery();
+  assert.equal((h.app.innerHTML.match(/claim-unclaimed">未认领/g) || []).length, 18);
+  assert.match(h.app.innerHTML, /<strong>库存盒子 18<\/strong>/);
+  const requests = () => h.calls.filter(([name]) => name === "lookup-device-discovery");
+  assert.deepEqual(requests().map(([, values]) => values.length), [16, 2]);
+  assert.deepEqual(requests().flatMap(([, values]) => values), ids);
+  for (let iteration = 0; iteration < 3; ++iteration) {
+    h.update({ ...state(), devices: [] });
+    discoveryIdentity(h, ids[0]);
+  }
+  await settleDiscovery();
+  assert.equal(requests().length, 2, "re-renders and unchanged identity notifications must not poll metadata");
+});
+
+for (const outcome of ["unknown", "missing", "404"]) test(`discovery ${outcome} retains the local name and never infers unclaimed`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(5);
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => {
+      if (outcome === "404") throw Object.assign(new Error("not found"), { status: 404 });
+      return { devices: outcome === "missing" ? [] : [{ deviceId: id, deviceName: null, claimStatus: "unknown" }] };
+    },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id, "provider-1", "附近的盒子");
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>附近的盒子<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-unknown">认领状态待确认/);
+  assert.doesNotMatch(h.app.innerHTML, /claim-unclaimed|claim-claimed/);
+  h.update({ ...state(), devices: [] });
+  await settleDiscovery();
+  assert.equal(h.calls.filter(([name]) => name === "lookup-device-discovery").length, 1);
+});
+
+test("an explicit account owner or member remains claimed and the owner's existing connection still works", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(6);
+  const owned = { ...devices[0], deviceId: id, deviceRole: "owner" };
+  const h = await harness({ ...state(), devices: [owned] }, [application], {
+    after: fn => t.after(fn), lookupDeviceDiscovery: async () => { throw new Error("offline"); },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  h.update({ ...state(), devices: [{ ...owned, deviceRole: "member" }] });
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  h.update({ ...state(), devices: [owned] });
+  await h.click("back-devices");
+  await h.click("connect", { deviceId: id });
+  assert.equal(h.calls.find(([name]) => name === "wanx-client:connect-box")[1], id);
+});
+
+test("each new scan refreshes inventory names and claim state", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(7);
+  let revision = 0;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => ({ devices: [{ deviceId: id,
+      deviceName: ++revision === 1 ? "第一次扫描名称" : "新的库存名称",
+      claimStatus: revision === 1 ? "unclaimed" : "claimed" }] }),
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /第一次扫描名称/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  t.mock.timers.tick(12000);
+  await settleDiscovery();
+  await h.click("start-provisioning");
+  await settleDiscovery();
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /新的库存名称/);
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  assert.doesNotMatch(h.app.innerHTML, /第一次扫描名称/);
+  assert.equal(revision, 2);
+});
+
+test("late metadata from a previous account cannot populate the new account's scan", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(8);
+  let completeOld, requests = 0;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => ++requests === 1 ? new Promise(resolve => { completeOld = resolve; }) :
+      { devices: [{ deviceId: id, deviceName: "当前账号扫描结果", claimStatus: "unclaimed" }] },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  h.update({ account: { phase: "signed_out" } });
+  h.update({ ...state(), account: { phase: "authenticated", accountId: "account-2" }, devices: [] });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /当前账号扫描结果/);
+  completeOld({ devices: [{ deviceId: id, deviceName: "旧账号迟到名称", claimStatus: "claimed" }] });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /当前账号扫描结果/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  assert.doesNotMatch(h.app.innerHTML, /旧账号迟到名称|claim-claimed/);
+});
+
+test("revoked then rediscovered identity cannot reuse an old asynchronous metadata response", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(9);
+  let completeOld, requests = 0;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => ++requests === 1 ? new Promise(resolve => { completeOld = resolve; }) :
+      { devices: [{ deviceId: id, deviceName: "重新核对的名称", claimStatus: "unknown" }] },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0102", displayIdentity: null });
+  discoveryIdentity(h, id);
+  assert.match(h.app.innerHTML, /认领状态待确认/);
+  completeOld({ devices: [{ deviceId: id, deviceName: "失效身份的名称", claimStatus: "claimed" }] });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /重新核对的名称/);
+  assert.doesNotMatch(h.app.innerHTML, /失效身份的名称|claim-claimed/);
+  assert.equal(requests, 2);
 });
 
 test("numeric box display names remain visible during discovery and identity preview", async (t) => {
@@ -1248,8 +1467,7 @@ for (const fails of [false, true]) test(`identity loading prevents another scan 
   assert.doesNotMatch(h.app.innerHTML, /正在读取设备身份/);
   if (fails) {
     assert.match(h.app.innerHTML, /蓝牙连接|连接盒子超时/);
-    assert.equal(actionButton(h, "start-provisioning"), undefined);
-    await h.click("back-devices"); await h.click("provisioning");
+    assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
     assert.match(actionButton(h, "start-provisioning"), /开始扫描盒子/);
   } else assert.match(h.app.innerHTML, /确认设备身份/);
 });
@@ -1268,7 +1486,7 @@ for (const fails of [false, true]) test(`setup cancellation deduplicates clicks 
   await Promise.all([first, second]);
   assert.doesNotMatch(h.app.innerHTML, /正在取消/);
   if (fails) assert.doesNotMatch(actionButton(h, "cancel-provisioning"), /disabled/);
-  else assert.equal(actionButton(h, "start-provisioning"), undefined);
+  else assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
 });
 
 for (const cancelFirst of [false, true]) test(`cancelled setup ignores the original result when cancellation finishes ${cancelFirst ? "first" : "last"}`, async () => {
@@ -1286,7 +1504,7 @@ for (const cancelFirst of [false, true]) test(`cancelled setup ignores the origi
   }
   assert.match(h.app.innerHTML, /本次配网已取消/);
   assert.doesNotMatch(h.app.innerHTML, /data-form="wifi"/);
-  assert.equal(actionButton(h, "start-provisioning"), undefined);
+  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
 });
 
 for (const fails of [false, true]) test(`authorization refresh shows pending feedback and restores retry after ${fails ? "failure" : "success"}`, async () => {
@@ -1373,4 +1591,166 @@ test("an old setup completion cannot change the next account's setup state", asy
   assert.match(h.app.innerHTML, /发现附近的万象盒子/);
   assert.doesNotMatch(h.app.innerHTML, /设备已完成联网和账号绑定/);
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+});
+
+
+test("logout unlocks the login form and its late completion cannot unlock a new login", async () => {
+  const logout = pendingResponse(), login = pendingResponse();
+  const h = await harness(state(), [], { logoutRequest: () => logout.promise, loginRequest: () => login.promise });
+  await h.click("show-settings");
+  const loggingOut = h.click("logout");
+  await flushActions();
+  assert.match(h.app.innerHTML, /登录万象平台/);
+  assert.doesNotMatch(h.app.innerHTML, /处理中…/);
+  assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
+  const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
+  await flushActions();
+  assert.match(h.app.innerHTML, /正在完成退出…/);
+  logout.resolve(); await loggingOut;
+  assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, true);
+  login.resolve(); await loggingIn;
+  assert.match(h.app.innerHTML, /我的应用/);
+});
+
+
+for (const [status, message] of [["checking", "正在检查电脑蓝牙状态"], ["unavailable", "请先开启蓝牙"], ["permission-denied", "允许万象访问蓝牙"], ["unsupported", "不支持蓝牙发现"], ["error", "无法读取电脑蓝牙状态"]]) {
+  test(`Bluetooth ${status} blocks scanning and offers the appropriate guidance`, async () => {
+    const h = await harness(state(), [], { setupRequest: async () => ({ state: "idle" }), bluetoothStatus: status });
+    await h.click("provisioning");
+    assert.ok(h.app.innerHTML.includes(message));
+    assert.match(actionButton(h, "start-provisioning"), /disabled/);
+    await h.click("start-provisioning");
+    assert.ok(!h.chooser());
+    h.bluetooth("available");
+    assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+    assert.doesNotMatch(h.app.innerHTML, /bluetooth-notice/);
+  });
+}
+
+
+test("forgot-password validates, uses recovery IPC and returns to a fresh login form", async () => {
+  const h = await harness({ account: { phase: "signed_out" } });
+  await h.click("auth-reset");
+  assert.match(h.app.innerHTML, /找回密码/);
+  const values = { username: "13800138000", password: "new-password", confirmPassword: "mismatch", code: "123456" };
+  await h.submit("auth", values);
+  assert.match(h.app.innerHTML, /两次输入的密码不一致/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:reset-password").length, 0);
+  h.form("auth").values = values;
+  await h.click("send-reset-code");
+  await h.click("send-reset-code");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:send-reset-code").length, 1);
+  await h.submit("auth", { ...values, confirmPassword: values.password });
+  assert.deepEqual(structuredClone(h.calls.find(([name]) => name === "wanx-client:reset-password")[1]), { phone: values.username, password: values.password, code: values.code });
+  assert.match(h.app.innerHTML, /密码重置成功，请使用新密码登录/);
+  assert.doesNotMatch(h.app.innerHTML, /name="confirmPassword"|name="code"/);
+  assert.equal(h.form("auth").values.password, undefined);
+});
+
+test("settings password change keeps failed form and signs out on successful retry", async () => {
+  let failed = true;
+  const h = await harness({ ...state(), account: { phase: "authenticated", accountId: "account-1", maskedPhone: "138****8000" } }, [], {
+    passwordRequest: async () => { if (failed) throw Error("SMS_CODE_INVALID"); },
+  });
+  await h.click("show-settings");
+  await h.click("password-open");
+  assert.match(h.app.innerHTML, /138\*\*\*\*8000/);
+  assert.doesNotMatch(h.app.innerHTML, /name="username"/);
+  await h.click("send-change-code");
+  const form = h.form("password-change");
+  const values = { password: "changed-password", confirmPassword: "changed-password", code: "123456" };
+  form.values = values;
+  h.update(state());
+  assert.equal(h.form("password-change"), form);
+  await h.submit("password-change", values);
+  assert.match(h.app.innerHTML, /验证码错误或已过期/);
+  assert.equal(h.form("password-change"), form);
+  assert.equal(form.querySelector('button[type="submit"]').disabled, false);
+  failed = false;
+  await h.submit("password-change", values);
+  assert.match(h.app.innerHTML, /密码修改成功，请使用新密码重新登录/);
+  assert.equal(h.form("password-change"), undefined);
+  assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
+  assert.deepEqual(structuredClone(h.calls.find(([name]) => name === "wanx-client:change-password")[1]), { password: values.password, code: values.code });
+});
+
+test("pending password change prevents duplicate submission and recovers after network failure", async () => {
+  const pending = pendingResponse();
+  const h = await harness(state(), [], { passwordRequest: () => pending.promise });
+  await h.click("show-settings"); await h.click("password-open");
+  const values = { password: "changed-password", confirmPassword: "changed-password", code: "123456" };
+  const first = h.submit("password-change", values);
+  await h.submit("password-change", values);
+  assert.equal(h.form("password-change").querySelector('button[type="submit"]').disabled, true);
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:change-password").length, 1);
+  pending.reject(Error("ACCOUNT_NETWORK_ERROR"));
+  await first;
+  assert.match(h.app.innerHTML, /请检查网络后重试/);
+  assert.equal(h.form("password-change").querySelector('button[type="submit"]').disabled, false);
+});
+
+
+test("password change reports missing fields inline without sending a request", async () => {
+  const h = await harness();
+  await h.click("show-settings"); await h.click("password-open");
+  assert.match(h.app.innerHTML, /data-form="password-change" novalidate/);
+  for (const [values, expected] of [
+    [{}, "请输入新密码"],
+    [{ password: "changed-password" }, "请再次输入新密码"],
+    [{ password: "changed-password", confirmPassword: "changed-password" }, "请输入 6 位短信验证码"],
+    [{ password: "changed-password", confirmPassword: "changed-password", code: "123" }, "请输入 6 位短信验证码"],
+  ]) {
+    await h.submit("password-change", values);
+    const notice = h.form("password-change").querySelector('[data-password-notice]');
+    assert.equal(notice.textContent, expected);
+    assert.equal(notice.hidden, false);
+    assert.equal(h.form("password-change").querySelector('button[type="submit"]').disabled, false);
+  }
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:change-password").length, 0);
+});
+
+
+test("an existing box awaiting authorization explains synchronization then enables connection on ready", async () => {
+  const pendingBox = { ...devices[0], accessState: "authorization_pending", canOpen: false };
+  const h = await harness({ ...state(), devices: [pendingBox] });
+  await h.click("applications-launch", { applicationId: application.applicationId });
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /正在同步盒子访问权限/);
+  assert.match(h.app.innerHTML, /正在同步访问权限/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="pending-confirm"|data-action="connect"/);
+  h.update({ ...state(), devices: [devices[0]] });
+  assert.doesNotMatch(h.app.innerHTML, /正在同步.*访问权限/);
+  assert.match(h.app.innerHTML, /data-action="pending-confirm"/);
+  assert.match(h.app.innerHTML, /data-action="connect"/);
+});
+
+
+test("login rate limiting shows a specific message and releases the login button", async () => {
+  const h = await harness({ account: { phase: "signed_out" } }, [], { loginFailure: "AUTH_RATE_LIMITED" });
+  await h.submit("auth", { username: "13800138000", password: "valid-password" });
+  assert.match(h.app.innerHTML, /登录失败次数过多，已被暂时限制/);
+  assert.doesNotMatch(h.app.innerHTML, /账号服务暂时不可用/);
+  assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
+});
+
+
+test("recovery reports missing and malformed SMS codes next to submit without a request", async () => {
+  const h = await harness({ account: { phase: "signed_out" } });
+  await h.click("auth-reset");
+  assert.match(h.app.innerHTML, /data-mode="reset" novalidate/);
+  for (const code of ["", "123", "abcdef"]) {
+    await h.submit("auth", { username: "13800138000", password: "valid-password", confirmPassword: "valid-password", code });
+    const notice = h.form("auth").querySelector('[data-auth-notice]');
+    assert.equal(notice.textContent, "请输入 6 位短信验证码");
+    assert.equal(notice.hidden, false);
+    assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
+  }
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:reset-password").length, 0);
+});
+
+test("empty login password is explained inline without submitting", async () => {
+  const h = await harness({ account: { phase: "signed_out" } });
+  await h.submit("auth", { username: "13800138000", password: "" });
+  assert.equal(h.form("auth").querySelector('[data-auth-notice]').textContent, "请输入密码");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:login-password").length, 0);
 });

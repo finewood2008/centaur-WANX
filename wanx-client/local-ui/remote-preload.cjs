@@ -67,8 +67,16 @@ const actions = {
     ipcRenderer.invoke("wanx-client:send-registration-code", { phone: input?.username }),
   "auth.register": (input) =>
     ipcRenderer.invoke("wanx-client:register", { phone: input?.username, password: input?.password, code: input?.code }),
+  "auth.send-reset-code": (input) =>
+    ipcRenderer.invoke("wanx-client:send-reset-code", { phone: input?.username }),
+  "auth.reset-password": (input) =>
+    ipcRenderer.invoke("wanx-client:reset-password", { phone: input?.username, code: input?.code, password: input?.password }),
+  "auth.send-change-code": () => ipcRenderer.invoke("wanx-client:send-change-code"),
+  "auth.change-password": (input) =>
+    ipcRenderer.invoke("wanx-client:change-password", { code: input?.code, password: input?.password }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
+  "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "ownership.send-code": () => ipcRenderer.invoke("wanx-client:ownership-send-code"),
   "ownership.create": (input) => ipcRenderer.invoke("wanx-client:ownership-create", input),
@@ -182,6 +190,11 @@ contextBridge.exposeInMainWorld("wanxSetupTransport", {
 });
 
 contextBridge.exposeInMainWorld("wanxDiscovery", {
+  bluetoothState: () => ipcRenderer.invoke("wanx:discovery:bluetooth-state"),
+  openBluetoothSettings: async (section = "bluetooth") => {
+    const result = await ipcRenderer.invoke("wanx:discovery:open-bluetooth-settings", section);
+    if (!result.ok) throw Object.assign(new Error(result.code), { code: result.code });
+  },
   subscribe: (onCandidates, onSettled) => {
     const candidates = (_event, payload) => onCandidates(payload);
     const settled = (_event, payload) => onSettled(payload);

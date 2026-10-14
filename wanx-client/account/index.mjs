@@ -112,6 +112,8 @@ export function createAccount({
     epoch = 0,
     closed = false,
     refreshPromise = null;
+  let logoutCleanup = Promise.resolve();
+  let passwordUpdate = null;
   let vault = { version: 2, baseURL: base.href, accounts: {}, active: null };
   let loaded = false;
   let state = {
@@ -120,11 +122,16 @@ export function createAccount({
     clientId: null,
     devices: [],
     reason: null,
+    logoutPending: false,
   };
   const pending = new Set();
   const listeners = new Set();
   let writes = Promise.resolve();
-  const snapshot = () => structuredClone(state);
+  const snapshot = () => structuredClone({
+    ...state,
+    maskedPhone: state.phase === "authenticated" && record?.phone
+      ? `${record.phone.slice(0, 3)}****${record.phone.slice(-4)}` : null,
+  });
   const publish = (patch) => {
     state = { ...state, ...patch };
     emit(snapshot());
@@ -202,9 +209,11 @@ export function createAccount({
     },
     generation,
     auth = record,
+    detached = false,
   ) {
+    const checkGeneration = () => { if (!detached) assert(generation); };
     const url = route(path);
-    assert(generation);
+    checkGeneration();
     const text = body === undefined ? "" : JSON.stringify(body);
     const controller = new AbortController();
 
@@ -240,7 +249,7 @@ export function createAccount({
         { Authorization: `Bearer ${auth.session.accessToken}` },
       );
     }
-    pending.add(controller);
+    if (!detached) pending.add(controller);
     try {
       const response = await fetcher(url, {
         method,
@@ -249,7 +258,7 @@ export function createAccount({
         redirect: "error",
         signal: AbortSignal.any(signals),
       });
-      assert(generation);
+      checkGeneration();
       if (
         response.redirected ||
         (response.url && new URL(response.url).origin !== base.origin)
@@ -295,7 +304,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
-      assert(generation);
+      checkGeneration();
       let metadata;
       if (responseMetadata) {
         if (response.status === 401 || payload.code === 401)
@@ -350,7 +359,7 @@ export function createAccount({
             ? remoteCode
             : path.includes("/ownership/") && remoteCode === "SMS_CODE_INVALID"
             ? remoteCode
-            : path.startsWith("/app-api/auth/") && ["SMS_RATE_LIMITED", "SMS_DAILY_LIMIT", "SMS_CODE_INVALID", "PASSWORD_ALREADY_SET", "PASSWORD_WEAK", "PASSWORD_INVALID", "PASSWORD_NOT_SET"].includes(remoteCode)
+            : path.startsWith("/app-api/auth/") && ["AUTH_RATE_LIMITED", "PASSWORD_RESET_RATE_LIMITED", "SMS_RATE_LIMITED", "SMS_DAILY_LIMIT", "SMS_CODE_INVALID", "PASSWORD_ALREADY_SET", "PASSWORD_WEAK", "PASSWORD_INVALID", "PASSWORD_NOT_SET"].includes(remoteCode)
             ? remoteCode
             : status === 401
             ? "ACCOUNT_SESSION_EXPIRED"
@@ -372,7 +381,7 @@ export function createAccount({
       }
       return Object.hasOwn(payload, "data") ? payload.data : payload;
     } catch (error) {
-      assert(generation);
+      checkGeneration();
       if (error.status || error.code?.startsWith("ACCOUNT_")) throw error;
       throw failure(
         signal?.aborted ? "ACCOUNT_CANCELLED" : "ACCOUNT_NETWORK_ERROR",
@@ -477,6 +486,12 @@ export function createAccount({
     )) throw failure("ACCOUNT_INVALID_INPUT");
     if (closed) throw failure("ACCOUNT_CANCELLED");
     if (record?.session) throw failure("ACCOUNT_ALREADY_SIGNED_IN");
+    // Logout revokes every server session for this client. Never let its late
+    // response invalidate a freshly issued session for the same identity.
+    const beforeCleanup = epoch;
+    await logoutCleanup;
+    await passwordUpdate?.catch(() => {});
+    assert(beforeCleanup);
     cancel();
     const generation = epoch;
     publish({ phase: "authenticating", reason: null });
@@ -538,6 +553,50 @@ export function createAccount({
       throw error;
     }
   }
+  function requirePasswordMode(authenticated) {
+    if (closed) throw failure("ACCOUNT_CANCELLED");
+    if (authenticated) {
+      if (!record?.session || state.phase !== "authenticated") throw failure("ACCOUNT_LOGIN_REQUIRED");
+    } else if (record?.session || state.phase !== "signed_out") {
+      throw failure("ACCOUNT_ALREADY_SIGNED_IN");
+    }
+  }
+  async function sendPasswordCode(phone, authenticated) {
+    requirePasswordMode(authenticated);
+    const number = authenticated ? record.phone : phone;
+    if (typeof number !== "string" || !/^1\d{10}$/.test(number)) throw failure("ACCOUNT_INVALID_INPUT");
+    const result = await wire({ method: "POST", path: "/app-api/auth/sms/send",
+      body: { phone: number, scene: "consumer_reset_password" }, authenticated: false }, epoch);
+    return { expiresIn: Number(result?.expiresIn) || 300 };
+  }
+  async function updatePassword(input, authenticated) {
+    requirePasswordMode(authenticated);
+    const phone = authenticated ? record.phone : input?.phone;
+    if (typeof phone !== "string" || !/^1\d{10}$/.test(phone) || typeof input?.code !== "string" || !/^\d{6}$/.test(input.code) ||
+        typeof input?.password !== "string" || Buffer.byteLength(input.password, "utf8") < 8 ||
+        Buffer.byteLength(input.password, "utf8") > 72 || /[\r\n\0]/.test(input.password))
+      throw failure("ACCOUNT_INVALID_INPUT");
+    if (passwordUpdate) throw failure("ACCOUNT_REQUEST_IN_PROGRESS");
+    const generation = epoch;
+    // Password reset revokes every account session. Drain this request before
+    // issuing a new login, even if the user signs out while it is in flight.
+    const update = (async () => {
+      await wire({ method: "POST", path: "/app-api/auth/password/reset",
+        body: { phone, code: input.code, password: input.password }, authenticated: false }, generation, null, true);
+      if (authenticated && !closed && generation === epoch) {
+        cancel();
+        record = null;
+        const cleared = persist(null);
+        publish({ phase: "signed_out", accountId: null, clientId: null, devices: [],
+          reason: "password_reset", logoutPending: false });
+        await cleared;
+      }
+      return { passwordReset: true };
+    })();
+    passwordUpdate = update;
+    try { return await update; }
+    finally { if (passwordUpdate === update) passwordUpdate = null; }
+  }
   return {
     snapshot,
     request,
@@ -556,6 +615,10 @@ export function createAccount({
     loginPassword: (input) => login(input, "password"),
     loginSMS: (input) => login(input, "sms"),
     register: (input) => login(input, "register"),
+    sendResetCode: (input) => sendPasswordCode(input?.phone, false),
+    resetPassword: (input) => updatePassword(input, false),
+    sendChangeCode: () => sendPasswordCode(null, true),
+    changePassword: (input) => updatePassword(input, true),
     async sendSMS(phone, scene = "consumer_login") {
       if (!/^1\d{10}$/.test(phone || "") || !["consumer_login", "consumer_register"].includes(scene))
         throw failure("ACCOUNT_INVALID_INPUT");
@@ -636,6 +699,27 @@ export function createAccount({
       publish({ devices });
       return structuredClone(devices);
     },
+    async lookupDeviceDiscovery(deviceIds) {
+      if (!Array.isArray(deviceIds) || deviceIds.length < 1 || deviceIds.length > 16 ||
+          deviceIds.some(id => typeof id !== "string" || !/^centauros-(?:[0-9a-f]{24}|[0-9a-f]{32})$/.test(id)) ||
+          new Set(deviceIds).size !== deviceIds.length) throw failure("ACCOUNT_INVALID_INPUT");
+      const ids = [...deviceIds];
+      const data = await request({ path: `/app-api/v1/device-discovery?ids=${encode(ids.join(","))}` });
+      if (!Array.isArray(data?.devices) || data.devices.length !== ids.length)
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      const devices = new Map();
+      for (const item of data.devices) {
+        if (!item || !ids.includes(item.deviceId) || devices.has(item.deviceId) ||
+            !["claimed", "unclaimed", "unknown"].includes(item.claimStatus) ||
+            (item.deviceName !== null && (typeof item.deviceName !== "string" ||
+              !item.deviceName.trim() || item.deviceName.length > 128 ||
+              /[\u0000-\u001f\u007f-\u009f]/u.test(item.deviceName))))
+          throw failure("ACCOUNT_INVALID_RESPONSE");
+        devices.set(item.deviceId, { deviceId: item.deviceId,
+          deviceName: item.deviceName?.trim() || null, claimStatus: item.claimStatus });
+      }
+      return { devices: ids.map(id => devices.get(id)) };
+    },
     async lookupDeviceName(deviceId) {
       if (typeof deviceId !== "string" || !/^centauros-[0-9a-f]{24,32}$/.test(deviceId))
         throw failure("ACCOUNT_INVALID_INPUT");
@@ -679,39 +763,47 @@ export function createAccount({
         throw error;
       }
     },
-    async logout() {
+    async logout({ revokeNetwork = false } = {}) {
       const previous = record;
       cancel();
       const generation = epoch;
       record = null;
+      // Clear durable credentials before waiting for any remote operation.
+      // Remote cleanup is isolated from ordinary cancellation and holds only
+      // the old credentials; new logins wait for it before issuing requests.
+      const cleared = persist(null);
+      if (previous?.session) {
+        const requests = [
+          ...(revokeNetwork ? [{ method: "DELETE", path: "/app-api/network/current" }] : []),
+          { method: "POST", path: "/app-api/auth/logout", body: { refreshToken: previous.session.refreshToken } },
+        ];
+        const cleanup = (async () => {
+          // Network revocation needs the old authentication to remain valid.
+          // Attempt logout even if network cleanup fails or times out.
+          for (const input of requests) {
+            await wire(input, generation, previous, true).catch(() => {});
+          }
+        })().then(() => {
+          if (!closed && logoutCleanup === cleanup) publish({ logoutPending: false });
+        });
+        logoutCleanup = cleanup;
+      }
       publish({
         phase: "signed_out",
         accountId: null,
         clientId: null,
         devices: [],
         reason: null,
+        logoutPending: Boolean(previous?.session) || state.logoutPending,
       });
-      try {
-        if (previous)
-          await wire(
-            {
-              method: "POST",
-              path: "/app-api/auth/logout",
-              body: { refreshToken: previous.session.refreshToken },
-            },
-            generation,
-            previous,
-          );
-      } finally {
-        if (generation === epoch) await persist(null);
-      }
+      await cleared;
       return snapshot();
     },
     async close() {
       closed = true;
       cancel();
       record = null;
-      await writes;
+      await Promise.all([writes, logoutCleanup, passwordUpdate?.catch(() => {})]);
     },
   };
 }

@@ -278,6 +278,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         minWidth: 760,
         minHeight: 560,
         show: false,
+        acceptFirstMouse: true,
         title: DESKTOP_NAME,
         icon: APP_ICON,
         backgroundColor: "#faf8f4",
@@ -294,7 +295,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       if (["darwin", "win32"].includes(process.platform)) {
         panel = new BrowserWindow({
-          width: 400, height: 320, show: false, frame: false,
+          width: 400, height: 320, show: false, frame: false, acceptFirstMouse: true,
           resizable: false, maximizable: false, minimizable: false,
           fullscreenable: false, skipTaskbar: true, hasShadow: true,
           roundedCorners: true, alwaysOnTop: true, backgroundColor: "#faf8f4",
