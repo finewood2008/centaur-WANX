@@ -203,11 +203,23 @@ class ApplicationRepo:
             ).fetchone()
         return bool(row["enabled"]) if row is not None else None
 
-    def put_access(self, application_id: str, user_id: int, enabled: bool) -> None:
+    def put_access(
+        self,
+        application_id: str,
+        user_id: int,
+        enabled: bool,
+        *,
+        only_if_missing: bool = False,
+    ) -> bool:
+        conflict = (
+            "DO NOTHING"
+            if only_if_missing
+            else "DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at"
+        )
         with self._db.transaction() as conn:
-            conn.execute(
+            changed = conn.execute(
                 "INSERT INTO application_access(application_id, user_id, enabled, updated_at) "
-                "VALUES (?, ?, ?, ?) ON CONFLICT(application_id, user_id) DO UPDATE "
-                "SET enabled = excluded.enabled, updated_at = excluded.updated_at",
+                "VALUES (?, ?, ?, ?) ON CONFLICT(application_id, user_id) " + conflict,
                 (application_id, user_id, int(enabled), now_ts()),
             )
+        return bool(changed.rowcount)
