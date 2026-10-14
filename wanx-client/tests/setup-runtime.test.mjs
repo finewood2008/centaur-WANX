@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { createSetupRuntime } from '../shell/setup.mjs';
 import { createProvisioningHost } from '../shell/provisioning-host.cjs';
 const candidate = { candidateId: 'candidate', transport: 'ble-gatt', transportHandle: 'handle', selectionLeaseId: 'lease', advertisedName: 'CentaurOS-Setup', rssi: -40, firstSeenMonotonicMs: 0, lastSeenMonotonicMs: 1 };
-async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 }, scanWifi = async () => [] } = {}) {
+async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 }, scanWifi = async () => [], ownerWifi = false } = {}) {
   const ipcMain = new EventEmitter(); const handlers = new Map();
   ipcMain.handle = (name, fn) => handlers.set(name, fn);
   ipcMain.removeHandler = (name) => handlers.delete(name);
@@ -27,17 +27,25 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
     advertisementNames,
     makeStore: () => ({ load: async () => [] }),
     installPicker: (input) => { pickerInput = input; return () => { pickerDisposed++; }; },
-    makeHost: (options) => createProvisioningHost({ ...options, cryptoFactory: () => ({}), coordinatorFactory: () => {
-      let state = { flowId: 'flow-1', state: 'idle', preview }, notify;
+    makeHost: (options) => {
+      const factory = () => {
+      let state = { flowId: 'flow-1', state: 'idle', preview, ...(ownerWifi ? { mode: 'wifi' } : {}) }, notify;
       const set = (next) => { state = { ...state, state: next }; notify?.(); };
       return { getSnapshot: () => state, subscribe: (fn) => { notify = fn; return () => {}; },
-        begin: async () => set('previewReady'), confirmPhysicalDevice: async () => { handshakes++; set('awaitingWifi'); },
+        begin: async () => set('previewReady'), confirmPhysicalDevice: async () => {
+          handshakes++;
+          if (ownerWifi) state.pairingSessionId = '11111111-1111-4111-8111-111111111111';
+          set('awaitingWifi');
+        },
         scanWifi,
-        provideWifi: async (wifi) => { assert.equal(wifi.ssid, 'office'); set('awaitingOwnershipConfirmation'); },
+        provideWifi: async (wifi) => { assert.equal(wifi.ssid, 'office'); set(ownerWifi ? 'completed' : 'awaitingOwnershipConfirmation'); },
         confirmOwnership: async () => set('completed'), cancel: async () => set('cancelled'),
         suspend: async () => {}, dispose: async () => {},
       };
-    } }),
+      };
+      return createProvisioningHost({ ...options, cryptoFactory: () => ({}), coordinatorFactory: factory,
+        ...(ownerWifi ? { ownerWifiCoordinatorFactory: factory } : {}) });
+    },
   });
   return { runtime, handlers, event, sent, pickerInput, advertisementNames, handshakes: () => handshakes, refreshes: () => refreshes, pickerDisposed: () => pickerDisposed,
     logout() { identity = null; for (const fn of accountListeners) fn(); },
@@ -56,6 +64,29 @@ test('trusted setup IPC completes identity, Wi-Fi and ownership then refreshes o
   assert.equal(h.refreshes(), 1);
   await h.runtime.dispose();
   assert.equal(h.handlers.size, 0); assert.equal(h.pickerDisposed(), 1);
+});
+test('owner Wi-Fi mode crosses a closed claim window and cannot invoke ownership operations', async () => {
+  const h = await harness({ ownerWifi: true, preview: { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 0 } });
+  try {
+    assert.equal((await h.invoke('begin', { ...candidate, mode: 'wifi' })).value.mode, 'wifi');
+    assert.equal((await h.invoke('confirmPhysical')).value.state, 'awaitingWifi');
+    assert.equal((await h.invoke('confirmOwnership')).code, 'CLAIM_INVALID_STATE');
+    assert.equal((await h.invoke('refresh')).code, 'CLAIM_INVALID_STATE');
+    assert.equal((await h.invoke('redeemClaimCode', 'ABCD234567')).code, 'CLAIM_INVALID_STATE');
+    assert.equal((await h.invoke('wifi', { ssid: 'office', hidden: false, security: 'open' })).value.state, 'completed');
+    assert.equal(h.handshakes(), 1);
+  } finally { await h.runtime.dispose(); }
+});
+test('renderer crash discards the owner Wi-Fi session instead of restoring a claim task', async () => {
+  const h = await harness({ ownerWifi: true });
+  try {
+    await h.invoke('begin', { ...candidate, mode: 'wifi' });
+    await h.invoke('confirmPhysical');
+    h.event.sender.emit('render-process-gone');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await h.invoke('state')).value.state, 'idle');
+    assert.equal(h.refreshes(), 0);
+  } finally { await h.runtime.dispose(); }
 });
 test('Wi-Fi scan IPC is identity-gated, deduplicated and revoked on logout', async () => {
   let calls = 0, resolveScan, signal;
