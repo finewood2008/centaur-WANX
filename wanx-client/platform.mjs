@@ -858,6 +858,7 @@ export function createPlatformClient({
     sendChangeCode: () => account.sendChangeCode(),
     changePassword: (input) => account.changePassword(input),
     refreshDevices,
+    lookupDeviceDiscovery: (deviceIds) => account.lookupDeviceDiscovery(deviceIds),
     listOwnershipTransfers: () => account.listOwnershipTransfers(),
     sendTransferCode: () => account.sendTransferCode(),
     createOwnershipTransfer: (input) => ownershipChange(() => account.createOwnershipTransfer(input)),

@@ -54,7 +54,7 @@ export function registerControlActions({
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about",
   ]);
-  const reads = new Set(["get-state", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -118,6 +118,13 @@ export function registerControlActions({
   }
   register("logout", () => { uiState?.invalidateOpen(); return client.logout(); });
   register("refresh-devices", () => client.refreshDevices());
+  register("discovery-devices", (input) => {
+    const ids = input?.deviceIds;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 16 ||
+        ids.some(id => typeof id !== "string" || !/^centauros-(?:[0-9a-f]{24}|[0-9a-f]{32})$/.test(id)) ||
+        new Set(ids).size !== ids.length) throw new Error("ACCOUNT_INVALID_INPUT");
+    return client.lookupDeviceDiscovery([...ids]);
+  });
   register("ownership-list", () => client.listOwnershipTransfers());
   register("ownership-send-code", () => client.sendTransferCode());
   register("ownership-create", (input) => {

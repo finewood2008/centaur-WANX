@@ -20,7 +20,6 @@ from octop.api.routers.chat.serialize import (
     _load_projected_thread_messages,
 )
 from octop.infra.agents.security.hitl_session import parse_hitl_session_policy
-from octop.infra.agents.thread_memory_cleanup import thread_memory_cleanup
 from octop.infra.agents.threads.artifact import thread_artifacts_payload
 from octop.infra.agents.threads.context_breakdown import SEGMENT_KEYS, compute_context_breakdown
 from octop.infra.agents.threads.fork import fork_dashboard_thread
@@ -607,17 +606,17 @@ async def delete_thread(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> None:
-    """Remove a thread, its captured memory and derived records, and checkpoints.
+    """Remove a conversation thread, its actual checkpoint data, and its metadata.
 
-    Memory cleanup and checkpoint deletion precede metadata deletion. A failure
-    leaves the thread visible for retry; a stopped agent must be started so its
-    memory can be verified. Active conversations cannot race this operation.
+    Checkpoint deletion runs first: if it fails (as opposed to simply
+    finding nothing to delete — agent not running / no checkpointer),
+    the row is intentionally left in place so the thread stays visible
+    and the caller can retry, instead of orphaning undeleted data with
+    no remaining handle to it.
     """
     _require_thread(server, agent_id, thread_id, user, as_user)
-    registry = server.app_runtime.agent_registry
-    async with thread_memory_cleanup(registry, agent_id, thread_id):
-        await registry.delete_thread_checkpoint(agent_id, thread_id)
-        server.app_runtime.gateway.thread_registry.delete_thread(thread_id)
+    await server.app_runtime.agent_registry.delete_thread_checkpoint(agent_id, thread_id)
+    server.app_runtime.gateway.thread_registry.delete_thread(thread_id)
     runtime = getattr(server, "app_runtime", None)
     trajectory = getattr(runtime, "trajectory_service", None) if runtime is not None else None
     if isinstance(trajectory, TrajectoryService):

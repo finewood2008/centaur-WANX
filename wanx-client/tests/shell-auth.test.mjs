@@ -17,6 +17,7 @@ function harness() {
       "sendResetCode", "resetPassword", "sendChangeCode", "changePassword",
       "logout",
       "refreshDevices",
+      "lookupDeviceDiscovery",
       "listOwnershipTransfers", "sendTransferCode", "createOwnershipTransfer", "acceptOwnershipTransfer",
       "connectBox",
       "connect",
@@ -59,6 +60,16 @@ test("every account/device IPC rejects remote windows, same-url subframes and na
       /无权/,
     );
   assert.deepEqual(h.calls, []);
+});
+
+test("discovery IPC forwards only a bounded list of exact device IDs", () => {
+  const h = harness();
+  const deviceId = "centauros-0123456789abcdef01234567";
+  h.invoke("discovery-devices", { deviceIds: [deviceId], ownerAccountId: "injected", token: "injected" });
+  assert.deepEqual(h.calls, [["lookupDeviceDiscovery", [deviceId]]]);
+  for (const deviceIds of [null, [], [deviceId, deviceId], ["box-1"], [deviceId + "a"], Array(17).fill(deviceId)])
+    assert.throws(() => h.invoke("discovery-devices", { deviceIds }), /ACCOUNT_INVALID_INPUT/);
+  assert.equal(h.calls.length, 1);
 });
 
 test("registration IPC validates credentials and pins the SMS scene", () => {

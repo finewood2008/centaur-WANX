@@ -100,11 +100,69 @@ async function scanWifi() {
   return picker.pending;
 }
 let discoveryView = { selecting: false, retained: false, candidates: [] };
+let discoveryMetadata = new Map();
+let discoveryMetadataGeneration = 0;
+let discoveryMetadataRequest = null;
+function discoveryDeviceId(candidate) {
+  const value = candidate.displayIdentity?.deviceId;
+  return typeof value === "string" && /^[A-Za-z0-9._-]{1,36}$/.test(value) ? value : "";
+}
+function resetDiscoveryMetadata() {
+  ++discoveryMetadataGeneration;
+  discoveryMetadata = new Map();
+  discoveryMetadataRequest = null;
+}
+function discoveryMetadataActive() {
+  return page === "provisioning" && currentState?.route !== "auth" && marketAccount !== null &&
+    (discoveryView.selecting || discoveryView.retained);
+}
+function updateDiscoveryMetadata() {
+  if (!discoveryMetadataActive()) { resetDiscoveryMetadata(); return; }
+  const ids = new Set(discoveryView.candidates.map(discoveryDeviceId).filter(id => /^centauros-(?:[0-9a-f]{24}|[0-9a-f]{32})$/.test(id)));
+  for (const id of discoveryMetadata.keys()) if (!ids.has(id)) discoveryMetadata.delete(id);
+  for (const id of ids) if (!discoveryMetadata.has(id)) discoveryMetadata.set(id, { requested: false, value: null });
+  // Coalesce identity notifications, then query each ID once per scan. Rendering
+  // and account/network broadcasts never initiate discovery lookups.
+  void Promise.resolve().then(loadDiscoveryMetadata);
+}
+async function loadDiscoveryMetadata() {
+  if (!discoveryMetadataActive() || discoveryMetadataRequest) return;
+  const entries = [...discoveryMetadata].filter(([, entry]) => !entry.requested).slice(0, 16);
+  if (!entries.length) return;
+  for (const [, entry] of entries) entry.requested = true;
+  const request = { generation: discoveryMetadataGeneration, account: marketAccount, entries };
+  discoveryMetadataRequest = request;
+  try {
+    const response = await window.wanxClient.action("devices.discovery", { deviceIds: entries.map(([id]) => id) });
+    if (request.generation !== discoveryMetadataGeneration || request.account !== marketAccount || !discoveryMetadataActive()) return;
+    const rows = response.ok && Array.isArray(response.value?.devices) ? response.value.devices : [];
+    for (const [id, entry] of entries) {
+      // Removing or replacing a GATT identity revokes its old asynchronous result.
+      if (discoveryMetadata.get(id) !== entry) continue;
+      const matches = rows.filter(row => row?.deviceId === id);
+      const value = matches.length === 1 ? matches[0] : null;
+      entry.value = {
+        deviceName: typeof value?.deviceName === "string" ? value.deviceName : null,
+        claimStatus: ["claimed", "unclaimed"].includes(value?.claimStatus) ? value.claimStatus : "unknown",
+      };
+    }
+    // This read-only result cannot replace newer account state from broadcasts.
+    render(currentState);
+  } catch {
+    // Older platforms and temporary failures keep the local name and unknown state.
+  } finally {
+    if (discoveryMetadataRequest === request) {
+      discoveryMetadataRequest = null;
+      void loadDiscoveryMetadata();
+    }
+  }
+}
 const selection = createDiscoverySelection({
   discovery: window.wanxDiscovery,
   transport: window.wanxDeviceSetupTransport,
   onChange(view) {
     discoveryView = view;
+    updateDiscoveryMetadata();
     if (page === "provisioning") render(currentState);
   },
   onNotice(issue) {
@@ -118,7 +176,7 @@ const selection = createDiscoverySelection({
   },
   onSelected(candidate) { void run("provisioning.start", { candidate }); },
 });
-window.addEventListener?.("pagehide", () => { resetWifiPicker(); selection.dispose(); }, { once: true });
+window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); }, { once: true });
 window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); clearTimeout(passwordResendTimer); }, { once: true });
 const stageLabels = {
   discover: "发现盒子",
@@ -568,7 +626,7 @@ async function refreshMarket() {
 
 function discoveryCard(candidate) {
   const hint = candidate.displayIdentity;
-  const deviceId = typeof hint?.deviceId === "string" && /^[A-Za-z0-9._-]{1,36}$/.test(hint.deviceId) ? hint.deviceId : "";
+  const deviceId = discoveryDeviceId(candidate);
   // Public Device Info is a display hint only. Account names are joined by the
   // complete device ID; selection always keeps the original opaque handle.
   const known = deviceId && currentState.devices?.find((device) => device.deviceId === deviceId);
@@ -581,18 +639,23 @@ function discoveryCard(candidate) {
       !/^centauros-box-[0-9a-f]+$/i.test(name) ? name : "";
   };
   const knownName = boxName(known?.name) || boxName(known?.displayName);
+  const metadata = deviceId && discoveryMetadata.get(deviceId)?.value;
+  const registryName = boxName(metadata?.deviceName);
   const specificName = deviceId && boxName(hint?.displayName);
   const advertisedName = candidate.advertisedName || "";
   const scanning = discoveryView.selecting && !discoveryView.retained;
   const reading = !deviceId && scanning && candidate.nameSource === "advertisement";
-  const resolvedName = knownName || specificName;
+  const resolvedName = knownName || registryName || specificName;
+  const knownClaimed = ["owner", "member"].includes(known?.deviceRole) || ["owner", "member"].includes(known?.role);
+  const claimStatus = knownClaimed ? "claimed" : metadata?.claimStatus || "unknown";
+  const claimLabel = { claimed: "已认领", unclaimed: "未认领", unknown: "认领状态待确认" }[claimStatus];
   const title = resolvedName || (reading ? "正在读取盒子名称…" : "未获取到盒子名称");
   const detail = !deviceId && scanning && !reading
     ? [advertisedName, "选择后核对设备身份"].filter(Boolean).join(" · ")
     : [advertisedName, !deviceId ? reading ? "正在读取盒子名称…" : "未读取到名称" : "", "蓝牙配网"].filter(Boolean).join(" · ");
   const identityDetail = deviceId && !resolvedName
     ? `<span>设备编号：${escapeHTML(deviceId)}（用于核对，不是名称）</span>` : "";
-  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong>${identityDetail}<span>${escapeHTML(detail)}</span></button>`;
+  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong><span class="claim-badge claim-${claimStatus}">${claimLabel}</span>${identityDetail}<span>${escapeHTML(detail)}</span></button>`;
 }
 
 function bluetoothNotice() {
@@ -1079,7 +1142,7 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "start-provisioning") {
     if (busy || !setupReady || bluetoothState.status !== "available" || discoveryView.selecting) return;
-    resetWifiPicker(); selection.start(); return;
+    resetWifiPicker(); resetDiscoveryMetadata(); selection.start(); return;
   }
   if (action === "select-candidate") { if (bluetoothState.status === "available") selection.choose(target.dataset.candidateId); return; }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
@@ -1213,6 +1276,7 @@ function acceptRemoteState(state) {
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
   const accountChanged = account !== marketAccount;
   if (accountChanged) {
+    resetDiscoveryMetadata();
     const passwordChanged = state.account?.reason === "password_reset" && busyRequest?.action === "auth.change-password";
     releaseInteraction(); busy = false; busyRequest = null;
     passwordEditing = false; changeResendAt = 0;

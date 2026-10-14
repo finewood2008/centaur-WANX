@@ -76,6 +76,7 @@ const actions = {
     ipcRenderer.invoke("wanx-client:change-password", { code: input?.code, password: input?.password }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
+  "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "ownership.send-code": () => ipcRenderer.invoke("wanx-client:ownership-send-code"),
   "ownership.create": (input) => ipcRenderer.invoke("wanx-client:ownership-create", input),

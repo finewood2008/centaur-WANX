@@ -699,6 +699,27 @@ export function createAccount({
       publish({ devices });
       return structuredClone(devices);
     },
+    async lookupDeviceDiscovery(deviceIds) {
+      if (!Array.isArray(deviceIds) || deviceIds.length < 1 || deviceIds.length > 16 ||
+          deviceIds.some(id => typeof id !== "string" || !/^centauros-(?:[0-9a-f]{24}|[0-9a-f]{32})$/.test(id)) ||
+          new Set(deviceIds).size !== deviceIds.length) throw failure("ACCOUNT_INVALID_INPUT");
+      const ids = [...deviceIds];
+      const data = await request({ path: `/app-api/v1/device-discovery?ids=${encode(ids.join(","))}` });
+      if (!Array.isArray(data?.devices) || data.devices.length !== ids.length)
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      const devices = new Map();
+      for (const item of data.devices) {
+        if (!item || !ids.includes(item.deviceId) || devices.has(item.deviceId) ||
+            !["claimed", "unclaimed", "unknown"].includes(item.claimStatus) ||
+            (item.deviceName !== null && (typeof item.deviceName !== "string" ||
+              !item.deviceName.trim() || item.deviceName.length > 128 ||
+              /[\u0000-\u001f\u007f-\u009f]/u.test(item.deviceName))))
+          throw failure("ACCOUNT_INVALID_RESPONSE");
+        devices.set(item.deviceId, { deviceId: item.deviceId,
+          deviceName: item.deviceName?.trim() || null, claimStatus: item.claimStatus });
+      }
+      return { devices: ids.map(id => devices.get(id)) };
+    },
     async lookupDeviceName(deviceId) {
       if (typeof deviceId !== "string" || !/^centauros-[0-9a-f]{24,32}$/.test(deviceId))
         throw failure("ACCOUNT_INVALID_INPUT");

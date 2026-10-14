@@ -163,6 +163,9 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .discovery-card { flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; text-align: left; }
 .discovery-card strong, .discovery-card span { overflow-wrap: anywhere; max-width: 100%; }
 .discovery-card span { color: var(--fn-text-tertiary); font-size: 11px; }
+.discovery-card .claim-badge { border: 1px solid currentColor; border-radius: 999px; padding: 2px 8px; }
+.discovery-card .claim-claimed { color: var(--fn-text-secondary); }
+.discovery-card .claim-unclaimed { color: var(--fn-text-success); }
 .market-confirmation { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: #30282040; backdrop-filter: blur(3px); }
 .market-confirm-card { width: min(410px, 100%); padding: 25px; border: 1px solid var(--fn-border-primary); border-radius: 14px; background: var(--fn-bg-elevated); box-shadow: 0 14px 70px #30201020; }
 .market-confirm-card h2 { margin-bottom: 13px; font-size: 23px; overflow-wrap: anywhere; }

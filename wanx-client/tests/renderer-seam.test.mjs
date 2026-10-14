@@ -107,6 +107,12 @@ async function harness(initial = state(), installed = [application], options = {
     connectBox: async (deviceId) => { rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
     refreshDevices: async () => {},
+    lookupDeviceDiscovery: async (deviceIds) => {
+      calls.push(["lookup-device-discovery", [...deviceIds]]);
+      return options.lookupDeviceDiscovery ? options.lookupDeviceDiscovery(deviceIds) : {
+        devices: deviceIds.map(deviceId => ({ deviceId, deviceName: null, claimStatus: "unknown" })),
+      };
+    },
     listOwnershipTransfers: async () => options.transfers ? options.transfers() : [],
     sendTransferCode: async () => ({ expiresIn: 300 }),
     createOwnershipTransfer: async input => { calls.push(["ownership-created", input]); return { ...input, state: "pending_target" }; },
@@ -964,6 +970,185 @@ test("missing box names are explicit and identifiers never become names or suffi
   assert.match(h.app.innerHTML, /<strong>Office box<\/strong>/);
   h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0102", displayIdentity: { deviceId: "other-box-102", displayName: "   " } });
   assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
+});
+
+const discoveryId = index => `centauros-${index.toString(16).padStart(24, "0")}`;
+const settleDiscovery = () => new Promise(resolve => setImmediate(resolve));
+async function startDiscovery(h) {
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  await settleDiscovery();
+}
+function discoveryIdentity(h, deviceId, provider = "provider-1", displayName = "CentaurAI Box") {
+  h.advertisement({ deviceId: provider, advertisedName: "CentaurOS-Setup-0102", displayIdentity: { deviceId, displayName } });
+}
+
+test("discovery resolves another user's claimed box name without changing its opaque selection", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(1);
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async ids => ({ devices: ids.map(deviceId => ({ deviceId,
+      deviceName: '<客户盒子 "A">', claimStatus: "claimed" })) }),
+  });
+  await startDiscovery(h);
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(h.app.innerHTML, /认领状态待确认/);
+  assert.equal(h.calls.filter(([name]) => name === "lookup-device-discovery").length, 0);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>&lt;客户盒子 &quot;A&quot;&gt;<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  assert.doesNotMatch(h.app.innerHTML, /<客户盒子|认领状态待确认/);
+  assert.equal(h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1], candidateId);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+  assert.deepEqual(h.calls.find(([name]) => name === "lookup-device-discovery")[1], [id]);
+  await h.click("select-candidate", { candidateId });
+  await settleDiscovery();
+  assert.equal(h.calls.find(([name]) => name === "nexusaos:discovery:select")[1].candidateId, candidateId);
+  const selected = h.calls.find(([name]) => name === "wanx:setup:begin")[1];
+  assert.ok(selected.transportHandle);
+  assert.equal(selected.deviceId, undefined);
+  assert.equal(selected.claimStatus, undefined);
+});
+
+test("unclaimed inventory names are visible and discovery queries stay batched and event driven", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const ids = Array.from({ length: 18 }, (_, index) => discoveryId(index + 1));
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async values => ({ devices: values.map(deviceId => ({ deviceId,
+      deviceName: `库存盒子 ${ids.indexOf(deviceId) + 1}`, claimStatus: "unclaimed" })) }),
+  });
+  h.nearby(ids.map((_, index) => ({ deviceId: `provider-${index + 1}`, deviceName: "Test box" })));
+  await startDiscovery(h);
+  for (const [index, id] of ids.entries()) discoveryIdentity(h, id, `provider-${index + 1}`);
+  await settleDiscovery();
+  assert.equal((h.app.innerHTML.match(/claim-unclaimed">未认领/g) || []).length, 18);
+  assert.match(h.app.innerHTML, /<strong>库存盒子 18<\/strong>/);
+  const requests = () => h.calls.filter(([name]) => name === "lookup-device-discovery");
+  assert.deepEqual(requests().map(([, values]) => values.length), [16, 2]);
+  assert.deepEqual(requests().flatMap(([, values]) => values), ids);
+  for (let iteration = 0; iteration < 3; ++iteration) {
+    h.update({ ...state(), devices: [] });
+    discoveryIdentity(h, ids[0]);
+  }
+  await settleDiscovery();
+  assert.equal(requests().length, 2, "re-renders and unchanged identity notifications must not poll metadata");
+});
+
+for (const outcome of ["unknown", "missing", "404"]) test(`discovery ${outcome} retains the local name and never infers unclaimed`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(5);
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => {
+      if (outcome === "404") throw Object.assign(new Error("not found"), { status: 404 });
+      return { devices: outcome === "missing" ? [] : [{ deviceId: id, deviceName: null, claimStatus: "unknown" }] };
+    },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id, "provider-1", "附近的盒子");
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>附近的盒子<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-unknown">认领状态待确认/);
+  assert.doesNotMatch(h.app.innerHTML, /claim-unclaimed|claim-claimed/);
+  h.update({ ...state(), devices: [] });
+  await settleDiscovery();
+  assert.equal(h.calls.filter(([name]) => name === "lookup-device-discovery").length, 1);
+});
+
+test("an explicit account owner or member remains claimed and the owner's existing connection still works", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(6);
+  const owned = { ...devices[0], deviceId: id, deviceRole: "owner" };
+  const h = await harness({ ...state(), devices: [owned] }, [application], {
+    after: fn => t.after(fn), lookupDeviceDiscovery: async () => { throw new Error("offline"); },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  h.update({ ...state(), devices: [{ ...owned, deviceRole: "member" }] });
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  h.update({ ...state(), devices: [owned] });
+  await h.click("back-devices");
+  await h.click("connect", { deviceId: id });
+  assert.equal(h.calls.find(([name]) => name === "wanx-client:connect-box")[1], id);
+});
+
+test("each new scan refreshes inventory names and claim state", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(7);
+  let revision = 0;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => ({ devices: [{ deviceId: id,
+      deviceName: ++revision === 1 ? "第一次扫描名称" : "新的库存名称",
+      claimStatus: revision === 1 ? "unclaimed" : "claimed" }] }),
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /第一次扫描名称/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  t.mock.timers.tick(12000);
+  await settleDiscovery();
+  await h.click("start-provisioning");
+  await settleDiscovery();
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /新的库存名称/);
+  assert.match(h.app.innerHTML, /claim-claimed">已认领/);
+  assert.doesNotMatch(h.app.innerHTML, /第一次扫描名称/);
+  assert.equal(revision, 2);
+});
+
+test("late metadata from a previous account cannot populate the new account's scan", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(8);
+  let completeOld, requests = 0;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => ++requests === 1 ? new Promise(resolve => { completeOld = resolve; }) :
+      { devices: [{ deviceId: id, deviceName: "当前账号扫描结果", claimStatus: "unclaimed" }] },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  h.update({ account: { phase: "signed_out" } });
+  h.update({ ...state(), account: { phase: "authenticated", accountId: "account-2" }, devices: [] });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /当前账号扫描结果/);
+  completeOld({ devices: [{ deviceId: id, deviceName: "旧账号迟到名称", claimStatus: "claimed" }] });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /当前账号扫描结果/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  assert.doesNotMatch(h.app.innerHTML, /旧账号迟到名称|claim-claimed/);
+});
+
+test("revoked then rediscovered identity cannot reuse an old asynchronous metadata response", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = discoveryId(9);
+  let completeOld, requests = 0;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async () => ++requests === 1 ? new Promise(resolve => { completeOld = resolve; }) :
+      { devices: [{ deviceId: id, deviceName: "重新核对的名称", claimStatus: "unknown" }] },
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0102", displayIdentity: null });
+  discoveryIdentity(h, id);
+  assert.match(h.app.innerHTML, /认领状态待确认/);
+  completeOld({ devices: [{ deviceId: id, deviceName: "失效身份的名称", claimStatus: "claimed" }] });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /重新核对的名称/);
+  assert.doesNotMatch(h.app.innerHTML, /失效身份的名称|claim-claimed/);
+  assert.equal(requests, 2);
 });
 
 test("numeric box display names remain visible during discovery and identity preview", async (t) => {
