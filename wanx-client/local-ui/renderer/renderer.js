@@ -10,6 +10,7 @@ let marketAccount = null;
 let marketConfirmation = null;
 let ownershipTransfers = [];
 let ownershipRevision = 0;
+let transferRequest = null;
 let transferDeviceId = null;
 let transferNotice = null;
 let transferResendAt = 0;
@@ -26,6 +27,7 @@ const expandedDetails = new Set();
 let busy = false;
 let setupState = { state: "idle" };
 let setupReady = false;
+let setupRequest = null;
 let wifiPicker = newWifiPicker();
 function newWifiPicker() { return { scanned: false, pending: null, networks: [], selected: null, manual: false, error: null, sessionId: null }; }
 function resetWifiPicker() {
@@ -263,7 +265,7 @@ function boxesView() {
 function ownershipView() {
   const device = currentState.devices?.find(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner"));
   const pending = ownershipTransfers.filter(item => item.state === "pending_target" && Date.parse(item.expiresAt) > Date.now());
-  return `<section class="content-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" ${busy ? "disabled" : ""}>刷新转移记录</button></div>
+  return `<section class="content-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
     <p class="muted">将盒子交给另一个万象账号。此操作保留盒内数据；需要清空交付时，请由管理员执行盒子清除。</p>
     ${transferNotice ? `<p role="status">${escapeHTML(transferNotice)}</p>` : ""}
     ${device ? `<form data-form="transfer" data-device-id="${escapeHTML(device.deviceId)}" class="auth-card transfer-form"><h3>转移 ${escapeHTML(device.name || device.displayName || device.deviceId)}</h3>
@@ -276,19 +278,29 @@ function ownershipView() {
     ${!pending.length ? '<p class="muted">暂无待处理的转移邀请。</p>' : ""}</section>`;
 }
 
-async function refreshTransfers() {
+async function refreshTransfers({ force = false } = {}) {
+  if (transferRequest && !force) return transferRequest.promise;
   const generation = marketGeneration;
   const revision = ++ownershipRevision;
-  try {
-    const response = await window.wanxClient.action("ownership.list");
-    if (generation !== marketGeneration || revision !== ownershipRevision) return;
-    if (!response.ok) throw new Error(response.code);
-    ownershipTransfers = response.value || [];
-  } catch (error) {
-    if (generation !== marketGeneration || revision !== ownershipRevision) return;
-    transferNotice = "转移记录暂时无法加载，请刷新重试。";
-  }
+  const request = {};
+  transferRequest = request;
+  const loadError = "转移记录暂时无法加载，请刷新重试。";
+  if (transferNotice === loadError) transferNotice = null;
   render(currentState);
+  request.promise = (async () => {
+    try {
+      const response = await window.wanxClient.action("ownership.list");
+      if (generation !== marketGeneration || revision !== ownershipRevision) return;
+      if (!response.ok) throw new Error(response.code);
+      ownershipTransfers = response.value || [];
+    } catch (error) {
+      if (generation !== marketGeneration || revision !== ownershipRevision) return;
+      transferNotice = loadError;
+    } finally {
+      if (transferRequest === request) { transferRequest = null; render(currentState); }
+    }
+  })();
+  return request.promise;
 }
 
 function dashboardButton() {
@@ -527,6 +539,10 @@ function discoveryCard(candidate) {
 }
 
 function provisioningView() {
+  const starting = setupRequest?.action === "provisioning.start";
+  const cancelling = setupRequest?.action === "provisioning.cancel";
+  const refreshing = setupRequest?.action === "provisioning.refresh";
+  const cancelButton = `<button class="button danger" data-action="cancel-provisioning" aria-busy="${cancelling}" ${cancelling ? "disabled" : ""}>${cancelling ? "正在取消…" : "取消"}</button>`;
   const stagesByState = {
     idle: "discover", previewReady: "identity", awaitingWifi: "network",
     awaitingOwnershipConfirmation: "claim", submittingAppProof: "claim",
@@ -534,9 +550,9 @@ function provisioningView() {
   };
   const failed = ["terminalError", "restartRequired"].includes(setupState.state);
   const provisioning = {
-    phase: failed ? "failed" : setupState.state === "completed" ? "ready" :
+    phase: starting || cancelling ? "running" : failed ? "failed" : setupState.state === "completed" ? "ready" :
       ["submittingAppProof", "provisioningWifi", "waitingCloud"].includes(setupState.state) ? "running" : "idle",
-    stage: stagesByState[setupState.state],
+    stage: starting ? "identity" : stagesByState[setupState.state],
     error: { message: setupErrorMessage(setupState.errorCode) },
   };
   const running = provisioning.phase === "running";
@@ -545,7 +561,7 @@ function provisioningView() {
     preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null;
   const setupPhase = setupState.state || "idle";
   const stages = Object.entries(stageLabels);
-  const setupCopy = {
+  const setupCopy = starting ? "正在通过蓝牙读取盒子身份，请稍候。" : cancelling ? "正在停止本次配网，请稍候。" : {
     idle: "请让盒子进入蓝牙配网模式，然后点击扫描并选择附近的盒子。",
     attentionRequired: "盒子授权尚未完成，请检查盒子联网状态后刷新。",
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
@@ -572,9 +588,9 @@ function provisioningView() {
       ${shellHeader("发现并配置盒子")}<div class="page-content">
       <div class="page-heading"><div><h2>发现新盒子</h2><p class="muted">核对身份，连接网络，然后绑定到你的账号。</p></div></div>
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
-        <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${discoveryBlock}${previewBlock}${controls}</div>
-        <div class="wizard-actions">${running ? '<button class="button" disabled>返回盒子</button><button class="button danger" data-action="cancel-provisioning">取消</button>' : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary" data-action="start-provisioning" ${busy || !setupReady ? "disabled" : ""}>${provisioning.phase === "failed" ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : '<button class="button danger" data-action="cancel-provisioning">取消</button>'}</div>`}
-        ${setupPhase === "attentionRequired" ? '<button class="button" data-action="provisioning-refresh">刷新授权状态</button>' : ""}
+        <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${discoveryBlock}${previewBlock}${controls}</div>
+        <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
+        ${setupPhase === "attentionRequired" ? `<button class="button" data-action="provisioning-refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? "正在刷新…" : "刷新授权状态"}</button>` : ""}
         ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
         ${!setupReady ? '<p class="hint">正在准备蓝牙配网服务…</p>' : ""}
       </section></div>
@@ -591,6 +607,10 @@ function render(state) {
   const wifiForm = page === "provisioning" && setupState.state === "awaitingWifi" ? app.querySelector?.('[data-form="wifi"]') : null;
   const authForm = auth && previousAuth?.dataset.mode === authMode ? previousAuth : null;
   const transferForm = !auth && page === "boxes" && transferDeviceId && currentState.devices?.some(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner")) ? app.querySelector?.(`[data-form="transfer"][data-device-id="${transferDeviceId}"]`) : null;
+  // Keep the active scan indicator spinning across discovery and account updates.
+  const scanButton = !auth && page === "provisioning" && discoveryView.selecting
+    ? app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]') : null;
+  const scanAnimations = new Map(scanButton?.querySelector('.scan-spinner').getAnimations().map(animation => [animation.animationName, animation.currentTime]));
   const retainedForm = wifiForm || authForm || transferForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   if (state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating") app.innerHTML = authView();
@@ -598,6 +618,12 @@ function render(state) {
   else if (page === "boxes") app.innerHTML = boxesView();
   else if (page === "settings") app.innerHTML = settingsView();
   else app.innerHTML = applicationsView();
+  if (scanButton) {
+    app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]')?.replaceWith(scanButton);
+    for (const animation of scanButton.querySelector('.scan-spinner').getAnimations()) {
+      animation.currentTime = scanAnimations.get(animation.animationName) ?? 0;
+    }
+  }
   if (retainedForm) {
     const formName = wifiForm ? "wifi" : transferForm ? "transfer" : "auth";
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
@@ -710,6 +736,10 @@ function operationErrorMessage(error) {
 }
 
 async function run(action, input = {}) {
+  const isSetupOperation = action.startsWith("provisioning.");
+  if (isSetupOperation && setupRequest && (action !== "provisioning.cancel" || setupRequest.action === action)) return null;
+  const request = isSetupOperation ? { action } : null;
+  if (request) setupRequest = request;
   if (["provisioning.start", "provisioning.cancel", "auth.logout"].includes(action)) resetWifiPicker();
   notice = null;
   codeSent = false;
@@ -717,7 +747,7 @@ async function run(action, input = {}) {
   const applicationId = input.applicationId;
   const isAppOperation = Boolean(applicationId) && (action.startsWith("market.") || action.startsWith("applications."));
   if (isAppOperation && operationBusy(applicationId)) return null;
-  const holdBusy = !isAppOperation && !["provisioning.start", "applications.confirm-open", "applications.cancel-open", "desktop.about"].includes(action);
+  const holdBusy = !isAppOperation && !["applications.confirm-open", "applications.cancel-open", "desktop.about"].includes(action);
   if (isAppOperation) localOperations.set(applicationId, { phase: { "market.install": "installing", "market.uninstall": "uninstalling", "market.rollback": "rolling_back", "applications.select-current": "selecting" }[action] || "opening" });
   if (holdBusy) busy = true;
   render(currentState);
@@ -731,12 +761,18 @@ async function run(action, input = {}) {
       "provisioning.refresh": () => window.wanxSetup.refresh(),
       "provisioning.cancel": () => window.wanxSetup.cancel(),
     };
-    if (setupActions[action]) { setupState = await setupActions[action](); return { ok: true }; }
+    if (setupActions[action]) {
+      const snapshot = await setupActions[action]();
+      if (setupRequest !== request) return null;
+      setupState = snapshot;
+      return { ok: true };
+    }
     const response = await window.wanxClient.action(action, input);
     if (response.state) acceptRemoteState(response.state);
     if (!response.ok) throw new Error(response.code);
     return response;
   } catch (error) {
+    if (request && setupRequest !== request) return null;
     if (action === "auth.send-code" && error.message.includes("SMS_RATE_LIMITED")) {
       resendAt = Date.now() + 60000;
       updateResendButton();
@@ -749,7 +785,8 @@ async function run(action, input = {}) {
       if (failure) localOperations.set(applicationId, { phase: "failed", error: failure });
       else localOperations.delete(applicationId);
     }
-    if (holdBusy) busy = false;
+    if (holdBusy && (!request || setupRequest === request)) busy = false;
+    if (request && setupRequest === request) setupRequest = null;
     render(currentState);
   }
 }
@@ -768,7 +805,7 @@ app.addEventListener("click", async (event) => {
     const result = await run(confirmation.action, confirmation.input || { applicationId: confirmation.applicationId });
     if (result && generation === marketGeneration && confirmation.action === "ownership.accept") {
       transferNotice = result.value?.refreshRequired ? "所有权已接受，盒子列表暂未刷新，请点击刷新。" : "已接受所有权，请等待盒子授权同步后连接。";
-      await refreshTransfers();
+      await refreshTransfers({ force: true });
     }
     if (result && confirmation.action.startsWith("market.")) await refreshMarket();
     return;
@@ -858,7 +895,7 @@ app.addEventListener("click", async (event) => {
     render(currentState);
     return;
   }
-  if (action === "refresh") { if (page === "provisioning") page = "boxes"; await run("devices.refresh"); if (page === "boxes") await refreshTransfers(); return; }
+  if (action === "refresh") { if (page === "provisioning") page = "boxes"; await run("devices.refresh"); if (page === "boxes") await refreshTransfers({ force: true }); return; }
   if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
   if (action === "provisioning") {
     resetWifiPicker();
@@ -878,7 +915,10 @@ app.addEventListener("click", async (event) => {
     if (!wifiPicker.manual && wifiPicker.selected) selectWifi(wifiKey(wifiPicker.selected));
     updateWifiPicker(); return;
   }
-  if (action === "start-provisioning") { resetWifiPicker(); selection.start(); return; }
+  if (action === "start-provisioning") {
+    if (busy || !setupReady || discoveryView.selecting) return;
+    resetWifiPicker(); selection.start(); return;
+  }
   if (action === "select-candidate") { selection.choose(target.dataset.candidateId); return; }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
@@ -955,7 +995,7 @@ app.addEventListener("submit", async (event) => {
     if (result && generation === marketGeneration) {
       transferDeviceId = null;
       transferNotice = result.value?.refreshRequired ? "邀请已发送，列表暂未刷新；请客户登录万象接受。" : "邀请已发送，24 小时内请客户登录万象，在“我的盒子”中接受转移。";
-      await refreshTransfers();
+      await refreshTransfers({ force: true });
     }
     return;
   }
@@ -1010,6 +1050,9 @@ function acceptRemoteState(state) {
   if (state.route === "auth" || accountChanged) {
     resetWifiPicker();
     page = "applications";
+    transferRequest = null;
+    ++ownershipRevision;
+    if (setupRequest) { setupRequest = null; busy = false; }
     ownershipTransfers = []; transferDeviceId = null; transferNotice = null; transferResendAt = 0;
     selection.reset();
     marketItems = [];

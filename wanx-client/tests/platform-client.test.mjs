@@ -1306,3 +1306,112 @@ test("late ownership completion cannot refresh or disconnect a newly logged-in a
   await assert.rejects(accepting, { code: "ACCOUNT_CANCELLED" });
   assert.equal(h.client.snapshot().phase, "ready");
 });
+
+// Exercise the scheduled renewal, not a manual refresh (which leaves its old timer alive).
+test("background renewal retries a temporary outage after retiring an unhealthy engine", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let offline = false;
+  const h = harness(t, { sidecarStatus: () => offline ? { phase: "unavailable", peers: [] } : undefined });
+  await h.client.loginPassword({ phone: "account-1" });
+  offline = true;
+  await h.transports[0].network.refresh();
+  h.override(input => { if (input.path.endsWith("/restore")) throw fail("ACCOUNT_NETWORK_ERROR"); });
+  t.mock.timers.tick(60_000);
+  await tick();
+  assert.equal(h.client.snapshot().platform.phase, "unavailable");
+  assert.equal(h.transports[0].closed, true);
+  offline = false;
+  h.override(undefined);
+  t.mock.timers.tick(5_000);
+  await tick();
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+});
+
+for (const stop of ["disable", "logout", "close", "denied"]) {
+  test(`pending automatic retry stops on ${stop}`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const h = harness(t);
+    h.override(input => { if (input.path.endsWith("/prepare")) throw fail("ACCOUNT_NETWORK_ERROR"); });
+    await h.client.loginPassword({ phone: "account-1" });
+    if (stop === "disable") await h.client.setNetworkEnabled(false);
+    if (stop === "logout") await h.client.logout();
+    if (stop === "close") await h.client.close();
+    if (stop === "denied") {
+      h.override(input => { if (input.path.endsWith("/prepare")) throw fail("ACCOUNT_ACCESS_DENIED", 403); });
+      await h.client.refreshDevices();
+    }
+    const calls = h.calls.length;
+    h.override(undefined);
+    t.mock.timers.tick(120_000);
+    await tick();
+    assert.equal(h.calls.length, calls);
+    assert.notEqual(h.client.snapshot().platform.phase, "ready");
+  });
+}
+
+test("offline activation retries with bounded backoff and recovers without a system event", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  h.override(input => { if (input.path.endsWith("/prepare")) throw fail("ACCOUNT_NETWORK_ERROR"); });
+  await h.client.loginPassword({ phone: "account-1" });
+  for (const delay of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+    const before = h.calls.length;
+    t.mock.timers.tick(delay - 1);
+    await tick();
+    assert.equal(h.calls.length, before, "must not retry before backoff elapses");
+    t.mock.timers.tick(1);
+    await tick();
+    assert.ok(h.calls.length > before, "must retry after backoff elapses");
+  }
+  h.override(undefined);
+  const recovered = new Promise(resolve => {
+    const unsubscribe = h.client.subscribe(state => {
+      if (state.platform.phase === "ready") { unsubscribe(); resolve(); }
+    });
+    t.after(unsubscribe);
+  });
+  t.mock.timers.tick(60_000);
+  await recovered;
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+});
+
+test("a hard lease deadline cancels pending recovery and cannot revive old access", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  h.override(input => input.path.startsWith("/app-api/network/enrollments/") ? {
+    enrollmentId: "enrollment-1", networkSessionId: "enrollment-1", phase: "ready",
+    managementUrl: "https://p2p.qeeshu.com", leaseExpiresAt: Date.now() / 1000 + 2,
+  } : undefined);
+  await h.client.loginPassword({ phone: "account-1" });
+  h.override(input => { if (input.path.endsWith("/restore")) throw fail("ACCOUNT_NETWORK_ERROR"); });
+  t.mock.timers.tick(1_000);
+  await tick();
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  t.mock.timers.tick(1_000);
+  await tick();
+  assert.equal(h.client.snapshot().platform.reason, "NETWORK_LEASE_EXPIRED");
+  const calls = h.calls.length;
+  h.override(undefined);
+  t.mock.timers.tick(120_000);
+  await tick();
+  await h.client.networkChanged();
+  assert.equal(h.calls.length, calls);
+  assert.equal(h.client.snapshot().platform.reason, "NETWORK_LEASE_EXPIRED");
+});
+
+test("an old account retry cannot restart after signing into another account", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = harness(t);
+  h.override(input => { if (input.path.endsWith("/prepare")) throw fail("ACCOUNT_NETWORK_ERROR"); });
+  await h.client.loginPassword({ phone: "account-1" });
+  await h.client.logout();
+  h.override(undefined);
+  await h.client.loginPassword({ phone: "account-2" });
+  const calls = h.calls.length;
+  t.mock.timers.tick(5_000);
+  await tick();
+  assert.equal(h.calls.length, calls);
+  assert.equal(h.client.snapshot().account.accountId, "account-2");
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+});
