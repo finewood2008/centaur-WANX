@@ -1104,6 +1104,41 @@ test("each new scan refreshes inventory names and claim state", async t => {
   assert.equal(revision, 2);
 });
 
+test("late inventory metadata enriches retained scan results without selecting or extending retention", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = "centauros-37859979e324b9e257c586da";
+  let completeLookup;
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: () => new Promise(resolve => { completeLookup = resolve; }),
+  });
+  await startDiscovery(h);
+  discoveryIdentity(h, id);
+  await settleDiscovery();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(h.app.innerHTML, /未获取到盒子名称/);
+  assert.match(h.app.innerHTML, /认领状态待确认/);
+  t.mock.timers.tick(12000);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /扫描已结束，本轮结果保留 2 分钟/);
+  t.mock.timers.tick(1000);
+  completeLookup({ devices: [{ deviceId: id, deviceName: "CentaurOS-79", claimStatus: "unclaimed" }] });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>CentaurOS-79<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  assert.doesNotMatch(h.app.innerHTML, /未获取到盒子名称|认领状态待确认/);
+  assert.equal(h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1], candidateId);
+  assert.equal(h.calls.filter(([name]) => name === "lookup-device-discovery").length, 1);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
+  t.mock.timers.tick(118999);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /CentaurOS-79/);
+  t.mock.timers.tick(1);
+  await settleDiscovery();
+  assert.doesNotMatch(h.app.innerHTML, /data-candidate-id|CentaurOS-79/);
+  assert.match(h.app.innerHTML, /扫描结果已过期/);
+});
+
 test("late metadata from a previous account cannot populate the new account's scan", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const id = discoveryId(8);
@@ -1165,7 +1200,7 @@ test("numeric box display names remain visible during discovery and identity pre
   h.setup({ state: "previewReady", preview: { device_id: deviceId, display_name: "CentaurOS-22",
     cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 0 } });
   assert.match(h.app.innerHTML, /<dt>设备名称<\/dt><dd>CentaurOS-22<\/dd>/);
-  assert.match(h.app.innerHTML, /盒子尚未开启配网模式/);
+  assert.match(h.app.innerHTML, /盒子尚未准备好首次配网/);
   assert.doesNotMatch(h.app.innerHTML, /PROTOCOL_CHANGED/);
 });
 
@@ -1197,7 +1232,7 @@ test("provisioning explains unregistered and closed-window boxes and does not bl
   assert.match(h.app.innerHTML, /盒子尚未完成平台注册/);
   assert.match(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
   h.setup({ state: "previewReady", preview: { ...preview, cloud_enrollment_status: "ready" } });
-  assert.match(h.app.innerHTML, /盒子尚未开启配网模式/);
+  assert.match(h.app.innerHTML, /盒子尚未准备好首次配网/);
   assert.match(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
   h.setup({ state: "previewReady", preview: { ...preview, cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 300 } });
   assert.doesNotMatch(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
@@ -1753,4 +1788,65 @@ test("empty login password is explained inline without submitting", async () => 
   await h.submit("auth", { username: "13800138000", password: "" });
   assert.equal(h.form("auth").querySelector('[data-auth-notice]').textContent, "请输入密码");
   assert.equal(h.calls.filter(([name]) => name === "wanx-client:login-password").length, 0);
+});
+
+
+test("nearby owner Wi-Fi entry preserves the opaque selection and requests only wifi mode", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const deviceId = discoveryId(79);
+  const h = await harness({ ...state(), devices: [{ deviceId, name: "我的盒子", deviceRole: "owner" }] }, [application], t);
+  await startDiscovery(h);
+  discoveryIdentity(h, deviceId);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /data-action="select-candidate-wifi"/);
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate-wifi", { candidateId });
+  await settleDiscovery();
+  assert.equal(h.calls.find(([name]) => name === "nexusaos:discovery:select")[1].candidateId, candidateId);
+  const selected = h.calls.find(([name]) => name === "wanx:setup:begin")[1];
+  assert.equal(selected.mode, "wifi");
+  assert.ok(selected.transportHandle);
+  assert.equal(selected.deviceId, undefined);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:confirmOwnership").length, 0);
+});
+
+for (const role of ["member", "unknown", undefined]) test(`nearby ${role} cannot request owner Wi-Fi mode`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const deviceId = discoveryId(79);
+  const h = await harness({ ...state(), devices: [{ deviceId, deviceRole: role }] }, [application], t);
+  await startDiscovery(h);
+  discoveryIdentity(h, deviceId);
+  await settleDiscovery();
+  assert.doesNotMatch(h.app.innerHTML, /data-action="select-candidate-wifi"/);
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate-wifi", { candidateId });
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
+});
+
+test("owner Wi-Fi flow ignores the initial-claim window and never shows binding controls or success", async () => {
+  const h = await harness();
+  await h.click("provisioning");
+  const mode = "wifi";
+  h.setup({ state: "previewReady", mode, preview: { device_id: "box-102", display_name: "我的盒子",
+    cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 0 } });
+  assert.match(h.app.innerHTML, /修改 Wi-Fi/);
+  assert.doesNotMatch(actionButton(h, "provisioning-confirm"), /disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /认领设备|初始化盒端|首次配网/);
+  h.setup({ state: "awaitingWifi", mode });
+  await flushWifi();
+  assert.match(h.app.innerHTML, /连接 Wi-Fi/);
+  assert.match(h.app.innerHTML, /认领关系和盒子数据将保留/);
+  assert.doesNotMatch(h.app.innerHTML, /继续绑定账号|确认绑定到当前账号/);
+  h.setup({ state: "completed", mode });
+  assert.match(h.app.innerHTML, /Wi-Fi 配置成功/);
+  assert.doesNotMatch(h.app.innerHTML, /设备已完成联网和账号绑定/);
+});
+
+test("expired setup sessions offer a new scan without requiring a deployment window", async () => {
+  const h = await harness(state(), [application], { setupRequest: async () => ({ state: "idle" }) });
+  await h.click("provisioning");
+  h.setup({ state: "restartRequired", errorCode: "PAIRING_EXPIRED" });
+  assert.match(h.app.innerHTML, /本次配网会话已超时，请重新扫描并重试/);
+  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
 });

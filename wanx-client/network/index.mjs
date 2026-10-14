@@ -113,6 +113,8 @@ export function createNetwork({
   let recovery = null;
   let recoveryRequired = false;
   let retryAfter = 0;
+  let degradedSince = null;
+  let recoveryDelay = 5000;
   let restartDelay = 5000;
   let closePromise;
   const closing = new Set();
@@ -144,6 +146,9 @@ export function createNetwork({
     clearAgents();
     proxy = null;
     recoveryRequired = false;
+    degradedSince = null;
+    retryAfter = 0;
+    recoveryDelay = 5000;
     const previous = engine;
     engine = null;
     if (!previous) return Promise.resolve();
@@ -214,6 +219,19 @@ export function createNetwork({
     proxy = { port: result.proxy.port, token: result.proxy.token };
     restartDelay = 5000;
     publish(next);
+    observeRecovery(next);
+  }
+  function observeRecovery(next) {
+    if (next.phase === "ready") {
+      recoveryRequired = false;
+      degradedSince = null;
+      retryAfter = 0;
+      recoveryDelay = 5000;
+    } else if (next.phase === "recovering") degradedSince ??= Date.now();
+  }
+  function retryRecovery() {
+    retryAfter = Date.now() + recoveryDelay;
+    recoveryDelay = Math.min(recoveryDelay * 2, 60_000);
   }
   async function start(sidecar, generation, extra = {}) {
     acceptStart(await sidecar.request("start", { ...baseParams, ...extra }), generation);
@@ -224,11 +242,11 @@ export function createNetwork({
     publish({ ...state, phase: "recovering", reason: "network_unavailable" });
     try {
       acceptStart(await sidecar.request("recover"), generation, true);
-      if (current(generation)) recoveryRequired = false;
+      if (current(generation) && state.phase !== "ready") retryRecovery();
     } catch (error) {
       if (!current(generation)) return;
       if (!["start_failed", "network_unavailable"].includes(error.code)) throw error;
-      retryAfter = Date.now() + 5_000;
+      retryRecovery();
       publish({ ...state, phase: "recovering", reason: "network_unavailable" });
     }
   }
@@ -289,10 +307,9 @@ export function createNetwork({
     if (!state.enabled || closed) return Promise.resolve(snapshot());
     return run(async (sidecar, generation) => {
       if (!proxy) return start(sidecar, generation);
-      if (recoveryRequired && Date.now() >= retryAfter)
-        return recoverEngine(sidecar, generation);
       const next = parseStatus(await sidecar.request("status"));
       if (current(generation)) {
+        observeRecovery(next);
         if (!["ready", "recovering"].includes(next.phase)) clearAgents();
         else if (next.phase === "ready") {
           for (const [url, agent] of agents) {
@@ -306,6 +323,16 @@ export function createNetwork({
           }
         }
         publish(next);
+        // Give the SDK's own reconnect loop time to repair transient control
+        // outages. A healthy box path must not be interrupted by a status-only
+        // failure, nor should one offline box restart all other connections.
+        if (next.phase === "recovering" && Date.now() >= retryAfter &&
+            (recoveryRequired || Date.now() - degradedSince >= 20_000)) {
+          const reachable = await Promise.all([...agents.values()].map(agent => agent.probe()));
+          if (!current(generation)) return;
+          if (reachable.some(Boolean)) retryAfter = Date.now() + 20_000;
+          else await recoverEngine(sidecar, generation);
+        }
       }
     });
   }
