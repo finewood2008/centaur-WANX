@@ -113,6 +113,7 @@ export function createNetwork({
   let recovery = null;
   let recoveryRequired = false;
   let retryAfter = 0;
+  let restartDelay = 5000;
   let closePromise;
   const closing = new Set();
   const agents = new Map();
@@ -177,6 +178,7 @@ export function createNetwork({
           dispose();
           pending = null;
           failed(failure(code));
+          schedule();
         },
       });
     }
@@ -184,10 +186,13 @@ export function createNetwork({
   }
   const schedule = () => {
     stopTimer();
-    if (state.enabled && proxy && !closed) {
+    const restart = !proxy && state.phase === "unavailable" &&
+      ["start_failed", "network_unavailable", "engine_timeout", "engine_exited", "engine_unavailable"].includes(state.reason);
+    if (state.enabled && (proxy || restart) && !closed) {
       timer = setTimeout(() => {
         void refresh();
-      }, pollIntervalMs);
+      }, restart ? restartDelay : pollIntervalMs);
+      if (restart) restartDelay = Math.min(restartDelay * 2, 60_000);
       timer.unref?.();
     }
   };
@@ -207,6 +212,7 @@ export function createNetwork({
     else if (proxy.port !== result.proxy.port || proxy.token !== result.proxy.token)
       throw failure("invalid_status");
     proxy = { port: result.proxy.port, token: result.proxy.token };
+    restartDelay = 5000;
     publish(next);
   }
   async function start(sidecar, generation, extra = {}) {
@@ -308,6 +314,7 @@ export function createNetwork({
       throw new TypeError("enabled must be boolean");
     if (closed) throw failure("network_closed");
     if (!enabled) {
+      restartDelay = 5000;
       epoch += 1;
       stopTimer();
       pending = null;

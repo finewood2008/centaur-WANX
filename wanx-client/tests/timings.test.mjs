@@ -28,3 +28,47 @@ test("timings persist phase and elapsed time, never results or error details, an
   assert.equal(JSON.parse(previous).step, "account.restore");
   assert.equal(typeof JSON.parse(current).durationMs, "number");
 });
+
+test("failure diagnostics allow only known codes and HTTP status, never free-form errors", async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-errors-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "connection.jsonl");
+  const recorder = createTimingRecorder({ filePath });
+  for (const code of ["ACCOUNT_NETWORK_ERROR", "engine_timeout", "SECRET_TOKEN", "https://secret.example/token"]) {
+    await assert.rejects(recorder.run("network.restore", async () => {
+      throw Object.assign(new Error("SECRET phone=13800138000 token=private"), {
+        code, status: 503, headers: { authorization: "Bearer SECRET" }, body: "SECRET",
+      });
+    }));
+  }
+  await recorder.flush();
+  const contents = await readFile(filePath, "utf8");
+  assert.doesNotMatch(contents, /SECRET|13800138000|private|secret.example|authorization|body/);
+  const rows = contents.trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(rows.map(row => row.errorCode), ["ACCOUNT_NETWORK_ERROR", "engine_timeout", "UNKNOWN_ERROR", "UNKNOWN_ERROR"]);
+  assert.ok(rows.every(row => row.httpStatus === 503));
+});
+
+test("connection diagnostics record only sanitized state changes, including recovery and lease expiry", async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-states-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "connection.jsonl");
+  const recorder = createTimingRecorder({ filePath });
+  const state = { phase: "unavailable", reason: "engine_timeout", enabled: true,
+    peers: [{ ip: "100.80.1.2", name: "SECRET-DEVICE" }], token: "SECRET" };
+  recorder.state("network", state);
+  recorder.state("network", { ...state, token: "CHANGED-SECRET" });
+  recorder.state("network", { phase: "ready", reason: null, enabled: true });
+  recorder.state("platform", { phase: "unavailable", reason: "NETWORK_LEASE_EXPIRED" });
+  recorder.state("network", { phase: "SECRET-PHASE", reason: "SECRET_CODE", enabled: "SECRET" });
+  recorder.state("SECRET-COMPONENT", state);
+  await recorder.flush();
+  const contents = await readFile(filePath, "utf8");
+  assert.doesNotMatch(contents, /SECRET|100.80|peers|token/);
+  const rows = contents.trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows.map(row => row.phase), ["unavailable", "ready", "unavailable", "unknown"]);
+  assert.deepEqual(rows.map(row => row.reason), ["engine_timeout", null, "NETWORK_LEASE_EXPIRED", "UNKNOWN_ERROR"]);
+  assert.equal(rows[0].enabled, true);
+  assert.equal(Object.hasOwn(rows[3], "enabled"), false);
+});

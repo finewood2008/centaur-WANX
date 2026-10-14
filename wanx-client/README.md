@@ -132,4 +132,8 @@ npm --prefix wanx-client run package:windows
 
 ### 启动耗时诊断
 
-源码运行时可使用 `WANX_CONNECTION_TIMINGS=1 npm --prefix wanx-client start`（仓库根目录）记录入网各步骤耗时。日志只包含固定步骤名、完成/失败状态和毫秒数，不包含请求参数、令牌、设备标识或响应内容；默认关闭。`client.initialize` 包括账号恢复、权限准备、平台会话恢复及引擎启动，不代表点击盒子后的业务页面加载耗时。
+客户端默认将诊断写入 Electron `userData/logs/connection-timings.jsonl`；macOS 源码运行通常位于 `~/Library/Application Support/centuarai-wanx-client/logs/`。文件达到 512 KiB 后轮换为 `.previous`，只保留当前与上一份日志。`WANX_CONNECTION_TIMINGS=1 npm --prefix wanx-client start`（仓库根目录）额外开启控制台输出。
+
+日志包含步骤、完成/失败状态、耗时，以及白名单内的错误码和 HTTP 错误状态码。`network.state` / `platform.state` 仅在状态变化时记录阶段和原因，可区分引擎退出、超时、授权拒绝与租约到期，并观察后续恢复；未知错误统一记为 `UNKNOWN_ERROR`。不写入请求地址、参数、账号、设备标识、令牌、响应正文或错误消息/堆栈。`client.initialize` 包括账号恢复、权限准备、平台会话恢复及引擎启动，不代表点击盒子后的业务页面加载耗时。
+
+临时入网、续期或引擎故障会自动重试，等待间隔从 5 秒逐步增加，最长 60 秒，成功后复位。手动关闭、退出登录、客户端关闭、授权拒绝和硬租约到期会停止对应重试；重新建立连接必须重新取得有效平台授权。修改客户端源码后需重启万象生效。

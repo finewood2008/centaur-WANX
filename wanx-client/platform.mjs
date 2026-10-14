@@ -54,6 +54,7 @@ export function createPlatformClient({
     activeWork = null;
   let resumeHint = null;
   let retryActivation = false;
+  let retryDelay = 5000;
   let resumeWrites = Promise.resolve();
   const persistResume = (value) => {
     resumeHint = value;
@@ -148,6 +149,7 @@ export function createPlatformClient({
   };
   function cancel() {
     retryActivation = false;
+    retryDelay = 5000;
     epoch++;
     directoryRevision++;
     clearTimeout(timer);
@@ -258,8 +260,10 @@ export function createPlatformClient({
   }
   function schedule(generation, interval = renewIntervalMs) {
     clearTimeout(timer);
-    if (!current(generation) || !enabled || !networkSession) return;
-    const remaining = networkSession.leaseExpiresAt * 1000 - Date.now();
+    // A transient failure may retire the old lease; retry activation must still
+    // run, and restore must authorize the replacement before exposing endpoints.
+    if (!current(generation) || !enabled || (!networkSession && !retryActivation)) return;
+    const remaining = networkSession ? networkSession.leaseExpiresAt * 1000 - Date.now() : Infinity;
     timer = setTimeout(
       () => {
         void activate();
@@ -535,7 +539,7 @@ export function createPlatformClient({
       const error = fail("NETWORK_ENGINE_UNAVAILABLE");
       error.retryable =
         status.phase === "unavailable" &&
-        ["start_failed", "network_unavailable", "engine_timeout"].includes(
+        ["start_failed", "network_unavailable", "engine_timeout", "engine_exited", "engine_unavailable"].includes(
           status.reason,
         );
       throw error;
@@ -568,11 +572,14 @@ export function createPlatformClient({
       networkSessionId: enrollment.networkSessionId,
       managementURL,
     });
+    retryDelay = 5000;
     schedule(generation);
     return emit();
   }
   function activate() {
     if (activeWork) return activeWork;
+    // A manual/system-triggered attempt replaces any previously scheduled retry.
+    clearTimeout(timer);
     const generation = epoch;
     const controller = new AbortController();
     activeController = controller;
@@ -581,6 +588,8 @@ export function createPlatformClient({
         if (current(generation)) {
           const transient = transientError(error);
           retryActivation = transient;
+          const backoff = retryDelay;
+          if (transient) retryDelay = Math.min(retryDelay * 2, 60_000);
           if (
             transient &&
             platform.phase === "ready" &&
@@ -590,7 +599,7 @@ export function createPlatformClient({
             )
           ) {
             // Existing authorization remains bounded by the independent deadline.
-            schedule(generation, 5000);
+            schedule(generation, backoff);
             return emit();
           }
           clearTimeout(leaseTimer);
@@ -599,7 +608,10 @@ export function createPlatformClient({
           platform = { phase: "unavailable", reason: safeReason(error) };
           if (!transient) void persistResume(null);
           await retireTransport();
-          if (current(generation)) emit();
+          if (current(generation)) {
+            if (transient) schedule(generation, backoff);
+            emit();
+          }
         }
         return snapshot();
       })
