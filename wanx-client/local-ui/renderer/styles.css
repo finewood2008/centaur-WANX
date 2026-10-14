@@ -187,6 +187,9 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .code-field { display: flex; gap: 8px; align-items: center; } .code-field input { flex: 1; }
 .notice.success { color: var(--fn-text-success); background: var(--fn-bg-success); }
 
+/* Temporarily hide ownership transfer entry points while retaining the workflow. */
+[data-action="transfer-open"], .ownership-section { display: none; }
+
 /* Ownership handoff remains a deliberate form within box management. */
 .device-action { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
 .transfer-form { width: min(480px, 100%); margin: 20px 0; padding: 20px; border: 1px solid var(--fn-border-input); border-radius: 10px; background: var(--fn-bg-elevated); }
