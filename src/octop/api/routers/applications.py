@@ -178,7 +178,9 @@ def put_access(
     user: User = Depends(current_user),
     service: ApplicationService = Depends(application_service),
 ) -> AccessResponse:
-    return service.put_access(user, application_id, body.user_id, body.enabled)
+    return service.put_access(
+        user, application_id, body.user_id, body.enabled, only_if_missing=body.only_if_missing
+    )
 
 
 @router.get(

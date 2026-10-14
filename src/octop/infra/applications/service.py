@@ -230,13 +230,25 @@ class ApplicationService:
         return [AccessResponse.model_validate(row) for row in self.repo.access(application_id)]
 
     def put_access(
-        self, user: User, application_id: str, user_id: int, enabled: bool
+        self,
+        user: User,
+        application_id: str,
+        user_id: int,
+        enabled: bool,
+        *,
+        only_if_missing: bool = False,
     ) -> AccessResponse:
         self.get(user, application_id)
+        if only_if_missing and not enabled:
+            raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
         if self.services.user_repo.get(user_id) is None:
             raise OctopError.localized(ErrorCode.NOT_FOUND)
-        self.repo.put_access(application_id, user_id, enabled)
-        self._audit(user, "application.access.update", application_id)
+        changed = self.repo.put_access(
+            application_id, user_id, enabled, only_if_missing=only_if_missing
+        )
+        if changed:
+            action = "application.access.create" if only_if_missing else "application.access.update"
+            self._audit(user, action, application_id)
         return next(row for row in self.access(user, application_id) if row.user_id == user_id)
 
     def manifest(self, user: User, application_id: str) -> ProductManifest:

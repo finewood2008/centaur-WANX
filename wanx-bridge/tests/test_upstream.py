@@ -261,6 +261,74 @@ async def test_unmodified_octop_real_oidc_isolation_and_roles(real_octop, oidc_s
         await restarted.close()
 
 
+async def test_box_application_policy_grants_only_verified_opener(real_octop, oidc_server):
+    from tests.support.auth import bearer, login
+
+    client, _server, credentials = real_octop
+    headers = bearer(await login(client))
+    path = "/api/admin/applications/super-advisory"
+    response = await client.post(
+        "/api/admin/applications",
+        headers=headers,
+        json={
+            "application_id": "super-advisory",
+            "name": "超级参谋团",
+            "capabilities": ["chat", "teams", "brainstorm", "zhijun_context"],
+        },
+    )
+    assert response.status_code == 201
+    response = await client.put(
+        path + "/deployment",
+        headers=headers,
+        json={"enabled": True, "configuration": {"auto_grant_box_users": True}},
+    )
+    assert response.status_code == 200
+    adapter = OctopAdapter(
+        "http://127.0.0.1:18088",
+        oidc_server,
+        credentials,
+        transport=httpx.ASGITransport(app=client._octop_app),
+    )
+    try:
+        await adapter.initialize()
+        first = await adapter.login({"sub": "app-first", "role": "user"})
+        second = await adapter.login({"sub": "app-second", "role": "user"})
+        assert (await client.get(path + "/access", headers=headers)).json() == []
+        scoped = await adapter.application_session(first["access_token"], "super-advisory")
+        assert scoped["user"]["id"] == first["user"]["id"]
+        assert scoped["user"]["application_id"] == "super-advisory"
+        grants = (await client.get(path + "/access", headers=headers)).json()
+        assert [(g["user_id"], g["enabled"]) for g in grants] == [(first["user"]["id"], True)]
+        await adapter.application_session(first["access_token"], "super-advisory")
+        assert (await client.get(path + "/access", headers=headers)).json() == grants
+        # A new account arriving after deployment gets its own grant when opening.
+        other = await adapter.application_session(second["access_token"], "super-advisory")
+        assert other["user"]["id"] == second["user"]["id"]
+        response = await client.put(
+            path + "/access",
+            headers=headers,
+            json={"user_id": first["user"]["id"], "enabled": False},
+        )
+        assert response.status_code == 200
+        with pytest.raises(BridgeUpstreamError, match="BOX_APPLICATION_ACCESS_DENIED"):
+            await adapter.application_session(first["access_token"], "super-advisory")
+        response = await client.get(
+            "/api/auth/me", headers={"Authorization": "Bearer " + scoped["access_token"]}
+        )
+        assert response.status_code in {401, 403}
+        # Deployment disable must still reject previously authorized accounts.
+        response = await client.put(
+            path + "/deployment",
+            headers=headers,
+            json={"enabled": False, "configuration": {"auto_grant_box_users": True}},
+        )
+        assert response.status_code == 200
+        with pytest.raises(BridgeUpstreamError, match="BOX_APPLICATION_ACCESS_DENIED"):
+            await adapter.application_session(second["access_token"], "super-advisory")
+    finally:
+        await adapter.close()
+
+
 async def test_refuses_existing_enterprise_oidc(real_octop, oidc_server):
     from tests.support.auth import bearer, login
 

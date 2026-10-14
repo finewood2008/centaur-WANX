@@ -12,6 +12,7 @@ import httpx
 
 from .admin_client import AdminClient
 from .admin_client import BridgeUpstreamError as BridgeUpstreamError
+from .application_bootstrap import ensure_application_access
 from .oidc import OidcError, OidcProvider
 from .zhijun_bootstrap import ensure_private_expert
 
@@ -180,6 +181,15 @@ class OctopAdapter(AdminClient):
             headers={"Authorization": "Bearer " + token},
             json={"application_id": application_id},
         )
+        if response.status_code == 403 and application_id == "super-advisory":
+            async with self._lock:
+                if await ensure_application_access(self, token, application_id):
+                    response = await self._request(
+                        "POST",
+                        "/api/auth/application/exchange",
+                        headers={"Authorization": "Bearer " + token},
+                        json={"application_id": application_id},
+                    )
         if response.status_code == 404:
             raise BridgeUpstreamError("BOX_APPLICATION_RUNTIME_UPDATE_REQUIRED", 409)
         if response.status_code in {401, 403}:

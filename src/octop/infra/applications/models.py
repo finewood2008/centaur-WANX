@@ -210,9 +210,15 @@ class RecommendBody(Contract):
 class AccessBody(Contract):
     user_id: int = Field(gt=0)
     enabled: bool
+    only_if_missing: bool = Field(
+        default=False,
+        description="Grant only when no access decision exists; preserve existing grants and revocations.",
+    )
 
 
-class AccessResponse(AccessBody):
+class AccessResponse(Contract):
+    user_id: int = Field(gt=0)
+    enabled: bool
     username: str
     updated_at: int
 
