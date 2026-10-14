@@ -12,7 +12,7 @@ export function createDesktopIntegration({
   platform = process.platform,
 }) {
   const mac = platform === "darwin";
-  const usesPanel = mac && Boolean(panel);
+  const usesPanel = (mac || platform === "win32") && Boolean(panel);
   app.setAboutPanelOptions({
     applicationName: DESKTOP_NAME,
     applicationVersion: app.getVersion(),
@@ -20,7 +20,7 @@ export function createDesktopIntegration({
     credits: `${DESKTOP_ENGLISH_NAME}\n你的 AI 应用底座`,
   });
   if (mac) app.dock.setIcon(APP_ICON);
-  if (usesPanel) app.dock.hide();
+  if (mac && usesPanel) app.dock.hide();
   const trayImage = nativeImage.createFromPath(resource(mac ? "trayTemplate.png" : platform === "win32" ? "icon.ico" : "tray.png"));
   if (mac) trayImage.setTemplateImage(true);
   const tray = new Tray(trayImage);
@@ -53,8 +53,19 @@ export function createDesktopIntegration({
     const height = Math.max(1, Math.min(panelHeight, area.height - margin * 2));
     const left = area.x + margin;
     const top = area.y + margin;
-    const x = anchored ? bounds.x + bounds.width / 2 - width / 2 : area.x + area.width - width - margin;
-    const y = anchored ? bounds.y + bounds.height + margin : top;
+    let x = anchored ? bounds.x + bounds.width / 2 - width / 2 : area.x + area.width - width - margin;
+    let y = anchored ? bounds.y + bounds.height + margin : mac ? top : area.y + area.height - height - margin;
+    if (anchored && !mac) {
+      if (bounds.y >= area.y + area.height) y = bounds.y - height - margin;
+      else if (bounds.y + bounds.height <= area.y) y = bounds.y + bounds.height + margin;
+      else if (bounds.x >= area.x + area.width) {
+        x = bounds.x - width - margin;
+        y = bounds.y + bounds.height / 2 - height / 2;
+      } else if (bounds.x + bounds.width <= area.x) {
+        x = bounds.x + bounds.width + margin;
+        y = bounds.y + bounds.height / 2 - height / 2;
+      } else y = bounds.y - height - margin;
+    }
     panel.setBounds({
       x: Math.round(Math.max(left, Math.min(x, area.x + area.width - width - margin))),
       y: Math.round(Math.max(top, Math.min(y, area.y + area.height - height - margin))),
@@ -198,6 +209,7 @@ export function createDesktopIntegration({
     panel.on("close", hidePanelOnClose);
     panel.on("blur", panelBlurred);
     tray.on("click", togglePanel);
+    if (platform === "win32") tray.on("double-click", show);
     tray.on("right-click", showTrayMenu);
     for (const event of ["display-added", "display-removed", "display-metrics-changed"])
       screen?.on(event, updatePanelPosition);

@@ -72,6 +72,7 @@ function sourceFingerprint() {
 async function main() {
   const input = preflight();
   const quickPackage = process.env.WANX_QUICK_PACKAGE === "1";
+  const skipTests = process.env.WANX_SKIP_TESTS === "1";
   if (path.isAbsolute(input.goExecutable))
     process.env.PATH = `${path.dirname(input.goExecutable)}${path.delimiter}${process.env.PATH || ""}`;
   const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -89,18 +90,18 @@ async function main() {
   if (!existsSync(npmCli)) throw new Error("NPM_CLI_MISSING");
   run(process.execPath, [npmCli, "ci"]);
   run(process.execPath, [npmCli, "run", "build:renderer"]);
-  if (quickPackage) run(process.execPath, ["--test",
+  if (!skipTests && quickPackage) run(process.execPath, ["--test",
     "tests/desktop-seam.test.mjs", "tests/desktop-runtime-seam.test.mjs",
     "tests/panel-renderer.test.mjs", "tests/panel-security.test.mjs",
     "tests/ui-state.test.mjs", "tests/ui-broadcast.test.mjs",
     "tests/startup.test.mjs", "tests/renderer-seam.test.mjs",
     "tests/discovery-names.test.mjs", "tests/setup-preload.test.mjs",
   ]);
-  else run(process.execPath, [npmCli, "test"]);
+  else if (!skipTests) run(process.execPath, [npmCli, "test"]);
   for (const name of ["TMP", "TEMP"])
     if (originalTemp[name] === undefined) delete process.env[name];
     else process.env[name] = originalTemp[name];
-  if (!quickPackage) run(input.goExecutable, ["test", "./..."], native);
+  if (!skipTests && !quickPackage) run(input.goExecutable, ["test", "./..."], native);
   run(process.execPath, [path.join(root, "tools", "build-network.mjs"), "win32-x64"]);
   run(process.execPath, [path.join(root, "tools", "build-discovery.mjs"), "win32-x64"]);
 
@@ -234,7 +235,7 @@ async function main() {
   process.env.WANX_PACKAGED_EXECUTABLE = packedExecutable;
   process.env.TMP = testTemp;
   process.env.TEMP = testTemp;
-  run(process.execPath, ["--test", "tests/packaged-application-seam.test.mjs"], root);
+  if (!skipTests) run(process.execPath, ["--test", "tests/packaged-application-seam.test.mjs"], root);
   for (const name of ["TMP", "TEMP"])
     if (originalTemp[name] === undefined) delete process.env[name];
     else process.env[name] = originalTemp[name];
@@ -262,7 +263,7 @@ async function main() {
     licenses: licenseFiles,
     installer: { file: filename, sha256: sha256(installer), bytes: statSync(installer).size },
     tests: {
-      node: quickPackage ? "focused-passed" : "passed", go: quickPackage ? "not-run-go-source-unchanged" : "passed", rendererBuild: "passed", engineBuild: "passed", packedResources: "passed", packagedApplicationSeam: "passed", installedSmoke: skipInstallSmoke ? "unverified" : "passed",
+      node: skipTests ? "not-run-user-requested" : quickPackage ? "focused-passed" : "passed", go: skipTests ? "not-run-user-requested" : quickPackage ? "not-run-go-source-unchanged" : "passed", rendererBuild: "passed", engineBuild: "passed", packedResources: "passed", packagedApplicationSeam: skipTests ? "not-run-user-requested" : "passed", installedSmoke: skipInstallSmoke ? "unverified" : "passed",
       realAccount: "unverified", liveBoxP2P: "unverified", boxSSO: "unverified", upload: "unverified", streamingChat: "unverified",
     },
   };

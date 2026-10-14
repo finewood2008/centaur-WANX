@@ -454,7 +454,7 @@ test("device setup retains its wizard across polling and returns to boxes", asyn
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
 });
 
-test("box scanning disables repeat starts until the scan finishes", async (t) => {
+test("box scanning shows the spinner and does not offer a repeat scan", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
   await h.click("provisioning");
@@ -473,10 +473,9 @@ test("box scanning disables repeat starts until the scan finishes", async (t) =>
   assert.match(scanButton(), /disabled/);
   t.mock.timers.tick(12000);
   await new Promise(resolve => setImmediate(resolve));
-  assert.doesNotMatch(scanButton(), /disabled|正在扫描|scan-spinner/);
-  assert.match(scanButton(), /aria-busy="false"/);
+  assert.equal(scanButton(), undefined);
   await h.click("start-provisioning");
-  assert.match(scanButton(), /disabled/);
+  assert.equal(h.chooser(), chooser);
 });
 
 test("discovered boxes remain selectable after the scan times out", async (t) => {
@@ -504,49 +503,19 @@ test("Windows discovery keeps the chooser and renderer lease open for late box n
   await h.click("provisioning");
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.match(h.app.innerHTML, /aria-valuenow="0"><span style="width: 0%"/);
-  assert.match(h.app.innerHTML, /<strong data-scan-status>正在扫描附近的盒子…<\/strong>/);
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
+  assert.doesNotMatch(h.app.innerHTML, /role="progressbar"/);
   t.mock.timers.tick(20000);
   assert.doesNotMatch(h.app.innerHTML, /扫描已结束/);
   h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-000FE1",
     displayIdentity: { deviceId: "centauros-727f68e96c972c5bcf000fe1", displayName: "CentaurAI-AMD-102" } });
   assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
-  assert.match(h.app.innerHTML, /aria-valuenow="33"><span style="width: 33%"/);
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
   t.mock.timers.tick(40000);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /扫描已结束/);
   assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
-});
-
-test("continuing a scan keeps prior boxes visible until fresh candidates replace them", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
-  const h = await harness(state(), [application], t);
-  h.nearby([{ deviceId: "provider-1", deviceName: "Box A" }, { deviceId: "provider-2", deviceName: "Box B" }]);
-  await h.click("provisioning");
-  await h.click("start-provisioning");
-  await new Promise(resolve => setImmediate(resolve));
-  h.advertisement({ deviceId: "provider-1", advertisedName: "Box A", displayIdentity: { deviceId: "box-a", displayName: "Box A" } });
-  h.advertisement({ deviceId: "provider-2", advertisedName: "Box B", displayIdentity: { deviceId: "box-b", displayName: "Box B" } });
-  const oldA = h.app.innerHTML.match(/data-candidate-id="([^"]+)"[^>]*><strong>Box A<\/strong>/)[1];
-  const oldB = h.app.innerHTML.match(/data-candidate-id="([^"]+)"[^>]*><strong>Box B<\/strong>/)[1];
-  t.mock.timers.tick(12000);
-  await new Promise(resolve => setImmediate(resolve));
-  h.nearby([{ deviceId: "provider-2", deviceName: "Box B" }]);
-  await h.click("start-provisioning");
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.app.innerHTML, new RegExp(`data-candidate-id="${oldA}" disabled><strong>Box A`));
-  assert.match(h.app.innerHTML, /上轮发现，等待本轮重新发现后可选择/);
-  assert.match(h.app.innerHTML, new RegExp(`data-candidate-id="${oldB}" disabled><strong>Box B`));
-  h.advertisement({ deviceId: "provider-2", advertisedName: "Box B", displayIdentity: { deviceId: "box-b" } });
-  assert.match(h.app.innerHTML, new RegExp(`data-candidate-id="${oldA}" disabled><strong>Box A`));
-  assert.doesNotMatch(h.app.innerHTML, new RegExp(`data-candidate-id="${oldB}"`));
-  assert.equal((h.app.innerHTML.match(/<strong>Box B<\/strong>/g) || []).length, 1);
-  t.mock.timers.tick(12000);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.app.innerHTML, new RegExp(`data-candidate-id="${oldA}" disabled><strong>Box A`));
-  t.mock.timers.tick(108000);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.doesNotMatch(h.app.innerHTML, /<strong>Box A<\/strong>/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="start-provisioning"/);
 });
 
 test("selection during a live scan still opens device identity", async (t) => {
@@ -662,7 +631,7 @@ for (const leave of ["back-devices", "logout"]) {
   });
 }
 
-test("an empty scan gives an actionable retry message", async (t) => {
+test("an empty scan offers no repeat button", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
   h.nearby([]);
@@ -673,11 +642,12 @@ test("an empty scan gives an actionable retry message", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未发现可用盒子/);
   assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
-  const scanButton = h.app.innerHTML.match(/<button[^>]*data-action="start-provisioning"[^>]*>/)[0];
-  assert.doesNotMatch(scanButton, /disabled/);
-  assert.match(scanButton, /aria-busy="false"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="start-provisioning"/);
   await h.click("start-provisioning");
-  assert.match(h.app.innerHTML, /data-action="start-provisioning"[^>]*disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="start-provisioning"/);
+  await h.click("back-devices");
+  await h.click("provisioning");
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
 });
 
 test("native menu navigation reaches settings and home while preserving login and setup boundaries", async () => {
@@ -1044,16 +1014,17 @@ for (const retained of [false, true]) {
     await h.click("provisioning");
     await h.click("start-provisioning");
     await new Promise((resolve) => setImmediate(resolve));
-    assert.match(h.app.innerHTML, /role="progressbar" aria-label="正在扫描附近的盒子"/);
+    assert.match(h.app.innerHTML, /class="scan-spinner"/);
+    assert.doesNotMatch(h.app.innerHTML, /role="progressbar"/);
     h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-0102", displayIdentity: { deviceId: "box-102", displayName: "CentaurAI Box" } });
-    assert.match(h.app.innerHTML, /<strong data-scan-status>正在扫描附近的盒子…<\/strong>/);
+    assert.match(h.app.innerHTML, /class="scan-spinner"/);
     const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
     assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
     if (retained) {
       t.mock.timers.tick(12000);
       await new Promise((resolve) => setImmediate(resolve));
       assert.match(h.app.innerHTML, /扫描已结束/);
-      assert.doesNotMatch(h.app.innerHTML, /role="progressbar"/);
+      assert.doesNotMatch(h.app.innerHTML, /class="scan-spinner"/);
     }
     h.update(state());
     assert.match(h.app.innerHTML, /<strong>CentuarAI-AMD-102<\/strong>/);
@@ -1277,9 +1248,9 @@ for (const fails of [false, true]) test(`identity loading prevents another scan 
   assert.doesNotMatch(h.app.innerHTML, /正在读取设备身份/);
   if (fails) {
     assert.match(h.app.innerHTML, /蓝牙连接|连接盒子超时/);
-    assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
-    await h.click("start-provisioning"); await flushActions();
-    assert.notEqual(h.chooser(), chooser);
+    assert.equal(actionButton(h, "start-provisioning"), undefined);
+    await h.click("back-devices"); await h.click("provisioning");
+    assert.match(actionButton(h, "start-provisioning"), /开始扫描盒子/);
   } else assert.match(h.app.innerHTML, /确认设备身份/);
 });
 
@@ -1296,7 +1267,8 @@ for (const fails of [false, true]) test(`setup cancellation deduplicates clicks 
   else cancel.resolve({ state: "cancelled" });
   await Promise.all([first, second]);
   assert.doesNotMatch(h.app.innerHTML, /正在取消/);
-  assert.doesNotMatch(actionButton(h, fails ? "cancel-provisioning" : "start-provisioning"), /disabled/);
+  if (fails) assert.doesNotMatch(actionButton(h, "cancel-provisioning"), /disabled/);
+  else assert.equal(actionButton(h, "start-provisioning"), undefined);
 });
 
 for (const cancelFirst of [false, true]) test(`cancelled setup ignores the original result when cancellation finishes ${cancelFirst ? "first" : "last"}`, async () => {
@@ -1314,7 +1286,7 @@ for (const cancelFirst of [false, true]) test(`cancelled setup ignores the origi
   }
   assert.match(h.app.innerHTML, /本次配网已取消/);
   assert.doesNotMatch(h.app.innerHTML, /data-form="wifi"/);
-  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+  assert.equal(actionButton(h, "start-provisioning"), undefined);
 });
 
 for (const fails of [false, true]) test(`authorization refresh shows pending feedback and restores retry after ${fails ? "failure" : "success"}`, async () => {

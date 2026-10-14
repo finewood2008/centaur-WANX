@@ -261,6 +261,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         captureSession: () => marketSession.captureSession(),
       });
       const startup = createStartupSettings({ app });
+      try { startup.initializeDefault(); } catch (error) { reportError(error); }
       uiState = await createUIState({
         client, account, applications,
         preferenceFile: path.join(userData, "ui-preferences.json"),
@@ -291,7 +292,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           backgroundThrottling: false,
         },
       });
-      if (process.platform === "darwin") {
+      if (["darwin", "win32"].includes(process.platform)) {
         panel = new BrowserWindow({
           width: 400, height: 320, show: false, frame: false,
           resizable: false, maximizable: false, minimizable: false,
@@ -303,7 +304,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
           },
         });
-        panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+        if (process.platform === "darwin") panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
       }
       for (const window of [control, panel].filter(Boolean)) {
         window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
