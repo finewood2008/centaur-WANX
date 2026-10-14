@@ -170,7 +170,40 @@ async def real_octop(tmp_path, monkeypatch):
 
 
 async def test_unmodified_octop_real_oidc_isolation_and_roles(real_octop, oidc_server):
+    from tests.support.auth import bearer, login
+
     client, _server, credentials = real_octop
+    admin_headers = bearer(await login(client))
+    provider = await client.post(
+        "/api/admin/providers",
+        headers=admin_headers,
+        json={
+            "name": "preconfigured-local",
+            "kind": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "ollama",
+            "models": [{"id": "local-chat", "name": "local-chat", "input": ["text"]}],
+        },
+    )
+    assert provider.status_code == 201
+    preferred_model = {"provider_name": "preconfigured-local", "model": "local-chat"}
+    assert (
+        await client.put("/api/providers/active-model", headers=admin_headers, json=preferred_model)
+    ).status_code == 200
+
+    async def private_companions(session):
+        response = await client.get(
+            "/api/agents?scope=mine",
+            headers={"Authorization": "Bearer " + session["access_token"]},
+        )
+        assert response.status_code == 200
+        rows = [row for row in response.json() if "知君" in row["name"]]
+        assert len(rows) == 1
+        assert rows[0]["user_id"] == session["user"]["id"]
+        assert rows[0]["is_shared"] is False
+        assert rows[0]["default_model"] == "preconfigured-local/local-chat"
+        return rows
+
     adapter = OctopAdapter(
         "http://127.0.0.1:18088",
         oidc_server,
@@ -189,6 +222,16 @@ async def test_unmodified_octop_real_oidc_isolation_and_roles(real_octop, oidc_s
         assert again["user"]["role"] == "user"
         assert again["user"]["has_password"] is False
         assert again["user"]["sso_identities"] == [{"kind": "oidc"}]
+        owner_companions = await private_companions(again)
+        guest_companions = await private_companions(guest)
+        assert owner_companions[0]["agent_id"] != guest_companions[0]["agent_id"]
+        denied = await client.get(
+            "/api/agents/" + guest_companions[0]["agent_id"],
+            headers={"Authorization": "Bearer " + again["access_token"]},
+        )
+        assert denied.status_code in {403, 404}
+        active = await client.get("/api/providers/active-model", headers=admin_headers)
+        assert active.json() == preferred_model
         response = await client.get(
             "/api/auth/me", headers={"Authorization": "Bearer " + owner["access_token"]}
         )
@@ -211,6 +254,9 @@ async def test_unmodified_octop_real_oidc_isolation_and_roles(real_octop, oidc_s
         await restarted.initialize()
         restored = await restarted.login({"sub": "account-A", "display_name": "甲", "role": "user"})
         assert restored["user"]["id"] == owner["user"]["id"]
+        assert (await private_companions(restored))[0]["agent_id"] == owner_companions[0][
+            "agent_id"
+        ]
     finally:
         await restarted.close()
 

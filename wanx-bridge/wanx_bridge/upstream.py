@@ -13,6 +13,7 @@ import httpx
 from .admin_client import AdminClient
 from .admin_client import BridgeUpstreamError as BridgeUpstreamError
 from .oidc import OidcError, OidcProvider
+from .zhijun_bootstrap import ensure_private_expert
 
 
 class OctopAdapter(AdminClient):
@@ -167,6 +168,7 @@ class OctopAdapter(AdminClient):
                 me = self._json(await self._request("GET", "/api/auth/me", headers=headers))
             if me.get("role") != role:
                 raise BridgeUpstreamError("BOX_UPSTREAM_ROLE_SYNC_FAILED")
+            await ensure_private_expert(self, token, uid)
             return {"access_token": token, "user": me, "expires_at": minted_at + ttl}
 
     async def application_session(self, token: str, application_id: str) -> dict[str, Any]:
