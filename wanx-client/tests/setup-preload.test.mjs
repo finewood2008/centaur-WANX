@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 const source = await readFile(new URL('../local-ui/remote-preload.cjs', import.meta.url), 'utf8');
-function harness(rawState = {}) {
+function harness(rawState = {}, platform = 'darwin') {
   const exposed = {}, calls = [], listeners = new Map();
-  vm.runInNewContext(source, { require: () => ({
+  vm.runInNewContext(source, { process: { platform }, require: () => ({
     contextBridge: { exposeInMainWorld(name, api) { exposed[name] = api; } },
     ipcRenderer: {
       invoke: async (name, value) => {
@@ -21,6 +21,8 @@ function harness(rawState = {}) {
 test('active preload connects discovery, GATT transport and setup actions', async () => {
   const { exposed, calls } = harness();
   assert.equal(typeof exposed.wanxSetupTransport?.subscribe, 'function');
+  assert.equal(exposed.wanxSetupTransport.scanTimeoutMs, 12000);
+  assert.equal(harness({}, 'win32').exposed.wanxSetupTransport.scanTimeoutMs, 60000);
   assert.equal(typeof exposed.wanxDiscovery?.select, 'function');
   assert.equal(typeof exposed.wanxSetup?.begin, 'function');
   await exposed.wanxSetup.begin({ candidateId: 'selected' });

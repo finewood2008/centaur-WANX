@@ -127,9 +127,18 @@ test("Windows uses a color tray and standard editing/window roles", () => {
   assert.ok(!roles.includes("hide"));
   h.control.hidden = true;
   h.trays[0].emit("click");
+  assert.equal(h.control.hidden, true);
+  assert.equal(h.panel.hidden, false);
+  assert.equal(h.panel.focused, true);
+  assert.equal(h.trays[0].menu, undefined);
+  assert.equal(h.app.dockHidden, undefined);
+  h.panel.emit("blur");
+  assert.equal(h.panel.hidden, true);
+  h.trays[0].emit("right-click");
+  h.trays[0].poppedMenu.getMenuItemById("settings").click();
+  assert.deepEqual(h.management, ["settings"]);
   assert.equal(h.control.hidden, false);
   assert.equal(h.panel.hidden, true);
-  assert.equal(h.app.dockHidden, undefined);
   h.desktop.dispose();
 });
 
@@ -271,4 +280,37 @@ test("packaging ships readable platform icons and Retina tray artwork", async ()
     assert.equal(png.readUInt32BE(16), size);
     assert.equal(png.readUInt32BE(20), size);
   }
+});
+
+test("Windows popup follows bottom, top and side taskbars and stays within each display work area", () => {
+  const h = harness("win32", true);
+  const cases = [
+    [{ x: 0, y: 0, width: 1920, height: 1040 }, { x: 1830, y: 1040, width: 24, height: 40 }, { x: 1512, y: 512 }],
+    [{ x: 0, y: 40, width: 1920, height: 1040 }, { x: 1830, y: 0, width: 24, height: 40 }, { x: 1512, y: 48 }],
+    [{ x: -1920, y: 0, width: 1840, height: 1080 }, { x: -80, y: 900, width: 80, height: 24 }, { x: -488, y: 552 }],
+    [{ x: 80, y: 0, width: 1840, height: 1080 }, { x: 0, y: 900, width: 80, height: 24 }, { x: 88, y: 552 }],
+  ];
+  for (const [workArea, bounds, position] of cases) {
+    h.screen.display = { scaleFactor: 1.5, workArea };
+    h.trays[0].bounds = bounds;
+    h.desktop.show();
+    assert.deepEqual(h.panel.bounds, { ...position, width: 400, height: 520 });
+  }
+  h.trays[0].bounds = { x: 0, y: 0, width: 0, height: 0 };
+  h.screen.display = { workArea: { x: 0, y: 0, width: 800, height: 600 } };
+  h.screen.emit("display-removed");
+  assert.deepEqual(h.panel.bounds, { x: 392, y: 72, width: 400, height: 520 });
+  h.desktop.dispose();
+});
+test("Windows tray click toggles only the popup and ordinary dismissal cancels once", () => {
+  const h = harness("win32", true);
+  h.control.hidden = true;
+  h.trays[0].emit("click");
+  h.trays[0].emit("click");
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.hidden.length, 1);
+  h.trays[0].emit("double-click");
+  assert.equal(h.panel.hidden, false);
+  assert.equal(h.control.hidden, true);
+  h.desktop.dispose();
 });
