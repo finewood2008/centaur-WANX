@@ -884,3 +884,119 @@ test("engine startup failures back off and stop retrying on authorization denial
   assert.equal(calls.length, count);
   assert.equal(network.snapshot().phase, "auth_required");
 });
+
+test("an idle control connection recovers automatically after a sustained outage", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let down = false;
+  const { network, calls } = harness(t, method => {
+    if (method === "start") return started();
+    if (method === "recover") { down = false; return started(); }
+    return down ? { phase: "recovering", peers: [] } : connected();
+  });
+  await network.setEnabled(true);
+  down = true;
+  await network.refresh();
+  t.mock.timers.tick(19_000);
+  await tick();
+  assert.equal(calls.filter(c => c.method === "recover").length, 0);
+  t.mock.timers.tick(1000);
+  await tick();
+  assert.equal(calls.filter(c => c.method === "recover").length, 1);
+  assert.equal(network.snapshot().phase, "ready");
+});
+
+test("SDK self-recovery during the grace period avoids an engine restart", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let status = connected();
+  const { network, calls } = harness(t, method => method === "start" ? started() : status);
+  await network.setEnabled(true);
+  status = { phase: "recovering", peers: [] };
+  await network.refresh();
+  t.mock.timers.tick(19_000);
+  await tick();
+  status = connected();
+  t.mock.timers.tick(1000);
+  await tick();
+  t.mock.timers.tick(60_000);
+  await tick();
+  assert.equal(network.snapshot().phase, "ready");
+  assert.equal(calls.filter(c => c.method === "recover").length, 0);
+});
+
+test("a recovery that starts but remains degraded retries with bounded backoff", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const down = { phase: "recovering", peers: [] };
+  const { network, calls } = harness(t, method =>
+    method === "start" ? started() : method === "recover" ? started(down) : down);
+  await network.setEnabled(true);
+  await network.refresh();
+  t.mock.timers.tick(20_000);
+  await tick();
+  assert.equal(calls.filter(c => c.method === "recover").length, 1);
+  for (const wait of [5000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+    const before = calls.filter(c => c.method === "recover").length;
+    t.mock.timers.tick(wait - 1);
+    await tick();
+    await network.refresh();
+    assert.equal(calls.filter(c => c.method === "recover").length, before);
+    t.mock.timers.tick(1);
+    await tick();
+    await network.refresh();
+    assert.equal(calls.filter(c => c.method === "recover").length, before + 1);
+  }
+});
+
+test("a healthy target preserves streams during a prolonged control-plane outage", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let status = connected([
+    { ip: "100.80.1.2", connected: true }, { ip: "100.80.1.3", connected: true },
+  ]);
+  const { network, calls } = harness(t, method => method === "start" ? started(status) : status);
+  await network.setEnabled(true);
+  const first = await network.resolveEndpoint({ url: "http://100.80.1.2:8088", mode: "netbird" });
+  const second = await network.resolveEndpoint({ url: "http://100.80.1.3:8088", mode: "netbird" });
+  let resets = 0;
+  first.agent.probe = async () => false;
+  second.agent.probe = async () => true;
+  first.agent.resetConnections = second.agent.resetConnections = () => { resets++; };
+  status = { phase: "recovering", peers: [] };
+  await network.refresh();
+  t.mock.timers.tick(20_000);
+  await tick();
+  t.mock.timers.tick(20_000);
+  await tick();
+  assert.equal(calls.filter(c => c.method === "recover").length, 0);
+  assert.equal(resets, 0);
+});
+
+for (const stop of ["disable", "close"]) {
+  test(`sustained-outage recovery is cancelled by ${stop}`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const { network, calls } = harness(t, method => method === "start" ? started() : { phase: "recovering", peers: [] });
+    await network.setEnabled(true);
+    await network.refresh();
+    if (stop === "disable") await network.setEnabled(false);
+    else await network.close();
+    t.mock.timers.tick(60_000);
+    await tick();
+    assert.equal(calls.filter(c => c.method === "recover").length, 0);
+    assert.equal(network.snapshot().enabled, false);
+  });
+}
+
+test("automatic recovery stops after explicit authentication rejection", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const { network, calls } = harness(t, method => {
+    if (method === "recover") throw error("auth_required");
+    return method === "start" ? started() : { phase: "recovering", peers: [] };
+  });
+  await network.setEnabled(true);
+  await network.refresh();
+  t.mock.timers.tick(20_000);
+  await tick();
+  assert.equal(network.snapshot().phase, "auth_required");
+  const count = calls.length;
+  t.mock.timers.tick(120_000);
+  await tick();
+  assert.equal(calls.length, count);
+});

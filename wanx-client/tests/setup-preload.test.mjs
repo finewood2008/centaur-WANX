@@ -74,3 +74,11 @@ test('password preload restricts change requests to code and password', async ()
     ['wanx-client:change-password', { code: input.code, password: input.password }],
   ]);
 });
+
+
+test('owner wifi begin preserves selected transport fields and explicit mode through IPC', async () => {
+  const { exposed, calls } = harness();
+  const selected = { candidateId: 'opaque', transportHandle: 'transport', mode: 'wifi' };
+  await exposed.wanxSetup.begin(selected);
+  assert.deepEqual(calls, [['wanx:setup:begin', selected]]);
+});

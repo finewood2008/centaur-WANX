@@ -37,6 +37,7 @@ let setupState = { state: "idle" };
 let setupReady = false;
 let bluetoothState = window.wanxBluetooth?.snapshot() || { status: "unsupported" };
 let setupRequest = null;
+let setupSelection = null;
 let wifiPicker = newWifiPicker();
 function newWifiPicker() { return { scanned: false, pending: null, networks: [], selected: null, manual: false, error: null, sessionId: null }; }
 function resetWifiPicker() {
@@ -174,7 +175,16 @@ const selection = createDiscoverySelection({
     };
     notice = issue ? messages[issue.kind] || issue.message : null;
   },
-  onSelected(candidate) { void run("provisioning.start", { candidate }); },
+  onSelected(candidate) {
+    const selected = setupSelection;
+    setupSelection = null;
+    if (selected?.mode === "wifi" && !deviceIsOwner(selected.deviceId)) {
+      notice = "当前账号不是此盒子的主人，请刷新盒子列表后重试。";
+      render(currentState);
+      return;
+    }
+    void run("provisioning.start", { candidate, mode: selected?.mode || "claim" });
+  },
 });
 window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); }, { once: true });
 window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); clearTimeout(passwordResendTimer); }, { once: true });
@@ -624,6 +634,11 @@ async function refreshMarket() {
   }
 }
 
+function deviceIsOwner(deviceId) {
+  const device = currentState.devices?.find(item => item.deviceId === deviceId);
+  return Boolean(device && (device.deviceRole || device.role) === "owner");
+}
+
 function discoveryCard(candidate) {
   const hint = candidate.displayIdentity;
   const deviceId = discoveryDeviceId(candidate);
@@ -647,6 +662,7 @@ function discoveryCard(candidate) {
   const reading = !deviceId && scanning && candidate.nameSource === "advertisement";
   const resolvedName = knownName || registryName || specificName;
   const knownClaimed = ["owner", "member"].includes(known?.deviceRole) || ["owner", "member"].includes(known?.role);
+  const owner = deviceIsOwner(deviceId);
   const claimStatus = knownClaimed ? "claimed" : metadata?.claimStatus || "unknown";
   const claimLabel = { claimed: "已认领", unclaimed: "未认领", unknown: "认领状态待确认" }[claimStatus];
   const title = resolvedName || (reading ? "正在读取盒子名称…" : "未获取到盒子名称");
@@ -655,7 +671,7 @@ function discoveryCard(candidate) {
     : [advertisedName, !deviceId ? reading ? "正在读取盒子名称…" : "未读取到名称" : "", "蓝牙配网"].filter(Boolean).join(" · ");
   const identityDetail = deviceId && !resolvedName
     ? `<span>设备编号：${escapeHTML(deviceId)}（用于核对，不是名称）</span>` : "";
-  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong><span class="claim-badge claim-${claimStatus}">${claimLabel}</span>${identityDetail}<span>${escapeHTML(detail)}</span></button>`;
+  return `<button class="device-card discovery-card" data-action="${owner ? "select-candidate-wifi" : "select-candidate"}" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong><span class="claim-badge claim-${claimStatus}">${claimLabel}</span>${identityDetail}<span>${escapeHTML(detail)}</span>${owner ? "<span>修改 Wi-Fi</span>" : ""}</button>`;
 }
 
 function bluetoothNotice() {
@@ -672,6 +688,7 @@ function bluetoothNotice() {
 }
 
 function provisioningView() {
+  const wifiOnly = setupState.mode === "wifi" || setupRequest?.mode === "wifi";
   const starting = setupRequest?.action === "provisioning.start";
   const cancelling = setupRequest?.action === "provisioning.cancel";
   const refreshing = setupRequest?.action === "provisioning.refresh";
@@ -679,31 +696,33 @@ function provisioningView() {
   const stagesByState = {
     idle: "discover", previewReady: "identity", awaitingWifi: "network",
     awaitingOwnershipConfirmation: "claim", submittingAppProof: "claim",
-    provisioningWifi: "network", waitingCloud: "initialize", attentionRequired: "initialize",
+    verifyingLocalDevice: "identity", establishingSecureChannel: "identity", provisioningWifi: "network", waitingCloud: "initialize", attentionRequired: "initialize",
   };
   const failed = ["terminalError", "restartRequired"].includes(setupState.state);
   const provisioning = {
     phase: starting || cancelling ? "running" : failed ? "failed" : setupState.state === "completed" ? "ready" :
-      ["submittingAppProof", "provisioningWifi", "waitingCloud"].includes(setupState.state) ? "running" : "idle",
+      ["verifyingLocalDevice", "establishingSecureChannel", "submittingAppProof", "provisioningWifi", "waitingCloud"].includes(setupState.state) ? "running" : "idle",
     stage: starting ? "identity" : stagesByState[setupState.state],
     error: { message: setupErrorMessage(setupState.errorCode) },
   };
   const running = provisioning.phase === "running";
   const preview = setupState.preview || setupState.compatiblePreview;
   const previewBlocked = preview?.cloud_enrollment_status === "not_enrolled" ? "DEVICE_NOT_ENROLLED" :
-    preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null;
+    !wifiOnly && preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null;
   const setupPhase = setupState.state || "idle";
-  const stages = Object.entries(stageLabels);
+  const stages = Object.entries(stageLabels).filter(([key]) => !wifiOnly || !["claim", "initialize"].includes(key));
   const setupCopy = starting ? "正在通过蓝牙读取盒子身份，请稍候。" : cancelling ? "正在停止本次配网，请稍候。" : {
-    idle: "请让盒子进入蓝牙配网模式，然后点击扫描并选择附近的盒子。",
+    idle: "让盒子保持通电，点击扫描并选择附近的盒子。已认领的盒子可由主人修改 Wi-Fi。",
     attentionRequired: "盒子授权尚未完成，请检查盒子联网状态后刷新。",
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
-    awaitingWifi: "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
+    verifyingLocalDevice: "正在验证设备身份和主人权限…",
+    establishingSecureChannel: "正在建立加密连接…",
+    awaitingWifi: wifiOnly ? "主人权限已验证，请选择新的 Wi-Fi。认领关系和盒子数据将保留。" : "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
     awaitingOwnershipConfirmation: "设备已准备联网，请确认绑定到当前账号。",
     submittingAppProof: "正在提交账号绑定证明…",
     provisioningWifi: "正在通过加密通道配置 Wi‑Fi…",
     waitingCloud: "正在等待设备联网并完成平台授权…",
-    completed: "设备已完成联网和账号绑定。",
+    completed: wifiOnly ? "Wi-Fi 配置成功，认领关系和盒子数据已保留。" : "设备已完成联网和账号绑定。",
     cancelled: "本次配网已取消。",
   }[setupPhase] || "请让设备进入配置模式后开始扫描。";
   const previewBlock = preview ? `<dl class="setup-preview"><dt>设备名称</dt><dd>${escapeHTML(preview.display_name)}</dd><dt>设备 ID</dt><dd>${escapeHTML(preview.device_id)}</dd><dt>型号</dt><dd>${escapeHTML(preview.model)}</dd><dt>身份公钥指纹</dt><dd>${escapeHTML(preview.identity_public_key_sha256)}</dd></dl>` : "";
@@ -712,14 +731,14 @@ function provisioningView() {
   const controls = setupPhase === "previewReady"
     ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? "盒子尚未准备好配网" : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
-      ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>继续绑定账号</button></form>`
-      : setupPhase === "awaitingOwnershipConfirmation"
+      ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>${wifiOnly ? "连接 Wi-Fi" : "继续绑定账号"}</button></form>`
+      : !wifiOnly && setupPhase === "awaitingOwnershipConfirmation"
         ? `<button class="button primary" data-action="provisioning-owner" ${busy ? "disabled" : ""}>确认绑定到当前账号</button>`
         : "";
   return `
     <div class="app-layout">
-      ${shellHeader("发现并配置盒子")}<div class="page-content">
-      <div class="page-heading"><div><h2>发现新盒子</h2><p class="muted">核对身份，连接网络，然后绑定到你的账号。</p></div></div>
+      ${shellHeader(wifiOnly ? "修改 Wi-Fi" : "发现并配置盒子")}<div class="page-content">
+      <div class="page-heading"><div><h2>${wifiOnly ? "修改 Wi-Fi" : "发现附近的盒子"}</h2><p class="muted">${wifiOnly ? "为你的盒子更换网络，保留认领关系和全部业务数据。" : "新盒子可配网并认领；已认领的盒子可由主人修改 Wi-Fi。"}</p></div></div>
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
         <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${bluetoothNotice()}${discoveryBlock}${previewBlock}${controls}</div>
         <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || bluetoothState.status !== "available" || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
@@ -832,13 +851,15 @@ function setupErrorMessage(error) {
   const code = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
     DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，暂不能配网或绑定。请先由设备管理员完成注册，再让盒子进入配网模式并重新扫描。",
-    PAIRING_MODE_CLOSED: "盒子尚未开启配网模式，或配网时间已结束。首次使用请联系设备提供方完成配网初始化；已初始化的盒子请重新开启配网窗口后再扫描。",
+    PAIRING_MODE_CLOSED: "盒子尚未准备好首次配网，请确认已更新盒端程序并完成初始化，然后重新扫描。",
     PROTOCOL_CHANGED: "盒子与客户端的配网协议未能匹配，接入已停止（PROTOCOL_CHANGED）。",
     DEVICE_IDENTITY_MISMATCH: "盒子身份校验未通过，接入已停止。请核对目标盒子。",
     LOCAL_TRANSPORT_DISCONNECTED: "蓝牙连接已断开，请靠近盒子并重新扫描。",
     LOCAL_CONNECT_TIMEOUT: "连接盒子超时，请确认盒子处于配网模式后重试。",
     GATT_FRAGMENT_INCOMPLETE: "未完整收到盒子的蓝牙响应，请靠近盒子后重试。",
-    PAIRING_EXPIRED: "本次配网已过期，请让盒子重新进入配网模式。",
+    PAIRING_EXPIRED: "本次配网会话已超时，请重新扫描并重试。",
+    OWNER_REQUIRED: "只有盒子的主人可以修改 Wi-Fi，请刷新盒子列表后重试。",
+    OWNER_WIFI_UNSUPPORTED: "盒端程序尚不支持修改 Wi-Fi，请更新盒端程序后重试。",
     CONTRACT_MISMATCH: "账号服务的配网响应不兼容，请联系管理员核对服务版本（CONTRACT_MISMATCH）。",
     LOCAL_SELECTION_LEASE_INVALID: "扫描结果已失效，请重新扫描并选择盒子。",
     AUTH_SESSION_CHANGED: "登录状态已变化，请重新开始配网。",
@@ -925,7 +946,7 @@ function operationErrorMessage(error) {
 async function run(action, input = {}) {
   const isSetupOperation = action.startsWith("provisioning.");
   if (isSetupOperation && setupRequest && (action !== "provisioning.cancel" || setupRequest.action === action)) return null;
-  const request = isSetupOperation ? { action } : null;
+  const request = isSetupOperation ? { action, mode: input.mode } : null;
   if (request) setupRequest = request;
   if (["provisioning.start", "provisioning.cancel", "auth.logout"].includes(action)) resetWifiPicker();
   notice = null;
@@ -942,7 +963,7 @@ async function run(action, input = {}) {
   let failure;
   try {
     const setupActions = {
-      "provisioning.start": () => window.wanxSetup.begin(input.candidate),
+      "provisioning.start": () => window.wanxSetup.begin(input.mode === "wifi" ? { ...input.candidate, mode: "wifi" } : input.candidate),
       "provisioning.confirm": () => window.wanxSetup.confirmPhysical(),
       "provisioning.wifi": () => window.wanxSetup.wifi(input),
       "provisioning.owner": () => window.wanxSetup.confirmOwnership(),
@@ -1122,6 +1143,7 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "provisioning") {
     resetWifiPicker();
+    setupSelection = null;
     selection.reset();
     page = "provisioning";
     void window.wanxBluetooth?.refresh();
@@ -1142,9 +1164,20 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "start-provisioning") {
     if (busy || !setupReady || bluetoothState.status !== "available" || discoveryView.selecting) return;
+    setupSelection = null;
     resetWifiPicker(); resetDiscoveryMetadata(); selection.start(); return;
   }
-  if (action === "select-candidate") { if (bluetoothState.status === "available") selection.choose(target.dataset.candidateId); return; }
+  if (["select-candidate", "select-candidate-wifi"].includes(action)) {
+    if (bluetoothState.status !== "available") return;
+    const candidate = discoveryView.candidates.find(item => item.candidateId === target.dataset.candidateId);
+    if (!candidate) return;
+    const deviceId = discoveryDeviceId(candidate);
+    const owner = deviceIsOwner(deviceId);
+    if (action === "select-candidate-wifi" && !owner) return;
+    setupSelection = { mode: owner ? "wifi" : "claim", deviceId };
+    selection.choose(candidate.candidateId);
+    return;
+  }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
   if (action === "provisioning-owner") { await run("provisioning.owner"); return; }
@@ -1277,6 +1310,7 @@ function acceptRemoteState(state) {
   const accountChanged = account !== marketAccount;
   if (accountChanged) {
     resetDiscoveryMetadata();
+    setupSelection = null;
     const passwordChanged = state.account?.reason === "password_reset" && busyRequest?.action === "auth.change-password";
     releaseInteraction(); busy = false; busyRequest = null;
     passwordEditing = false; changeResendAt = 0;

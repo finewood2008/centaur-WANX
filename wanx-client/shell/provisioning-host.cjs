@@ -83,6 +83,7 @@ function snapshot(value) {
   const result = {};
   for (const key of [
     "flowId",
+    "mode",
     "state",
     "verifiedDeviceId",
     "networkState",
@@ -132,6 +133,7 @@ async function createProvisioningHost({
   trustedRootCertificatesPem,
   trustedRootSpkiPins,
   coordinatorFactory,
+  ownerWifiCoordinatorFactory,
   cryptoFactory,
   beforeConnect = async () => {},
   clock = {
@@ -147,6 +149,8 @@ async function createProvisioningHost({
     ? undefined
     : await import("@nexusaos/local-provisioning-contracts");
   const makeCoordinator = coordinatorFactory || core.createClaimCoordinator;
+  const makeOwnerWifiCoordinator = ownerWifiCoordinatorFactory ||
+    (await import('../account/owner-wifi.mjs')).createOwnerWifiCoordinator;
   const makeCrypto =
     cryptoFactory ||
     (await import("@nexusaos/local-provisioning-core/node"))
@@ -404,8 +408,9 @@ async function createProvisioningHost({
       throw failure("CLAIM_INVALID_STATE");
     return deviceId;
   }
-  function createContext(session, pairing) {
+  function createContext(session, pairing, mode = 'claim') {
     const current = {
+      mode,
       accountId: session.accountId,
       clientId: session.clientId,
       abort: new AbortController(),
@@ -418,6 +423,8 @@ async function createProvisioningHost({
       "cancelPairing",
       "getPairing",
       "syncBootstrap",
+      "getOwnerWifiAttestation",
+      "authorizeOwnerWifi",
     ]) {
       consumerApi[method] = async (...args) => {
         try {
@@ -438,7 +445,7 @@ async function createProvisioningHost({
         }
       };
     }
-    current.coordinator = makeCoordinator({
+    current.coordinator = (mode === 'wifi' ? makeOwnerWifiCoordinator : makeCoordinator)({
       transportFactory,
       crypto: makeCrypto({ trustedRootCertificatesPem }),
       consumerApi,
@@ -465,7 +472,7 @@ async function createProvisioningHost({
       if (preview?.cloud_enrollment_status === "not_enrolled") throw failure("DEVICE_NOT_ENROLLED");
       if (preview?.cloud_enrollment_status !== "ready" ||
         !Number.isInteger(preview.pairing_mode_remaining_seconds)) throw failure("PROTOCOL_CHANGED");
-      if (preview.pairing_mode_remaining_seconds <= 0) throw failure("PAIRING_MODE_CLOSED");
+      if (current.mode !== 'wifi' && preview.pairing_mode_remaining_seconds <= 0) throw failure("PAIRING_MODE_CLOSED");
     }
     await current.coordinator[method](
       ...(argument === undefined ? [current.abort.signal] : [argument]),
@@ -484,7 +491,9 @@ async function createProvisioningHost({
     async begin(value) {
       if (disposed || disposing) throw failure("CLAIM_INVALID_STATE");
       if (beginning) throw failure("CLAIM_OPERATION_IN_PROGRESS");
-      const candidate = selected(value);
+      const mode = value?.mode ?? 'claim';
+      if (!['claim', 'wifi'].includes(mode)) throw failure('INVALID_REQUEST');
+      const candidate = selected(plain(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'mode')) : value);
       beginning = true;
       try {
         if (resetting) await resetting;
@@ -511,7 +520,7 @@ async function createProvisioningHost({
         const pairing = await consumer.pairingApi();
         if (disposed || disposing || generation !== expected)
           throw failure("STALE_GENERATION");
-        const current = createContext(session, pairing);
+        const current = createContext(session, pairing, mode);
         context = current;
         await current.coordinator.begin(
           {
