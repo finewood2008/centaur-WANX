@@ -145,6 +145,11 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wizard-copy h3 { margin-bottom: 8px; font-size: 16px; }
 .wizard-copy > p { color: var(--fn-text-secondary); font-size: 12px; }
 .wizard-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
+.scan-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 132px; }
+.scan-button[aria-busy="true"] { cursor: progress; opacity: .8; }
+.scan-spinner { width: 13px; height: 13px; flex: 0 0 auto; border: 2px solid #ffffff50; border-top-color: currentColor; border-radius: 50%; animation: scan-spin .8s linear infinite, scan-appear .18s ease-out both; }
+@keyframes scan-spin { to { transform: rotate(360deg); } }
+@keyframes scan-appear { from { opacity: 0; } to { opacity: 1; } }
 .setup-preview { display: grid; grid-template-columns: 110px 1fr; gap: 8px 15px; margin: 18px 0; padding: 14px; border-radius: 8px; background: var(--fn-bg-primary); font-size: 11px; }
 .setup-preview dt { color: var(--fn-text-tertiary); }
 .setup-preview dd { margin: 0; overflow-wrap: anywhere; color: var(--fn-text-secondary); }
@@ -176,7 +181,7 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
   .wizard-step { flex-direction: column; }
   .setup-wifi { grid-template-columns: 1fr; }
 }
-@media (prefers-reduced-motion: reduce) { button { transition: none; } }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } .scan-spinner { animation: none; } }
 
 .tabs { display: flex; gap: 4px; margin: 24px 0 22px; padding: 4px; border-radius: 10px; background: var(--fn-bg-secondary); } .tab { flex: 1; padding: 9px; border: 0; border-radius: 8px; color: var(--fn-text-tertiary); background: transparent; font-weight: 700; } .tab.active { color: var(--fn-color-brand); background: var(--fn-bg-elevated); box-shadow: var(--fn-card-shadow); }
 .code-field { display: flex; gap: 8px; align-items: center; } .code-field input { flex: 1; }

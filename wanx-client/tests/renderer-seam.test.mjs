@@ -141,7 +141,7 @@ async function harness(initial = state(), installed = [application], options = {
     ipcRenderer: {
       invoke: async (name, input) => {
         calls.push([name, input]);
-        if (name.startsWith("wanx:setup:")) return { ok: true, value: { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
+        if (name.startsWith("wanx:setup:")) return { ok: true, value: await options.setupRequest?.(name) ?? { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
         return handlers.get(name)({ sender: contents, senderFrame: frame }, input);
       },
       on: (name, listener) => listeners.set(name, listener), removeListener() {},
@@ -175,7 +175,7 @@ async function harness(initial = state(), installed = [application], options = {
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
-  if (discoveryTest) {
+  if (discoveryTest || options.setupRequest) {
     listeners.get("wanx:setup:ready")();
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -451,6 +451,31 @@ test("device setup retains its wizard across polling and returns to boxes", asyn
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
 });
 
+test("box scanning disables repeat starts until the scan finishes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(state(), [application], t);
+  await h.click("provisioning");
+  await h.click("start-provisioning");
+  const scanButton = () => h.app.innerHTML.match(/<button[^>]*data-action="start-provisioning"[^>]*>[\s\S]*?<\/button>/)?.[0];
+  assert.match(scanButton(), /disabled/);
+  assert.match(scanButton(), /正在扫描/);
+  assert.match(scanButton(), /aria-busy="true"/);
+  assert.match(scanButton(), /class="scan-spinner"/);
+  await new Promise(resolve => setImmediate(resolve));
+  const chooser = h.chooser();
+  await h.click("start-provisioning");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.chooser(), chooser, "repeat clicks must not restart Bluetooth discovery");
+  h.update(state());
+  assert.match(scanButton(), /disabled/);
+  t.mock.timers.tick(12000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(scanButton(), /disabled|正在扫描|scan-spinner/);
+  assert.match(scanButton(), /aria-busy="false"/);
+  await h.click("start-provisioning");
+  assert.match(scanButton(), /disabled/);
+});
+
 test("discovered boxes remain selectable after the scan times out", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const h = await harness(state(), [application], t);
@@ -465,6 +490,7 @@ test("discovered boxes remain selectable after the scan times out", async (t) =>
   await h.click("select-candidate", { candidateId });
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /确认设备身份/);
+  assert.doesNotMatch(h.app.innerHTML, /scan-spinner|正在扫描…/);
   assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:reselect"));
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 1);
 });
@@ -593,6 +619,11 @@ test("an empty scan gives an actionable retry message", async (t) => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未发现可用盒子/);
   assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
+  const scanButton = h.app.innerHTML.match(/<button[^>]*data-action="start-provisioning"[^>]*>/)[0];
+  assert.doesNotMatch(scanButton, /disabled/);
+  assert.match(scanButton, /aria-busy="false"/);
+  await h.click("start-provisioning");
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"[^>]*disabled/);
 });
 
 test("native menu navigation reaches settings and home while preserving login and setup boundaries", async () => {
@@ -1038,18 +1069,21 @@ test("stale incoming invitations cannot reappear after switching account", async
   assert.doesNotMatch(h.app.innerHTML, /private-box/);
 });
 
-test("older transfer list response cannot replace a newer invitation refresh", async () => {
-  let release;
-  const late = new Promise(resolve => { release = resolve; });
+test("post-transfer refresh supersedes an in-flight list request", async () => {
+  const late = pendingResponse();
   let requests = 0;
-  const invitation = { transferId: "t-new", deviceId: "new-customer-box", direction: "incoming", state: "pending_target", retainData: true, expiresAt: "2099-01-01T00:00:00Z" };
-  const h = await harness(state(), [], { transfers: () => ++requests === 1 ? late : Promise.resolve([invitation]) });
+  const invitation = { transferId: "t-new", deviceId: "new-customer-box", direction: "outgoing", state: "pending_target", retainData: true, expiresAt: "2099-01-01T00:00:00Z" };
+  const initial = state(); initial.devices[0] = { ...initial.devices[0], deviceRole: "owner" };
+  const h = await harness(initial, [], { transfers: () => ++requests === 1 ? late.promise : Promise.resolve([invitation]) });
   await h.click("show-boxes");
-  await h.click("transfer-refresh");
+  await h.click("transfer-open", { deviceId: "box-102" });
+  await h.submit("transfer", { targetPhone: "13900139000", verificationCode: "012345", retainData: "on" });
+  assert.equal(requests, 2, "a committed mutation must fetch fresh data instead of joining the old request");
   assert.match(h.app.innerHTML, /new-customer-box/);
-  release([]);
-  await new Promise(resolve => setImmediate(resolve));
+  late.resolve([]);
+  await flushActions();
   assert.match(h.app.innerHTML, /new-customer-box/);
+  assert.doesNotMatch(actionButton(h, "transfer-refresh"), /disabled|正在刷新/);
 });
 
 test("revoked recipient client explains reauthentication instead of reporting transfer success", async () => {
@@ -1155,4 +1189,157 @@ for (const action of ["cancel-provisioning", "logout", "back-devices"]) test(`le
   complete([officeWifi]); await flushWifi();
   assert.equal(h.renderCount, renderCount);
   assert.equal(h.calls.filter(([name]) => name === "scan-wifi").length, 1);
+});
+
+
+function pendingResponse() {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+const flushActions = () => new Promise(resolve => setImmediate(resolve));
+const actionButton = (h, action) => h.app.innerHTML.match(new RegExp(`<button[^>]*data-action="${action}"[^>]*>[\\s\\S]*?</button>`))?.[0];
+
+for (const fails of [false, true]) test(`identity loading prevents another scan and recovers after ${fails ? "failure" : "success"}`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const begin = pendingResponse();
+  const h = await harness(state(), [], { after: t.after.bind(t), setupRequest: name => name === "wanx:setup:begin" ? begin.promise : undefined });
+  await h.click("provisioning"); await h.click("start-provisioning"); await flushActions();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate", { candidateId }); await flushActions();
+  const chooser = h.chooser();
+  await h.click("start-provisioning"); await flushActions();
+  assert.equal(h.chooser(), chooser, "identity loading must not start another Bluetooth chooser");
+  assert.match(h.app.innerHTML, /正在读取设备身份/);
+  assert.ok(!actionButton(h, "start-provisioning") || /disabled/.test(actionButton(h, "start-provisioning")));
+  if (fails) begin.reject(new Error("LOCAL_CONNECT_TIMEOUT"));
+  else begin.resolve({ state: "previewReady" });
+  await flushActions();
+  assert.doesNotMatch(h.app.innerHTML, /正在读取设备身份/);
+  if (fails) {
+    assert.match(h.app.innerHTML, /蓝牙连接|连接盒子超时/);
+    assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+    await h.click("start-provisioning"); await flushActions();
+    assert.notEqual(h.chooser(), chooser);
+  } else assert.match(h.app.innerHTML, /确认设备身份/);
+});
+
+for (const fails of [false, true]) test(`setup cancellation deduplicates clicks and recovers after ${fails ? "failure" : "success"}`, async () => {
+  const cancel = pendingResponse();
+  const h = await harness(state(), [], { setupRequest: name => name === "wanx:setup:cancel" ? cancel.promise : undefined });
+  await h.click("provisioning"); h.setup({ state: "provisioningWifi" });
+  const first = h.click("cancel-provisioning");
+  const second = h.click("cancel-provisioning");
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:cancel").length, 1);
+  assert.match(actionButton(h, "cancel-provisioning"), /disabled/);
+  assert.match(actionButton(h, "cancel-provisioning"), /正在取消/);
+  if (fails) cancel.reject(new Error("LOCAL_TRANSPORT_DISCONNECTED"));
+  else cancel.resolve({ state: "cancelled" });
+  await Promise.all([first, second]);
+  assert.doesNotMatch(h.app.innerHTML, /正在取消/);
+  assert.doesNotMatch(actionButton(h, fails ? "cancel-provisioning" : "start-provisioning"), /disabled/);
+});
+
+for (const cancelFirst of [false, true]) test(`cancelled setup ignores the original result when cancellation finishes ${cancelFirst ? "first" : "last"}`, async () => {
+  const confirm = pendingResponse(), cancel = pendingResponse();
+  const h = await harness(state(), [], { setupRequest: name => name === "wanx:setup:confirmPhysical" ? confirm.promise : name === "wanx:setup:cancel" ? cancel.promise : undefined });
+  await h.click("provisioning"); h.setup({ state: "previewReady" });
+  const original = h.click("provisioning-confirm");
+  const cancellation = h.click("cancel-provisioning");
+  if (cancelFirst) { cancel.resolve({ state: "cancelled" }); await cancellation; }
+  confirm.resolve({ state: "awaitingWifi" }); await original;
+  if (!cancelFirst) {
+    assert.match(actionButton(h, "cancel-provisioning"), /disabled/);
+    assert.match(actionButton(h, "cancel-provisioning"), /正在取消/);
+    cancel.resolve({ state: "cancelled" }); await cancellation;
+  }
+  assert.match(h.app.innerHTML, /本次配网已取消/);
+  assert.doesNotMatch(h.app.innerHTML, /data-form="wifi"/);
+  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
+});
+
+for (const fails of [false, true]) test(`authorization refresh shows pending feedback and restores retry after ${fails ? "failure" : "success"}`, async () => {
+  const refresh = pendingResponse();
+  const h = await harness(state(), [], { setupRequest: name => name === "wanx:setup:refresh" ? refresh.promise : undefined });
+  await h.click("provisioning"); h.setup({ state: "attentionRequired" });
+  const first = h.click("provisioning-refresh");
+  const second = h.click("provisioning-refresh");
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:refresh").length, 1);
+  assert.match(actionButton(h, "provisioning-refresh"), /disabled/);
+  assert.match(actionButton(h, "provisioning-refresh"), /正在刷新/);
+  if (fails) refresh.reject(new Error("LOCAL_TRANSPORT_DISCONNECTED"));
+  else refresh.resolve({ state: "attentionRequired" });
+  await Promise.all([first, second]);
+  assert.doesNotMatch(actionButton(h, "provisioning-refresh"), /disabled|正在刷新/);
+});
+
+for (const fails of [false, true]) test(`transfer refresh deduplicates pending requests and allows retry after ${fails ? "failure" : "success"}`, async () => {
+  const refresh = pendingResponse();
+  let requests = 0;
+  const h = await harness(state(), [], { transfers: () => ++requests === 2 ? refresh.promise : [] });
+  await h.click("show-boxes"); await flushActions();
+  const first = h.click("transfer-refresh");
+  const second = h.click("transfer-refresh");
+  assert.equal(requests, 2, "two clicks should add only one request after the initial load");
+  assert.match(actionButton(h, "transfer-refresh"), /disabled/);
+  assert.match(actionButton(h, "transfer-refresh"), /正在刷新/);
+  if (fails) refresh.reject(new Error("offline")); else refresh.resolve([]);
+  await Promise.all([first, second]);
+  assert.doesNotMatch(actionButton(h, "transfer-refresh"), /disabled|正在刷新/);
+  if (fails) assert.match(h.app.innerHTML, /转移记录暂时无法加载/);
+  await h.click("transfer-refresh");
+  assert.equal(requests, 3);
+  assert.doesNotMatch(h.app.innerHTML, /转移记录暂时无法加载/);
+});
+
+
+test("account changes release transfer loading without letting old completion unlock the new refresh", async () => {
+  const old = pendingResponse(), current = pendingResponse();
+  let requests = 0;
+  const h = await harness(state(), [], { transfers: () => ++requests === 1 ? old.promise : current.promise });
+  await h.click("show-boxes");
+  h.update({ account: { phase: "signed_out" } });
+  const next = state(); next.account.accountId = "account-2";
+  h.update(next); await flushActions();
+  await h.click("show-boxes");
+  assert.equal(requests, 2);
+  old.resolve([{ transferId: "old", deviceId: "old-private-box", state: "pending_target", expiresAt: "2099-01-01", retainData: true }]);
+  await flushActions();
+  assert.match(actionButton(h, "transfer-refresh"), /disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /old-private-box/);
+  current.resolve([]); await flushActions();
+  assert.doesNotMatch(actionButton(h, "transfer-refresh"), /disabled/);
+});
+
+test("a cancelled identity request cannot show its late failure or unlock a new setup action", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const begin = pendingResponse(), refresh = pendingResponse();
+  const h = await harness(state(), [], { after: t.after.bind(t), setupRequest: name => name === "wanx:setup:begin" ? begin.promise : name === "wanx:setup:refresh" ? refresh.promise : name === "wanx:setup:cancel" ? { state: "cancelled" } : undefined });
+  await h.click("provisioning"); await h.click("start-provisioning"); await flushActions();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate", { candidateId }); await flushActions();
+  await h.click("cancel-provisioning");
+  assert.match(h.app.innerHTML, /本次配网已取消/);
+  h.setup({ state: "attentionRequired" });
+  const refreshing = h.click("provisioning-refresh");
+  begin.reject(new Error("LOCAL_CONNECT_TIMEOUT")); await flushActions();
+  assert.match(actionButton(h, "provisioning-refresh"), /disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /连接盒子超时/);
+  refresh.resolve({ state: "attentionRequired" }); await refreshing;
+  assert.doesNotMatch(actionButton(h, "provisioning-refresh"), /disabled/);
+});
+
+test("an old setup completion cannot change the next account's setup state", async () => {
+  const refresh = pendingResponse();
+  const h = await harness(state(), [], { setupRequest: name => name === "wanx:setup:refresh" ? refresh.promise : undefined });
+  await h.click("provisioning"); h.setup({ state: "attentionRequired" });
+  const pending = h.click("provisioning-refresh");
+  h.update({ account: { phase: "signed_out" } });
+  const next = state(); next.account.accountId = "account-2";
+  h.update(next); await flushActions();
+  await h.click("provisioning");
+  refresh.resolve({ state: "completed" }); await pending;
+  assert.match(h.app.innerHTML, /发现附近的万象盒子/);
+  assert.doesNotMatch(h.app.innerHTML, /设备已完成联网和账号绑定/);
+  assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
 });
