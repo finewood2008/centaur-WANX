@@ -42,7 +42,14 @@ async function verify() {
     await window.loadFile(fileURLToPath(index));
     const js = value => window.webContents.executeJavaScript(value);
     await js(`window.until = async predicate => { for(let i=0;i<100;i++){ if(predicate()) return; await new Promise(r=>setTimeout(r,20)); } throw Error('UI timeout'); }; window.click = action => document.querySelector('[data-action="'+action+'"]').click(); void 0;`);
-    await js(`(async()=>{ await until(()=>!!document.querySelector('[data-action="show-settings"]')); click('show-settings'); click('show-boxes'); await until(()=>!!document.querySelector('[data-action="transfer-open"]')); if(document.querySelectorAll('[data-action="transfer-open"]').length!==1) throw Error('member sees transfer'); document.querySelector('[data-action="transfer-open"]').scrollIntoView({block:'center'}); click('transfer-open');
+    await js(`(async()=>{ await until(()=>!!document.querySelector('[data-action="show-settings"]')); click('show-settings'); click('show-boxes'); await until(()=>!!document.querySelector('[data-action="transfer-open"]'));
+      for (const selector of ['[data-action="transfer-open"]', '.ownership-section']) {
+        if (getComputedStyle(document.querySelector(selector)).display !== 'none') throw Error('ownership transfer UI must stay hidden: ' + selector);
+      }
+    })()`);
+    // Reveal only in this test to continue checking the retained workflow.
+    await window.webContents.insertCSS('[data-action="transfer-open"] { display: inline-block !important; } .ownership-section { display: block !important; }');
+    await js(`(async()=>{ if(document.querySelectorAll('[data-action="transfer-open"]').length!==1) throw Error('member sees transfer'); document.querySelector('[data-action="transfer-open"]').scrollIntoView({block:'center'}); click('transfer-open');
       const form = document.querySelector('[data-form="transfer"]');
       const phone = form.querySelector('[name="targetPhone"]');
       const headerBottom = document.querySelector('.topbar').getBoundingClientRect().bottom;
