@@ -108,7 +108,7 @@ test("in-flight SMS prevents a second request and tab changes", async t => {
 test("preload forwards registration and pins the registration SMS IPC", async () => {
   const calls = [], window = {};
   const preload = await readFile(new URL('../local-ui/remote-preload.cjs', import.meta.url), 'utf8');
-  vm.runInNewContext(preload, { require: () => ({
+  vm.runInNewContext(preload, { process: { platform: "win32" }, require: () => ({
     contextBridge: { exposeInMainWorld: (name, api) => { window[name] = api; } },
     ipcRenderer: { on() {}, invoke: async (name, input) => {
       calls.push([name, input]);

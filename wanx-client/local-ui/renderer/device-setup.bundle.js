@@ -695,7 +695,7 @@ ${match.responseMessageType}`;
           const timer = setTimeout(() => {
             finish(failure("LOCAL_SELECTION_TIMEOUT"));
             cancelSelection();
-          }, 12e3);
+          }, options.selectionTimeoutMs ?? 12e3);
           selectionCancel = cancel;
           try {
             void current.requestDeviceFromUserGesture().then(
@@ -729,7 +729,8 @@ ${match.responseMessageType}`;
   if (window.wanxSetupTransport && navigator.bluetooth) {
     const transport = createDeviceSetupTransport({
       bridge: window.wanxSetupTransport,
-      bluetooth: navigator.bluetooth
+      bluetooth: navigator.bluetooth,
+      selectionTimeoutMs: window.wanxSetupTransport.scanTimeoutMs
     });
     window.wanxDeviceSetupTransport = transport;
   }

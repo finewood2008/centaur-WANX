@@ -199,5 +199,11 @@ export function createApplicationLauncher({
       if (failure) { closing = null; throw failure.reason; }
     });
   }
-  return Object.freeze({ launch, stop, close });
+  function activate(id) {
+    const entry = applications.get(id)?.entry;
+    if (!entry || entry.exited) return false;
+    entry.child.send?.({ type: "wanx:application-activate", launchId: entry.session.launchId }, () => {});
+    return true;
+  }
+  return Object.freeze({ launch, activate, stop, close });
 }

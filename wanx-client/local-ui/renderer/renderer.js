@@ -91,11 +91,40 @@ async function scanWifi() {
   return picker.pending;
 }
 let discoveryView = { selecting: false, retained: false, candidates: [] };
+let previousScanCandidates = [];
+let previousScanTimer;
+function clearPreviousScan() {
+  clearTimeout(previousScanTimer);
+  previousScanTimer = undefined;
+  previousScanCandidates = [];
+}
+let scanStartedAt = 0;
+let scanTicker;
+const scanDurationMs = window.wanxSetupTransport?.scanTimeoutMs || 12000;
+const scanProgress = (elapsedMs) => Math.min(100, Math.max(0, Math.floor(elapsedMs * 100 / scanDurationMs)));
 const selection = createDiscoverySelection({
   discovery: window.wanxDiscovery,
   transport: window.wanxDeviceSetupTransport,
   onChange(view) {
-    discoveryView = view;
+    const scanning = view.selecting && !view.retained;
+    if (scanning && !scanTicker) {
+      scanStartedAt = Date.now();
+      const tick = () => {
+        if (!discoveryView.selecting || discoveryView.retained) return;
+        discoveryView.elapsedMs = Date.now() - scanStartedAt;
+        const progress = scanProgress(discoveryView.elapsedMs);
+        const track = page === "provisioning" && app.querySelector?.('[aria-label="正在扫描附近的盒子"]');
+        track?.setAttribute?.("aria-valuenow", String(progress));
+        const fill = track?.querySelector?.("span");
+        if (fill) fill.style.width = `${progress}%`;
+        scanTicker = setTimeout(tick, 1000);
+      };
+      scanTicker = setTimeout(tick, 1000);
+    } else if (!scanning && scanTicker) {
+      clearTimeout(scanTicker);
+      scanTicker = undefined;
+    }
+    discoveryView = { ...view, elapsedMs: scanning ? Date.now() - scanStartedAt : 0 };
     if (page === "provisioning") render(currentState);
   },
   onNotice(issue) {
@@ -107,7 +136,7 @@ const selection = createDiscoverySelection({
     };
     notice = issue ? messages[issue.kind] || issue.message : null;
   },
-  onSelected(candidate) { void run("provisioning.start", { candidate }); },
+  onSelected(candidate) { clearPreviousScan(); void run("provisioning.start", { candidate }); },
 });
 window.addEventListener?.("pagehide", () => { resetWifiPicker(); selection.dispose(); }, { once: true });
 window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); }, { once: true });
@@ -321,7 +350,18 @@ function operationBusy(id) {
 function operationMessage(operation) {
   if (!operation) return "";
   if (operation.error) return /[\u3400-\u9fff]/.test(String(operation.error)) ? String(operation.error) : operationErrorMessage(operation.error);
-  return { installing: "正在安装…", updating: "正在更新…", uninstalling: "正在卸载…", rolling_back: "正在恢复版本…", rollback: "正在恢复版本…", selecting: "正在选择版本…", "rolling-back": "正在恢复版本…", opening: "正在打开…", connecting: "正在连接盒子…" }[operation.phase] || "";
+  return { installing: "正在安装…", updating: "正在更新…", uninstalling: "正在卸载…", rolling_back: "正在恢复版本…", rollback: "正在恢复版本…", selecting: "正在选择版本…", "rolling-back": "正在恢复版本…", opening: "正在打开…", connecting: "正在连接盒子…", running: "已打开" }[operation.phase] || "";
+}
+
+function showOpenedStatus(applicationId) {
+  const operation = { phase: "running" };
+  localOperations.set(applicationId, operation);
+  setTimeout(() => {
+    if (localOperations.get(applicationId) === operation) {
+      localOperations.delete(applicationId);
+      render(currentState);
+    }
+  }, 4000);
 }
 
 function pendingOpenView() {
@@ -450,7 +490,7 @@ function applicationCard(item, installed = true) {
   const status = operationMessage(operation);
   const actions = item.selectionRequired
     ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => `<button class="button small" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" ${disabled}>使用 ${escapeHTML(version)}</button>`).join("")}</div>`
-    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : "打开"}</button>` : ""}</div>`;
+    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
   return `<article class="application-card" data-application="${id}">${applicationIcon(item)}<div class="application-main">
     <div class="application-title"><h3>${escapeHTML(item.name)}</h3>${installed && item.version ? `<span class="muted">v${escapeHTML(item.version)}</span>` : ""}</div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
@@ -510,7 +550,7 @@ async function refreshMarket() {
   }
 }
 
-function discoveryCard(candidate) {
+function discoveryCard(candidate, previousScan = false) {
   const hint = candidate.displayIdentity;
   const deviceId = typeof hint?.deviceId === "string" && /^[A-Za-z0-9._-]{1,36}$/.test(hint.deviceId) ? hint.deviceId : "";
   // Public Device Info is a display hint only. Account names are joined by the
@@ -521,21 +561,22 @@ function discoveryCard(candidate) {
   const boxName = (value) => {
     const name = typeof value === "string" ? value.trim() : "";
     return name && name !== deviceId && !/^CentaurAI\s+Box$/i.test(name) &&
-      !/^CentaurOS-(?:Setup-[0-9a-f]*|[0-9a-f]{24})?$/i.test(name) ? name : "";
+      !/^CentaurOS-(?:Setup-[0-9a-f]*|[0-9a-f]{6}|[0-9a-f]{24})?$/i.test(name) &&
+      !/^centauros-box-[0-9a-f]+$/i.test(name) ? name : "";
   };
   const knownName = boxName(known?.name) || boxName(known?.displayName);
   const specificName = deviceId && boxName(hint?.displayName);
   const advertisedName = candidate.advertisedName || "";
   const scanning = discoveryView.selecting && !discoveryView.retained;
-  const reading = !deviceId && scanning && candidate.nameSource === "advertisement";
+  const reading = !previousScan && !deviceId && scanning && candidate.nameSource === "advertisement";
   const resolvedName = knownName || specificName;
   const title = resolvedName || (reading ? "正在读取盒子名称…" : "未获取到盒子名称");
-  const detail = !deviceId && scanning && !reading
+  const detail = !previousScan && !deviceId && scanning && !reading
     ? [advertisedName, "选择后核对设备身份"].filter(Boolean).join(" · ")
     : [advertisedName, !deviceId ? reading ? "正在读取盒子名称…" : "未读取到名称" : "", "蓝牙配网"].filter(Boolean).join(" · ");
   const identityDetail = deviceId && !resolvedName
     ? `<span>设备编号：${escapeHTML(deviceId)}（用于核对，不是名称）</span>` : "";
-  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong>${identityDetail}<span>${escapeHTML(detail)}</span></button>`;
+  return `<button class="device-card discovery-card" data-action="select-candidate" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${previousScan || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong>${identityDetail}<span>${escapeHTML(detail)}</span>${previousScan ? "<span>上轮发现，等待本轮重新发现后可选择</span>" : ""}</button>`;
 }
 
 function provisioningView() {
@@ -575,7 +616,17 @@ function provisioningView() {
   }[setupPhase] || "请让设备进入配置模式后开始扫描。";
   const previewBlock = preview ? `<dl class="setup-preview"><dt>设备名称</dt><dd>${escapeHTML(preview.display_name)}</dd><dt>设备 ID</dt><dd>${escapeHTML(preview.device_id)}</dd><dt>型号</dt><dd>${escapeHTML(preview.model)}</dd><dt>身份公钥指纹</dt><dd>${escapeHTML(preview.identity_public_key_sha256)}</dd></dl>` : "";
   const { candidates, selecting, retained } = discoveryView;
-  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(discoveryCard).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
+  const scanStatus = selecting && !retained ? "正在扫描附近的盒子…" : "";
+  const progress = scanProgress(discoveryView.elapsedMs || 0);
+  const displayCandidates = candidates.map(candidate => {
+    const previous = previousScanCandidates.find(old => old.displayIdentity?.deviceId && old.displayIdentity.deviceId === candidate.displayIdentity?.deviceId);
+    return previous?.displayIdentity?.displayName && !candidate.displayIdentity?.displayName
+      ? { ...candidate, displayIdentity: { ...candidate.displayIdentity, displayName: previous.displayIdentity.displayName } }
+      : candidate;
+  });
+  const currentIds = new Set(candidates.map(candidate => candidate.displayIdentity?.deviceId).filter(Boolean));
+  const oldCandidates = previousScanCandidates.filter(candidate => !candidate.displayIdentity?.deviceId || !currentIds.has(candidate.displayIdentity.deviceId));
+  const discoveryBlock = selecting || retained || oldCandidates.length ? `<div class="discovery-list">${scanStatus ? `<div class="discovery-progress" role="status" aria-live="polite"><strong data-scan-status>${scanStatus}</strong><div class="discovery-progress-track" role="progressbar" aria-label="正在扫描附近的盒子" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span style="width: ${progress}%"></span></div></div>` : ""}<p>${retained ? "扫描已结束，本轮结果保留 2 分钟；上轮未重新发现的盒子仅供参考。请选择要配置的盒子：" : oldCandidates.length && !selecting ? "本轮未重新发现的盒子暂时保留，重新扫描后才能选择：" : "选择要配置的盒子："}</p>${displayCandidates.length || oldCandidates.length ? displayCandidates.map(candidate => discoveryCard(candidate)).join("") + oldCandidates.map(candidate => discoveryCard(candidate, true)).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
   const controls = setupPhase === "previewReady"
     ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? "盒子尚未准备好配网" : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
@@ -589,7 +640,7 @@ function provisioningView() {
       <div class="page-heading"><div><h2>发现新盒子</h2><p class="muted">核对身份，连接网络，然后绑定到你的账号。</p></div></div>
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
         <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${discoveryBlock}${previewBlock}${controls}</div>
-        <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
+        <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" ? "重新扫描" : retained ? "继续扫描缺名盒子" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
         ${setupPhase === "attentionRequired" ? `<button class="button" data-action="provisioning-refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? "正在刷新…" : "刷新授权状态"}</button>` : ""}
         ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
         ${!setupReady ? '<p class="hint">正在准备蓝牙配网服务…</p>' : ""}
@@ -783,6 +834,7 @@ async function run(action, input = {}) {
   } finally {
     if (isAppOperation && actionAccount === marketAccount) {
       if (failure) localOperations.set(applicationId, { phase: "failed", error: failure });
+      else if (action === "applications.request-open" && !currentState.ui?.pendingOpen) showOpenedStatus(applicationId);
       else localOperations.delete(applicationId);
     }
     if (holdBusy && (!request || setupRequest === request)) busy = false;
@@ -864,7 +916,7 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
-  if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && currentState.networkReady && !["connecting", "opening"].includes(pending.phase)) await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); return; }
+  if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && currentState.networkReady && !["connecting", "opening"].includes(pending.phase)) { const opened = await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); if (opened) { showOpenedStatus(pending.applicationId); render(currentState); } } return; }
   if (action === "desktop-about") { await run("desktop.about"); return; }
   if (busy && action !== "cancel-provisioning") return;
   if (action === "startup-toggle") { if (currentState.desktopStartup?.supported) await run("desktop.startup.set", { enabled: !currentState.desktopStartup.enabled }); return; }
@@ -899,6 +951,7 @@ app.addEventListener("click", async (event) => {
   if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
   if (action === "provisioning") {
     resetWifiPicker();
+    clearPreviousScan();
     selection.reset();
     page = "provisioning";
     busy = true;
@@ -917,13 +970,22 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "start-provisioning") {
     if (busy || !setupReady || discoveryView.selecting) return;
-    resetWifiPicker(); selection.start(); return;
+    resetWifiPicker();
+    if (discoveryView.retained) {
+      const byId = new Map([...previousScanCandidates, ...discoveryView.candidates]
+        .map(candidate => [candidate.displayIdentity?.deviceId || candidate.candidateId, { ...candidate }]));
+      previousScanCandidates = [...byId.values()].slice(-128);
+      clearTimeout(previousScanTimer);
+      previousScanTimer = setTimeout(() => { clearPreviousScan(); if (page === "provisioning") render(currentState); }, 120000);
+    }
+    selection.start();
+    return;
   }
   if (action === "select-candidate") { selection.choose(target.dataset.candidateId); return; }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
   if (action === "provisioning-owner") { await run("provisioning.owner"); return; }
-  if (action === "cancel-provisioning") { selection.reset(); await run("provisioning.cancel"); return; }
+  if (action === "cancel-provisioning") { clearPreviousScan(); selection.reset(); await run("provisioning.cancel"); return; }
   if (action === "connect") {
     const device = currentState.devices?.find((item) => item.deviceId === target.dataset.deviceId);
     if (!currentState.networkReady || !device || !deviceCanConnect(device)) return;
@@ -937,7 +999,7 @@ app.addEventListener("click", async (event) => {
     marketConfirmation = { action: "devices.disconnect", input: {}, title: "断开当前盒子", detail: "当前应用与盒子的连接将失效。重新连接后，请再次打开应用。", verb: "断开" };
     render(currentState); return;
   }
-  if (action === "back-devices") { resetWifiPicker(); page = "boxes"; selection.reset(); notice = null; render(currentState); return; }
+  if (action === "back-devices") { resetWifiPicker(); clearPreviousScan(); page = "boxes"; selection.reset(); notice = null; render(currentState); return; }
   if (action === "applications-select-current") {
     await run("applications.select-current", { applicationId: target.dataset.applicationId, version: target.dataset.version });
     return;
@@ -1054,6 +1116,7 @@ function acceptRemoteState(state) {
     ++ownershipRevision;
     if (setupRequest) { setupRequest = null; busy = false; }
     ownershipTransfers = []; transferDeviceId = null; transferNotice = null; transferResendAt = 0;
+    clearPreviousScan();
     selection.reset();
     marketItems = [];
     marketCandidates = new Map();

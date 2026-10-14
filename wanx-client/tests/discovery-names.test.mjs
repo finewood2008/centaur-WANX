@@ -36,6 +36,78 @@ test('maps the exact peripheral UUID to Chromium ID and reassembles split UTF-8 
   assert.equal(h.events.length, 1, 'UUID casing and duplicate metadata are equivalent');
 });
 
+test('Windows address metadata joins the exact Chromium candidate without hashing', (t) => {
+  const h = harness({ platform: 'win32' }); t.after(h.unsubscribe);
+  const windowsRecord = { deviceId: '1c:7e:51:c7:3e:8a', serviceUuid,
+    advertisedName: 'CentaurOS-Setup-000FE1',
+    displayIdentity: { deviceId: 'box-000FE1', displayName: '办公室万象盒子' } };
+  h.send(windowsRecord);
+  assert.deepEqual(h.events, [{ deviceId: '1C:7E:51:C7:3E:8A',
+    advertisedName: 'CentaurOS-Setup-000FE1', displayIdentity: windowsRecord.displayIdentity }]);
+  h.send({ ...windowsRecord, deviceId: 'not-a-bluetooth-address' });
+  h.send({ ...windowsRecord, peripheralId });
+  h.send({ ...windowsRecord, deviceId: '1C:7E:51:C7:3E:8B' });
+  assert.equal(h.events.length, 2);
+  assert.equal(h.events[1].deviceId, '1C:7E:51:C7:3E:8B');
+});
+
+test('a public full device ID can gain its exact admin inventory name during discovery', async (t) => {
+  const registryId = 'centauros-3ca0e31374f7508677bd42de';
+  const calls = [];
+  const h = harness({ platform: 'win32', lookupName: async (id) => { calls.push(id); return 'CentaurAI-AMD-102'; } });
+  t.after(h.unsubscribe);
+  h.send({ deviceId: '1C:7E:51:C7:3E:8A', serviceUuid,
+    advertisedName: 'CentaurOS-Setup-000FE1', displayIdentity: { deviceId: registryId, displayName: 'CentaurAI Box' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [registryId]);
+  assert.equal(h.events[1].displayIdentity.displayName, 'CentaurAI-AMD-102');
+  assert.equal(h.events[1].deviceId, '1C:7E:51:C7:3E:8A');
+  h.send({ deviceId: '1C:7E:51:C7:3E:8A', serviceUuid,
+    advertisedName: 'CentaurOS-Setup-000FE1', displayIdentity: { deviceId: registryId, displayName: 'CentaurAI Box' } });
+  assert.equal(h.events.length, 2, 'a later BLE hint cannot replace the inventory name');
+});
+
+test('a second Windows scan reuses recently named addresses and retries unnamed boxes', async (t) => {
+  const registryId = 'centauros-3ca0e31374f7508677bd42de';
+  let scope = 'account-a';
+  const lookups = [];
+  const h = harness({ platform: 'win32', cacheScope: () => scope,
+    lookupName: async (id) => { lookups.push(id); return '办公室万象盒子'; } });
+  t.after(h.unsubscribe);
+  const named = { deviceId: '1C:7E:51:C7:3E:8A', serviceUuid,
+    advertisedName: 'CentaurOS-Setup-000FE1', displayIdentity: { deviceId: registryId } };
+  h.send(named);
+  await new Promise(resolve => setImmediate(resolve));
+  h.unsubscribe();
+  const resumed = [];
+  const stopSecond = h.provider.subscribe(value => resumed.push(value));
+  t.after(stopSecond);
+  assert.deepEqual(h.calls[1].args, ['--known=1C:7E:51:C7:3E:8A']);
+  h.send({ deviceId: named.deviceId, serviceUuid, advertisedName: named.advertisedName }, 1);
+  assert.equal(resumed[0].displayIdentity.deviceId, registryId);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(resumed.at(-1).displayIdentity.displayName, '办公室万象盒子');
+  assert.deepEqual(lookups, [registryId, registryId], 'the current account name is refreshed');
+  stopSecond();
+  scope = 'account-b';
+  const stopOther = h.provider.subscribe(() => {});
+  t.after(stopOther);
+  assert.deepEqual(h.calls[2].args, [], 'another account cannot reuse the previous account hints');
+});
+
+test('Windows retries GATT for a box whose admin name was not resolved', async (t) => {
+  const h = harness({ platform: 'win32', cacheScope: () => 'account-a', lookupName: async () => null });
+  t.after(h.unsubscribe);
+  h.send({ deviceId: '1C:7E:51:C7:3E:8A', serviceUuid,
+    advertisedName: 'CentaurOS-Setup-000FE1',
+    displayIdentity: { deviceId: 'centauros-3ca0e31374f7508677bd42de' } });
+  await new Promise(resolve => setImmediate(resolve));
+  h.unsubscribe();
+  const stopSecond = h.provider.subscribe(() => {});
+  t.after(stopSecond);
+  assert.deepEqual(h.calls[1].args, []);
+});
+
 test('same advertisement name can gain, update and withdraw its public identity hint', (t) => {
   const h = harness(); t.after(h.unsubscribe);
   h.send(record());
@@ -169,6 +241,15 @@ test('the 13 second deadline stops helpers and discards a late completion', (t) 
   stale(bytes(record())); assert.deepEqual(h.events, []);
 });
 
+test('Windows helper remains available through the extended scan window', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness({ platform: 'win32' }); t.after(h.unsubscribe);
+  t.mock.timers.tick(60000);
+  assert.deepEqual(h.child.kills, []);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(h.child.kills, ['SIGTERM']);
+});
+
 test('normal close drops incomplete lines without killing; errors stop and remain silent', (t) => {
   const h = harness(); t.after(h.unsubscribe);
   h.child.stdout.emit('data', bytes(record()).subarray(0, -1)); h.child.emit('close', 0);
@@ -181,7 +262,7 @@ test('normal close drops incomplete lines without killing; errors stop and remai
   }
 });
 
-test('non-Mac, missing helper and spawn failure leave ordinary discovery available', () => {
+test('unsupported platform, missing helper and spawn failure leave ordinary discovery available', () => {
   let spawns = 0;
   const spawn = () => { spawns++; throw Error('missing helper'); };
   for (const options of [{ platform: 'linux', helperPath: '/helper' }, { platform: 'darwin' }]) {

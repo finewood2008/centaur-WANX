@@ -70,6 +70,10 @@ export function createDashboardWindows({
         allowRunningInsecureContent: false,
       },
     });
+    if (process.platform === "win32") {
+      window.setMenu?.(null);
+      window.setMenuBarVisibility?.(false);
+    }
     const entry = {
       window,
       session: isolatedSession,
@@ -121,6 +125,10 @@ export function createDashboardWindows({
         };
       });
       target.webContents.on("did-create-window", (child) => {
+        if (process.platform === "win32") {
+          child.setMenu?.(null);
+          child.setMenuBarVisibility?.(false);
+        }
         entry.children.add(child);
         child.on("closed", () => entry.children.delete(child));
         protect(child);

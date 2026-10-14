@@ -159,6 +159,9 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .setup-wifi .check input { width: auto; accent-color: var(--fn-color-brand); }
 .setup-wifi > button { justify-self: start; margin-top: 14px; }
 .discovery-list { display: grid; gap: 9px; margin: 18px 0; }
+.discovery-progress { display: grid; gap: 8px; color: var(--fn-text-secondary); font-size: 12px; }
+.discovery-progress-track { height: 7px; overflow: hidden; border-radius: 99px; background: var(--fn-bg-secondary); }
+.discovery-progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--fn-color-brand); transition: width 1s linear; }
 .discovery-card { flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; text-align: left; }
 .discovery-card strong, .discovery-card span { overflow-wrap: anywhere; max-width: 100%; }
 .discovery-card span { color: var(--fn-text-tertiary); font-size: 11px; }
@@ -181,7 +184,7 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
   .wizard-step { flex-direction: column; }
   .setup-wifi { grid-template-columns: 1fr; }
 }
-@media (prefers-reduced-motion: reduce) { button { transition: none; } .scan-spinner { animation: none; } }
+@media (prefers-reduced-motion: reduce) { button, .discovery-progress-track span { transition: none; } .scan-spinner { animation: none; } }
 
 .tabs { display: flex; gap: 4px; margin: 24px 0 22px; padding: 4px; border-radius: 10px; background: var(--fn-bg-secondary); } .tab { flex: 1; padding: 9px; border: 0; border-radius: 8px; color: var(--fn-text-tertiary); background: transparent; font-weight: 700; } .tab.active { color: var(--fn-color-brand); background: var(--fn-bg-elevated); box-shadow: var(--fn-card-shadow); }
 .code-field { display: flex; gap: 8px; align-items: center; } .code-field input { flex: 1; }

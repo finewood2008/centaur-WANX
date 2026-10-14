@@ -156,6 +156,10 @@ export function createDesktopIntegration({
     ] },
   ]);
   Menu.setApplicationMenu(menu);
+  if (platform === "win32") {
+    control.setMenu?.(null);
+    control.setMenuBarVisibility?.(false);
+  }
   const trayMenu = Menu.buildFromTemplate([
     { id: "connection-status", label: "未连接盒子", enabled: false }, separator,
     { label: usesPanel ? "打开万象" : "显示主窗口", click: show }, homeItem(), settingsItem(), dashboardItem(),

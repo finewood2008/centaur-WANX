@@ -36,9 +36,11 @@ test("launch dispatches to the installed app and only reports running after its 
   assert.equal(settled, false);
   h.child.emit("message", { type: "wanx:application-ready", launchId: "launch-1" });
   assert.equal((await launched).state, "running");
+  assert.equal(h.launcher.activate(record.applicationId), true);
   await h.launcher.launch(record);
-  assert.deepEqual(h.messages, [{ type: "wanx:application-activate", launchId: "launch-1" }]);
+  assert.deepEqual(h.messages, Array(2).fill({ type: "wanx:application-activate", launchId: "launch-1" }));
   await h.launcher.stop(record.applicationId);
+  assert.equal(h.launcher.activate(record.applicationId), false);
   assert.equal(h.closed, 1);
 });
 
