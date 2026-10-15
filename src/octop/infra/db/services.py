@@ -13,6 +13,7 @@ from octop.infra.db.repos.backends import BackendRepo
 from octop.infra.db.repos.care_push import CarePushRepo
 from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
+from octop.infra.db.repos.credits import CreditRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
@@ -52,6 +53,7 @@ class RepoBundle:
     thread_message_repo: ThreadMessageRepo
     trajectory_event_repo: TrajectoryEventRepo
     secret_repo: SecretRepo
+    credit_repo: CreditRepo
     audit_repo: AuditRepo
     usage_repo: UsageRepo
     settings_repo: SettingsRepo
@@ -83,6 +85,7 @@ class RepoBundle:
             thread_message_repo=ThreadMessageRepo(db),
             trajectory_event_repo=TrajectoryEventRepo(db),
             secret_repo=SecretRepo(db),
+            credit_repo=CreditRepo(db),
             audit_repo=AuditRepo(db),
             usage_repo=UsageRepo(db),
             settings_repo=SettingsRepo(db),
@@ -104,6 +107,10 @@ class SharedServices:
     paths: PathLayout
     config: OctopConfig
     repos: RepoBundle
+
+    @property
+    def credit_repo(self) -> CreditRepo:
+        return self.repos.credit_repo
 
     @property
     def db(self) -> DatabasePool:

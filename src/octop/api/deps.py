@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -98,7 +99,20 @@ def is_jwt_exempt_path(path: str) -> bool:
 
 
 def is_jwt_exempt_request(request: Request) -> bool:
-    return is_jwt_exempt_path(request.url.path)
+    # These exact GET routes verify a signed Consumer session online in their dependency.
+    path = request.url.path
+    if request.method == "GET" and (
+        path
+        in {
+            "/api/credits/account/balance",
+            "/api/credits/account/transactions",
+            "/api/credits/account/tasks",
+            "/api/credits/account/meter-session",
+        }
+        or re.fullmatch(r"/api/credits/account/(?:reservations|tasks)/[A-Za-z0-9_-]{1,128}", path)
+    ):
+        return True
+    return is_jwt_exempt_path(path)
 
 
 def get_server(request: Request) -> OctopServer:

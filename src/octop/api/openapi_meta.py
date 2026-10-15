@@ -158,6 +158,7 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
     {"name": "workspace", "description": "Agent workspace file tree: list, read, write, upload."},
     {"name": "agent_files", "description": "Agent-owned configuration files (SOUL.md, skills, …)."},
+    {"name": "credits", "description": "WANX account ledger and non-blocking shadow token usage."},
     {"name": "usage", "description": "Token usage summaries for billing and dashboards."},
     {
         "name": "skill-packages",

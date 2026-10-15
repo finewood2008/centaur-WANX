@@ -1313,6 +1313,8 @@ class GlobalProcessor:
             request["mcp_servers"] = mcp_servers
         if "skills" in meta:
             request["skills"] = meta["skills"]
+        if meta.get("_meter_identity"):
+            request["_meter_identity"] = meta["_meter_identity"]
         self._apply_turn_hitl_policy(thread_id, meta)
         return self._stamp_turn_conversation_mode(
             request,

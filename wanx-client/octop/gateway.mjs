@@ -66,6 +66,8 @@ export async function createDashboardGateway({
   ) {
     throw new Error("INVALID_TARGET_URL");
   }
+  const applicationExchangePath = session?.applicationExchangePath === "/api/auth/application/exchange"
+    ? "/api/auth/application/exchange" : "/api/auth/platform/application";
   const marker = session ? randomBytes(32).toString("hex") : null;
   const bootstrapPath = session
     ? `/__wanx_session/${randomBytes(32).toString("hex")}`
@@ -132,7 +134,7 @@ export async function createDashboardGateway({
     if (
       (pathname === "/api/auth" || pathname.startsWith("/api/auth/")) &&
       (websocket || (!PROFILE_ROUTES.has(`${request.method} ${pathname}`) &&
-        !(applicationExchange && request.method === "POST" && pathname === "/api/auth/platform/application")))
+        !(applicationExchange && request.method === "POST" && pathname === applicationExchangePath)))
     )
       return null;
     const headerToken = request.headers.authorization;
@@ -594,7 +596,7 @@ export async function createDashboardGateway({
     const parent = authorized.token;
     let cached = applicationTokens.get(applicationScope);
     if (!cached || cached.parent !== parent || cached.renewAt <= Date.now()) {
-      const pending = gateway.request({ path: "/api/auth/platform/application", method: "POST",
+      const pending = gateway.request({ path: applicationExchangePath, method: "POST",
         headers: { "content-type": "application/json" }, body: { application_id: applicationScope },
         applicationExchange: true }).then(response => {
         let value;
@@ -636,7 +638,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"].includes(key))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session", "range", "if-none-match", "if-modified-since"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };
@@ -714,7 +716,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id"].includes(key))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };
@@ -727,7 +729,7 @@ export async function createDashboardGateway({
       const endpoint = new URL(target);
       endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";
       const upstreamPath = new URL(authorized.path, target);
-      if (authorized.token && !upstreamPath.searchParams.has("token") && !upstreamPath.searchParams.has("access_token"))
+      if (upstreamPath.pathname !== "/api/browser-stream/ws" && authorized.token && !upstreamPath.searchParams.has("token") && !upstreamPath.searchParams.has("access_token"))
         upstreamPath.searchParams.set("token", authorized.token);
       const socket = new WebSocket(endpoint.origin + upstreamPath.pathname + upstreamPath.search, protocols, {
         headers: authorized.headers,

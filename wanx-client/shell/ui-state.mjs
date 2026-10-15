@@ -59,9 +59,9 @@ export async function createUIState({
     if (!identityKey()) throw fail("ACCOUNT_LOGIN_REQUIRED");
   };
   const connected = (state) => state.account?.phase === "authenticated" &&
-    state.network?.enabled !== false && state.network?.phase === "ready" &&
-    state.platform?.phase === "ready" && state.phase === "ready" &&
-    state.connection?.mode === "netbird" && deviceID(state.connection.deviceId);
+    state.phase === "ready" && deviceID(state.connection?.deviceId) &&
+    (state.connection.mode === "local" || (state.network?.enabled !== false &&
+      state.network?.phase === "ready" && state.platform?.phase === "ready" && state.connection.mode === "netbird"));
   const assertIntent = (current) => {
     assertOpen();
     if (current.generation !== generation || current.identity !== identityKey()) throw fail("ACCOUNT_SESSION_CHANGED");

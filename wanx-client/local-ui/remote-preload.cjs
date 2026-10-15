@@ -12,8 +12,8 @@ function projectState(raw) {
   const networkReady =
     source.network?.enabled !== false &&
     source.platform?.phase === "ready" && source.network?.phase === "ready";
-  const connected = authenticated && networkReady && source.phase === "ready" &&
-    connection?.mode === "netbird" && Boolean(connection.deviceId);
+  const connected = authenticated && source.phase === "ready" && Boolean(connection?.deviceId) &&
+    (connection.mode === "local" || (networkReady && connection.mode === "netbird"));
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,
@@ -58,6 +58,10 @@ async function rawState() {
 }
 
 const actions = {
+  "credits.tasks": () => ipcRenderer.invoke("wanx-client:credits-tasks"),
+  "credits.balance": () => ipcRenderer.invoke("wanx-client:credits-balance"),
+  "credits.transactions": input => ipcRenderer.invoke("wanx-client:credits-transactions", { after: input?.after }),
+  "credits.reservation": input => ipcRenderer.invoke("wanx-client:credits-reservation", { id: input?.id }),
   "auth.login": (input) =>
     ipcRenderer.invoke("wanx-client:login-password", {
       phone: input?.username,
@@ -139,7 +143,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "applications" || page === "boxes" || page === "settings") listener(page);
+        if (page === "applications" || page === "boxes" || page === "settings" || page === "credits") listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);

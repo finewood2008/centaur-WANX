@@ -83,7 +83,7 @@ test("panel cannot invoke account, market mutation, version selection, or manage
     "applications-install", "applications-launch", "applications-select-current", "applications-stop",
     "market-list", "market-candidate", "market-install", "market-uninstall", "market-rollback",
     "desktop-startup-get", "desktop-startup-set", "desktop-quit",
-    "connect-box", "disconnect", "refresh-devices",
+    "connect-box", "disconnect", "refresh-devices", "credits-balance", "credits-transactions", "credits-reservation",
   ]) {
     assert.throws(() => h.invoke(name, {
       phone: "13800138000", password: "secret", code: "123456", applicationId: "example.app",

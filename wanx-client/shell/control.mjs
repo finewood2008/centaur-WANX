@@ -13,6 +13,7 @@ function phone(input) {
 
 function requireConnectedBox(state) {
   if (state.account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+  if (state.phase === "ready" && state.connection?.mode === "local" && state.connection.deviceId) return;
   if (state.network?.enabled === false || state.platform?.phase !== "ready" || state.network?.phase !== "ready")
     throw new Error("NETWORK_NOT_READY");
   if (state.phase !== "ready" || state.connection?.mode !== "netbird" || !state.connection.deviceId)
@@ -39,6 +40,7 @@ export function registerControlActions({
   dashboards,
   selectApplicationArchive,
   market,
+  credits,
   uiState,
   desktop,
   getState,
@@ -54,7 +56,7 @@ export function registerControlActions({
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about",
   ]);
-  const reads = new Set(["get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -66,6 +68,12 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  for (const method of ["balance", "transactions", "reservation", "tasks"]) {
+    register(`credits-${method}`, (input) => {
+      if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
+      return credits[method](input);
+    });
+  }
   register("get-state", async () => {
     if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
@@ -201,7 +209,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "boxes", "settings"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "boxes", "settings", "credits"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());

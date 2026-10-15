@@ -14,7 +14,7 @@ import {
 } from "electron";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -29,6 +29,8 @@ import { registerShutdown } from "./shutdown.mjs";
 import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
+import { createCreditsReader } from "../account/credits.mjs";
+import { createLocalBoxes } from "../octop/local-boxes.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
 import { createApplicationMarket } from "../applications/market.mjs";
@@ -141,6 +143,18 @@ if (process.argv.includes("--wanx-managed-app")) {
         }),
         deviceModel: os.hostname(),
       });
+      let creditsServiceURL = process.env.WANX_CREDITS_URL || "";
+      if (!creditsServiceURL) {
+        try {
+          const file = path.join(userData, "credits-service.json");
+          const info = await lstat(file);
+          if (!info.isFile() || info.size > 4096 || (process.platform !== "win32" && (info.uid !== process.getuid() || (info.mode & 0o077))))
+            throw new Error("CREDITS_INVALID_CONFIG");
+          const config = JSON.parse(await readFile(file, "utf8"));
+          if (config.version !== 1 || typeof config.serviceURL !== "string") throw new Error("CREDITS_INVALID_CONFIG");
+          creditsServiceURL = config.serviceURL;
+        } catch (error) { if (error.code !== "ENOENT") reportError(new Error("CREDITS_INVALID_CONFIG")); }
+      }
       const preferenceFile = path.join(userData, "p2p-preference.json");
       const requestAccount = account.request;
       account.request = (input) => {
@@ -164,6 +178,8 @@ if (process.argv.includes("--wanx-managed-app")) {
       let preferenceWrites = Promise.resolve();
       client = createPlatformClient({
         account,
+        localBoxes: createLocalBoxes(),
+        creditsServiceURL,
         measure: timed,
         resumeStore: createSecureAccountStore({
           filePath: path.join(userData, "network-resume.enc"),
@@ -356,6 +372,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       registerControlActions({
+        credits: createCreditsReader({ client, authorityDeviceId: process.env.WANX_CREDITS_DEVICE_ID || "",
+          accountRequest: creditsServiceURL ? input => account.creditsRequest({ ...input, serviceURL: creditsServiceURL }) : null }),
         ipcMain,
         control,
         controlURL,

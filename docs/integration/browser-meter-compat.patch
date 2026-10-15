@@ -1,0 +1,58 @@
+--- a/src/octop/infra/credits/runtime.py
++++ b/src/octop/infra/credits/runtime.py
+@@ -20,6 +20,8 @@
+ 
+ from langchain_core.callbacks import BaseCallbackHandler
+ 
++from octop.infra.browser.model_access import current as browser_model_context
++from octop.infra.browser.model_access import current_model, direct_stream, isolated_call
+ from octop.infra.credits.metering import Meter
+ from octop.infra.db.repos.metering import MeterRepo
+ from octop.infra.gateway.process.usage_record import normalize_usage
+@@ -92,6 +94,11 @@
+ def metered_stream(method: Any) -> Any:
+     @functools.wraps(method)
+     async def wrapped(self: Any, agent_id: str, request: dict[str, Any]) -> Any:
++        if browser_model_context.get() is not None:
++            clean = {k: v for k, v in request.items() if not k.startswith("_meter_")}
++            async for chunk in method(self, agent_id, clean):
++                yield chunk
++            return
+         # Test/embedded registries without persistent services retain their behavior.
+         db = getattr(self._repos, "db", None)
+         if db is None:
+@@ -119,7 +126,7 @@
+                 if active.get(key) is task:
+                     active.pop(key, None)
+ 
+-    return wrapped
++    return direct_stream(wrapped)
+ 
+ 
+ def cancel(agent_id: str, thread_id: str) -> None:
+@@ -216,6 +223,9 @@
+     providers = {p.id: p for p in factory.provider_configs()}
+ 
+     def get_model(ref: str) -> Any:
++        direct = current_model()
++        if direct is not None:
++            return direct
+         model = original(ref)
+         provider = providers.get(ref.partition("/")[0])
+         callbacks = list(model.callbacks or [])
+@@ -239,6 +249,9 @@
+ def metered_call(method: Any) -> Any:
+     @functools.wraps(method)
+     async def wrapped(self: Any, agent_id: str, request: dict[str, Any]) -> Any:
++        if browser_model_context.get() is not None:
++            clean = {k: v for k, v in request.items() if not k.startswith("_meter_")}
++            return await method(self, agent_id, clean)
+         db = getattr(self._repos, "db", None)
+         if db is None:
+             return await method(self, agent_id, request)
+@@ -252,4 +265,4 @@
+             clean = {k: v for k, v in request.items() if not k.startswith("_meter_")}
+             return await method(self, agent_id, clean)
+ 
+-    return wrapped
++    return isolated_call(wrapped)

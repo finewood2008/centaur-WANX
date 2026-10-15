@@ -605,6 +605,50 @@ export function createAccount({
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    // Main-only read transport. The renderer never receives or supplies credentials/URLs.
+    async creditsRequest({ serviceURL, path }) {
+      const target = new URL(serviceURL);
+      if ((target.protocol !== "https:" && !(target.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(target.hostname))) ||
+          target.username || target.password || target.pathname !== "/" || target.search || target.hash ||
+          !(/^\/api\/credits\/(balance|tasks|tasks\/[A-Za-z0-9_-]{1,128}|meter-session\?application_id=[A-Za-z0-9._-]{1,128}|transactions\?after=\d+&limit=50|reservations\/[A-Za-z0-9_-]{1,128})$/.test(path)))
+        throw failure("CREDITS_NOT_CONFIGURED");
+      const generation = epoch;
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (record.session.expiresAt <= now() + 30000) await refresh();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert(generation);
+        const auth = record;
+        const controller = new AbortController(); pending.add(controller);
+        try {
+          const proof = consumerSignature({ identity: auth.identity, accountId: auth.session.accountId,
+            method: "GET", path: "/app-api/v1/sync/bootstrap", now: now() });
+          const response = await fetcher(new URL(path.replace("/credits/", "/credits/account/"), target).href, {
+            method: "GET", redirect: "error", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
+            headers: { ...proof, Authorization: `Bearer ${auth.session.accessToken}`, Accept: "application/json" },
+          });
+          assert(generation);
+          if (response.redirected || (response.url && new URL(response.url).origin !== target.origin))
+            throw failure("CREDITS_UNAVAILABLE");
+          const chunks = []; let size = 0;
+          const reader = response.body.getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read(); if (done) break;
+              size += value.length; if (size > 2 * 1024 * 1024) throw failure("CREDITS_INVALID_RESPONSE");
+              chunks.push(Buffer.from(value));
+            }
+          } finally { await reader.cancel().catch(() => {}); }
+          assert(generation);
+          const body = Buffer.concat(chunks);
+          if (attempt === 0 && [401, 403].includes(response.status)) { await refresh(); continue; }
+          if (response.status === 200 && path === "/api/credits/balance") {
+            let result; try { result = JSON.parse(body); } catch { throw failure("CREDITS_INVALID_RESPONSE"); }
+            if (result.account_id !== auth.session.accountId) throw failure("ACCOUNT_SESSION_CHANGED");
+          }
+          return { status: response.status, body };
+        } finally { pending.delete(controller); }
+      }
+    },
     getIdentity: () =>
       record?.session
         ? {

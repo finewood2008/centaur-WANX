@@ -113,6 +113,9 @@ def build_app(server: OctopServer) -> FastAPI:
         openapi_url="/api/openapi.json" if enable_api_docs else None,
         openapi_tags=OPENAPI_TAGS,
     )
+    from octop.api.middleware.token_metering import MeteringIdentity
+
+    app.add_middleware(MeteringIdentity)
     configure_openapi(app)
     app.state.octop_server = server
     _install_exception_handlers(app)
@@ -158,6 +161,7 @@ def build_app(server: OctopServer) -> FastAPI:
         channels,
         chat,
         connectors,
+        credits,
         cron,
         desktop,
         digital_self,
@@ -265,6 +269,8 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(memory.router, "/api", ["memory"]),
             _RouterMount(memory_portable.router, "/api", ["memory"]),
             _RouterMount(proactive_care.router, "/api", ["proactive-care"]),
+            _RouterMount(credits.router, "/api/credits", ["credits"]),
+            _RouterMount(credits.admin_router, "/api/admin/credits", ["credits"]),
             _RouterMount(usage.router, "/api", ["usage"]),
             _RouterMount(usage.admin_router, "/api/admin", ["admin"]),
             _RouterMount(skill_packages.router, "/api", ["skill-packages"]),

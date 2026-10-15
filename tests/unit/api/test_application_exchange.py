@@ -104,6 +104,7 @@ async def test_real_token_narrows_same_identity_and_never_extends_parent(environ
 @pytest.mark.parametrize(
     "bearer",
     [None, "not-a-jwt", token(secret=b"wrong-signing-key-at-least-32-bytes"), token(ttl=-1)],
+    ids=["missing", "malformed", "wrong-signature", "expired"],
 )
 async def test_rejects_missing_invalid_and_expired_credentials(environment, bearer):
     assert (await exchange(environment[0], bearer)).status_code == 401

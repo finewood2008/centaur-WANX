@@ -22,15 +22,15 @@
   };
   const phaseText = { opening: "正在打开…", installing: "正在安装…", uninstalling: "正在卸载…", "rolling-back": "正在回退…", selecting: "正在切换版本…" };
   const signedIn = () => state.account?.phase === "authenticated";
-  const ready = () => signedIn() && state.phase === "ready" && state.network?.enabled !== false && state.network?.phase === "ready" && state.platform?.phase === "ready" && state.connection?.deviceId;
+  const ready = () => signedIn() && state.phase === "ready" && state.connection?.deviceId && (state.connection.mode === "local" || (state.network?.enabled !== false && state.network?.phase === "ready" && state.platform?.phase === "ready"));
   const devices = () => state.devices || [];
   const available = () => devices().filter(device => device.canOpen);
   function boxStatus() {
     if (!signedIn()) return "登录后连接盒子";
+    if (ready()) return state.connection.mode === "local" ? "本机已连接" : "已连接";
     if (state.network?.enabled === false) return "网络已关闭";
     if (state.phase === "recovering") return "正在恢复连接…";
     if (state.phase === "connecting") return "正在连接…";
-    if (ready()) return "已连接";
     return "尚未连接";
   }
   function renderIntent() {
@@ -47,7 +47,7 @@
     root.innerHTML = `<header><button class="brand" data-action="about" aria-label="关于万象"><img src="../renderer/assets/centaurai-mark.png" alt="半人马"><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button><button data-page="settings" aria-label="打开设置">设置</button></header>
       <div class="box-status" aria-label="当前盒子"><span class="dot ${ready() ? "ready" : ""}"></span><span class="box-name">${escape(connection.name || "我的盒子")}</span><span class="muted">${boxStatus()}</span></div>
       <h2>我的应用</h2><div class="apps">${!signedIn() ? '<div class="empty">登录后，连接盒子并使用你的应用。<br><button class="primary" data-page="applications">登录万象</button></div>' : apps.length ? apps.map(app => { const op = state.ui?.applicationOperations?.[app.applicationId]; return `<div class="app-row"><span class="app-icon">${escape((app.name || "应用").slice(0, 1))}</span><div class="app-body"><div class="app-name">${escape(app.name || app.applicationId)}</div>${op ? `<div class="app-message ${op.phase === "failed" ? "error" : ""}">${op.phase === "failed" ? errorText(op.error) : phaseText[op.phase] || "正在处理…"}</div>` : ""}</div><button class="open" data-app="${escape(app.applicationId)}" ${op && op.phase !== "failed" ? "disabled" : ""}>${op?.phase === "failed" ? "重试" : "打开"}</button></div>`; }).join("") : '<p class="empty">还没有应用，去商店挑选一个吧。</p>'}</div>
-      ${renderIntent()}${notice ? `<p class="notice error" role="status">${escape(notice)}</p>` : ""}<footer><button data-page="applications">浏览应用商店 ↗</button></footer>`;
+      ${renderIntent()}${notice ? `<p class="notice error" role="status">${escape(notice)}</p>` : ""}<footer><button data-page="applications">浏览应用商店 ↗</button>${signedIn() ? '<button data-page="credits">我的积分 ↗</button>' : ""}</footer>`;
     resize();
   }
   async function act(name, input) {

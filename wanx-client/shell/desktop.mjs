@@ -182,12 +182,12 @@ export function createDesktopIntegration({
     const signedIn = state.account?.phase === "authenticated";
     const networkReady = signedIn && state.network?.enabled !== false &&
       state.platform?.phase === "ready" && state.network?.phase === "ready";
-    const connected = networkReady && state.phase === "ready" &&
-      state.connection?.mode === "netbird" && Boolean(state.connection.deviceId && state.connection.gatewayURL);
+    const connected = signedIn && state.phase === "ready" &&
+      Boolean(state.connection?.deviceId && state.connection.gatewayURL) &&
+      (state.connection.mode === "local" || (networkReady && state.connection.mode === "netbird"));
     const unavailable = state.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(state.network?.phase);
-    const label = !signedIn ? "尚未登录万象" : state.network?.enabled === false ? "网络已关闭" :
+    const label = !signedIn ? "尚未登录万象" : connected ? `已连接 · ${state.connection.name || state.connection.deviceId}` : state.network?.enabled === false ? "网络已关闭" :
       unavailable ? "网络暂不可用" : !networkReady ? "网络连接中" :
-      connected ? `已连接 · ${state.connection.name || state.connection.deviceId}` :
       state.phase === "recovering" ? "盒子连接恢复中" : state.phase === "connecting" ? "盒子连接中" : "未连接盒子";
     const key = JSON.stringify([signedIn, connected, label]);
     if (key === previous) return;

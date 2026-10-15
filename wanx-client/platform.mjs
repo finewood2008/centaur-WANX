@@ -20,6 +20,8 @@ export function createPlatformClient({
   account,
   createTransport,
   createSession = createPlatformSession,
+  localBoxes,
+  creditsServiceURL = "",
   managementURL = "https://p2p.qeeshu.com",
   readPreference = async () => true,
   writePreference = async () => {},
@@ -37,6 +39,7 @@ export function createPlatformClient({
   let directTransport = null,
     unsubscribeDirect,
     activeLink = null;
+  let localDevices = [], activeLocalDeviceId = null;
   let devices = [],
     boxes = [];
   let directory = { phase: "idle", reason: null };
@@ -96,6 +99,8 @@ export function createPlatformClient({
   });
   const snapshot = () => {
     const connection = activeLink?.client.snapshot() || empty();
+    if (activeLink === directTransport && activeLocalDeviceId && connection.connection?.deviceId === activeLocalDeviceId)
+      connection.connection = { ...connection.connection, mode: "local" };
     const signedIn = account.snapshot().phase === "authenticated";
     const transportNetwork = transport?.network.snapshot();
     const network = !enabled
@@ -110,7 +115,7 @@ export function createPlatformClient({
     return structuredClone({
       ...connection,
       account: account.snapshot(),
-      devices: boxes.map((box) => {
+      devices: [...(signedIn ? localDevices : []), ...boxes.filter(box => !localDevices.some(local => local.deviceId === box.deviceId)).map((box) => {
         const endpoint = devices.find((item) => item.deviceId === box.deviceId);
         const host =
           endpoint &&
@@ -135,7 +140,7 @@ export function createPlatformClient({
               endpoint,
           ),
         };
-      }),
+      })],
       directory,
       platform,
       network: { ...network, enabled, peers: [] },
@@ -171,6 +176,7 @@ export function createPlatformClient({
     clearTimeout(leaseTimer);
     timer = null;
     connectionEpoch++;
+    if (selectionController && activeLink === directTransport) void directTransport?.client.disconnect();
     selectionController?.abort();
     selectionController = null;
     activeController?.abort();
@@ -194,6 +200,7 @@ export function createPlatformClient({
     return closing;
   }
   function retireDirect() {
+    activeLocalDeviceId = null;
     unsubscribeDirect?.();
     unsubscribeDirect = null;
     const old = directTransport;
@@ -717,9 +724,8 @@ export function createPlatformClient({
       void persistResume(null);
       platform = { phase: "idle", reason: null };
       void retireTransport().catch(() => {});
-    }
-    if (state.phase === "signed_out" && accountPhase !== "signed_out")
       void retireDirect().catch(() => {});
+    }
     accountKey = nextAccountKey;
     accountPhase = state.phase;
     emit();
@@ -738,6 +744,14 @@ export function createPlatformClient({
     authenticated();
     authorizationDeadline = 0;
     const generation = epoch;
+    if (localBoxes) {
+      const found = await localBoxes.list().catch(() => []);
+      if (!current(generation)) return snapshot();
+      localDevices = found;
+      if (activeLocalDeviceId && !found.some(device => device.deviceId === activeLocalDeviceId && device.canOpen))
+        await retireDirect();
+      emit();
+    }
     const listing = loadDirectory(generation);
     if (enabled) {
       prepareNeeded = true;
@@ -814,11 +828,31 @@ export function createPlatformClient({
       if (response.status !== 200) throw fail("BOX_IDENTITY_UNAVAILABLE");
       let user;
       try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
+      let metering = null;
+      async function meteredInput(input) {
+        // Development authority tokens must never be forwarded to another box.
+        const local = localDevices.find(d => d.deviceId === state.connection.deviceId);
+        if (!creditsServiceURL || !local || new URL(local.serviceUrl).origin !== new URL(creditsServiceURL).origin)
+          return input;
+        if (!metering || metering.expires_at * 1000 < Date.now() + 30000) {
+          try {
+            const result = await account.creditsRequest({ serviceURL: creditsServiceURL,
+              path: `/api/credits/meter-session?application_id=${applicationId}` });
+            assertLive();
+            const value = JSON.parse(result.body.toString("utf8"));
+            if (result.status !== 200 || value.mode !== "shadow" || typeof value.token !== "string" ||
+                !/^[A-Za-z0-9_-]{32,128}$/.test(value.token) || !Number.isSafeInteger(value.expires_at)) return input;
+            metering = value;
+          } catch { return input; } // Shadow collection must not block an existing free app.
+        }
+        assertReady();
+        return { ...input, headers: { ...input.headers, "x-wanx-metering-session": metering.token } };
+      }
       const context = { protocolVersion: 1, accountId: state.account.accountId, clientId: state.account.clientId, boxId: state.connection.deviceId, user, connection: "ready" };
       return {
         context: () => ({ ...context, connection: assertLive() }),
-        request: (input) => { assertReady(); return connection.request(input); },
-        openStream: (input) => { assertReady(); return connection.openStream(input); },
+        request: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.request(value); }); },
+        openStream: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.openStream(value); }); },
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       };
     },
@@ -912,6 +946,7 @@ export function createPlatformClient({
     },
     async connect(input) {
       if (input?.mode !== "direct") throw fail("NETWORK_USE_AUTHORIZED_DEVICE");
+      activeLocalDeviceId = null;
       const selection = ++connectionEpoch;
       selectionController?.abort();
       selectionController = null;
@@ -929,6 +964,33 @@ export function createPlatformClient({
     },
     async connectBox(deviceId) {
       const identity = authenticated();
+      const local = localDevices.find(device => device.deviceId === deviceId);
+      if (local && localBoxes) {
+        const generation = epoch, selection = ++connectionEpoch;
+        selectionController?.abort();
+        const controller = new AbortController();
+        selectionController = controller;
+        activeLocalDeviceId = null;
+        await activeLink?.client.disconnect();
+        if (selection !== connectionEpoch || !current(generation)) return snapshot();
+        if (!directTransport) {
+          directTransport = createTransport(null);
+          unsubscribeDirect = directTransport.client.subscribe(() => emit());
+        }
+        const target = directTransport;
+        activeLink = target;
+        // Only this registered, authenticated path can project a local box.
+        activeLocalDeviceId = deviceId;
+        await target.client.connect({ deviceId, name: local.displayName, url: local.serviceUrl, mode: "direct" }, {
+          createSession: ({ url, signal }) => localBoxes.createSession(deviceId, {
+            url, signal: AbortSignal.any([signal, controller.signal]),
+            onExpired: () => { if (activeLink === target && activeLocalDeviceId === deviceId) void target.client.disconnect(); },
+          }),
+        });
+        if (selection !== connectionEpoch || !current(generation)) return snapshot();
+        selectionController = null;
+        return emit();
+      }
       if (
         !enabled ||
         platform.phase !== "ready" ||
@@ -963,6 +1025,7 @@ export function createPlatformClient({
       )
         throw fail("NETWORK_DEVICE_ACCESS_DENIED");
       const target = transport;
+      activeLocalDeviceId = null;
       activeLink = target;
       const sessionId = networkSession.networkSessionId;
       await target.client.connect(

@@ -149,6 +149,7 @@ async function harness(initial = state(), installed = [application], options = {
       uninstall: async () => { records = []; },
       rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
     },
+    credits: options.credits,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -1849,4 +1850,18 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   assert.match(h.app.innerHTML, /本次配网会话已超时，请重新扫描并重试/);
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
+});
+
+
+test("credits entry opens a read-only account ledger with real IPC data", async () => {
+  const h = await harness(state(), [application], { credits: {
+    balance: async () => ({ available: 1250, held: 40, paid_available: 1000, gift_available: 250 }),
+    transactions: async () => ({ items: [], after: 0, hasMore: false }),
+  } });
+  assert.match(h.app.innerHTML, /1,250 点/);
+  await h.click("show-credits");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /我的积分/);
+  assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
+  assert.match(h.app.innerHTML, /还没有积分记录/);
 });

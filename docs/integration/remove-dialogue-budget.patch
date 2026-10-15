@@ -1,0 +1,39 @@
+--- a/src/octop/infra/dialogue/pool.py
++++ b/src/octop/infra/dialogue/pool.py
+@@ -77,25 +77,21 @@
+             llm = build_chat_model(provider, replace(model, native_tool_search=False))
+             from urllib.parse import urlparse
+ 
+-            from octop.infra.credits.cloud_client import gateway_url, install_transport
+             from octop.infra.credits.metering import Meter
+             from octop.infra.credits.runtime import CostCallback
+             from octop.infra.db.repos.metering import MeterRepo
+ 
+-            if gateway_url() and provider.base_url == gateway_url() + "/v1":
+-                install_transport(llm)
+-            else:
+-                llm.callbacks = [
+-                    *(getattr(llm, "callbacks", None) or []),
+-                    CostCallback(
+-                        Meter(MeterRepo(self.services.db)),
+-                        model.id,
+-                        provider.id,
+-                        urlparse(provider.base_url).hostname == "api.deepseek.com",
+-                        "centaurai.wanx.dialogue",
+-                        user_id,
+-                    ),
+-                ]
++            llm.callbacks = [
++                *(getattr(llm, "callbacks", None) or []),
++                CostCallback(
++                    Meter(MeterRepo(self.services.db)),
++                    model.id,
++                    provider.id,
++                    urlparse(provider.base_url).hostname == "api.deepseek.com",
++                    "centaurai.wanx.dialogue",
++                    user_id,
++                ),
++            ]
+             llm.max_retries = 0
+             if (
+                 hasattr(llm, "use_responses_api")

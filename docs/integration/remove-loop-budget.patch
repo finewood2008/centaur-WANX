@@ -1,0 +1,96 @@
+--- a/src/octop/infra/loops/service.py
++++ b/src/octop/infra/loops/service.py
+@@ -680,66 +680,13 @@
+         decisions: list[dict[str, Any]] | None = None,
+         previous: dict[str, Any] | None = None,
+     ) -> None:
+-        from octop.infra.credits.scheduling import automatic_scope
+-
+-        try:
+-            async with automatic_scope(self.repos.db, row["user_id"], rid):
+-                await self._execute_body(
+-                    row, rid, trial=trial, decisions=decisions, previous=previous
+-                )
+-                from octop.infra.credits.cloud_client import execution
+-
+-                current_row = await self._db(self.repos.loop_repo.get, row["loop_id"])
+-                grant = execution.get()
+-                if grant and current_row and current_row["status"] == "awaiting_approval":
+-                    grant.paused = True  # Keep this run's bill open across a human tool checkpoint.
+-        except asyncio.CancelledError:
+-            raise
+-        except Exception:
+-            # No cloud credential, revoked consent, exhausted daily budget or failed
+-            # authority request: stop scheduling before executing another model/tool.
+-            await self._db(
+-                self.repos.loop_repo.finish_round,
+-                rid,
+-                "failed",
+-                {"error": "cloud_budget_authorization_required"},
+-            )
+-            await self._db(
+-                self.repos.loop_repo.transition,
+-                row["loop_id"],
+-                row["version"],
+-                ("running",),
+-                status="paused",
+-                reason="cloud_budget_authorization_required",
+-                enabled=0,
+-                next_run_at=None,
+-            )
+-
+-    async def _execute_body(
+-        self,
+-        row: dict[str, Any],
+-        rid: str,
+-        *,
+-        trial: bool,
+-        decisions: list[dict[str, Any]] | None = None,
+-        previous: dict[str, Any] | None = None,
+-    ) -> None:
+-        from contextlib import nullcontext
+-        from types import SimpleNamespace
+-
+-        from octop.infra.credits.cloud_client import execution
+         from octop.infra.credits.metering import Meter
+         from octop.infra.credits.runtime import task_scope
+         from octop.infra.db.repos.metering import MeterRepo
+ 
+-        scope_context = (
+-            nullcontext(SimpleNamespace(failed=False, cancelled=False))
+-            if execution.get()
+-            else task_scope(
+-                Meter(MeterRepo(self.repos.db)), "centaurloop", key=rid, user_id=row["user_id"]
+-            )
+-        )
+-        with scope_context as metered:
++        with task_scope(
++            Meter(MeterRepo(self.repos.db)), "centaurloop", key=rid, user_id=row["user_id"]
++        ) as metered:
+             lid, aid, uid = row["loop_id"], row["definition"]["agent_id"], row["user_id"]
+             definition = self._definition(row)
+             scope = LoopScope(
+@@ -1112,22 +1059,9 @@
+                     and controls["review_seconds"] >= definition.human_review.max_execution_seconds
+                 )
+                 current = await self._db(self.repos.loop_repo.get, lid)
+-                from octop.infra.credits.cloud_client import execution
+-
+-                active_grant = execution.get()
+-                if active_grant:
+-                    active_grant.failed = True
+-                cloud_budget_paused = bool(active_grant and active_grant.paused)
+-                failure_reason = (
+-                    "cloud_budget_authorization_required"
+-                    if cloud_budget_paused
+-                    else "execution_unknown"
+-                    if uncertain
+-                    else "execution_failed"
+-                )
++                failure_reason = "execution_unknown" if uncertain else "execution_failed"
+                 paused = (
+                     trial
+-                    or cloud_budget_paused
+                     or uncertain
+                     or failures >= definition.failure_limit
+                     or isinstance(exc, (OctopError, PermissionError))

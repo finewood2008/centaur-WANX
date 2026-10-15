@@ -71,6 +71,7 @@ from octop.infra.connectors.builder import (
     inject_missing_gateway_tools,
 )
 from octop.infra.connectors.service import ConnectorService
+from octop.infra.credits.runtime import metered_call, metered_stream
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.skills.presentation import apply_skill_presentation, localize_skill_summary
@@ -1350,6 +1351,7 @@ class AgentManager:
         finally:
             self._end_invocation(agent_id)
 
+    @metered_stream
     async def stream(self, agent_id: str, request: dict[str, Any]) -> AsyncIterator[Any]:
         """Stream harness chunks (Langfuse tracing handled inside octop-harness)."""
         if self._harness_manager is None:
@@ -1377,6 +1379,7 @@ class AgentManager:
                 )
             self._apply_pending_bootstrap_graph_refresh(agent_id)
 
+    @metered_call
     async def call(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Non-streaming harness invocation (one-shot agent call)."""
         if self._harness_manager is None:
@@ -1414,6 +1417,9 @@ class AgentManager:
 
     def cancel_stream(self, agent_id: str, thread_id: str) -> None:
         """Signal octop-harness to stop the active stream for *(agent_id, thread_id)*."""
+        from octop.infra.credits.runtime import cancel
+
+        cancel(agent_id, thread_id)
         if self._harness_manager is not None:
             self._harness_manager.cancel(agent_id, thread_id)
 
@@ -2768,7 +2774,11 @@ class AgentManager:
         user_display: str = "User",
     ) -> None:
         from octop.infra.agents.teams import is_team_agent  # noqa: PLC0415
+        from octop.infra.credits.runtime import instrument_factory
 
+        factory = getattr(agent, "model_factory", None)
+        if factory is not None:
+            instrument_factory(factory, self._repos.db, application_id(row), row.user_id or 0)
         team_host = is_team_agent(row)
         private_product = application_id(row) != "wanx"
         if private_product:

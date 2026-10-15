@@ -108,3 +108,14 @@ test("state reads sample the connection after the asynchronous application list 
   finishListing([]);
   assert.equal((await pending).connection, null);
 });
+
+
+test("authenticated local box opens Dashboard and apps without cloud network", () => {
+  const state = { ...connected, platform: { phase: "unavailable" }, network: { enabled: false, phase: "disabled" },
+    connection: { ...connected.connection, mode: "local", deviceId: "local-0123456789abcdef01234567" } };
+  const h = control(state);
+  h.invoke("dashboard-open");
+  h.invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" });
+  assert.equal(h.dashboards.length, 1); assert.equal(h.launched.length, 1);
+  assert.throws(() => control({ ...state, phase: "disconnected" }).invoke("dashboard-open"));
+});

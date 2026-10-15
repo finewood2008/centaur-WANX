@@ -1,0 +1,59 @@
+--- a/src/octop/infra/dialogue/service.py
++++ b/src/octop/infra/dialogue/service.py
+@@ -6,6 +6,7 @@
+ import copy
+ import hashlib
+ import json
++import logging
+ import time
+ import uuid
+ from collections.abc import AsyncIterator
+@@ -303,11 +304,15 @@
+                 if identity and identity["application_id"] == "centaurai.wanx.dialogue"
+                 else None
+             )
+-            quote = meter.quote(
+-                account, "centaurai.wanx.dialogue", uuid.uuid4().hex, user_id=owner[0], audit_unregistered=True
+-            )
+-            meter.start(quote["id"])
+-            metered, count = Task(meter, quote["id"]), 0
++            try:
++                row = meter.create_task(
++                    account, "centaurai.wanx.dialogue", uuid.uuid4().hex, user_id=owner[0]
++                )
++                meter.start(row["id"])
++                metered, count = Task(meter, row["id"]), 0
++            except Exception:
++                logging.getLogger(__name__).warning("Usage recording unavailable", exc_info=True)
++                metered, count = Task(meter, "", closed=True), 0
+         self.meter_groups[group_key] = metered, count + 1
+         task = asyncio.create_task(
+             self._metered_run(
+@@ -347,14 +352,19 @@
+             else:
+                 self.meter_groups.pop(group_key)
+                 metered.closed = True
+-                metered.meter.finish(
+-                    metered.id,
+-                    "failed"
+-                    if metered.failed
+-                    else "cancelled"
+-                    if metered.cancelled
+-                    else "completed",
+-                )
++                try:
++                    metered.meter.finish(
++                        metered.id,
++                        "failed"
++                        if metered.failed
++                        else "cancelled"
++                        if metered.cancelled
++                        else "completed",
++                    )
++                except Exception:
++                    logging.getLogger(__name__).warning(
++                        "Usage finalization unavailable", exc_info=True
++                    )
+ 
+     async def _update(self, owner: Owner, session_id: str, answer_id: str, **changes: Any) -> None:
+         async with self.lock(session_id):

@@ -55,7 +55,7 @@ export async function createApplicationSession({
         !["GET /api/auth/me", "PATCH /api/auth/me", "POST /api/auth/me/avatar", "DELETE /api/auth/me/avatar"].includes(`${method} ${decoded}`)) throw fail("HOST_AUTH_MANAGED", 403);
     // Credentials are supplied by the Host, never by an application URL.
     if (["token", "access_token"].some(key => endpoint.searchParams.has(key))) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
-    if (websocket && !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(decoded)) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
+    if (websocket && decoded !== "/api/browser-stream/ws" && !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(decoded)) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
     return raw;
   }
   const headersFor = req => Object.fromEntries(Object.entries(req.headers).filter(([name]) => REQUEST_HEADERS.has(name)));
