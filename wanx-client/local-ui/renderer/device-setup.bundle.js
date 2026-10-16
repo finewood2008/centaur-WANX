@@ -238,17 +238,30 @@
         if (!device.gatt)
           throw new LocalProvisioningFailure("GATT_SERVICE_NOT_FOUND");
         let server, service, deviceInfo, command, status;
+        let stage = "connect";
+        const assertActive = () => {
+          if (signal.aborted)
+            throw new DOMException("Aborted", "AbortError");
+        };
         try {
           server = await device.gatt.connect();
+          assertActive();
+          stage = "service";
           service = await server.getPrimaryService(PROVISIONING_SERVICE_UUID);
-          [deviceInfo, command, status] = await Promise.all([
-            service.getCharacteristic(DEVICE_INFO_UUID),
-            service.getCharacteristic(COMMAND_UUID),
-            service.getCharacteristic(STATUS_UUID)
-          ]);
-        } catch {
+          assertActive();
+          stage = "characteristic";
+          deviceInfo = await service.getCharacteristic(DEVICE_INFO_UUID);
+          assertActive();
+          command = await service.getCharacteristic(COMMAND_UUID);
+          assertActive();
+          status = await service.getCharacteristic(STATUS_UUID);
+          assertActive();
+        } catch (error) {
           device.gatt.disconnect();
-          throw new LocalProvisioningFailure("GATT_CHARACTERISTIC_MISMATCH");
+          if (signal.aborted || error?.name === "AbortError")
+            throw new DOMException("Aborted", "AbortError");
+          const code = error?.name === "NotFoundError" && stage !== "connect" ? stage === "service" ? "GATT_SERVICE_NOT_FOUND" : "GATT_CHARACTERISTIC_MISMATCH" : "LOCAL_TRANSPORT_DISCONNECTED";
+          throw new LocalProvisioningFailure(code);
         }
         const allocator = createMessageIdAllocator(), reassemblers = /* @__PURE__ */ new Map(), completed = /* @__PURE__ */ new Map();
         let closed = false, pending, statusListener;
