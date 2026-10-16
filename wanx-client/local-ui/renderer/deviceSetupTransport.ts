@@ -81,7 +81,7 @@ function candidate(value: unknown): SelectedDiscoveryCandidate {
 
 export interface DeviceSetupTransport {
   requestDeviceFromUserGesture(): Promise<SelectedDiscoveryCandidate>;
-  cancelSelection(): void;
+  cancelSelection(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -117,6 +117,9 @@ export function createDeviceSetupTransport(options: {
             consumeSelectionLease: (selected) =>
               selection.consumeSelectionLease(selected),
             clock,
+            // The SDK starts this deadline before writing every 12-byte GATT
+            // fragment. Signed pairing tokens can take more than 5 seconds.
+            requestTimeoutMs: 30_000,
           }),
         });
   let selection = makeSelection(),
@@ -126,6 +129,7 @@ export function createDeviceSetupTransport(options: {
     disposed = false,
     disposing: Promise<void> | undefined;
   let selectionCancel: (() => void) | undefined;
+  let selectionSettled: Promise<void> | undefined;
   const flights = new Map<
     string,
     { abort: AbortController; connectionId?: string }
@@ -147,6 +151,9 @@ export function createDeviceSetupTransport(options: {
     selection.cancelSelection();
     // A cancelled Chromium chooser may resolve later; isolate its one-use lease.
     selection = makeSelection();
+    // Revoking the local lease does not cancel Chromium's requestDevice call.
+    // Main must close its chooser; callers can wait for the browser to settle.
+    return selectionSettled ?? Promise.resolve();
   }
   async function closeAll() {
     ++epoch;
@@ -329,6 +336,8 @@ export function createDeviceSetupTransport(options: {
     requestDeviceFromUserGesture(): Promise<SelectedDiscoveryCandidate> {
       if (disposed)
         return Promise.reject(failure("LOCAL_TRANSPORT_DISCONNECTED"));
+      if (selectionSettled)
+        return Promise.reject(failure("LOCAL_SELECTION_BUSY"));
       const expected = selectionEpoch,
         current = selection;
       // Settle cancellation locally even if Chromium never resolves its chooser.
@@ -353,8 +362,9 @@ export function createDeviceSetupTransport(options: {
         }, options.selectionTimeoutMs ?? 12000);
         selectionCancel = cancel;
         try {
-          void current.requestDeviceFromUserGesture().then(
+          const completed = current.requestDeviceFromUserGesture().then(
             (selected) => {
+              if (selectionSettled === completed) selectionSettled = undefined;
               if (disposed || expected !== selectionEpoch || settled) {
                 current.cancelSelection();
                 finish(failure("LOCAL_SELECTION_LEASE_INVALID"));
@@ -362,8 +372,12 @@ export function createDeviceSetupTransport(options: {
               }
               finish(undefined, selected);
             },
-            (error) => finish(error),
+            (error) => {
+              if (selectionSettled === completed) selectionSettled = undefined;
+              finish(error);
+            },
           );
+          selectionSettled = completed;
         } catch (error) {
           finish(error);
         }

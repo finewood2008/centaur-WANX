@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, randomUUID, sign } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -52,8 +52,11 @@ async function envelopeFor(file, metadata, key) {
   return { descriptor, descriptorBase64: bytes.toString("base64"), signatureBase64: sign(null, bytes, key).toString("base64") };
 }
 
-/** Package a prepared build directory, never a working tree containing secrets. */
-export async function packageApplication({ sourceDir, outputDir, os = "universal", arch = "universal", keyFile, keyId, minWanxVersion = "0.1.0", buildId }) {
+/** Package a prepared build directory, never a working tree containing secrets.
+ * protocol3 releaseAccess="account" is retained in the normalized ZIP manifest
+ * and the signed descriptor; publication audience is selected later in Admin.
+ */
+export async function packageApplication({ sourceDir, outputDir, os = "universal", arch = "universal", keyFile, keyId, minWanxVersion = "0.1.0", buildId, overwrite = false }) {
   sourceDir = path.resolve(sourceDir); outputDir = path.resolve(outputDir);
   if (!keyId || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) fail("需要有效的 --key-id。");
   if (inside(sourceDir, outputDir) || inside(sourceDir, path.resolve(keyFile)))
@@ -97,16 +100,42 @@ export async function packageApplication({ sourceDir, outputDir, os = "universal
     const { descriptor, ...envelope } = await envelopeFor(archivePath, {
       applicationId: manifest.applicationId, version: manifest.version, os, arch,
       packageType: "wanxapp", fileName, minWanxVersion, manifest,
+      ...(manifest.protocolVersion >= 2 ? { schemaVersion: manifest.protocolVersion, compatibility: manifest.compatibility, critical: [] } : {}),
       ...(buildId ? { buildId } : {}),
     }, key);
     await extractApplicationArchive(archivePath, path.join(staging, "validation"), descriptor);
     const destination = path.join(outputDir, fileName), sidecar = `${destination}.release.json`;
-    // Fail on existing output rather than accidentally replacing a published build.
-    const output = createWriteStream(destination, { flags: "wx" });
-    try { await pipeline(createReadStream(archivePath), output); moved = true; }
-    catch (error) { if (error.code !== "EEXIST") await rm(destination, { force: true }); throw error; }
-    try { await writeFile(sidecar, JSON.stringify({ keyId, ...envelope }, null, 2) + "\n", { flag: "wx" }); }
-    catch (error) { if (moved) await rm(destination, { force: true }); throw error; }
+    const envelopeText = JSON.stringify({ keyId, ...envelope }, null, 2) + "\n";
+    if (overwrite) {
+      const nextSidecar = path.join(staging, "next.release.json");
+      const previousArchive = path.join(staging, "previous.wanxapp");
+      const previousSidecar = path.join(staging, "previous.release.json");
+      await writeFile(nextSidecar, envelopeText);
+      const moveIfPresent = async (from, to) => {
+        try { await rename(from, to); return true; }
+        catch (error) { if (error.code === "ENOENT") return false; throw error; }
+      };
+      let oldArchive = false, oldSidecar = false, newArchive = false, newSidecar = false;
+      try {
+        oldArchive = await moveIfPresent(destination, previousArchive);
+        oldSidecar = await moveIfPresent(sidecar, previousSidecar);
+        await rename(archivePath, destination); newArchive = true;
+        await rename(nextSidecar, sidecar); newSidecar = true;
+      } catch (error) {
+        if (newArchive) await rm(destination, { force: true });
+        if (newSidecar) await rm(sidecar, { force: true });
+        if (oldArchive) await rename(previousArchive, destination);
+        if (oldSidecar) await rename(previousSidecar, sidecar);
+        throw error;
+      }
+    } else {
+      // The low-level release tool keeps its original no-overwrite default.
+      const output = createWriteStream(destination, { flags: "wx" });
+      try { await pipeline(createReadStream(archivePath), output); moved = true; }
+      catch (error) { if (error.code !== "EEXIST") await rm(destination, { force: true }); throw error; }
+      try { await writeFile(sidecar, envelopeText, { flag: "wx" }); }
+      catch (error) { if (moved) await rm(destination, { force: true }); throw error; }
+    }
     return { archivePath: destination, envelopePath: sidecar, descriptor };
   } finally { await rm(staging, { recursive: true, force: true }); }
 }

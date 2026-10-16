@@ -30,6 +30,19 @@ Admin 管理应用资料、发行版本、通用应用包与各平台原生制�
 
 ## 制作应用包
 
+知君、众见等已接入 WANX Host 的应用，统一使用万象仓库的 `wanx-client/package-app.sh`。在万象仓库根目录运行，例如：
+
+```sh
+./wanx-client/package-app.sh --project ../centuarai-wanx-zhijun --version 0.4.7
+./wanx-client/package-app.sh --project ../centuarai-wanx-zhongjian --version 0.3.1
+```
+
+也可以在仓库外的本机配置文件（例如 `~/.config/wanx-release/zhongjian.json`）写入 `{"version":"0.3.1"}`，调用时加 `--config <文件>`。可选字段为 `out`、`key`、`key-id`、`os`、`arch`；命令行参数优先。未指定 `--config` 时读取应用工程根目录的 `market-release.local.json`（若存在；请确保该文件被 Git 忽略）。版本号来自命令行或本机配置，不改应用源码。默认从 `~/.config/wanx-release/release-private.pem` 读取 Ed25519 私钥，使用 `release-2026` 公钥 ID，输出到忽略 Git 的 `wanx-client/release/market/`。生成同名 `.wanxapp` 和 `.wanxapp.release.json` 后会立即验签并校验哈希；把这两个文件上传到 Admin 对应应用、版本的草稿。同名本地产物会在新包构建并完成归档校验后成对替换，此脚本不上传或上架应用；已上传到 Admin 的同版本制品是否允许替换仍以服务端规则为准。
+
+统一脚本识别 `market/wanx-app.json`（知君布局）与 `application.manifest.json` 加 `npm run package`（众见布局）。新应用采用后一布局即可复用打包入口；构建结果必须包含实际入口和运行依赖。众见的客户端包只包含桌面应用，其盒端业务接口仍需先集成到万象底座。
+
+已有独立构建产物目录也可以直接使用下述低层 `package:application` 命令签名。
+
 准备独立的构建产物目录（包含运行依赖，不含源码私钥、账号文件和开发环境配置）。所有文件必须为普通文件或目录；符号链接、跨平台非法路径、大小写冲突均拒绝。包根目录放 `wanx-app.json`：
 
 ```json

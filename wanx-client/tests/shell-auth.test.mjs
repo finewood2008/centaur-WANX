@@ -25,6 +25,8 @@ function harness() {
       "setNetworkEnabled",
     ].map((name) => [name, (input) => calls.push([name, input])]),
   );
+  for (const name of ["loginPassword", "loginSMS", "register"])
+    client[name] = (input, options) => calls.push([name, input, options]);
   registerControlActions({
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     control: { webContents: contents, isDestroyed: () => false },
@@ -78,7 +80,7 @@ test("registration IPC validates credentials and pins the SMS scene", () => {
   h.invoke("register", input);
   h.invoke("send-registration-code", { phone: input.phone, scene: "consumer_login" });
   assert.deepEqual(h.calls, [
-    ["register", { phone: "13800138000", password: input.password, code: "000001" }],
+    ["register", { phone: "13800138000", password: input.password, code: "000001" }, { waitForDevices: false }],
     ["sendSMS", { phone: "13800138000", scene: "consumer_register" }],
   ]);
   for (const password of [null, "short", "密".repeat(25), "password\n", "password\0"])
@@ -109,8 +111,8 @@ test("account IPC validates and forwards only allowed fields preserving password
   });
   h.invoke("send-sms", { phone: "13800000000", scope: "admin" });
   assert.deepEqual(h.calls, [
-    ["loginPassword", { phone: "13800000000", password: " secret " }],
-    ["loginSMS", { phone: "13800000000", code: "123456" }],
+    ["loginPassword", { phone: "13800000000", password: " secret " }, { waitForDevices: false }],
+    ["loginSMS", { phone: "13800000000", code: "123456" }, { waitForDevices: false }],
     ["sendSMS", { phone: "13800000000" }],
   ]);
   for (const code of [null, "abcd", "1", "1".repeat(13)])

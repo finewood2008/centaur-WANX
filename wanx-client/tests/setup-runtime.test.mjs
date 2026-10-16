@@ -4,7 +4,8 @@ import { EventEmitter } from 'node:events';
 import { createSetupRuntime } from '../shell/setup.mjs';
 import { createProvisioningHost } from '../shell/provisioning-host.cjs';
 const candidate = { candidateId: 'candidate', transport: 'ble-gatt', transportHandle: 'handle', selectionLeaseId: 'lease', advertisedName: 'CentaurOS-Setup', rssi: -40, firstSeenMonotonicMs: 0, lastSeenMonotonicMs: 1 };
-async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 }, scanWifi = async () => [], ownerWifi = false } = {}) {
+async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 }, scanWifi = async () => [], ownerWifi = false,
+  advertisementNames = { subscribe() { return () => {}; } }, connectTransport = false } = {}) {
   const ipcMain = new EventEmitter(); const handlers = new Map();
   ipcMain.handle = (name, fn) => handlers.set(name, fn);
   ipcMain.removeHandler = (name) => handlers.delete(name);
@@ -13,14 +14,13 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
   const sent = [];
   webContents.send = (name, input) => {
     sent.push([name, input]);
-    if (name === 'wanx:setup:transport') queueMicrotask(() => ipcMain.emit('wanx:setup:transport-result', event, { requestId: input.requestId, ok: true, value: null }));
+    if (name === 'wanx:setup:transport') queueMicrotask(() => ipcMain.emit('wanx:setup:transport-result', event, { requestId: input.requestId, ok: true, value: input.operation === 'connect' ? 'test-connection' : null }));
   };
   let identity = { accountId: 'a', clientId: 'c' }, refreshes = 0, pickerDisposed = 0, handshakes = 0;
   const accountListeners = new Set();
   const account = { getIdentity: () => identity, snapshot: () => ({ phase: identity ? 'authenticated' : 'signed_out' }),
     subscribe: (fn) => { accountListeners.add(fn); return () => accountListeners.delete(fn); } };
   let pickerInput;
-  const advertisementNames = { subscribe() { return () => {}; } };
   const runtime = await createSetupRuntime({ control: { webContents, isDestroyed: () => false }, controlURL: webContents.mainFrame.url,
     ipcMain, account, client: { refreshDevices: async () => { refreshes++; } },
     consumerBaseUrl: 'https://consumer.example', userData: 'unused',
@@ -28,11 +28,14 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
     makeStore: () => ({ load: async () => [] }),
     installPicker: (input) => { pickerInput = input; return () => { pickerDisposed++; }; },
     makeHost: (options) => {
-      const factory = () => {
+      const factory = ({ transportFactory }) => {
       let state = { flowId: 'flow-1', state: 'idle', preview, ...(ownerWifi ? { mode: 'wifi' } : {}) }, notify;
       const set = (next) => { state = { ...state, state: next }; notify?.(); };
       return { getSnapshot: () => state, subscribe: (fn) => { notify = fn; return () => {}; },
-        begin: async () => set('previewReady'), confirmPhysicalDevice: async () => {
+        begin: async (input, signal) => {
+          if (connectTransport) await transportFactory.connect(input.selected, signal);
+          set('previewReady');
+        }, confirmPhysicalDevice: async () => {
           handshakes++;
           if (ownerWifi) state.pairingSessionId = '11111111-1111-4111-8111-111111111111';
           set('awaitingWifi');
@@ -64,6 +67,35 @@ test('trusted setup IPC completes identity, Wi-Fi and ownership then refreshes o
   assert.equal(h.refreshes(), 1);
   await h.runtime.dispose();
   assert.equal(h.handlers.size, 0); assert.equal(h.pickerDisposed(), 1);
+});
+
+test('setup waits for native discovery handoff before dispatching the GATT connect RPC', async () => {
+  let release, waits = 0;
+  const advertisementNames = { subscribe() { return () => {}; }, stopAndWait() {
+    waits++; return new Promise(resolve => { release = resolve; });
+  } };
+  const h = await harness({ advertisementNames, connectTransport: true });
+  try {
+    const pending = h.invoke('begin', candidate);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(waits, 1);
+    assert.equal(h.sent.some(([name, input]) => name === 'wanx:setup:transport' && input.operation === 'connect'), false);
+    release();
+    assert.equal((await pending).value.state, 'previewReady');
+    assert.equal(h.sent.filter(([name, input]) => name === 'wanx:setup:transport' && input.operation === 'connect').length, 1);
+  } finally { await h.runtime.dispose(); }
+});
+
+test('failed native handoff never dispatches a GATT connect', async () => {
+  const h = await harness({ connectTransport: true, advertisementNames: {
+    subscribe() { return () => {}; },
+    async stopAndWait() { throw Object.assign(new Error('LOCAL_CONNECT_TIMEOUT'), { code: 'LOCAL_CONNECT_TIMEOUT' }); },
+  } });
+  try {
+    const result = await h.invoke('begin', candidate);
+    assert.equal(result.code, 'LOCAL_CONNECT_TIMEOUT');
+    assert.equal(h.sent.some(([name, input]) => name === 'wanx:setup:transport' && input.operation === 'connect'), false);
+  } finally { await h.runtime.dispose(); }
 });
 test('owner Wi-Fi mode crosses a closed claim window and cannot invoke ownership operations', async () => {
   const h = await harness({ ownerWifi: true, preview: { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 0 } });

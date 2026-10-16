@@ -81,6 +81,22 @@ async def test_keeps_existing_personal_expert_and_model_untouched():
     assert adapter.rows == [existing]
 
 
+async def test_owned_shared_bundled_source_keeps_existing_app_binding_and_data():
+    existing = expert(
+        agent_id="TVPQSB",
+        is_shared=True,
+        application_id="wanx",
+        template_name="zhijun-personal-companion",
+    )
+    adapter = Adapter(rows=[existing])
+    await ensure_private_expert(adapter, "user-session", UID)
+    await ensure_private_expert(adapter, "user-session", UID)
+    assert all(
+        method == "GET" and path == "/api/agents?scope=mine" for method, path, _ in adapter.calls
+    )
+    assert adapter.rows == [existing]
+
+
 @pytest.mark.parametrize(
     "unusable",
     [

@@ -10,24 +10,52 @@ const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x
 
 // Own the launch's credentials and local resources, but borrow its fixed box connection.
 export async function createApplicationSession({
-  hostApplicationId, applicationId, installPath, createConnection, signal,
+  hostApplicationId, applicationId, installPath, createConnection, authorizeRelease, signal,
 } = {}) {
   signal?.throwIfAborted();
   const launchId = randomUUID(), token = randomUUID() + randomUUID();
   const connection = await createConnection();
   signal?.throwIfAborted();
   let url, invalid = false, closing, unsubscribe, heartbeat;
+  let releasePermit, releaseExpiry, releaseRenewal, releaseAbort;
+  const releaseController = new AbortController();
   const operations = new Set(), events = new Set(), sockets = new Set();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false,
     handleProtocols: (_protocols, req) => req.selectedProtocol || false });
   function state() {
     if (invalid) throw fail("HOST_SESSION_EXPIRED");
-    try { return connection.context(); }
+    try { releasePermit?.assertLive(); return connection.context(); }
     catch { invalidate(); throw fail("HOST_SESSION_EXPIRED"); }
+  }
+  function clearRelease() {
+    clearTimeout(releaseExpiry); clearTimeout(releaseRenewal);
+    releasePermit?.signal?.removeEventListener("abort", releaseAbort);
+  }
+  function watchRelease(permit) {
+    if (!permit || typeof permit.assertLive !== "function" || !Number.isFinite(permit.expiresAt))
+      throw fail("MARKET_RELEASE_ACCESS_INVALID", 403);
+    permit.assertLive();
+    clearRelease(); releasePermit = permit;
+    releaseAbort = () => invalidate();
+    permit.signal?.addEventListener("abort", releaseAbort, { once: true });
+    const remaining = Math.min(60_000, permit.expiresAt - Date.now());
+    if (remaining <= 0 || permit.signal?.aborted) throw fail("MARKET_RELEASE_ACCESS_EXPIRED", 403);
+    // This deadline is independent of the renewal request. A hung Admin request
+    // cannot keep existing HTTP, SSE or WebSocket traffic alive after expiry.
+    releaseExpiry = setTimeout(() => invalidate(), remaining);
+    releaseExpiry.unref();
+    releaseRenewal = setTimeout(async () => {
+      try {
+        const next = await authorizeRelease({ signal: releaseController.signal });
+        if (!invalid) watchRelease(next);
+      } catch { invalidate(); }
+    }, Math.max(1, Math.floor(remaining / 2)));
+    releaseRenewal.unref();
   }
   function invalidate() {
     if (invalid) return;
     invalid = true;
+    clearRelease(); releaseController.abort();
     unsubscribeConnection();
     for (const res of events) res.end('data: {"type":"invalidated","code":"HOST_SESSION_EXPIRED"}\n\n');
     events.clear();
@@ -182,6 +210,8 @@ export async function createApplicationSession({
     return closing;
   }
   try {
+    if (authorizeRelease) watchRelease(await authorizeRelease({ signal: releaseController.signal }));
+    signal?.throwIfAborted();
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     url = `http://127.0.0.1:${server.address().port}`;
     unsubscribe = connection.subscribe?.(() => {

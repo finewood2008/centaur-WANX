@@ -39,6 +39,7 @@ export function registerControlActions({
   dashboards,
   selectApplicationArchive,
   market,
+  updates,
   uiState,
   desktop,
   getState,
@@ -84,13 +85,13 @@ export function registerControlActions({
       Buffer.byteLength(input.password, "utf8") > 72
     )
       throw new Error("invalid_credentials");
-    return client.loginPassword({ phone: number, password: input.password });
+    return client.loginPassword({ phone: number, password: input.password }, { waitForDevices: false });
   });
   register("login-sms", (input) => {
     const number = phone(input);
     const code = text(input?.code, 12, "invalid_sms_code");
     if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
-    return client.loginSMS({ phone: number, code });
+    return client.loginSMS({ phone: number, code }, { waitForDevices: false });
   });
   register("send-sms", (input) => client.sendSMS({ phone: phone(input) }));
   register("send-registration-code", (input) => client.sendSMS({ phone: phone(input), scene: "consumer_register" }));
@@ -101,7 +102,7 @@ export function registerControlActions({
       throw new Error("invalid_credentials");
     const code = text(input.code, 12, "invalid_sms_code");
     if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
-    return client.register({ phone: number, password: input.password, code });
+    return client.register({ phone: number, password: input.password, code }, { waitForDevices: false });
   });
   register("send-reset-code", (input) => client.sendResetCode({ phone: phone(input) }));
   register("send-change-code", () => client.sendChangeCode());
@@ -216,6 +217,14 @@ export function registerControlActions({
   });
   register("desktop-about", () => showAbout?.());
   register("desktop-quit", () => quit?.());
+  for (const [product, methods] of [["client", ["check", "download", "install"]], ["box", ["check", "plan", "execute", "status", "cancel", "resume"]]]) {
+    for (const method of methods) register(`updates-${product}-${method}`, input => {
+      if (!updates?.[product]) throw new Error("UPDATE_NOT_CONFIGURED");
+      if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      if (["install", "execute", "resume"].includes(method) && input?.confirmed !== true) throw new Error("UPDATE_CONFIRMATION_REQUIRED");
+      return updates[product][method](input || {});
+    });
+  }
   for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
     register(`market-${method}`, (input) => {
       if (!market) throw new Error("MARKET_UNAVAILABLE");

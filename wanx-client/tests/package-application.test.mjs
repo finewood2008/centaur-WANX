@@ -39,11 +39,53 @@ test("release tool creates an independently verifiable package, signature and ex
   await verifyPackageHash(result.archivePath, descriptor);
 });
 
+test("market rebuild replaces an existing package and sidecar only after validation", async (t) => {
+  const f = await fixture(t);
+  const first = await packageApplication({ ...f, overwrite: true });
+  const oldEnvelope = await readFile(first.envelopePath, "utf8");
+  await writeFile(path.join(f.sourceDir, "main.mjs"), "console.log('updated');");
+  const rebuilt = await packageApplication({ ...f, overwrite: true });
+  assert.equal(rebuilt.archivePath, first.archivePath);
+  assert.equal(rebuilt.envelopePath, first.envelopePath);
+  const newEnvelope = await readFile(rebuilt.envelopePath, "utf8");
+  assert.notEqual(newEnvelope, oldEnvelope);
+  const descriptor = verifyEnvelope(JSON.parse(newEnvelope), { "test-key": f.publicKey });
+  await verifyPackageHash(rebuilt.archivePath, descriptor);
+  await extractApplicationArchive(rebuilt.archivePath, path.join(f.directory, "rebuilt"), descriptor);
+  assert.equal(await readFile(path.join(f.directory, "rebuilt/main.mjs"), "utf8"), "console.log('updated');");
+  await writeFile(path.join(f.sourceDir, "wanx-app.json"), "{}");
+  await assert.rejects(packageApplication({ ...f, overwrite: true }));
+  assert.equal(await readFile(rebuilt.envelopePath, "utf8"), newEnvelope);
+  await verifyPackageHash(rebuilt.archivePath, descriptor);
+});
+
 test("release tool refuses symlinks and a signing key inside the package", { skip: process.platform === "win32" }, async (t) => {
   const f = await fixture(t);
   await symlink(f.keyFile, path.join(f.sourceDir, "private.pem"));
   await assert.rejects(packageApplication(f), /符号链接/);
   await assert.rejects(packageApplication({ ...f, keyFile: path.join(f.sourceDir, "private.pem") }), /之外/);
+});
+
+test("v2 package signs backend and expert requirements with the manifest", async (t) => {
+  const f = await fixture(t), manifestPath = path.join(f.sourceDir, "wanx-app.json");
+  const compatibility = {
+    backendProductId: "zhijun", clientRange: ">=0.1.0 <1.0.0", hostProtocolRange: ">=1.0.0 <2.0.0",
+    backendContracts: [{ id: "wanx-bridge.readiness", range: ">=1.0.0 <2.0.0", features: ["read-only"] }],
+    requiredExperts: [{ templateId: "zhijun-default", versionRange: ">=1.0.0 <2.0.0", role: "advisor", count: 1, required: true }],
+    localDataSchema: { readRange: ">=1.0.0 <2.0.0", writeVersion: "1.0.0" },
+  };
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, protocolVersion: 2, compatibility, critical: [] }));
+  const result = await packageApplication(f);
+  const envelope = JSON.parse(await readFile(result.envelopePath, "utf8"));
+  const descriptor = verifyEnvelope(envelope, { "test-key": f.publicKey });
+  assert.equal(descriptor.schemaVersion, 2);
+  assert.deepEqual(descriptor.compatibility, compatibility);
+  assert.deepEqual(descriptor.manifest.compatibility, compatibility);
+  await extractApplicationArchive(result.archivePath, path.join(f.directory, "v2-unpacked"), descriptor);
+  const tampered = JSON.parse(Buffer.from(envelope.descriptorBase64, "base64"));
+  tampered.compatibility.requiredExperts = [];
+  assert.throws(() => verifyEnvelope({ ...envelope, descriptorBase64: Buffer.from(JSON.stringify(tampered)).toString("base64") }, { "test-key": f.publicKey }));
 });
 
 test("release CLI defaults to a signed universal shared application without platform flags", async (t) => {

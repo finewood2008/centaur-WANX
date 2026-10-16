@@ -1,17 +1,17 @@
 import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 
-export function createStartupSettings({ app, platform = process.platform, preferenceFile, argv = process.argv }) {
+export function createStartupSettings({ app, platform = process.platform, preferenceFile, argv = process.argv, testBuild = false }) {
   // Installed branded source builds have a stable launchable bundle too.
   const installedBundle = platform === "darwin" && app.isInApplicationsFolder?.() === true &&
-    path.basename(path.resolve(app.getPath("exe"), "../../..")) === "半人马AI-万象.app";
+    path.basename(path.resolve(app.getPath("exe"), "../../..")) === "万象.app";
   const windows = platform === "win32";
-  const supported = ["darwin", "win32"].includes(platform) && (app.isPackaged || installedBundle);
+  const supported = !testBuild && ["darwin", "win32"].includes(platform) && (app.isPackaged || installedBundle);
   const loginArguments = ["--wanx-login-startup"];
   const loginOptions = windows && supported ? { path: app.getPath("exe"), args: loginArguments } : {};
   const readSettings = () => windows ? app.getLoginItemSettings(loginOptions) : app.getLoginItemSettings();
   const writeSettings = enabled => app.setLoginItemSettings({ openAtLogin: enabled,
-    ...(windows ? { ...loginOptions, enabled, name: "半人马AI-万象" } : {}) });
+    ...(windows ? { ...loginOptions, enabled, name: "万象" } : {}) });
   const preferences = preferenceFile ?? (app.getPath ? path.join(app.getPath("userData"), "startup-preferences.json") : null);
   function remember(enabled) {
     if (!preferences) return;
@@ -24,7 +24,7 @@ export function createStartupSettings({ app, platform = process.platform, prefer
     supported: false,
     enabled: false,
     status: "unsupported",
-    reason: !["darwin", "win32"].includes(platform)
+    reason: testBuild ? "测试版本不注册登录启动。" : !["darwin", "win32"].includes(platform)
       ? "此版本暂不支持设置登录时启动。"
       : "请安装正式版万象后设置登录时启动。",
   });

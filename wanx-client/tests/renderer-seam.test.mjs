@@ -10,6 +10,7 @@ import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import { installElectronBluetoothPicker } from "@nexusaos/device-discovery-electron/main";
 import { registerControlActions } from "../shell/control.mjs";
+import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 const indexURL = new URL("../local-ui/renderer/index.html", import.meta.url);
 const html = await readFile(indexURL, "utf8");
@@ -104,7 +105,7 @@ async function harness(initial = state(), installed = [application], options = {
       return { passwordReset: true };
     },
     logout: async () => { rawState = { account: { phase: "signed_out", logoutPending: true } }; notify(); await options.logoutRequest?.(); },
-    connectBox: async (deviceId) => { rawState = state("ready", "ready", deviceId); notify(); },
+    connectBox: async (deviceId) => { if (options.connectFailure) throw new Error(options.connectFailure); rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
     refreshDevices: async () => {},
     lookupDeviceDiscovery: async (deviceIds) => {
@@ -295,6 +296,17 @@ test("management keeps box settings nested and preserves the trusted console gat
   assert.match(h.app.innerHTML, /已登录万象平台/);
   assert.match(h.app.innerHTML, /data-action="startup-toggle" disabled/);
   assert.doesNotMatch(h.app.innerHTML, /account-1|data-action="dashboard-open"/);
+});
+
+test("box login failures show connection guidance instead of an application market error", async () => {
+  for (const code of BOX_SESSION_ERROR_CODES) {
+    const h = await harness(state(), [], { connectFailure: code });
+    await h.click("show-boxes");
+    await h.click("connect", { deviceId: "box-102" });
+    assert.match(h.app.innerHTML, new RegExp(`（${code}）`));
+    assert.doesNotMatch(h.app.innerHTML, /暂时无法完成应用市场操作/);
+    assert.match(h.app.innerHTML, /尚未连接盒子/);
+  }
 });
 
 test("console follows gateway readiness and rejects a stale button after disconnect", async () => {
@@ -1821,6 +1833,27 @@ for (const role of ["member", "unknown", undefined]) test(`nearby ${role} cannot
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
   await h.click("select-candidate-wifi", { candidateId });
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
+});
+
+test("retained owner Wi-Fi selection keeps wifi mode and ignores repeat clicks", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const deviceId = discoveryId(79);
+  const h = await harness({ ...state(), devices: [{ deviceId, name: "我的盒子", deviceRole: "owner" }] }, [application], t);
+  await startDiscovery(h);
+  discoveryIdentity(h, deviceId);
+  await settleDiscovery();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  t.mock.timers.tick(12000);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /扫描已结束/);
+  await h.click("select-candidate-wifi", { candidateId });
+  await h.click("select-candidate-wifi", { candidateId });
+  await settleDiscovery();
+  assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:reselect"));
+  const starts = h.calls.filter(([name]) => name === "wanx:setup:begin");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0][1].mode, "wifi");
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:confirmOwnership").length, 0);
 });
 
 test("owner Wi-Fi flow ignores the initial-claim window and never shows binding controls or success", async () => {

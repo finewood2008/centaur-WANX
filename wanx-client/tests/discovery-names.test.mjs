@@ -283,3 +283,75 @@ test('subscriber errors and mutation do not break deduplication or cancellation'
   assert.equal(called, 1);
   h.unsubscribe(); assert.deepEqual(h.child.kills, ['SIGTERM']);
 });
+
+test('GATT handoff waits for actual helper close after the picker unsubscribed', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness();
+  h.unsubscribe();
+  let released = false;
+  const waiting = h.provider.stopAndWait();
+  waiting.then(() => { released = true; });
+  assert.equal(h.provider.stopAndWait(), waiting, 'concurrent handoffs share one wait');
+  t.mock.timers.tick(999); await Promise.resolve();
+  assert.equal(released, false, 'SIGTERM and elapsed time do not prove GATT was released');
+  assert.deepEqual(h.child.kills, ['SIGTERM']);
+  const cancelIgnored = h.provider.subscribe(() => assert.fail('hint during handoff'));
+  assert.equal(h.children.length, 1, 'handoff cannot race a new native scan');
+  cancelIgnored();
+  h.child.emit('close', 0);
+  await waiting;
+  assert.equal(released, true);
+  t.mock.timers.tick(2000);
+  assert.deepEqual(h.child.kills, ['SIGTERM'], 'confirmed exit cancels force-kill and deadline');
+  const cancelNext = h.provider.subscribe(() => {});
+  assert.equal(h.children.length, 2, 'a later user scan can start normally');
+  cancelNext(); h.children[1].emit('close', 0);
+});
+
+test('slow helper termination escalates once and still waits for actual exit', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness();
+  let released = false;
+  const waiting = h.provider.stopAndWait().then(() => { released = true; });
+  t.mock.timers.tick(1000); await Promise.resolve();
+  assert.deepEqual(h.child.kills, ['SIGTERM', 'SIGKILL']);
+  assert.equal(released, false);
+  h.child.emit('close', null, 'SIGKILL');
+  await waiting;
+  assert.equal(released, true);
+});
+
+test('an unconfirmed helper exit fails handoff within two seconds instead of connecting', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness();
+  let settled = false;
+  const outcome = h.provider.stopAndWait().then(() => null, error => error).finally(() => { settled = true; });
+  t.mock.timers.tick(1999); await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  assert.equal((await outcome).code, 'LOCAL_CONNECT_TIMEOUT');
+  assert.deepEqual(h.child.kills, ['SIGTERM', 'SIGKILL']);
+  h.child.emit('close', 0);
+  await h.provider.stopAndWait();
+});
+
+test('handoff also waits for older helpers that were unsubscribed before a new scan', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness(); h.unsubscribe();
+  h.provider.subscribe(() => {});
+  let released = false;
+  const waiting = h.provider.stopAndWait().then(() => { released = true; });
+  h.children[1].emit('close', 0);
+  await Promise.resolve();
+  assert.equal(released, false);
+  h.child.emit('close', 0);
+  await waiting;
+  assert.equal(released, true);
+});
+
+test('handoff without a native helper is immediate and ordinary exit needs no signal', async () => {
+  await createAdvertisementNames({ platform: 'linux' }).stopAndWait();
+  const h = harness(); h.child.emit('close', 0);
+  await h.provider.stopAndWait();
+  assert.deepEqual(h.child.kills, []);
+});

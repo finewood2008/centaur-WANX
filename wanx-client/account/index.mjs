@@ -288,6 +288,8 @@ export function createAccount({
         response.status === 404 && path.startsWith("/app-api/network/");
       const missingMarketRoute =
         response.status === 404 && path.startsWith("/app-api/market/");
+      const upgradeRoute = path.startsWith("/app-api/v1/upgrades/");
+      const missingUpgradeRoute = response.status === 404 && upgradeRoute;
       try {
         payload = JSON.parse(responseText);
       } catch {
@@ -295,6 +297,8 @@ export function createAccount({
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
         if (missingMarketRoute)
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
+        if (missingUpgradeRoute)
+          throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -302,6 +306,8 @@ export function createAccount({
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
         if (missingMarketRoute)
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
+        if (missingUpgradeRoute)
+          throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
         throw failure("ACCOUNT_INVALID_RESPONSE");
       }
       checkGeneration();
@@ -336,6 +342,14 @@ export function createAccount({
           response.status === 200 && typeof payload.code === "number"
             ? payload.code
             : response.status;
+        // The old market contract rejects this new capability field. Recognize
+        // only that exact validation error, without exposing arbitrary details
+        // or treating other validation/authentication failures as compatibility.
+        if (response.status === 422 && /^\/app-api\/market\/apps\/[a-z][a-z0-9._-]{1,63}\/candidate$/.test(path) &&
+            Array.isArray(payload.detail) && payload.detail.length === 1 &&
+            payload.detail[0]?.type === "extra_forbidden" &&
+            JSON.stringify(payload.detail[0].loc) === '["body","supportsReleaseAccess"]')
+          throw failure("MARKET_RELEASE_CAPABILITY_UNSUPPORTED", 422);
         // Never expose arbitrary server text, request bodies or token values.
         const remoteCode =
           payload.errorCode || payload.data?.errorCode || payload.code;
@@ -345,8 +359,16 @@ export function createAccount({
         const explicitMarketCode =
           typeof remoteCode === "string" &&
           (/^MARKET_[A-Z0-9_]{1,64}$/.test(remoteCode) || remoteCode === "APPLICATION_RETIRED");
+        const explicitUpgradeCode = upgradeRoute && [
+          "PLAN_STALE", "UPDATE_IN_PROGRESS", "UNSUPPORTED_PLATFORM", "CONTRACT_UNSUPPORTED",
+          "DEPENDENCY_CONFLICT", "UPDATE_PERMISSION_REQUIRED", "RELEASE_WITHDRAWN", "RECOVERY_REQUIRED",
+          "INVENTORY_STALE", "INVENTORY_UNKNOWN", "SIGNATURE_INVALID", "IDEMPOTENCY_CONFLICT",
+          "EVENT_SEQUENCE_INVALID", "RELEASE_UNAVAILABLE", "UPDATE_NOT_CONFIGURED",
+        ].includes(remoteCode);
         const code =
-          path === "/app-api/auth/sms/send" && payload.code === 602
+          explicitUpgradeCode ? remoteCode
+            : missingUpgradeRoute ? "UPDATE_SERVICE_NOT_DEPLOYED"
+            : path === "/app-api/auth/sms/send" && payload.code === 602
             ? "SMS_DAILY_LIMIT"
             : missingNetworkRoute && !explicitNetworkCode
             ? "NETWORK_SERVICE_NOT_DEPLOYED"
