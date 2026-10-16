@@ -94,6 +94,45 @@ def assert_application_request(
     """
     path = path.rstrip("/")
     app_id = application_id(user)
+    drive_request = (
+        (method, path)
+        in {
+            ("GET", "/api/personal-space/overview"),
+            ("GET", "/api/personal-space/files"),
+            ("POST", "/api/personal-space/folders"),
+            ("POST", "/api/personal-space/uploads"),
+        }
+        or (
+            method in {"GET", "PATCH", "DELETE"}
+            and re.fullmatch(r"/api/personal-space/files/[a-f0-9]{32}", path) is not None
+        )
+        or (
+            method == "GET"
+            and re.fullmatch(r"/api/personal-space/files/[a-f0-9]{32}/content", path) is not None
+        )
+        or (
+            method in {"GET", "PUT", "DELETE"}
+            and re.fullmatch(r"/api/personal-space/uploads/[a-f0-9]{32}", path) is not None
+        )
+        or (
+            method == "POST"
+            and re.fullmatch(r"/api/personal-space/uploads/[a-f0-9]{32}/complete", path) is not None
+        )
+        or (
+            method == "POST"
+            and re.fullmatch(r"/api/personal-space/trash/[a-f0-9]{32}/restore", path) is not None
+        )
+        or (
+            method == "DELETE"
+            and re.fullmatch(r"/api/personal-space/trash/[a-f0-9]{32}", path) is not None
+        )
+    )
+    if drive_request:
+        if app_id not in {"wanx", "zhijun"}:
+            from octop.infra.applications.service import assert_product_login
+
+            assert_product_login(server.services, user.id, app_id)
+        return
     registered = app_id not in {"wanx", "zhijun"}
     if registered:
         _assert_registered_request(server, user, path=path, method=method)

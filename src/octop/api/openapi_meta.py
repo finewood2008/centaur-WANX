@@ -69,6 +69,10 @@ missing local components are reported as unavailable without remote fallback.
 
 OPENAPI_TAGS: list[dict[str, str]] = [
     {
+        "name": "personal-space",
+        "description": "Current-user drive shared by WANX applications; files stay on the connected box.",
+    },
+    {
         "name": "applications",
         "description": "Product definitions, box deployments, client releases and access metadata; personal memories and conversations are never management resources.",
     },

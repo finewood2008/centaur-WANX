@@ -1,15 +1,33 @@
 {
   "name": "@centaurai/wanx-host-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "WANX Electron main-process HTTP transport and session lifecycle",
   "license": "UNLICENSED",
   "main": "index.cjs",
   "types": "index.d.ts",
   "exports": {
-    ".": {"types":"./index.d.ts", "default":"./index.cjs"},
-    "./electron": {"types":"./electron.d.ts", "default":"./electron.cjs"}
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.cjs"
+    },
+    "./electron": {
+      "types": "./electron.d.ts",
+      "default": "./electron.cjs"
+    }
   },
-  "files": ["index.cjs", "index.d.ts", "electron.cjs", "electron.d.ts", "README.md"],
-  "engines": {"node": ">=22"},
-  "dependencies": {"ws": "8.22.0"}
+  "files": [
+    "index.cjs",
+    "index.d.ts",
+    "electron.cjs",
+    "electron.d.ts",
+    "README.md",
+    "drive.cjs",
+    "drive.d.ts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  }
 }
