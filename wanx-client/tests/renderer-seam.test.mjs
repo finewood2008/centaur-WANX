@@ -408,6 +408,37 @@ test("market cancellation, uninstall and rollback require explicit confirmation"
   assert.match(h.app.innerHTML, /安装你的第一个应用/);
 });
 
+test("unlisted official apps remain discoverable after uninstall and a fresh start", async () => {
+  const dialogue = { applicationId: "centaurai.wanx.dialogue", name: "众见", version: "0.3.3" };
+  const options = { list: async () => ({ items: [] }), candidate: async () => ({ status: "unavailable", reason: "application_unlisted" }) };
+  const h = await harness(state(), [dialogue], options);
+  await h.click("market-uninstall", { applicationId: dialogue.applicationId });
+  await h.click("market-confirm");
+  assert.match(h.app.innerHTML, /我的应用 <span class="count">0<\/span>/);
+  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
+  assert.match(h.app.innerHTML, /暂未提供可安装版本/);
+  await h.click("store-details", { applicationId: dialogue.applicationId });
+  assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.dialogue"/);
+  assert.match(h.app.innerHTML, /dialogue-product-v1.png/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"|data-action="applications-launch"/);
+  await h.click("market-install", { applicationId: dialogue.applicationId });
+  assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
+  const restarted = await harness(state(), [], options);
+  assert.match(restarted.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
+  assert.equal((restarted.app.innerHTML.match(/class="application-card" data-application="centaurai.wanx.dialogue"/g) || []).length, 1);
+});
+
+test("published official apps are listed once and can be reinstalled after uninstall", async () => {
+  const h = await harness(state(), [application]);
+  await h.click("market-uninstall", { applicationId: application.applicationId });
+  await h.click("market-confirm");
+  assert.equal((h.app.innerHTML.match(/class="application-card" data-application="centaurai.wanx.zhijun"/g) || []).length, 1);
+  await h.click("market-install", { applicationId: application.applicationId });
+  await h.click("market-confirm");
+  assert.match(h.app.innerHTML, /我的应用 <span class="count">1<\/span>/);
+  assert.equal((h.app.innerHTML.match(/class="application-card" data-application="centaurai.wanx.zhijun"/g) || []).length, 1);
+});
+
 for (const [status, label] of [["local_newer", "本机版本较新"], ["incompatible", "暂不兼容"], ["unavailable", "暂无适用版本"]]) {
   test(`market status ${status} never enables an install action`, async () => {
     const h = await harness(state(), [], { candidate: async () => ({ status }) });
@@ -722,7 +753,7 @@ test("native menu navigation reaches settings and home while preserving login an
 
 test("legacy version selection shows one application and persists through trusted IPC", async () => {
   const h = await harness(state(), [{ applicationId: application.applicationId, name: application.name, selectionRequired: true, versions: [{ version: "preview" }, { version: "1.0.0" }] }]);
-  assert.equal((h.app.innerHTML.match(/class="application-card"/g) || []).length, 1);
+  assert.equal((h.app.innerHTML.match(/class="application-card" data-application="centaurai.wanx.zhijun"/g) || []).length, 1);
   assert.match(h.app.innerHTML, /历史版本无法自动比较/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"/);
   await h.click("applications-select-current", { applicationId: application.applicationId, version: "1.0.0" });
@@ -1937,7 +1968,7 @@ test("credits entry opens a read-only account ledger with real IPC data", async 
   assert.match(h.app.innerHTML, /1,250 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.app.innerHTML, /我的积分/);
+  assert.match(h.app.innerHTML, /积分/);
   assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
   assert.match(h.app.innerHTML, /还没有积分记录/);
 });
@@ -1991,7 +2022,7 @@ test("six product pages have bundled icons, product posters and a safe back path
     assert.match(h.app.innerHTML, /data-action="applications-launch"/);
     assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
     assert.match(h.app.innerHTML, /恢复上一版本/);
-    assert.match(h.app.innerHTML, /aria-current="page"[^>]*>应用商店/);
+    assert.match(h.app.innerHTML, /aria-current="page"[^>]*>应用/);
     assert.match(h.app.innerHTML, /data-action="poster-open"/);
     await h.click("poster-open", { posterIndex: "0" });
     assert.match(h.app.innerHTML, /role="dialog" aria-modal="true"/);

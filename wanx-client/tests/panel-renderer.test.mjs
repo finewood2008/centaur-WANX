@@ -87,14 +87,16 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
   };
 }
 
-test("panel focuses on applications and sends low-frequency box management to settings", async () => {
+test("panel header opens box management directly", async () => {
   const h = await harness();
   assert.match(h.html, /data-app="centaurai\.wanx\.zhijun"/);
   assert.doesNotMatch(h.html, /data-action="boxes"|data-device=|>管理盒子</);
   await h.click({ app: application.applicationId });
   assert.deepEqual(h.actions(), [["applications-request-open", { applicationId: application.applicationId }]]);
-  await h.click({ page: "settings" });
-  assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "settings" }]);
+  assert.match(h.html, /class="box-button" data-page="boxes" aria-label="打开盒子"/);
+  assert.doesNotMatch(h.html, /打开设置/);
+  await h.click({ page: "boxes" });
+  assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "boxes" }]);
   assert.doesNotMatch(h.html, /<button[^>]*class="brand"|data-action="about"/);
   const before = h.actions().length;
   await h.click({ action: "about" });
@@ -268,7 +270,7 @@ test("an action rejected after logout and same-account login cannot publish its 
 test("quick panel reads real available points and opens the ledger without launching an application", async () => {
   const h = await harness(baseState(), async () => ({ available: 1250 }));
   assert.match(h.html, /1,250<small>点/);
-  assert.match(h.html, /我的积分，1,250点/);
+  assert.match(h.html, /积分，1,250点/);
   assert.match(h.html, /查看消耗明细/);
   await h.click({ page: "credits" });
   assert.deepEqual(h.actions(), [["desktop-open", { page: "credits" }]]);

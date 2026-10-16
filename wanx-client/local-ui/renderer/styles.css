@@ -23,6 +23,7 @@
   background: var(--fn-bg-primary);
 }
 * { box-sizing: border-box; }
+html { scrollbar-gutter: stable; }
 body { margin: 0; background: var(--fn-bg-primary); }
 button, input, select { font: inherit; }
 button, summary { cursor: pointer; }
@@ -46,8 +47,9 @@ button { transition: background .14s, border-color .14s; }
 .nav-item:hover:not(:disabled) { color: var(--fn-text-primary); background: #f8f3ed; }
 .nav-item.active { color: var(--fn-text-primary); background: var(--fn-bg-elevated); box-shadow: 0 1px 3px #4f372915; }
 .topbar-caption { color: var(--fn-text-tertiary); font-size: 11px; }
-.page-content { max-width: 1040px; padding: 27px 32px 34px; margin: 0 auto; }
+.page-content { max-width: 1180px; padding: 30px 30px 32px; margin: 0 auto; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 23px; }
+.page-heading h2 { font-family: inherit; font-size: 29px; font-weight: 700; letter-spacing: -.8px; line-height: 1.25; }
 .page-heading .muted { margin-top: 6px; }
 .muted, .hint { color: var(--fn-text-tertiary); font-size: 12px; line-height: 1.6; }
 .button { padding: 9px 15px; border: 1px solid var(--fn-border-input); border-radius: 8px; color: var(--fn-text-secondary); background: var(--fn-bg-elevated); font-weight: 500; white-space: nowrap; }
@@ -298,7 +300,6 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 
 /* Storefront: editorial feature cards and compact app shelves. */
 .store-layout { background: #faf9f6; }
-.store-page { max-width: 1180px; padding: 30px 30px 32px; }
 .store-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 22px; margin-bottom: 24px; }
 .store-eyebrow { font-size: 11px; font-weight: 500; letter-spacing: .4px; color: #8d8177; margin-bottom: 7px; }
 .store-heading h2 { font-family: inherit; font-size: 29px; font-weight: 700; letter-spacing: -.8px; line-height: 1.25; }
@@ -341,7 +342,6 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .store-footnote { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; font-size: 10px; color: #a4998e; padding-top: 27px; margin-top: 32px; border-top: 1px solid #eae3da; }
 @media (min-width: 1120px) { .store-page .application-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 720px) {
-  .store-page { padding: 24px 20px; }
   .store-heading { align-items: flex-start; }
   .store-toolbar { flex-direction: column; align-items: flex-end; gap: 8px; }
   .store-page .application-card { padding: 15px 14px 10px; column-gap: 10px; grid-template-columns: 40px minmax(0, 1fr) auto; }
@@ -350,7 +350,7 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 }
 @media (max-width: 580px) {
   .store-page .application-list { grid-template-columns: 1fr; }
-  .store-heading h2 { font-size: 25px; }
+  .store-heading h2, .page-heading h2 { font-size: 25px; }
   .store-section-note { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .store-page .application-details > summary::after { transition: none; } }
@@ -359,6 +359,12 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 /* Product pages share the storefront's restrained palette and real product media. */
 .store-icon-link, .store-title-link, .store-detail-link { border: 0; padding: 0; background: transparent; color: inherit; text-align: left; }
 .store-icon-link { border-radius: 23%; line-height: 0; }
+.store-page .application-card { position: relative; isolation: isolate; }
+.store-page .store-icon-link::after { content: ""; position: absolute; inset: 0; z-index: 1; border-radius: 15px; cursor: pointer; }
+.store-page .store-icon-link:hover::after { background: #a35c4304; }
+.store-page .store-icon-link:focus-visible { outline: none; }
+.store-page .store-icon-link:focus-visible::after { outline: 2px solid var(--fn-color-brand); outline-offset: 3px; }
+.store-page .application-actions, .store-page .application-details, .store-page .version-choices, .store-page .store-title-link, .store-page .store-detail-link { position: relative; z-index: 2; }
 .store-title-link { font: inherit; cursor: pointer; }
 .store-title-link:hover { color: #a35c43; }
 .store-page .generated-app-icon, .app-detail-page .generated-app-icon { object-fit: cover; border: 0; background: transparent; box-shadow: 0 3px 7px #412d1a12; }

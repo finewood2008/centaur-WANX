@@ -22,7 +22,7 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .brand-copy { display: grid; gap: 3px; }
 .brand strong { font-size: 15px; font-weight: 650; white-space: nowrap; letter-spacing: .1px; }
 .brand small { font-size: 10px; letter-spacing: .4px; color: var(--muted); }
-.settings-button { display: flex; align-items: center; gap: 5px; padding: 7px 8px; color: #7b6d61; font-size: 11px; }
+.box-button { display: flex; align-items: center; gap: 5px; padding: 7px 8px; color: #7b6d61; font-size: 11px; }
 .summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; flex-shrink: 0; }
 .box-status, .balance-card { display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; min-width: 0; height: 106px; padding: 13px 14px; border-radius: 14px; border: 1px solid var(--line); text-align: left; }
 .box-status { background: #f3f0ea; }

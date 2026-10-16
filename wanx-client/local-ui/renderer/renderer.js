@@ -293,7 +293,7 @@ function shellHeader(title) {
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用商店"], ["boxes", "盒子"], ["credits", "我的积分"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["boxes", "盒子"], ["credits", "积分"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
     <div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
     ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" ${busy ? "disabled" : ""}>退出登录</button></div>` : ""}</div></header>`;
 }
@@ -697,7 +697,7 @@ function marketErrorMessage(error) {
     MARKET_UNAVAILABLE: "此应用暂时无法安装，请刷新应用市场。",
     MARKET_GRAY_ACCESS_DENIED: "此版本正在灰度测试，当前账号未获测试资格。请使用正式版本，或联系管理员加入测试。",
     MARKET_RELEASE_ACCESS_REQUIRED: "请更新万象并登录有测试资格的账号，再打开此应用。",
-    MARKET_RELEASE_ACCESS_SIGNED_PACKAGE_REQUIRED: "此测试版本需要通过应用商店的签名安装包安装。",
+    MARKET_RELEASE_ACCESS_SIGNED_PACKAGE_REQUIRED: "此测试版本需要通过「应用」页提供的签名安装包安装。",
     MARKET_RELEASE_ACCESS_INVALID: "暂时无法确认此版本的使用资格，请保持联网后重试。",
     MARKET_RELEASE_ACCESS_EXPIRED: "此版本的使用许可已到期，请保持联网后重新打开应用。",
     MARKET_INCOMPATIBLE: "此版本不兼容当前系统或万象版本，请先更新万象。",
@@ -709,7 +709,7 @@ function marketErrorMessage(error) {
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
     APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会自动准备所需专家和技能包。",
     APPLICATION_RESOURCES_NOT_READY: "应用所需的专家或技能包尚未准备好，请保持盒子联网后重试。",
-    APPLICATION_RESOURCE_ARTIFACT_REQUIRED: "请从应用商店安装已发布的应用版本，再准备盒端资源。",
+    APPLICATION_RESOURCE_ARTIFACT_REQUIRED: "请在「应用」中安装已发布版本，再准备盒端资源。",
     APPLICATION_PREPARATION_INVALID: "盒端准备结果无法核验，请更新盒端后重试。",
     APP_ENTITLEMENT_REQUIRED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
     RESOURCE_PRODUCT_PROFILE_UNSUPPORTED: "此应用暂不支持自动准备专家，请联系应用提供方更新应用。",
@@ -807,10 +807,11 @@ function applicationActions(item, installed) {
 }
 function applicationManagement(item, installed) {
   const candidate = marketCandidates.get(item.applicationId);
+  const availability = item.editorialOnly && !candidate ? "暂未提供可安装版本" : candidateLabel(candidate);
   const id = escapeHTML(item.applicationId);
   const previous = typeof item.previous === "string" ? item.previous : item.previous?.version;
   const disabled = operationBusy(item.applicationId) ? "disabled" : "";
-  return `<div class="store-detail-body"><p class="store-full-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>${installed && item.version ? `<p class="muted">当前版本 v${escapeHTML(item.version)}</p>` : ""}<p class="market-status">${escapeHTML(candidateLabel(candidate))}</p>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</div>`;
+  return `<div class="store-detail-body"><p class="store-full-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>${installed && item.version ? `<p class="muted">当前版本 v${escapeHTML(item.version)}</p>` : ""}<p class="market-status">${escapeHTML(availability)}</p>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</div>`;
 }
 function applicationCard(item, installed = true) {
   const candidate = marketCandidates.get(item.applicationId);
@@ -822,15 +823,25 @@ function applicationCard(item, installed = true) {
     <div class="application-title"><h3><button class="store-title-link" data-action="store-details" data-application-id="${id}">${escapeHTML(item.name)}</button></h3></div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
     ${status ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status)}</p>` : ""}
+    ${!installed && candidate?.status !== "available" ? `<p class="market-status" role="status">${escapeHTML(candidate ? candidateLabel(candidate) : marketLoading ? "正在检查可安装版本…" : "暂未提供可安装版本")}</p>` : ""}
     </div>${actions}
     <button class="store-detail-link" data-action="store-details" data-application-id="${id}">了解应用 <span aria-hidden="true">›</span></button>
     <details class="application-details" data-detail-id="${id}" ${expandedDetails.has(item.applicationId) ? "open" : ""}><summary>版本与管理${candidate?.status === "available" && installed ? '<span class="store-update-dot">可更新</span>' : ""}</summary>${applicationManagement(item, installed)}</details></article>`;
 }
+function discoverableApplications() {
+  // Product introductions survive uninstall; only trusted market candidates enable installation.
+  const items = new Map(marketItems.map(item => [item.applicationId, item]));
+  for (const [applicationId, metadata] of Object.entries(window.wanxAppCatalog || {})) {
+    if (!items.has(applicationId)) items.set(applicationId, {
+      applicationId, name: metadata.name, description: metadata.tagline || metadata.introduction,
+      editorialOnly: marketCandidates.get(applicationId)?.status !== "available",
+    });
+  }
+  return [...items.values()];
+}
 function storeApplication(id) {
-  const item = currentState.applications?.find(item => item.applicationId === id) || marketItems.find(item => item.applicationId === id);
-  if (item) return item;
-  const metadata = featuredApplicationIds.includes(id) && window.wanxAppCatalog?.[id];
-  return metadata ? { applicationId: id, name: metadata.name, description: metadata.introduction, editorialOnly: true } : null;
+  return currentState.applications?.find(item => item.applicationId === id)
+    || discoverableApplications().find(item => item.applicationId === id) || null;
 }
 function storeFeatures() {
   const slides = featuredApplicationIds.map(id => ({ id, metadata: window.wanxAppCatalog?.[id] })).filter(item => item.metadata?.posters?.length);
@@ -852,14 +863,14 @@ function applicationDetailView() {
   const status = operationMessage(operation);
   const modal = posterPreview !== null && media[posterPreview];
   return `<div class="app-layout store-layout" ${marketConfirmation || modal ? "inert" : ""}>${shellHeader("应用介绍")}<div class="page-content app-detail-page">
-    <button class="store-back" data-action="store-back"><span aria-hidden="true">‹</span> 应用商店</button>
+    <button class="store-back" data-action="store-back"><span aria-hidden="true">‹</span> 应用</button>
     ${item ? `<section class="app-detail-hero" data-application-detail="${escapeHTML(item.applicationId)}" data-tone="${applicationTone(item)}">${applicationIcon(item)}<div class="app-detail-identity"><p class="app-detail-category">${escapeHTML(metadata?.category || "万象应用")}</p><h2 class="app-detail-title" tabindex="-1">${escapeHTML(item.name)}</h2><p class="app-detail-tagline">${escapeHTML(metadata?.tagline || item.description || "在你的盒子上使用 AI 服务。")}</p>${applicationActions(item, Boolean(installedItem))}${item.editorialOnly ? '<p class="muted app-editorial-notice">产品介绍 · 暂未提供可安装版本</p>' : ""}</div></section>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}${status ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status)}</p>` : ""}
     <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${installedItem ? installedItem.selectionRequired ? "待选择当前版本" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
     ${media.length ? `<section class="app-detail-section"><div class="section-heading"><h3>产品介绍</h3><span class="app-preview-hint">点击图片，放大查看</span></div><div class="app-poster-gallery ${media.length === 1 ? "single" : ""}" role="region" aria-label="${escapeHTML(item.name)}产品海报" tabindex="0">${media.map(([file, caption, context], index) => `<figure><button class="app-poster" data-action="poster-open" data-poster-index="${index}" aria-label="放大：${escapeHTML(caption)}"><img src="./assets/posters/${file}" alt="${escapeHTML(caption)}" decoding="async" /></button><figcaption><strong>${escapeHTML(caption)}</strong><span>${escapeHTML(context)}</span></figcaption></figure>`).join("")}</div></section>` : ""}
     <section class="app-detail-section app-detail-about"><p class="app-detail-category">为你的日常而设计</p><h3>关于${escapeHTML(item.name)}</h3><p>${escapeHTML(metadata?.introduction || item.description || "在你的盒子上使用 AI 服务。")}</p>${metadata ? `<div class="app-feature-grid">${metadata.features.map(([title, description], index) => `<article><span class="app-feature-number">0${index + 1}</span><h4>${escapeHTML(title)}</h4><p>${escapeHTML(description)}</p></article>`).join("")}</div>` : ""}</section>
     <section class="app-detail-section app-version-section"><h3>版本与管理</h3>${applicationManagement(item, Boolean(installedItem))}</section>
-    <p class="app-detail-note">通过万象打开应用，使用已连接盒子提供的服务。云端能力的用量可在「我的积分」查看。</p>` : '<div class="empty-state"><h2>此应用当前不可用</h2><p>返回应用商店刷新后重试。</p></div>'}
+    <p class="app-detail-note">通过万象打开应用，使用已连接盒子提供的服务。云端能力的用量可在「积分」查看。</p>` : '<div class="empty-state"><h2>此应用当前不可用</h2><p>返回应用刷新后重试。</p></div>'}
   </div></div>${modal ? `<section class="poster-modal" role="dialog" aria-modal="true" aria-label="${escapeHTML(modal[1])}"><div class="poster-modal-card"><button class="button poster-close" data-action="poster-close" aria-label="关闭海报">关闭 <span aria-hidden="true">×</span></button><img src="./assets/posters/${modal[0]}" alt="${escapeHTML(modal[1])}" /><p>${escapeHTML(modal[1])}<small>${escapeHTML(modal[2])}</small></p></div></section>` : ""}${confirmationView()}`;
 }
 
@@ -871,15 +882,15 @@ function confirmationView() {
 function applicationsView() {
   const applications = currentState.applications || [];
   const installed = new Set(applications.map((item) => item.applicationId));
-  const available = marketItems.filter((item) => !installed.has(item.applicationId));
-  return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用商店")}<div class="page-content store-page">
-    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用商店</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div></div>
+  const available = discoverableApplications().filter((item) => !installed.has(item.applicationId));
+  return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用")}<div class="page-content store-page">
+    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     ${storeFeatures()}
     <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>
     ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)} <button class="text-button" data-action="market-refresh">刷新重试</button></div>` : ""}
-    ${available.length ? `<div class="application-list">${available.map((item) => applicationCard(item, false)).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用商店…" : marketError ? "稍后刷新即可重试。" : marketItems.length ? "商店中的应用均已安装。" : "暂无已上架应用。"}</p>`}</section>
+    ${available.length ? `<div class="application-list">${available.map((item) => applicationCard(item, false)).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用…" : marketError ? "稍后刷新即可重试。" : marketItems.length ? "商店中的应用均已安装。" : "暂无已上架应用。"}</p>`}</section>
     <div class="store-footnote"><span>Windows 与 macOS 通用</span><span aria-hidden="true">·</span><span>安装和更新无需连接盒子</span></div>
   </div></div>${confirmationView()}`;
 }
@@ -1060,7 +1071,7 @@ function render(state) {
   scheduleBoxUpdatePolling();
   if (activeInteraction) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
-    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("我的积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if (markup === renderedMarkup) { syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
@@ -1490,7 +1501,7 @@ app.addEventListener("click", async (event) => {
   if (["market-install", "market-uninstall", "market-rollback"].includes(action)) {
     const applicationId = target.dataset.applicationId;
     const installed = (currentState.applications || []).find((item) => item.applicationId === applicationId);
-    const item = installed || marketItems.find((item) => item.applicationId === applicationId);
+    const item = installed || storeApplication(applicationId);
     if (!item || operationBusy(applicationId)) return;
     const candidate = marketCandidates.get(applicationId);
     if (action === "market-install" && candidate?.status !== "available") return;
