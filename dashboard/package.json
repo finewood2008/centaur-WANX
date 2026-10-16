@@ -17,7 +17,8 @@
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview",
     "preview:prod": "vite preview --mode production",
-    "preview:test": "vite preview --mode test"
+    "preview:test": "vite preview --mode test",
+    "build:maintenance": "tsc -p tsconfig.maintenance.json --incremental && vite build --config vite.maintenance.config.ts"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "^1.2.4",

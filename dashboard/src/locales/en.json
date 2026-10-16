@@ -6044,5 +6044,12 @@
     "sdkHash": "SDK SHA-256 from delivery notes",
     "hashMismatch": "SDK checksum does not match",
     "generate": "Generate SDK project ZIP"
+  },
+  "maintenance": {
+    "terminal": "Box terminal",
+    "desktop": "Box remote desktop",
+    "workspace": "Workspace expert",
+    "currentBox": "Currently connected box",
+    "connectionError": "The box connection is unavailable. Check the connection in WANX, then retry."
   }
 }

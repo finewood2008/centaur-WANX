@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 function errorCode(error) {
   return String(error?.code || error?.message || "CLIENT_REQUEST_FAILED");
@@ -12,8 +12,8 @@ function projectState(raw) {
   const networkReady =
     source.network?.enabled !== false &&
     source.platform?.phase === "ready" && source.network?.phase === "ready";
-  const connected = authenticated && networkReady && source.phase === "ready" &&
-    connection?.mode === "netbird" && Boolean(connection.deviceId);
+  const connected = authenticated && source.phase === "ready" && Boolean(connection?.deviceId) &&
+    (connection.mode === "local" || (networkReady && connection.mode === "netbird"));
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,
@@ -85,7 +85,7 @@ const actions = {
   "devices.connect": (input) =>
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
-  "dashboard.open": () => ipcRenderer.invoke("wanx-client:dashboard-open"),
+  "maintenance.open": (input) => ipcRenderer.invoke("wanx-client:maintenance-open", { tool: input?.tool, deviceId: input?.deviceId }),
   "network.set-enabled": (input) =>
     ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
@@ -105,6 +105,9 @@ const actions = {
   "applications.select-current": (input) => ipcRenderer.invoke("wanx-client:applications-select-current", input),
   "applications.stop": (input) => ipcRenderer.invoke("wanx-client:applications-stop", input),
 };
+
+for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview"])
+  actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
 async function action(name, input = {}) {
   const handler = actions[name];
@@ -127,6 +130,17 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     getLocalState,
     action,
+    async uploadDroppedFiles(files, input = {}) {
+      try {
+        if (!Array.isArray(files) || !files.length) throw new Error("SPACE_INVALID_DROP");
+        const paths = files.map(file => webUtils.getPathForFile(file));
+        if (paths.some(file => !file)) throw new Error("SPACE_INVALID_DROP");
+        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths });
+        return { ok: true, value };
+      } catch (error) {
+        return { ok: false, code: errorCode(error) };
+      }
+    },
     checkHealth: async () => ({
       ok: false,
       code: "DIAGNOSTIC_UNAVAILABLE",
@@ -137,9 +151,14 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.on("wanx-client:state", receive);
       return () => ipcRenderer.removeListener("wanx-client:state", receive);
     },
+    onSpaceState(listener) {
+      const receive = (_event, state) => listener(state);
+      ipcRenderer.on("wanx-client:space-state", receive);
+      return () => ipcRenderer.removeListener("wanx-client:space-state", receive);
+    },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "applications" || page === "boxes" || page === "settings") listener(page);
+        if (page === "space" || page === "applications" || page === "boxes" || page === "settings") listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);

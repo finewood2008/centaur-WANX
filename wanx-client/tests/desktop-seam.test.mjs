@@ -90,15 +90,13 @@ test("macOS menus and tray expose the current box, restore the window and revoke
   assert.equal(h.control.minimized, false);
   assert.equal(h.control.focused, true);
   assert.deepEqual(h.sent, [["wanx-client:navigate", "settings"]]);
-  await h.trays[0].menu.getMenuItemById("dashboard").click();
-  assert.deepEqual(h.opened, [ready.connection]);
-  h.update({ ...ready, connection: null, phase: "disconnected" }, false);
-  await h.menus[0].getMenuItemById("dashboard").click();
-  assert.equal(h.opened.length, 1);
-  assert.deepEqual(h.errors, ["BOX_CONNECTION_REQUIRED"]);
+  assert.equal(h.trays[0].menu.getMenuItemById("dashboard"), undefined);
+  assert.equal(h.menus[0].getMenuItemById("dashboard"), undefined);
+  h.menus[0].getMenuItemById("space").click();
+  assert.deepEqual(h.sent.at(-1), ["wanx-client:navigate", "space"]);
   h.update({ ...ready, account: { phase: "signed_out" } });
   for (const menu of [h.menus[0], h.trays[0].menu]) {
-    assert.equal(menu.getMenuItemById("dashboard").enabled, false);
+    assert.equal(menu.getMenuItemById("space").enabled, false);
     assert.equal(menu.getMenuItemById("settings").enabled, false);
   }
   h.desktop.dispose();
@@ -167,7 +165,7 @@ test("macOS tray toggles a focused panel, hides it on blur and opens its menu on
   assert.equal(h.panel.hidden, true);
   assert.match(tray.poppedMenu.getMenuItemById("connection-status").label, /测试盒子 102/);
   h.update({ ...ready, account: { phase: "signed_out" } });
-  assert.equal(tray.poppedMenu.getMenuItemById("dashboard").enabled, false);
+  assert.equal(tray.poppedMenu.getMenuItemById("space").enabled, false);
   h.desktop.dispose();
 });
 

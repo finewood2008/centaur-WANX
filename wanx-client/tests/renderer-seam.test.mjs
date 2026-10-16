@@ -138,7 +138,7 @@ async function harness(initial = state(), installed = [application], options = {
   registerControlActions({
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     control: { webContents: contents, isDestroyed: () => false }, controlURL, client,
-    dashboards: { open: async (snapshot) => { dashboards.push(snapshot.connection); } },
+    dashboards: { open: async (snapshot, destination) => { dashboards.push(snapshot.connection); calls.push(["dashboard-destination", destination]); } },
     market: {
       list: async () => options.list ? options.list() : { items: [application] },
       candidate: async (id) => options.candidate ? options.candidate(id) : {
@@ -195,10 +195,10 @@ async function harness(initial = state(), installed = [application], options = {
     discoveryTest.after(() => window.wanxDeviceSetupTransport.dispose());
   }
   vm.runInNewContext(source, {
-    window,
+    window, setInterval() {},
     Date,
-    setTimeout, clearTimeout, TextEncoder,
-    document: { querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
+    setTimeout, clearTimeout, TextEncoder, queueMicrotask,
+    document: { addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -214,7 +214,7 @@ async function harness(initial = state(), installed = [application], options = {
     advertisement(value) { advertisementListener?.(value); },
     failLaunch(code) { launchError = code; },
     navigate(page) { listeners.get("wanx-client:navigate")({}, page); },
-    window,
+    window, setInterval() {},
     update(next, publish = true) {
       rawState = next;
       notify();
@@ -278,18 +278,20 @@ test("pending app launch may be cancelled without connecting a box", async () =>
   assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
 });
 
-test("management keeps box settings nested and preserves the trusted console gateway", async () => {
+test("box management has its own top-level tab and exposes no console action", async () => {
   const h = await harness();
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
   assert.match(header, /<nav/);
-  for (const page of ["applications", "settings"]) assert.ok(header.includes(`data-action="show-${page}"`));
-  assert.ok(!header.includes('data-action="show-boxes"'));
+  for (const page of ["applications", "space", "boxes"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  assert.match(header, />空间<\/button>/);
+  assert.match(header, />盒子<\/button>/);
   await h.click("show-boxes");
   await h.click("connect", { deviceId: "box-102" });
-  assert.match(h.app.innerHTML, /data-action="dashboard-open"[^>]*>打开盒子控制台/);
+  assert.doesNotMatch(h.app.innerHTML, /盒子空间分区|box-space-tabs/);
+  assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"/);
   await h.click("dashboard-open", { url: "https://untrusted.example/" });
-  assert.deepEqual(h.dashboards.map((connection) => connection.deviceId), ["box-102"]);
-  assert.equal(h.dashboards[0].gatewayURL, state("ready", "ready", "box-102").connection.gatewayURL);
+  assert.deepEqual(h.dashboards, []);
   assert.equal(h.launches.length, 0);
   await h.click("show-settings");
   assert.match(h.app.innerHTML, /已登录万象平台/);
@@ -339,7 +341,7 @@ test("switching or disconnecting a box warns that the original application conne
   assert.match(h.app.innerHTML, /当前应用与盒子的连接将失效/);
   await h.click("market-confirm");
   assert.match(h.app.innerHTML, /尚未连接盒子/);
-  await h.click("show-settings");
+  await h.click("show-boxes");
   await h.click("network-toggle");
   assert.match(h.app.innerHTML, /aria-checked="false" aria-label="万象网络"/);
   await h.click("network-toggle");
@@ -352,7 +354,7 @@ test("network failure is actionable without disabling independent app requests",
   h.update(state("unavailable", "unavailable", "box-102"));
   assert.match(h.app.innerHTML, /网络暂不可用/);
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
-  await h.click("show-settings");
+  await h.click("show-boxes");
   assert.match(h.app.innerHTML, /重试连接/);
   await h.click("refresh");
   assert.ok(h.calls.some(([name]) => name === "wanx-client:refresh-devices"));
@@ -1243,22 +1245,28 @@ test("provisioning explains unregistered and closed-window boxes and does not bl
   assert.doesNotMatch(h.app.innerHTML, /应用市场操作失败|应用市场操作，请/);
 });
 
-test("settings owns box management and distinguishes account logout from application quit", async () => {
+test("space is files only and the box tab combines management and maintenance", async () => {
   const h = await harness(state("ready", "ready", "box-102"));
-  assert.doesNotMatch(h.app.innerHTML, /data-action="show-boxes"/);
   await h.click("show-settings");
-  assert.match(h.app.innerHTML, /管理与切换盒子/);
-  assert.match(h.app.innerHTML, /CentuarAI-AMD-102 · 已连接/);
+  assert.doesNotMatch(h.app.innerHTML, /管理与切换盒子|data-action="network-toggle"/);
   assert.match(h.app.innerHTML, /退出当前账号/);
   assert.match(h.app.innerHTML, /退出账号会断开盒子，万象仍在后台运行/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="desktop-quit"/);
-  const nav = h.app.innerHTML.match(/<nav[^>]*>(.*?)<\/nav>/)[1];
-  assert.doesNotMatch(nav, /show-boxes/);
   await h.click("show-boxes");
-  assert.match(h.app.innerHTML, /返回设置/);
-  assert.match(h.app.innerHTML, /data-action="show-settings" aria-current="page"/);
-  await h.click("show-settings");
-  assert.match(h.app.innerHTML, /管理与切换盒子/);
+  assert.doesNotMatch(h.app.innerHTML, /盒子空间分区|box-space-tabs/);
+  assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
+  assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
+  assert.match(h.app.innerHTML, /CentuarAI-AMD-102/);
+  assert.match(h.app.innerHTML, /data-action="network-toggle"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"|返回设置/);
+  await h.click("show-maintenance");
+  assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
+  assert.match(h.app.innerHTML, /aria-label="设备管理"/);
+  assert.match(h.app.innerHTML, /aria-label="盒子运维工具"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="show-maintenance"/);
+  await h.click("show-space");
+  assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-space" aria-current="page"/);
+  assert.doesNotMatch(h.app.innerHTML, /aria-label="设备管理"|aria-label="盒子运维工具"|box-space-tabs/);
 });
 
 for (const retained of [false, true]) {
@@ -1849,4 +1857,34 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   assert.match(h.app.innerHTML, /本次配网会话已超时，请重新扫描并重试/);
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
+});
+
+
+
+test("box maintenance opens the current box terminal and desktop through trusted IPC", async () => {
+  const h = await harness(state("ready", "ready", "box-102"));
+  await h.click("show-settings");
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /aria-label="设备管理"/);
+  assert.match(h.app.innerHTML, /aria-label="盒子运维工具"/);
+  assert.match(h.app.innerHTML, /CentuarAI-AMD-102/);
+  for (const tool of ["terminal", "desktop"]) await h.click("maintenance-open", { tool });
+  assert.deepEqual(h.calls.filter(([name]) => name === "dashboard-destination").map(([, tool]) => tool), ["terminal", "desktop"]);
+  assert.equal(h.dashboards.length, 2);
+  assert.ok(h.dashboards.every(connection => connection.deviceId === "box-102"));
+  h.update(state("ready", "ready", "box-103"));
+  assert.match(h.app.innerHTML, /CentuarAI-AMD-103/);
+  await h.click("maintenance-open", { tool: "terminal" });
+  assert.equal(h.dashboards.at(-1).deviceId, "box-103");
+  h.update({ ...state("ready", "ready", "box-103"), phase: "recovering" });
+  assert.match(h.app.innerHTML, /正在恢复连接/);
+  assert.match(h.app.innerHTML, /data-tool="terminal" disabled/);
+  await h.click("maintenance-open", { tool: "desktop" });
+  assert.equal(h.dashboards.length, 3);
+  h.update(state());
+  assert.match(h.app.innerHTML, /请先连接一台盒子/);
+  await h.click("maintenance-open", { tool: "terminal" });
+  assert.equal(h.dashboards.length, 3);
+  h.update({ account: { phase: "signed_out" } });
+  assert.doesNotMatch(h.app.innerHTML, /aria-label="盒子运维工具"/);
 });

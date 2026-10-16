@@ -13,17 +13,19 @@ function phone(input) {
 
 function requireConnectedBox(state) {
   if (state.account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+  if (state.phase === "ready" && state.connection?.mode === "local" && state.connection.deviceId) return;
   if (state.network?.enabled === false || state.platform?.phase !== "ready" || state.network?.phase !== "ready")
     throw new Error("NETWORK_NOT_READY");
   if (state.phase !== "ready" || state.connection?.mode !== "netbird" || !state.connection.deviceId)
     throw new Error("BOX_CONNECTION_REQUIRED");
 }
 
-export function openConnectedDashboard(client, dashboards) {
+export function openConnectedDashboard(client, dashboards, destination, deviceId) {
   const state = client.snapshot();
   requireConnectedBox(state);
   if (!state.connection.gatewayURL) throw new Error("BOX_CONNECTION_REQUIRED");
-  return dashboards.open(state);
+  if (destination && state.connection.deviceId !== deviceId) throw new Error("BOX_CONNECTION_CHANGED");
+  return dashboards.open(state, destination);
 }
 
 // Remote dashboards have no account bridge. Check the exact control main frame
@@ -39,6 +41,8 @@ export function registerControlActions({
   dashboards,
   selectApplicationArchive,
   market,
+  personalSpace,
+  confirmSpacePurge,
   uiState,
   desktop,
   getState,
@@ -66,6 +70,27 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview"]) {
+    register(`space-${method}`, async (input = {}) => {
+      if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+      if (method === "snapshot" || method === "refresh") return personalSpace[method]();
+      if (method === "downloads") return personalSpace.downloads(input.ids);
+      if (method === "uploads") return personalSpace.uploads(input.parent || "");
+      if (method === "download" || method === "preview") return personalSpace[method](input.id);
+      if (method === "transfer") return personalSpace.transfer(input.action, input.id);
+      if (method === "purge") {
+        const scope = personalSpace.snapshot().scope;
+        if (!(await confirmSpacePurge?.())) return { canceled: true };
+        if (scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
+      }
+      return personalSpace.operation(method, input);
+    });
+  }
+  register("space-upload-dropped", (input = {}) => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
+    return personalSpace.uploads(input.parent || "", input.paths);
+  });
   register("get-state", async () => {
     if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
@@ -157,7 +182,11 @@ export function registerControlActions({
     });
   });
   register("disconnect", () => { uiState?.invalidateOpen(); return client.disconnect(); });
-  register("dashboard-open", () => openConnectedDashboard(client, dashboards));
+  register("dashboard-open", () => { throw new Error("DASHBOARD_TERMINAL_ONLY"); });
+  register("maintenance-open", (input) => {
+    if (!["terminal", "desktop"].includes(input?.tool)) throw new Error("INVALID_MAINTENANCE_TOOL");
+    return openConnectedDashboard(client, dashboards, input.tool, text(input.deviceId, 128, "invalid_device"));
+  });
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
     if (!allowDevelopmentInstall) throw new Error("MARKET_SIGNED_PACKAGE_REQUIRED");
@@ -201,7 +230,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "boxes", "settings"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "space", "boxes", "settings"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());

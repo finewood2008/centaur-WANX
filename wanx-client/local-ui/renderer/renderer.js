@@ -241,7 +241,7 @@ function deviceCard(device) {
   const needsSetup = ["discovered", "unclaimed", "uninitialized"].includes(device.accessState);
   const action = selected
     ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>断开</button>`
-    : available && currentState.networkReady
+    : available && (device.local || currentState.networkReady)
       ? `<button class="button small" data-action="connect" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>${currentState.activeDeviceId ? "切换并连接" : "连接"}</button>`
       : available
         ? `<button class="button small" disabled>${networkStatus().label}</button>`
@@ -249,11 +249,12 @@ function deviceCard(device) {
           : `<span class="muted">${escapeHTML(statusLabel(device))}</span>`;
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
-    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
+    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
     <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
+  if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
   if (currentState.network?.enabled === false) return { label: "网络已关闭", detail: "开启网络后即可连接盒子。" };
   if (currentState.networkReady) return { label: "网络已连接", detail: "可以连接盒子并使用应用。" };
   if (currentState.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(currentState.network?.phase))
@@ -266,11 +267,11 @@ function activeDeviceName() {
 }
 
 function shellHeader(title) {
-  const activePage = ["boxes", "provisioning"].includes(page) ? "settings" : page;
+  const activePage = page === "provisioning" ? "boxes" : page;
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用商店"], ["settings", "设置"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用商店"], ["space", "空间"], ["boxes", "盒子"], ["settings", "设置"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
     <span class="topbar-caption">AI 应用底座</span></header>`;
 }
 
@@ -346,29 +347,37 @@ function authView() {
 }
 
 function settingsView() {
-  const network = networkStatus();
-  const enabled = currentState.network?.enabled !== false;
   const startup = currentState.desktopStartup || { supported: false, enabled: false };
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("设置")}<div class="page-content">
     <div class="page-heading"><h2>设置</h2><p class="muted">让万象在需要时，安静地为你准备好。</p></div>
     ${notice && !passwordEditing ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="settings-panel"><div><h3>盒子</h3><p class="muted">${currentState.activeDeviceId ? `${escapeHTML(activeDeviceName())} · 已连接` : "尚未连接盒子"}</p></div><button class="button small" data-action="show-boxes">管理与切换盒子</button></section>
     <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small" data-action="logout" ${busy ? "disabled" : ""}>退出当前账号</button></div></section>
     ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
-    <section class="settings-panel"><div><h3>万象网络</h3><p class="muted">${network.label} · ${network.detail}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
     <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted">${escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
     <section class="settings-panel"><div><h3>关于万象</h3><p class="muted">半人马AI-万象 · CentaurAI-WanX</p></div><button class="button small" data-action="desktop-about">关于</button></section>
     <div class="settings-foot"><p class="muted">关闭窗口后继续后台运行。完全退出请在万象菜单中选择“退出万象”。</p></div>
   </div></div>${confirmationView()}`;
 }
 
+function resourceSize(value) {
+  if (value == null) return "—";
+  let amount = value, unit = 0;
+  while (amount >= 1024 && unit < 4) { amount /= 1024; unit++; }
+  return `${amount.toFixed(unit ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][unit]}`;
+}
 function boxesView() {
-  const devices = currentState.devices || [];
-  return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content">
-    <button class="text-button" data-action="show-settings">‹ 返回设置</button><div class="page-heading"><div><h2>我的盒子</h2><p class="muted">连接一台盒子，为应用提供服务。</p></div><div class="settings-actions"><button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>刷新</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
+  const devices = currentState.devices || [], ready = currentState.canLaunchApplications;
+  const metrics = window.wanxSpace?.overview?.();
+  const network = networkStatus(), enabled = currentState.network?.enabled !== false;
+  const status = ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
+  return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content space-page-content box-page-content">
+    <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small" data-action="refresh" ${busy ? "disabled" : ""}>刷新设备</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="connection-banner ${currentState.canLaunchApplications ? "ready" : ""}"><div><span class="connection-caption">当前盒子</span><strong class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : ["connecting", "recovering"].includes(currentState.connectionPhase) ? currentState.connectionPhase === "recovering" ? "正在恢复连接…" : "正在连接…" : "尚未连接盒子"}</strong><p>${currentState.canLaunchApplications ? "切换或断开连接后，需要重新打开应用。" : networkStatus().detail}</p></div>${dashboardButton()}</section>
-    <section class="content-section" aria-label="设备管理"><div class="section-heading"><h3>设备管理 <span class="count">${devices.length}</span></h3></div>${devices.length ? `<div class="device-list">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
+    <section class="box-overview" aria-label="当前盒子"><div class="box-overview-heading"><div class="box-identity"><img src="./assets/centaurai-mark.png" alt=""/><div><span class="box-eyebrow">当前使用的盒子</span><h3 class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</h3><p>${ready ? currentState.connection?.mode === "local" ? "本机万象 · 文件与服务运行在这台电脑上" : "万象网络 · 已建立盒子连接" : network.detail}</p></div></div><span class="box-status ${ready ? "ready" : ""}"><i class="status-dot ${ready ? "ready" : ""}"></i>${status}</span></div>
+    <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>文件占用</span><strong>${resourceSize(metrics?.filesBytes)}</strong><small>含回收站中的文件</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
+    ${maintenanceToolsView()}
+    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted">连接或切换盒子后，文件空间和应用将使用所选盒子。</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
+    <section class="box-network" aria-label="连接设置"><div><h3>万象网络</h3><p class="muted">${network.label} · ${network.detail}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
     ${ownershipView()}
   </div></div>${confirmationView()}`;
 }
@@ -414,8 +423,13 @@ async function refreshTransfers({ force = false } = {}) {
   return request.promise;
 }
 
-function dashboardButton() {
-  return currentState.canOpenDashboard ? `<button class="button small" data-action="dashboard-open" ${busy ? "disabled" : ""}>打开盒子控制台</button>` : "";
+function maintenanceToolsView() {
+  const ready = currentState.canOpenDashboard;
+  const tools = [
+    ["terminal", "终端", "执行命令、查看日志与检查服务。", '<span aria-hidden="true">&gt;_</span>'],
+    ["desktop", "远程桌面", "查看并操作盒子的桌面。", '<svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="26" height="18" rx="3"/><path d="M16 22v6M10 28h12"/></svg>'],
+  ];
+  return `<section class="content-section box-operations" aria-label="盒子运维工具"><div class="box-section-heading"><div><h3>运维工具</h3><p class="muted">${ready ? `操作当前盒子：${escapeHTML(activeDeviceName())}` : "请先连接一台盒子"}</p></div><span class="box-operations-note">独立窗口打开</span></div><div class="box-operations-grid">${tools.map(([tool, title, description, icon]) => `<article class="box-operation"><div class="maintenance-icon box-operation-${tool}">${icon}</div><div class="box-operation-copy"><h4>${title}</h4><p>${description}</p></div><button class="button small ${tool === "terminal" ? "primary" : ""}" data-action="maintenance-open" data-tool="${tool}" ${!ready || busy ? "disabled" : ""}>打开${title}<span aria-hidden="true"> ↗</span></button></article>`).join("")}</div><p class="box-operations-footnote">终端与远程桌面使用当前盒子连接；切换或断开后，相关窗口会自动关闭。</p></section>`;
 }
 
 function operationFor(id) {
@@ -454,12 +468,13 @@ function pendingOpenView() {
   if (!devices.some((device) => device.deviceId === pendingSelection.deviceId)) pendingSelection.deviceId = devices[0]?.deviceId;
   const application = currentState.applications?.find((item) => item.applicationId === pending.applicationId);
   const processing = ["connecting", "opening"].includes(pending.phase);
+  const selectedReady = currentState.networkReady || devices.some(device => device.local && device.deviceId === pendingSelection.deviceId);
   const authorizing = !devices.length && currentState.devices?.some(device => device.accessState === "authorization_pending");
   return `<section class="pending-open" aria-label="连接盒子并打开应用" role="status"><div><h3>${processing ? pending.phase === "connecting" ? "正在连接盒子…" : "正在打开应用…" : "连接盒子并打开应用"}</h3><p class="muted">${escapeHTML(application?.name || "此应用")}需要一台盒子提供服务。</p></div>
     ${pending.error ? `<p class="inline-error">${escapeHTML(operationErrorMessage(pending.error))}</p>` : ""}
     ${authorizing ? `<p class="muted">正在同步盒子访问权限。${authorizationHint()}</p>` : ""}
-    <div class="pending-open-actions">${devices.length ? `<select aria-label="用于打开应用的盒子" data-input="pending-device" ${processing ? "disabled" : ""}>${devices.map((device) => `<option value="${escapeHTML(device.deviceId)}" ${pendingSelection.deviceId === device.deviceId ? "selected" : ""}>${escapeHTML(device.name || device.displayName || "万象盒子")}</option>`).join("")}</select><button class="button primary small" data-action="pending-confirm" ${processing || !currentState.networkReady ? "disabled" : ""}>${processing ? "处理中…" : "连接并打开"}</button>` : '<button class="button small" data-action="show-boxes">发现或管理盒子</button>'}<button class="text-button" data-action="pending-cancel">取消</button></div>
-    ${!currentState.networkReady ? `<p class="muted">${networkStatus().label}。<button class="text-button" data-action="show-settings">检查网络</button></p>` : ""}</section>`;
+    <div class="pending-open-actions">${devices.length ? `<select aria-label="用于打开应用的盒子" data-input="pending-device" ${processing ? "disabled" : ""}>${devices.map((device) => `<option value="${escapeHTML(device.deviceId)}" ${pendingSelection.deviceId === device.deviceId ? "selected" : ""}>${escapeHTML(device.name || device.displayName || "万象盒子")}</option>`).join("")}</select><button class="button primary small" data-action="pending-confirm" ${processing || !selectedReady ? "disabled" : ""}>${processing ? "处理中…" : "连接并打开"}</button>` : '<button class="button small" data-action="show-boxes">发现或管理盒子</button>'}<button class="text-button" data-action="pending-cancel">取消</button></div>
+    ${!selectedReady ? `<p class="muted">${networkStatus().label}。<button class="text-button" data-action="show-settings">检查网络</button></p>` : ""}</section>`;
 }
 
 function marketErrorMessage(error) {
@@ -777,8 +792,10 @@ function render(state) {
   const previousAuth = app.querySelector?.('[data-form="auth"]');
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
-  if (activeInteraction) return;
+  window.wanxSpace?.activate(!auth && ["space", "boxes"].includes(page), page === "space");
+  if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
+    : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
     : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if (markup === renderedMarkup) { syncFormState(); return; }
   renderedMarkup = markup;
@@ -796,7 +813,41 @@ function render(state) {
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   const scroller = document.scrollingElement;
   const scroll = retainedForm && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+  const spaceList = page === "space" ? app.querySelector?.(".space-file-list") : null;
+  const spacePosition = spaceList ? { key: spaceList.dataset.location, top: spaceList.scrollTop } : null;
+  const spaceFocus = spaceList?.contains?.(document.activeElement) ? document.activeElement.closest?.("[data-entry-id]")?.dataset.entryId || "" : null;
+  const spaceSearch = page === "space" && document.activeElement?.id === "space-search" ? document.activeElement : null;
+  const searchSelection = spaceSearch ? [spaceSearch.selectionStart, spaceSearch.selectionEnd] : null;
   app.innerHTML = markup;
+  if (spacePosition) {
+    const replacement = app.querySelector?.(".space-file-list");
+    if (replacement?.dataset.location === spacePosition.key) {
+      // Keep row nodes during selection/progress refreshes so a double-click
+      // still targets the same file and the browser retains its scroll position.
+      const oldRows = Array.from(spaceList.querySelectorAll?.(".space-file-row") || []);
+      const nextRows = Array.from(replacement.querySelectorAll?.(".space-file-row") || []);
+      if (oldRows.length && oldRows.length === nextRows.length && oldRows.every((row, index) => row.dataset.entryId === nextRows[index].dataset.entryId && row.innerHTML === nextRows[index].innerHTML)) {
+        for (let index = 0; index < oldRows.length; index++) {
+          const row = oldRows[index], next = nextRows[index];
+          row.className = next.className;
+          row.setAttribute("aria-selected", next.getAttribute("aria-selected"));
+          row.tabIndex = next.tabIndex;
+        }
+        spaceList.setAttribute("aria-busy", replacement.getAttribute("aria-busy"));
+        replacement.replaceWith(spaceList);
+        spaceList.scrollTop = spacePosition.top;
+      } else replacement.scrollTop = spacePosition.top;
+    }
+  }
+  if (spaceSearch) {
+    const replacement = app.querySelector?.("#space-search");
+    replacement?.focus({ preventScroll: true });
+    if (searchSelection[0] != null) replacement?.setSelectionRange?.(...searchSelection);
+  }
+  if (spaceFocus !== null) {
+    const list = app.querySelector?.(".space-file-list");
+    (list?.querySelector?.(`[data-entry-id="${spaceFocus}"]`) || list)?.focus?.({ preventScroll: true });
+  }
   if (scanButton) {
     app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]')?.replaceWith(scanButton);
     for (const animation of scanButton.querySelector('.scan-spinner').getAnimations()) {
@@ -912,11 +963,15 @@ function operationErrorMessage(error) {
       APPLICATION_OPEN_NOT_PENDING: "本次打开已取消，请重新打开应用。",
       APPLICATION_OPERATION_FAILED: "操作未完成，请重试。",
       NETWORK_DEVICE_ACCESS_DENIED: "当前账号无权访问此盒子，请刷新盒子列表。",
+      LOCAL_BOX_AUTH_FAILED: "本机万象登录失败，请检查本机盒子的登录配置。",
+      LOCAL_BOX_AUTH_TIMEOUT: "本机万象暂未响应，请确认服务已启动后重试。",
+      LOCAL_BOX_INVALID_REGISTRATION: "本机盒子的连接配置无效，请重新登记。",
       NETWORK_NOT_READY: "网络尚未连接，请在设置中检查网络状态。",
-      BOX_CONNECTION_REQUIRED: "请先连接一台盒子，再打开应用或盒子控制台。",
+      BOX_CONNECTION_REQUIRED: "请先在盒子空间中连接一台盒子。",
       NETWORK_CHANGED: "盒子连接已变化，请重新连接后打开应用。",
       BOX_IDENTITY_UNAVAILABLE: "暂时无法访问盒端服务，请重新连接盒子。",
       BOX_IDENTITY_INVALID: "盒端服务返回了无效身份，请重新连接盒子。",
+      BOX_CONNECTION_CHANGED: "盒子连接已变化，请核对当前盒子后重新打开运维工具。",
       DASHBOARD_OPEN_FAILED: "盒子控制台打开失败，请检查盒子连接后重试。",
       APPLICATION_START_CANCELED: "应用启动已取消。",
       APPLICATION_STOP_FAILED: "应用尚未完全退出，请关闭应用后重试。",
@@ -1093,22 +1148,22 @@ app.addEventListener("click", async (event) => {
     render(currentState); return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
-  if (["show-applications", "show-boxes", "show-settings"].includes(action)) {
+  if (["show-applications", "show-space", "show-boxes", "show-maintenance", "show-settings"].includes(action)) {
     if (page === "provisioning") return;
-    page = action.slice(5);
+    page = action === "show-maintenance" ? "boxes" : action.slice(5);
     if (page === "boxes") void refreshTransfers();
     notice = null;
     render(currentState);
     return;
   }
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
-  if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && currentState.networkReady && !["connecting", "opening"].includes(pending.phase)) { const opened = await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); if (opened) { showOpenedStatus(pending.applicationId); render(currentState); } } return; }
+  if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && (currentState.networkReady || currentState.devices?.some(device => device.local && device.deviceId === pendingSelection.deviceId)) && !["connecting", "opening"].includes(pending.phase)) { const opened = await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); if (opened) { showOpenedStatus(pending.applicationId); render(currentState); } } return; }
   if (action === "desktop-about") { await run("desktop.about"); return; }
   if (busy && action !== "cancel-provisioning") return;
   if (action === "startup-toggle") { if (currentState.desktopStartup?.supported) await run("desktop.startup.set", { enabled: !currentState.desktopStartup.enabled }); return; }
   if (action === "desktop-quit") { await run("desktop.quit"); return; }
-  if (action === "dashboard-open") {
-    if (currentState.canOpenDashboard) await run("dashboard.open");
+  if (action === "maintenance-open") {
+    if (currentState.canOpenDashboard && ["terminal", "desktop"].includes(target.dataset.tool)) await run("maintenance.open", { tool: target.dataset.tool, deviceId: currentState.activeDeviceId });
     return;
   }
   if (action === "market-refresh") { await refreshMarket(); return; }
@@ -1184,7 +1239,7 @@ app.addEventListener("click", async (event) => {
   if (action === "cancel-provisioning") { selection.reset(); await run("provisioning.cancel"); return; }
   if (action === "connect") {
     const device = currentState.devices?.find((item) => item.deviceId === target.dataset.deviceId);
-    if (!currentState.networkReady || !device || !deviceCanConnect(device)) return;
+    if (!device || (!device.local && !currentState.networkReady) || !deviceCanConnect(device)) return;
     if (currentState.activeDeviceId && currentState.activeDeviceId !== device.deviceId) {
       marketConfirmation = { action: "devices.connect", input: { deviceId: device.deviceId }, title: `切换到 ${device.name || device.displayName || "此盒子"}`, detail: "当前应用与原盒子的连接将失效。切换后，请重新打开应用。", verb: "切换" };
       render(currentState);
@@ -1222,7 +1277,7 @@ function selectWifi(key) {
 app.addEventListener("change", (event) => {
   if (event.target.dataset.input === "wifi-network") selectWifi(event.target.value);
   if (event.target.name === "security") updateWifiPicker();
-  if (event.target.dataset.input === "pending-device" && pendingSelection) pendingSelection.deviceId = event.target.value;
+  if (event.target.dataset.input === "pending-device" && pendingSelection) { pendingSelection.deviceId = event.target.value; render(currentState); }
 });
 app.addEventListener("toggle", (event) => {
   const id = event.target.dataset?.detailId;
@@ -1306,6 +1361,7 @@ app.addEventListener("submit", async (event) => {
 });
 
 function acceptRemoteState(state) {
+  window.wanxSpace?.hostState(state);
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
   const accountChanged = account !== marketAccount;
   if (accountChanged) {
@@ -1362,7 +1418,7 @@ window.wanxBluetooth?.subscribe(state => {
 window.wanxClient.onLocalState(acceptRemoteState);
 window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
-  if (!["applications", "boxes", "settings"].includes(destination)) return;
+  if (!["applications", "space", "boxes", "settings"].includes(destination)) return;
   page = destination;
   if (page === "boxes") void refreshTransfers();
   notice = null;
@@ -1387,4 +1443,5 @@ window.wanxSetup?.onReady?.(() => {
     if (page === "provisioning") render(currentState);
   }).catch(() => {});
 });
+window.wanxSpace?.bind({ render: () => { if (currentState && ["space", "boxes"].includes(page)) render(currentState); } });
 window.wanxClient.getLocalState().then(acceptRemoteState);

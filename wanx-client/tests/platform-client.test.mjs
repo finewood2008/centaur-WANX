@@ -119,6 +119,7 @@ function harness(t, options = {}) {
   };
   const client = createPlatformClient({
     account,
+    localBoxes: options.localBoxes,
     readPreference:
       options.readPreference || (async () => options.enabled ?? true),
     pollIntervalMs: 1,
@@ -1633,4 +1634,63 @@ test("lease expiry cancels pending authorization reads and cannot reauthorize a 
   await tick();
   assert.equal(h.calls.length, callCount);
   assert.equal(h.client.snapshot().devices.some(box => box.canOpen || box.deviceId === "stale-box"), false);
+});
+
+
+test("registered local box connects with authentication while cloud network is disabled", async t => {
+  let closed = 0;
+  const local = { deviceId: "local-0123456789abcdef01234567", displayName: "本机万象", serviceUrl: "http://127.0.0.1:8089", local: true, accessState: "ready", canOpen: true };
+  const h = harness(t, { enabled: false, localBoxes: {
+    list: async () => [local],
+    createSession: async (id, input) => { assert.equal(id, local.deviceId); assert.equal(input.url, local.serviceUrl); return { close() { closed++; } }; },
+  } });
+  await h.client.initialize();
+  await h.client.loginPassword({ phone: "alice", password: "unused" });
+  assert.equal(h.client.snapshot().devices[0].local, true);
+  await h.client.connectBox(local.deviceId);
+  assert.equal(h.client.snapshot().connection.mode, "local");
+  assert.equal(h.client.snapshot().network.phase, "disabled");
+  await h.client.setNetworkEnabled(false);
+  assert.equal(h.client.snapshot().phase, "ready");
+  await h.client.connect({ deviceId: "development", url: "http://127.0.0.1:8089", mode: "direct" });
+  assert.equal(h.client.snapshot().connection.mode, "direct", "manual direct connection never gets trusted local status");
+  assert.equal(closed, 1);
+  await h.client.connectBox(local.deviceId);
+  h.publishAccount({ phase: "authenticated", accountId: "other", clientId: "other-client" });
+  await tick();
+  assert.equal(h.client.snapshot().connection, null, "account switch closes local session");
+});
+
+test("local login failure never creates a ready connection", async t => {
+  const local = { deviceId: "local-0123456789abcdef01234567", serviceUrl: "http://127.0.0.1:8089", local: true, canOpen: true };
+  const h = harness(t, { enabled: false, localBoxes: { list: async () => [local], createSession: async () => { throw fail("LOCAL_BOX_AUTH_FAILED"); } } });
+  await h.client.initialize(); await h.client.loginPassword({});
+  await assert.rejects(h.client.connectBox(local.deviceId), { code: "LOCAL_BOX_AUTH_FAILED" });
+  assert.equal(h.client.snapshot().connection, null);
+  assert.equal(h.client.snapshot().phase, "disconnected");
+});
+
+
+test("local session expiry still disconnects after cloud network preference changes", async t => {
+  let expire;
+  const local = { deviceId: "local-0123456789abcdef01234567", serviceUrl: "http://127.0.0.1:8089", local: true, canOpen: true };
+  const h = harness(t, { enabled: false, localBoxes: { list: async () => [local], createSession: async (_id, input) => {
+    expire = input.onExpired; return { close() {} };
+  } } });
+  await h.client.initialize(); await h.client.loginPassword({}); await h.client.connectBox(local.deviceId);
+  await h.client.setNetworkEnabled(false);
+  expire(); await tick();
+  assert.equal(h.client.snapshot().connection, null);
+});
+
+test("cloud preference change cancels an unfinished local login", async t => {
+  const entered = deferred(), finish = deferred();
+  const local = { deviceId: "local-0123456789abcdef01234567", serviceUrl: "http://127.0.0.1:8089", local: true, canOpen: true };
+  const h = harness(t, { enabled: false, localBoxes: { list: async () => [local], createSession: async (_id, { signal }) => {
+    entered.resolve(); await finish.promise; signal.throwIfAborted(); return { close() {} };
+  } } });
+  await h.client.initialize(); await h.client.loginPassword({});
+  const connecting = h.client.connectBox(local.deviceId);
+  await entered.promise; await h.client.setNetworkEnabled(false); finish.resolve(); await connecting;
+  assert.equal(h.client.snapshot().connection, null);
 });
