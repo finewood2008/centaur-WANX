@@ -40,6 +40,8 @@ export function registerControlActions({
   selectApplicationArchive,
   market,
   updates,
+  credits,
+  accountProfile,
   uiState,
   desktop,
   getState,
@@ -53,9 +55,9 @@ export function registerControlActions({
   const panelActions = new Set([
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
-    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about",
+    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance",
   ]);
-  const reads = new Set(["get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -67,6 +69,26 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  register("panel-balance", async () => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
+    const balance = await credits.balance();
+    return { available: balance.available };
+  });
+  for (const method of ["balance", "transactions", "reservation", "tasks"]) {
+    register(`credits-${method}`, (input) => {
+      if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
+      return credits[method](input);
+    });
+  }
+  for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
+    register(action, input => {
+      if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      if (!accountProfile) throw new Error("PROFILE_UNAVAILABLE");
+      if (action === "profile-save" && (!input || Object.keys(input).some(key => key !== "displayName"))) throw new Error("PROFILE_INVALID_INPUT");
+      return accountProfile[method](input);
+    });
+  }
   register("get-state", async () => {
     if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
@@ -202,7 +224,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "boxes", "settings"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());

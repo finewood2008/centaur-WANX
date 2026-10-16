@@ -6,6 +6,10 @@ WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用�
 
 旧 `wanx-desktop/` 和 `wanx-admin-desktop/` 已删除。根目录 `npm start`、`npm test`、`npm run package:mac`、`npm run package:windows` 均指向 `wanx-client/`。Dashboard 不再提供盒子管理或 `/boxes` 路由；盒子统一在 wanx-client 中管理。
 
+## 客户端个人资料与积分入口
+
+本分支增加右上角头像与个人资料、独立积分页和新版快捷面板；头像昵称按万象账号保存在本机，积分读取权威账号账本，充值保持关闭。接入配置、兼容范围、验证与回退见 [客户端交付说明](docs/wanx-client-profile-credits-panel.md)。
+
 ## 本次 GitHub 迁移
 
 本仓库已从旧 DSH 版切换为 Octop 定制版 WANX。旧版提交记录保留，迁移前版本位于 `backup/dsh-before-octop-20261009`。源工程基础提交为 `7d84a99`，同时包含本地现有的 WANX 平台扩展与盒子管理源码。仓库保持私有，包含构建所需的私有 SDK 依赖，不包含本机账号、会话、数据库、日志或安装包。

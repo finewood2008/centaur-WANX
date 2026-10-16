@@ -36,7 +36,7 @@ function projectState(raw) {
         : "idle",
     account: {
       ...account,
-      displayName: "万象用户",
+      displayName: account.profile?.displayName || "万象用户",
     },
     devices,
     networkReady,
@@ -58,6 +58,13 @@ async function rawState() {
 }
 
 const actions = {
+  "profile.save": input => ipcRenderer.invoke("wanx-client:profile-save", { displayName: input?.displayName }),
+  "profile.avatar": () => ipcRenderer.invoke("wanx-client:profile-avatar"),
+  "profile.avatar-remove": () => ipcRenderer.invoke("wanx-client:profile-avatar-remove"),
+  "credits.tasks": () => ipcRenderer.invoke("wanx-client:credits-tasks"),
+  "credits.balance": () => ipcRenderer.invoke("wanx-client:credits-balance"),
+  "credits.transactions": input => ipcRenderer.invoke("wanx-client:credits-transactions", { after: input?.after }),
+  "credits.reservation": input => ipcRenderer.invoke("wanx-client:credits-reservation", { id: input?.id }),
   "auth.login": (input) =>
     ipcRenderer.invoke("wanx-client:login-password", {
       phone: input?.username,
@@ -143,7 +150,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "applications" || page === "boxes" || page === "settings") listener(page);
+        if (page === "applications" || page === "boxes" || page === "settings" || page === "credits" || page === "profile") listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);
