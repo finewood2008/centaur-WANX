@@ -6,7 +6,7 @@ Admin 管理应用资料、发行版本、通用应用包与各平台原生制�
 
 知君等共享运行时应用默认发布一份通用 `.wanxapp`，签名描述为 `os: "universal"`、`arch: "universal"`，适用于万象支持的 Windows/macOS、x64/ARM64。万象原生安装包仍按系统与架构区分；旧平台专用 `.wanxapp` 保留精确匹配，不跨架构回退。候选在通用与精确目标发布指针之间选择最新版本，同版本优先精确目标。正式渠道只发布稳定版。软件版本按严格 SemVer 比较，`1.10.0 > 1.9.0`，`1.0.0 > 1.0.0-rc.1`，`+build` 不影响排序。同一版本不能借 buildId 或重新上传变成升级。同版本不同制品返回需重新安装，不自动替换；本机版本较新时不降级。
 
-首期可执行安装类型是第一方 Electron ZIP 包 `.wanxapp`。DMG/EXE 可以在 Admin 中登记、验证和发布，当前 WANX 市场不会执行原生安装器，也未接入 WANX 自身的自动更新。灰度、静默更新、断点续传、差分下载和第三方应用沙箱不在本期。
+首期可执行安装类型是第一方 Electron ZIP 包 `.wanxapp`。DMG/EXE 可以在 Admin 中登记、验证和发布，当前 WANX 市场不会执行原生安装器，也未接入 WANX 自身的自动更新。指定账号灰度使用下文的协议 3 受控发行包；静默更新、断点续传、差分下载和第三方应用沙箱不在本期。
 
 ## 客户端使用与接口接入
 
@@ -30,16 +30,19 @@ Admin 管理应用资料、发行版本、通用应用包与各平台原生制�
 
 ## 制作应用包
 
-知君、众见等已接入 WANX Host 的应用，统一使用万象仓库的 `wanx-client/package-app.sh`。在万象仓库根目录运行，例如：
+已升级到协议 3 的 WANX Host 应用统一使用万象仓库的 `wanx-client/package-app.sh`。在万象仓库根目录运行，例如：
 
 ```sh
-./wanx-client/package-app.sh --project ../centuarai-wanx-zhijun --version 0.4.7
-./wanx-client/package-app.sh --project ../centuarai-wanx-zhongjian --version 0.3.1
+./wanx-client/package-app.sh --project ../centuarai-wanx-ai-browser --version 0.1.2
+./wanx-client/package-app.sh --project ../centuarai-wanx-centaurloop --version 0.10.4
+./wanx-client/package-app.sh --project ../centuarai-wanx-zhongjian --version 0.3.5
 ```
 
-也可以在仓库外的本机配置文件（例如 `~/.config/wanx-release/zhongjian.json`）写入 `{"version":"0.3.1"}`，调用时加 `--config <文件>`。可选字段为 `out`、`key`、`key-id`、`os`、`arch`；命令行参数优先。未指定 `--config` 时读取应用工程根目录的 `market-release.local.json`（若存在；请确保该文件被 Git 忽略）。版本号来自命令行或本机配置，不改应用源码。默认从 `~/.config/wanx-release/release-private.pem` 读取 Ed25519 私钥，使用 `release-2026` 公钥 ID，输出到忽略 Git 的 `wanx-client/release/market/`。生成同名 `.wanxapp` 和 `.wanxapp.release.json` 后会立即验签并校验哈希；把这两个文件上传到 Admin 对应应用、版本的草稿。同名本地产物会在新包构建并完成归档校验后成对替换，此脚本不上传或上架应用；已上传到 Admin 的同版本制品是否允许替换仍以服务端规则为准。
+知君和超级参谋团的市场清单仍为协议 1，统一脚本会拒绝打包。须先将各自市场清单升级到协议 3，并验证新版盒端准备接口、现有用户数据的版本兼容与回退限制，再以新版本号打包。半人马环已升级到协议 3；其盒端仍须提供新版 Bridge 准备与就绪接口，以及 Loop 业务接口。旧版安装留下的 Electron 数据需要实机验证升级兼容性。
 
-统一脚本识别 `market/wanx-app.json`（知君布局）与 `application.manifest.json` 加 `npm run package`（众见布局）。新应用采用后一布局即可复用打包入口；构建结果必须包含实际入口和运行依赖。众见的客户端包只包含桌面应用，其盒端业务接口仍需先集成到万象底座。
+也可以在仓库外的本机配置文件（例如 `~/.config/wanx-release/zhongjian.json`）写入 `{"version":"0.3.5"}`，调用时加 `--config <文件>`。可选字段为 `out`、`key`、`key-id`、`os`、`arch`；命令行参数优先。未指定 `--config` 时读取应用工程根目录的 `market-release.local.json`（若存在；请确保该文件被 Git 忽略）。版本号来自命令行或本机配置，不改应用源码。默认从 `~/.config/wanx-release/release-private.pem` 读取 Ed25519 私钥，使用 `release-2026` 公钥 ID，输出到忽略 Git 的 `wanx-client/release/market/`。生成同名 `.wanxapp` 和 `.wanxapp.release.json` 后会立即验签并校验哈希；把这两个文件上传到 Admin 对应应用、版本的草稿。同名本地产物会在新包构建并完成归档校验后成对替换，此脚本不上传或上架应用。Admin 中已校验的制品不能覆盖；同一版本的相同平台与架构目标也不能再上传另一份制品。修复或升级发行协议时须创建更高的新版本草稿、重新打包和上传。
+
+统一市场应用约定：工程根目录提供 `market/wanx-app.json`，`package.json` 提供 `build:market-source` 脚本。统一打包器以 `WANX_MARKET_VERSION=<发行版本>` 运行该脚本，读取工程生成的 `dist/application/`，要求其中包含实际入口、运行依赖、`application.manifest.json` 和 `package.json`，且产物版本与发行版本一致。统一打包器随后写入签名市场清单，不按应用 ID 特判目录。新市场发行包的清单必须使用协议 3 并声明 `releaseAccess: "account"`；仅遵守目录约定、但仍使用协议 1/2 的工程须先升级清单。未设置平台与架构限制的共享运行时应用生成通用包。众见的客户端包只包含桌面应用，其盒端业务接口仍需先集成到万象底座。
 
 已有独立构建产物目录也可以直接使用下述低层 `package:application` 命令签名。
 
@@ -50,13 +53,28 @@ Admin 管理应用资料、发行版本、通用应用包与各平台原生制�
   "applicationId": "centaurai.wanx.zhijun",
   "name": "知君",
   "version": "1.0.0",
-  "protocolVersion": 1,
+  "protocolVersion": 3,
+  "releaseAccess": "account",
   "runtime": "electron",
+  "launchMode": "shared",
   "entrypoint": "main.mjs",
   "capabilities": ["identity.read", "http.request", "chat.stream"],
-  "description": "知君应用"
+  "description": "知君应用",
+  "compatibility": {
+    "backendProductId": "wanx",
+    "clientRange": ">=0.1.4 <1.0.0",
+    "hostProtocolRange": ">=1.0.0 <2.0.0",
+    "backendContracts": [],
+    "resourceDependencies": [],
+    "localDataSchema": {
+      "readRange": ">=1.0.0 <2.0.0",
+      "writeVersion": "1.0.0"
+    }
+  }
 }
 ```
+
+`backendContracts` 和 `resourceDependencies` 为空仅表示没有额外声明的盒端接口合同或市场资源包；协议 3 启动仍须连接支持应用准备与就绪接口的盒子。`localDataSchema` 应与应用实际读写的数据格式一致，不能照抄示例后假定旧安装的数据可升级。旧协议 1/2 安装包仍可由支持它们的客户端读取和运行，但不具备指定账号灰度准入能力，不再用于制作新市场发行包。
 
 `capabilities` 只能选择现有 Host 协议能力：`identity.read`、`experts.read`、`experts.select`、`http.request`、`chat.stream`、`files.upload`。该字段保留在已签名清单中作为发行元数据，当前 Host 不按 capability 限权；应用接口权限仍由盒端按当前用户校验，不能将此字段视为应用沙箱。应用通过 `WANX_HOST_*` 环境变量连接独立 Host 会话，不读取 WANX 的账号文件。
 
@@ -77,7 +95,7 @@ openssl pkey -in /secure/wanx-release-private.pem -pubout -out /secure/wanx-rele
 npm ci
 npm run package:application -- --source /build/zhijun --out /release/zhijun \
   --key /secure/wanx-release-private.pem \
-  --key-id release-2026 --min-wanx-version 0.1.0 --build-id git-commit-id
+  --key-id release-2026 --min-wanx-version 0.1.4 --build-id git-commit-id
 ```
 
 默认输出 `*-universal-universal.wanxapp` 和配套 `.wanxapp.release.json`，同一份文件覆盖四种受支持的电脑目标。输出目录和私钥必须在输入目录之外，现有输出不能覆盖。确有原生依赖时显式同时指定 `--os macos|windows --arch x64|arm64`。原生安装器可用 `--file <file.dmg|exe> --application-id <id> --version <semver>` 代替 `--source/--out`，且必须指定系统和架构；该签名不能代替 Apple/Windows 平台签名、公证。
@@ -90,7 +108,7 @@ npm run package:application -- --source /build/zhijun --out /release/zhijun \
 
 密钥轮换先发布同时信任新旧公钥的 WANX，再用新私钥发布应用。撤下旧公钥会让旧签名版本无法启动或回退，需先安排应用换签版本和底座升级。
 
-Admin 部署步骤见其仓库 `docs/operations/app-market.md`。操作顺序：创建未上架应用 → 创建版本 → 上传通用应用包及签名旁文件（原生安装器按平台分别上传） → 等待后端验证成功 → 发布版本 → 编辑应用上架。无通用包且缺失当前平台制品时显示不可安装。旧签名包不能手动修改平台标签；请使用递增的新版本重新生成通用包和签名描述，再上传发布。先部署支持通用包的 Admin 与 WANX 客户端；旧客户端不识别 universal 描述，需要更新。
+Admin 部署步骤见其仓库 `docs/operations/app-market.md`。新应用操作顺序：创建未上架应用 → 创建版本 → 上传协议 3 通用应用包及签名旁文件 → 等待后端验证成功 → 指定账号灰度并验收 → 将同一制品转为正式版本 → 编辑应用上架。无通用包且缺失当前平台制品时显示不可安装。旧签名包不能手动修改平台标签或协议字段；请使用递增的新版本重新生成通用包和签名描述，再上传发布。先部署支持通用包及账号准入的 Admin、WANX 客户端与盒端 Bridge；旧客户端不识别受控发行包，需要更新。
 
 上传使用 15 分钟 OSS 临时 PUT URL，验证由后台读取整个对象执行，验证成功后将已验证的本地字节提升到独立正式对象。浏览器没有 OSS 密钥或正式目录写权限。临时下载链接短期有效；撤销停止签发新链接，已经签发的链接在到期前仍可能有效。
 

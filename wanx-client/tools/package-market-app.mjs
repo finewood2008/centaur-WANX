@@ -1,17 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 import { verifyEnvelope } from "../applications/descriptor.mjs";
 import { validateApplicationManifest } from "../applications/manifest.mjs";
 import { verifyPackageHash } from "../applications/verified-archive.mjs";
-import { packageApplication } from "./package-application.mjs";
+import { assertCurrentMarketProtocol, packageApplication } from "./package-application.mjs";
 
 const clientRoot = fileURLToPath(new URL("../", import.meta.url));
-const zhijunServerFiles = ["app", "attachments", "expert-selection", "host-client", "host-runtime", "interaction", "interaction-schema", "knowledge-error", "library", "memory", "ontology", "policy", "provision", "roles", "static"];
 const configFields = ["version", "out", "key", "key-id", "os", "arch"];
 
 function expandHome(value) {
@@ -30,70 +29,33 @@ function runBuild(project, args, env = process.env) {
   if (result.status !== 0) throw new Error(`构建失败：npm ${args.join(" ")}`);
 }
 
-async function stageZhijun(project, destination, version) {
-  const rendererDir = path.join(destination, "renderer");
-  runBuild(project, ["run", "build", "--", "--outDir", rendererDir], { ...process.env, VITE_ZHIJUN_RELEASE_VERSION: version });
-  await access(path.join(rendererDir, "index.html"));
-  await mkdir(path.join(destination, "market"), { recursive: true });
-  await mkdir(path.join(destination, "server"), { recursive: true });
-  await cp(path.join(project, "market/main.mjs"), path.join(destination, "market/main.mjs"));
-  for (const name of zhijunServerFiles)
-    await cp(path.join(project, `server/${name}.mjs`), path.join(destination, `server/${name}.mjs`));
-  await cp(path.join(project, "server/wanx-host-sdk.cjs"), path.join(destination, "server/wanx-host-sdk.cjs"));
-  await mkdir(path.join(destination, "resources"), { recursive: true });
-  for (const name of ["icon.png", "icon.ico"])
-    await cp(path.join(project, "desktop/resources", name), path.join(destination, "resources", name));
-  await cp(path.join(project, "desktop/THIRD_PARTY_NOTICES.md"), path.join(destination, "THIRD_PARTY_NOTICES.md"));
-  await mkdir(path.join(destination, "node_modules"), { recursive: true });
-  await cp(path.join(project, "node_modules/ws"), path.join(destination, "node_modules/ws"), { recursive: true });
-  const ws = await readJson(path.join(destination, "node_modules/ws/package.json"));
-  await writeFile(path.join(destination, "package.json"), JSON.stringify({
-    name: "zhijun-wanx-application", version, private: true, type: "module", dependencies: { ws: ws.version },
-  }, null, 2) + "\n");
-  const verification = spawnSync(process.execPath, ["--input-type=module", "--eval", "await import(process.argv[1])", pathToFileURL(path.join(destination, "server/host-runtime.mjs")).href], {
-    cwd: destination, encoding: "utf8",
-  });
-  if (verification.error || verification.status !== 0)
-    throw new Error(`知君发行包的服务模块加载失败：${verification.error?.message || verification.stderr?.trim() || "未知错误"}`);
-}
-
-export async function stageApplication(project, destination, manifest) {
-  runBuild(project, ["run", "--silent", "package"], { ...process.env, WANX_MARKET_VERSION: manifest.version });
+export async function stageMarketSource(project, destination, manifest) {
+  runBuild(project, ["run", "build:market-source"], { ...process.env, WANX_MARKET_VERSION: manifest.version });
   await cp(path.join(project, "dist/application"), destination, { recursive: true });
   const appManifest = path.join(destination, "application.manifest.json");
   const value = await readJson(appManifest);
-  assertSameApplication(value, manifest);
-  // Keep the development manifest out of the signed release. Both archive
-  // entry points must describe the same account-controlled application.
-  await writeFile(appManifest, JSON.stringify(manifest, null, 2) + "\n");
-}
-
-function assertSameApplication(local, market) {
-  for (const field of ["applicationId", "name", "runtime", "entrypoint"])
-    if (local[field] !== market[field]) throw new Error(`市场清单与应用工程的 ${field} 不一致。`);
-  if ((local.launchMode ?? "shared") !== (market.launchMode ?? "shared"))
-    throw new Error("市场清单与应用工程的 launchMode 不一致。");
+  const validated = validateApplicationManifest(value, { signed: true });
+  if (validated.version !== manifest.version) throw new Error("市场源目录的应用版本与发行版本不一致。");
+  if (!isDeepStrictEqual(validated, manifest)) throw new Error("市场源目录的应用清单与发行清单不一致。");
+  const pkg = await readJson(path.join(destination, "package.json"));
+  if (pkg.version !== manifest.version) throw new Error("市场源目录的 package.json 版本与发行版本不一致。");
+  await access(path.join(destination, manifest.entrypoint));
 }
 
 export async function readProjectManifest(project, version) {
-  // An explicit market manifest leaves the unsigned local-development ZIP
-  // contract intact while opting this application's signed releases into v3.
-  const dedicated = path.join(project, "market.manifest.json");
+  const canonical = path.join(project, "market/wanx-app.json");
   try {
-    await access(dedicated);
+    await access(canonical);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    for (const [relative, layout] of [["market/wanx-app.json", "zhijun"], ["application.manifest.json", "application"]]) {
-      const file = path.join(project, relative);
-      try { await access(file); }
-      catch (cause) { if (cause.code === "ENOENT") continue; throw cause; }
-      return { layout, manifest: validateApplicationManifest({ ...await readJson(file), version }, { signed: true }) };
-    }
-    throw new Error("未找到 market.manifest.json、market/wanx-app.json 或 application.manifest.json，无法识别应用工程。");
+    throw new Error(`应用工程缺少标准市场清单：${canonical}`);
   }
-  const input = await readJson(dedicated);
-  assertSameApplication(await readJson(path.join(project, "application.manifest.json")), input);
-  return { layout: "application", manifest: validateApplicationManifest({ ...input, version }, { signed: true }) };
+  const manifest = validateApplicationManifest({ ...await readJson(canonical), version }, { signed: true });
+  assertCurrentMarketProtocol(manifest);
+  const pkg = await readJson(path.join(project, "package.json"));
+  if (!pkg.scripts?.["build:market-source"])
+    throw new Error("应用工程缺少 npm run build:market-source，无法构建标准市场源目录。");
+  return { manifest };
 }
 
 export async function readMarketOptions(cli = {}) {
@@ -121,6 +83,7 @@ export async function readMarketOptions(cli = {}) {
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) throw new Error("无效的发行 key-id。");
   return {
     project, version: values.version, os: osName, arch, keyId,
+    targetConfigured: Boolean(values.os || values.arch),
     keyFile: resolveOption("key", path.join(os.homedir(), ".config/wanx-release/release-private.pem")),
     outputDir: resolveOption("out", path.join(clientRoot, "release/market")),
   };
@@ -129,7 +92,8 @@ export async function readMarketOptions(cli = {}) {
 export async function packageMarketApp(cli = {}) {
   const options = await readMarketOptions(cli);
   const { project, version, keyId, keyFile, outputDir } = options;
-  const { layout, manifest } = await readProjectManifest(project, version);
+  const { manifest } = await readProjectManifest(project, version);
+  const { targetOS, targetArch } = resolveMarketTarget(options, manifest);
   const trusted = (await readJson(path.join(clientRoot, "applications/market-trust.json"))).keys || {};
   if (!trusted[keyId]) throw new Error(`万象客户端未配置信任公钥 ${keyId}。`);
   const privateKey = createPrivateKey(await readFile(keyFile));
@@ -139,13 +103,13 @@ export async function packageMarketApp(cli = {}) {
   if (!actual.equals(expected)) throw new Error(`签名私钥与万象客户端 ${keyId} 的公钥不匹配。`);
   const sourceDir = await mkdtemp(path.join(os.tmpdir(), "wanx-market-"));
   try {
-    console.log(`构建 ${manifest.name} 市场包 ${version}（${options.os}/${options.arch}）`);
-    if (layout === "zhijun") await stageZhijun(project, sourceDir, version);
-    else await stageApplication(project, sourceDir, manifest);
+    console.log(`构建 ${manifest.name} 市场包 ${version}（${targetOS}/${targetArch}）`);
+    await stageMarketSource(project, sourceDir, manifest);
     await writeFile(path.join(sourceDir, "wanx-app.json"), JSON.stringify(manifest, null, 2) + "\n");
     const result = await packageApplication({
-      sourceDir, outputDir, os: options.os, arch: options.arch,
+      sourceDir, outputDir, os: targetOS, arch: targetArch,
       keyFile, keyId, overwrite: true,
+      minWanxVersion: "0.1.4",
     });
     const envelope = await readJson(result.envelopePath);
     const descriptor = verifyEnvelope(envelope, trusted);
@@ -154,12 +118,20 @@ export async function packageMarketApp(cli = {}) {
   } finally { await rm(sourceDir, { recursive: true, force: true }); }
 }
 
+export function resolveMarketTarget(options, manifest) {
+  const targetOS = !options.targetConfigured ? { darwin: "macos", win32: "windows" }[manifest.platform] || options.os : options.os;
+  const targetArch = !options.targetConfigured && manifest.arch ? manifest.arch : options.arch;
+  if (manifest.platform && (manifest.platform !== (targetOS === "macos" ? "darwin" : "win32") || manifest.arch !== targetArch))
+    throw new Error("打包目标平台或架构与应用市场清单不一致。");
+  return { targetOS, targetArch };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const names = ["project", "version", "config", "out", "key", "key-id", "os", "arch"];
     const { values } = parseArgs({ options: { ...Object.fromEntries(names.map(name => [name, { type: "string" }])), help: { type: "boolean" } } });
     if (values.help) {
-      console.log("用法：./package-app.sh --project <应用工程> --version <SemVer> [--out <目录>] [--key <私钥>] [--key-id <ID>] [--os macos|windows --arch arm64|x64]\n也可在应用工程的 market-release.local.json 中配置 version、out、key、key-id、os、arch；命令行优先。默认签名密钥 ~/.config/wanx-release/release-private.pem，默认输出 wanx-client/release/market/。通用应用省略平台参数。同名包会在新包构建校验通过后覆盖；不会修改应用源码或上传市场。");
+      console.log("用法：./package-app.sh --project <应用工程> --version <SemVer> [--out <目录>] [--key <私钥>] [--key-id <ID>] [--os macos|windows --arch arm64|x64]\n标准工程提供 market/wanx-app.json 和 npm run build:market-source，产物放在 dist/application。也可在应用工程的 market-release.local.json 中配置 version、out、key、key-id、os、arch；命令行优先。默认签名密钥 ~/.config/wanx-release/release-private.pem，默认输出 wanx-client/release/market/。通用应用省略平台参数；清单限定平台时自动使用该平台。同名包会在新包构建校验通过后覆盖；不会修改应用源码或上传市场。");
     } else {
       const result = await packageMarketApp(values);
       console.log(JSON.stringify({ archivePath: result.archivePath, envelopePath: result.envelopePath, sha256: result.descriptor.sha256, verified: true }, null, 2));

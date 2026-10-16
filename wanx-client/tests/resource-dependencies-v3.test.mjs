@@ -65,7 +65,7 @@ function harness(value, options = {}) {
             ? { ...backend(), backendProductId: "wanx", status: "ready", applicationId: id, artifactId: value.descriptor.artifactId }
             : backend();
           options.edit?.(result, input);
-          return { status: options.status || 200, body: Buffer.from(JSON.stringify(result)) };
+          return { status: options.status || 200, body: Buffer.from(options.body ?? JSON.stringify(result)) };
         },
       };
     },
@@ -101,6 +101,17 @@ test("v3 signatures bind the exact resource declaration and schema", async t => 
   ]) assert.throws(() => verifyEnvelope(envelopeFor(edit), trustedKeys), { code: "MARKET_INVALID_DESCRIPTOR" });
   const tampered = { ...value.envelope, descriptorBase64: Buffer.from(JSON.stringify({ ...value.descriptor, compatibility: { ...compatibility, resourceDependencies: [] } })).toString("base64") };
   assert.throws(() => verifyEnvelope(tampered, trustedKeys), { code: "MARKET_INVALID_SIGNATURE" });
+});
+
+test("missing box preparation route or service is not reported as missing experts", async t => {
+  const value = await artifact(await temporary(t));
+  const noResources = { ...manifest, compatibility: { ...compatibility, backendContracts: [], resourceDependencies: [] } };
+  for (const [status, code] of [[404, "BACKEND_CONTRACT_INCOMPATIBLE"], [503, "APPLICATION_PREPARATION_UNAVAILABLE"]]) {
+    const h = harness(value, { status });
+    await assert.rejects(h.provider.prepareApplication({ manifest: noResources, descriptor: value.descriptor }), { code });
+    const nonJson = harness(value, { status, body: "Not Found" });
+    await assert.rejects(nonJson.provider.prepareApplication({ manifest: noResources, descriptor: value.descriptor }), { code });
+  }
 });
 
 test("missing downloaded resources are installable candidates, but download/name alone cannot authorize launch", () => {

@@ -224,6 +224,11 @@ def validate(package: Any) -> dict[str, Any]:
     json_value(package["metadata"])
     if len(canonical(package["metadata"])) > 64 * 1024:
         raise PackageError("metadata exceeds 64 KiB")
+    if "expertInstanceScope" in package["metadata"] and (
+        kind != "expert"
+        or package["metadata"]["expertInstanceScope"] not in ("application", "account")
+    ):
+        raise PackageError("expertInstanceScope is only valid for experts: application or account")
     files = package["files"]
     if not isinstance(files, list) or not 1 <= len(files) <= 256:
         raise PackageError("resource must contain 1 through 256 files")

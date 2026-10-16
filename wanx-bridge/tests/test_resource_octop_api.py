@@ -184,8 +184,10 @@ async def test_global_package_copy_preserves_private_filesystem_isolation(
     assert downloaded.content == binary
 
 
+@pytest.mark.parametrize("controlled_resources", [False, True])
+@pytest.mark.parametrize("share_experts", [False, True])
 async def test_resource_runtime_pins_existing_history_through_real_octop(
-    env_admin_alice: Any, tmp_path: Any
+    env_admin_alice: Any, tmp_path: Any, controlled_resources: bool, share_experts: bool
 ) -> None:
     """Exercise the bridge implementation, not just hand-written endpoint shapes."""
     import hashlib
@@ -225,7 +227,7 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
     credential_file = tmp_path / "device.key"
     credential_file.write_text("resource-api-test-device-only")
     credential_file.chmod(0o600)
-    artifact_packages, envelopes = {}, []
+    artifact_packages, all_envelopes, envelopes = {}, {}, []
     skill_text = "---\nname: file_reader\ndescription: test\n---\n# Private resource skill"
     asset_bytes = b"\x00\xffprivate-package"
 
@@ -240,7 +242,9 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
             "name": "资源测试" + resource_id,
             "description": "Integration fixture",
             "dependencies": dependencies,
-            "metadata": {},
+            "metadata": {"expertInstanceScope": "account"}
+            if kind == "expert" and share_experts
+            else {},
             "files": [
                 {"path": path, "contentBase64": base64.b64encode(content).decode()}
                 for path, content in files.items()
@@ -260,6 +264,8 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
                 "publishedAt": "2026-10-15T00:00:00Z",
             }
         )
+        if controlled_resources:
+            payload["releaseAccess"] = "account"
         envelope = {
             "payload": payload,
             "signature": {
@@ -269,6 +275,7 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
             },
         }
         artifact_packages[digest] = raw
+        all_envelopes[(kind, resource_id, version)] = envelope
         return envelope
 
     skill = bundle(
@@ -306,29 +313,30 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
         )
         if request.url.path.endswith("/resolve"):
             body = json.loads(request.content)
+            assert body["resourceProtocol"] == 2
             data = {
                 "schemaVersion": 1,
-                **body,
+                "applicationId": body["applicationId"],
+                "artifactId": body["artifactId"],
                 "backendProductId": "wanx",
                 "requirements": requirements,
                 "resources": envelopes,
             }
-        elif request.url.path.endswith("/download"):
+            if controlled_resources:
+                data["releaseAccess"] = "account"
+        elif request.url.path.endswith(("/download", "/access")):
             body = json.loads(request.content)
-            envelope = next(
-                item
-                for item in envelopes
-                if all(
-                    item["payload"][name] == body[name]
-                    for name in ("kind", "resourceId", "version")
-                )
-            )
+            envelope = all_envelopes[
+                tuple(body[name] for name in ("kind", "resourceId", "version"))
+            ]
             data = {
                 "envelope": envelope,
                 "url": "https://resource-download.test/package/"
                 + envelope["payload"]["package"]["sha256"],
                 "expiresAt": int(time.time()) + 300,
             }
+            if request.url.path.endswith("/access"):
+                data = {"envelope": envelope, "channel": "stable"}
         else:
             raise AssertionError(request.url)
         return httpx.Response(200, json={"code": 200, "success": True, "data": data})
@@ -363,7 +371,13 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
         "applicationId": "centaurai.resource-fixture",
         "artifactId": "fixture-artifact-1",
     }
-    context = {"device_id": "fixture-box", "ownership_epoch": 1, "sub": "fixture-consumer"}
+    context = {
+        "device_id": "fixture-box",
+        "ownership_epoch": 1,
+        "sub": "a898cd6c-bca4-42dc-9a35-4165c20b5d21"
+        if controlled_resources
+        else "fixture-consumer",
+    }
     session = SimpleNamespace(user=me)
     result = await runtime.prepare(body, session, context, user_request, live)
     assert result["status"] == "ready", result
@@ -381,9 +395,24 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
     assert binary.content == asset_bytes
     repeated = await runtime.prepare(body, session, context, user_request, live)
     assert repeated["bindings"] == result["bindings"]
+    other_body = {**body, "applicationId": "centaurai.resource-other"}
+    other = await runtime.prepare(other_body, session, context, user_request, live)
+    assert other["status"] == "ready", other
+    initial_skill = next(item for item in result["bindings"] if item["kind"] == "skill-package")
+    assert (
+        next(item for item in other["bindings"] if item["kind"] == "skill-package") == initial_skill
+    )
+    other_agent = next(item["instanceId"] for item in other["bindings"] if item["kind"] == "expert")
+    assert (other_agent == agent) is share_experts
+    global_packages = await client.get("/api/skill-packages", headers=admin)
+    assert len(global_packages.json()) == 1
     inspected = await runtime.inspect(body, session, context, user_request, live)
     assert inspected["status"] == "ready"
-    if os.environ.get("WANX_WRITE_RESOURCE_FIXTURE") == "1":
+    if (
+        not controlled_resources
+        and not share_experts
+        and os.environ.get("WANX_WRITE_RESOURCE_FIXTURE") == "1"
+    ):
         destination = Path(__file__).parent / "fixtures/resources-prepare-v1.json"
         destination.parent.mkdir(exist_ok=True)
         destination.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
@@ -424,6 +453,40 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
         params={"path": "skills/file_reader/assets/binary.dat", "from_workspace": "true"},
     )
     assert unchanged.content == asset_bytes
+    if share_experts:
+        old_requirements = list(requirements)
+        requirements[:] = [{**dep, "minVersion": "2.0.0"}]
+        skill_only = await runtime.prepare(
+            {**body, "applicationId": "centaurai.resource-skill-only"},
+            session,
+            context,
+            user_request,
+            live,
+        )
+        assert skill_only["status"] == "ready", skill_only
+        assert skill_only["bindings"][0]["version"] == "2.0.0"
+        requirements[:] = [dep, *old_requirements]
+        # A new application must adopt the private expert's complete old graph,
+        # even if the first root selects a skill with a newer shared installation.
+        third = await runtime.prepare(
+            {**body, "applicationId": "centaurai.resource-third"},
+            session,
+            context,
+            user_request,
+            live,
+        )
+        assert third["bindings"] == result["bindings"], third
+        assert len((await client.get("/api/skill-packages", headers=admin)).json()) == 2
+        requirements[0] = {**dep, "minVersion": "2.0.0"}
+        incompatible = await runtime.prepare(
+            {**body, "applicationId": "centaurai.resource-fourth"},
+            session,
+            context,
+            user_request,
+            live,
+        )
+        assert incompatible["code"] == "RESOURCE_MIGRATION_REQUIRED"
+        requirements[:] = old_requirements
 
     # A higher required skill version would change this existing expert's private
     # working files; no implicit agent switch or misleading version success.
@@ -493,4 +556,84 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
     still_ready = await failing.prepare(body, session, context, no_install_request, live)
     assert still_ready["status"] == "ready", still_ready
     assert still_ready["bindings"] == expanded["bindings"]
+    # Stable pool reads/copies are safe; shared writes/mounts are not. Gray pool
+    # content remains completely internal to the verified resource workflow.
+    from wanx_bridge.server import create_app
+
+    bob = await create_user(client, admin, username="resource-guard-bob")
+    package_id = next(
+        item["packageId"] for item in result["bindings"] if item["kind"] == "skill-package"
+    )
+    direct = await client.get(f"/api/skill-packages/{package_id}", headers=bob)
+    assert direct.status_code == 200
+    assert direct.json()["description"].startswith(
+        "wanx-resource:account:" if controlled_resources else "wanx-resource:shared:"
+    )
+    bob_agent = (await resource_agent(client, bob))["agent_id"]
+
+    class BridgeAuth:
+        async def authorize(self, marker: str) -> Any:
+            assert marker == "fixture-bridge-session"
+            return {"upstream_token": bob["Authorization"].removeprefix("Bearer ")}
+
+        async def assert_live(self, session: Any) -> None:
+            pass
+
+    app = create_app(
+        BridgeAuth(),
+        LocalAdmin(),
+        http_transport=httpx.ASGITransport(app=client._transport.app),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bridge.test",
+        headers={"Authorization": "Bearer fixture-bridge-session"},
+    ) as public:
+        listed = await public.get("/api/skill-packages")
+        assert listed.status_code == 200, listed.text
+        assert any(row["id"] == package_id for row in listed.json()) is not controlled_resources
+        assert listed.headers["cache-control"] == "no-store"
+        for path in (
+            f"/api/skill-packages/{package_id}",
+            f"/api/skill-packages/{package_id}/skills/file_reader",
+        ):
+            response = await public.get(path)
+            assert response.status_code == (403 if controlled_resources else 200), response.text
+        copied = await public.post(
+            f"/api/agents/{bob_agent}/skill-packages/{package_id}/copy",
+            json={"skill_slugs": ["file_reader"], "overwrite": False},
+        )
+        assert copied.status_code == (403 if controlled_resources else 200), copied.text
+        if not controlled_resources:
+            private_copy = await public.get(
+                f"/api/agents/{bob_agent}/workspace/download",
+                params={"path": "skills/file_reader/assets/binary.dat", "from_workspace": "true"},
+            )
+            assert private_copy.content == asset_bytes
+        for method, path, payload in (
+            (
+                "PATCH",
+                f"/api/skill-packages/{package_id}",
+                {"description": "remove the immutable marker"},
+            ),
+            ("DELETE", f"/api/skill-packages/{package_id}", {}),
+            ("POST", f"/api/skill-packages/{package_id}/skills", {"name": "injected", "files": []}),
+            ("PUT", f"/api/agents/{bob_agent}/skill-packages", {"package_ids": [package_id]}),
+            ("POST", "/api/agents", {"name": "Bypass", "skill_package_ids": [package_id]}),
+            (
+                "PATCH",
+                f"/api/agents/{bob_agent}",
+                {"config": {"skill_package_ids": [package_id]}},
+            ),
+        ):
+            response = await public.request(method, path, json=payload)
+            assert response.status_code == 403, response.text
+            if controlled_resources:
+                assert response.json()["code"] == "RESOURCE_MANAGED_PACKAGE_PRIVATE"
+    preserved = await client.get(
+        f"/api/agents/{agent}/workspace/download",
+        headers=alice,
+        params={"path": "skills/file_reader/assets/binary.dat", "from_workspace": "true"},
+    )
+    assert preserved.content == asset_bytes
     await catalog.close()

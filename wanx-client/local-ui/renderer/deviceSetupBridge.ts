@@ -32,6 +32,7 @@ export interface SetupTransportRequest {
   requestId: string;
   operation:
     | "connect"
+    | "cancelConnect"
     | "readDeviceInfo"
     | "request"
     | "subscribeStatus"
