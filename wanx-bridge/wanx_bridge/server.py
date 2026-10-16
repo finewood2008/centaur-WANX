@@ -27,6 +27,7 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from .assets import DashboardAssets, installed_dashboard
 from .config import BridgeAuthError
+from .managed_resource_guard import ManagedResourceGuard
 from .readiness import diagnose_application
 from .upstream import BridgeUpstreamError
 from .version import bridge_build_metadata, version_snapshot
@@ -212,6 +213,9 @@ def create_app(
         trust_env=False,
         timeout=httpx.Timeout(connect=10, read=None, write=60, pool=10),
     )
+    # This boundary stays active even when background resource synchronization
+    # is disabled: previously installed controlled packages must remain private.
+    managed_resources = ManagedResourceGuard(adapter)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -386,11 +390,27 @@ def create_app(
         upstream = None
         pending = None
         try:
+            content = request.stream()
+            request_body = None
+            if managed_resources.needs_body(request.method, path):
+                data = bytearray()
+                async with asyncio.timeout(30):
+                    async for chunk in content:
+                        data.extend(chunk)
+                        if len(data) > 2 * 1024 * 1024:
+                            raise _error("BOX_PLATFORM_BODY_TOO_LARGE", 413)
+                        if session:
+                            await _call(auth.assert_live, session)
+                request_body = bytes(data)
+                content = request_body
+            await managed_resources.inspect_request(request.method, path, request_body)
+            if session:
+                await _call(auth.assert_live, session)
             req = client.build_request(
                 request.method,
                 _target(origin, path, request.query_params, token),
                 headers=_headers(request.headers, token),
-                content=request.stream(),
+                content=content,
             )
             # AsyncClient keeps a shared response cookie jar. Never let a prior
             # upstream response attach another user's cookies to this request.
@@ -402,6 +422,33 @@ def create_app(
                     await guard
             upstream = await pending
             headers = _response_headers(upstream, origin)
+            if upstream.status_code == 200 and managed_resources.needs_response(
+                request.method, path
+            ):
+                data = bytearray()
+                async with asyncio.timeout(30):
+                    async for chunk in upstream.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > 4 * 1024 * 1024:
+                            raise _error("RESOURCE_RESPONSE_TOO_LARGE", 502)
+                        if session:
+                            await _call(auth.assert_live, session)
+                try:
+                    value = json.loads(data)
+                except (ValueError, UnicodeError) as exc:
+                    raise _error("RESOURCE_UPSTREAM_RESPONSE_INVALID", 502) from exc
+                filtered = await managed_resources.filter_response(request.method, path, value)
+                if session:
+                    await _call(auth.assert_live, session)
+                await upstream.aclose()
+                if guard:
+                    guard.cancel()
+                    with contextlib.suppress(BaseException):
+                        await guard
+                for name in ("content-length", "content-encoding", "etag", "last-modified"):
+                    headers.pop(name, None)
+                headers["cache-control"] = "no-store"
+                return JSONResponse(filtered, headers=headers)
         except BaseException:
             if pending and not pending.done():
                 pending.cancel()

@@ -40,6 +40,11 @@ async function packageManifest(sourceDir) {
   return validateApplicationManifest(JSON.parse(content), { signed: true });
 }
 
+export function assertCurrentMarketProtocol(manifest) {
+  if (manifest.protocolVersion !== 3 || manifest.releaseAccess !== "account")
+    fail("新市场应用包仅支持协议 3 和账号许可，请更新 market/wanx-app.json 后重新打包。");
+}
+
 async function envelopeFor(file, metadata, key) {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(file)) digest.update(chunk);
@@ -159,9 +164,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const { values } = parseArgs({ options: { ...options, help: { type: "boolean" } } });
     if (values.help) {
-      console.log("node tools/package-application.mjs --source <build-dir> --out <output-dir> --key <ed25519-private.pem> --key-id <id> [--min-wanx-version 0.1.0] [--build-id <commit>]\n应用包默认通用（universal/universal），仅平台专用应用需指定 --os macos|windows --arch x64|arm64。\n原生安装包签名：将 --source/--out 换为 --file <package.dmg|exe> --application-id <id> --version <semver>，必须指定 --os 和 --arch。");
+      console.log("node tools/package-application.mjs --source <build-dir> --out <output-dir> --key <ed25519-private.pem> --key-id <id> [--min-wanx-version 0.1.0] [--build-id <commit>]\n新市场应用包必须使用协议 3 和账号许可，默认通用（universal/universal）；仅平台专用应用需指定 --os macos|windows --arch x64|arm64。\n原生安装包签名：将 --source/--out 换为 --file <package.dmg|exe> --application-id <id> --version <semver>，必须指定 --os 和 --arch。");
     } else {
       if (!values.key || (values.file && (!values.os || !values.arch)) || (!values.file && (!values.source || !values.out))) fail("参数不完整，使用 --help 查看用法。");
+      if (!values.file) assertCurrentMarketProtocol(await packageManifest(path.resolve(values.source)));
       const input = { sourceDir: values.source, outputDir: values.out, inputFile: values.file, applicationId: values["application-id"], version: values.version, os: values.os, arch: values.arch, keyFile: values.key, keyId: values["key-id"], minWanxVersion: values["min-wanx-version"], buildId: values["build-id"] };
       const result = await (values.file ? signNativePackage(input) : packageApplication(input));
       console.log(JSON.stringify({ package: result.archivePath, signature: result.envelopePath, artifactId: result.descriptor.artifactId, sha256: result.descriptor.sha256 }, null, 2));

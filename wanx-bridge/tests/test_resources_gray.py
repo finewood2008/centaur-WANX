@@ -189,7 +189,12 @@ async def test_http_resolve_contract_carries_uuid_and_rejects_stopped_gray(setup
     value = await catalog.resolve("centaurai.test", "gray-artifact", account_id=ACCOUNT_A)
     assert value["releaseAccess"] == "account"
     assert observed == [
-        {"applicationId": "centaurai.test", "artifactId": "gray-artifact", "accountId": ACCOUNT_A}
+        {
+            "applicationId": "centaurai.test",
+            "artifactId": "gray-artifact",
+            "accountId": ACCOUNT_A,
+            "resourceProtocol": 2,
+        }
     ]
     stopped = True
     with pytest.raises(BridgeAuthError, match="MARKET_GRAY_ACCESS_DENIED") as error:

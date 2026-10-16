@@ -20,6 +20,9 @@ import httpx
 
 from .admin_client import AdminClient, BridgeUpstreamError
 from .config import BridgeAuthError
+from .managed_resource_guard import CONTROLLED_MARKER, SHARED_MARKER
+from .resource_cache import cache_io
+from .resource_instances import ResourceInstances, instance_identity
 from .resources import ResourceCatalog, atomic, private_bytes
 from .resources_contract import (
     canonical,
@@ -166,7 +169,8 @@ class ResourceRuntime:
                 # permit. A promoted controlled artifact remains online-only.
                 raise fail("RESOURCE_ONLINE_ACCESS_REQUIRED", 503) from exc
             for envelope in resolution["resources"]:
-                self.catalog.verify(envelope)
+                if self.catalog.verify(envelope).get("releaseAccess") == "account":
+                    raise fail("RESOURCE_ONLINE_ACCESS_REQUIRED", 503) from exc
         if "releaseAccess" in resolution:
             if resolution["releaseAccess"] != "account":
                 raise fail("RESOURCE_RESPONSE_INVALID", 502)
@@ -209,6 +213,19 @@ class ResourceRuntime:
 
                 active_resources = copy.deepcopy(ledger["resources"])
                 publish_bindings = False
+                authorized_resources: set[str] = set()
+
+                async def authorize_resource(envelope: dict[str, Any]) -> None:
+                    payload = self.catalog.verify(envelope)
+                    if payload.get("releaseAccess") != "account":
+                        return
+                    identity = _digest(envelope)
+                    if identity not in authorized_resources:
+                        await assert_live()
+                        await self.catalog.authorize(envelope, account_id=account_id)
+                        await assert_live()
+                        authorized_resources.add(identity)
+                    result["releaseAccess"] = "account"
 
                 async def save() -> None:
                     await assert_live()
@@ -220,12 +237,12 @@ class ResourceRuntime:
                         # a new global version alongside an old private copy.
                         if not publish_bindings:
                             durable["resources"] = active_resources
-                        await asyncio.to_thread(atomic, path, canonical(durable))
+                        await cache_io(atomic, path, canonical(durable))
 
                 async def remember_resolution() -> None:
                     await assert_live()
                     if not read_only:
-                        await asyncio.to_thread(
+                        await cache_io(
                             atomic,
                             resolution_path,
                             canonical(resolution),
@@ -234,7 +251,13 @@ class ResourceRuntime:
                 requirements = resolution["requirements"]
                 try:
                     current = await self._current(
-                        ledger, requirements, me["id"], product, request, assert_live
+                        ledger,
+                        requirements,
+                        me["id"],
+                        product,
+                        request,
+                        assert_live,
+                        authorize_resource,
                     )
                 except BridgeAuthError as exc:
                     if exc.code != "RESOURCE_NOT_PREPARED":
@@ -263,7 +286,7 @@ class ResourceRuntime:
                         > version(item["version"])
                     ]
                     # Instance IDs carry conversation/history identity. A newly
-                    # published package is cached, never implicitly substituted.
+                    # published resource is offered, never implicitly substituted.
                     await remember_resolution()
                     return result
                 latest_envelopes = {
@@ -272,14 +295,69 @@ class ResourceRuntime:
                 }
                 minimums: dict[str, str] = {}
                 selected_envelopes: dict[str, Any] = {}
+                instances = ResourceInstances(self.catalog.directory)
 
-                def require(dependency: dict[str, Any]) -> None:
+                async def adopt_shared(dependency: dict[str, Any]) -> None:
+                    key = dependency["kind"] + ":" + dependency["resourceId"]
+                    # Existing per-application bindings and legacy unfinished
+                    # installations remain authoritative; never merge their data.
+                    if key in ledger["resources"] or key in ledger.get("pendingResources", {}):
+                        return
+                    envelope = latest_envelopes.get(key)
+                    if envelope is None:
+                        return
+                    payload = self.catalog.verify(envelope)
+                    identity = instance_identity(payload, scope)
+                    if identity is None:
+                        return
+                    record = await instances.read(identity)
+                    if record is None:
+                        return
+                    stored = self.catalog.verify(record.get("envelope"))
+                    if (
+                        instance_identity(stored, scope) != identity
+                        or stored["version"] != record.get("version")
+                        or stored["package"]["sha256"] != record["digest"]
+                    ):
+                        raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                    if version(record["version"]) < version(dependency["minVersion"]):
+                        raise fail("RESOURCE_MIGRATION_REQUIRED")
+                    if stored["version"] == payload["version"] and canonical(
+                        record["envelope"]
+                    ) != canonical(envelope):
+                        raise fail("RESOURCE_VERSION_CHANGED")
+                    await authorize_resource(record["envelope"])
+                    # A shared private expert keeps the exact skill copies it
+                    # was verified with, even when the market now offers newer ones.
+                    for dep_key, dep_record in record.get("dependencyResources", {}).items():
+                        if not isinstance(dep_record, dict) or dep_record.get("status") != "ready":
+                            raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                        dep_payload = self.catalog.verify(dep_record.get("envelope"))
+                        if (
+                            dep_payload["kind"] != "skill-package"
+                            or dep_key != "skill-package:" + dep_payload["resourceId"]
+                            or dep_record.get("version") != dep_payload["version"]
+                            or dep_record.get("digest") != dep_payload["package"]["sha256"]
+                        ):
+                            raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                        installed = ledger["resources"].get(dep_key)
+                        if installed and installed.get("digest") != dep_record.get("digest"):
+                            raise fail("RESOURCE_MIGRATION_REQUIRED")
+                        if not installed:
+                            ledger["resources"][dep_key] = copy.deepcopy(dep_record)
+                    if record["status"] == "ready":
+                        ledger["resources"][key] = record
+                    else:
+                        ledger.setdefault("pendingResources", {})[key] = record
+
+                async def require(dependency: dict[str, Any]) -> None:
                     dep_key = dependency["kind"] + ":" + dependency["resourceId"]
                     if dep_key in minimums and version(minimums[dep_key]) >= version(
                         dependency["minVersion"]
                     ):
                         return
                     minimums[dep_key] = dependency["minVersion"]
+                    await adopt_shared(dependency)
                     installed = ledger["resources"].get(dep_key)
                     compatible = installed and version(installed["version"]) >= version(
                         dependency["minVersion"]
@@ -294,19 +372,33 @@ class ResourceRuntime:
                         )
                         if dependency["kind"] == "expert" or consumed:
                             raise fail("RESOURCE_MIGRATION_REQUIRED")
+                    pending = ledger.get("pendingResources", {}).get(dep_key)
                     envelope = (
-                        installed["envelope"] if compatible else latest_envelopes.get(dep_key)
+                        installed["envelope"]
+                        if compatible
+                        else (
+                            pending["envelope"]
+                            if pending and pending.get("sharedIdentity")
+                            else latest_envelopes.get(dep_key)
+                        )
                     )
                     if envelope is None:
                         raise fail("RESOURCE_DEPENDENCY_UNRESOLVED")
                     selected_envelopes[dep_key] = envelope
                     selected = self.catalog.verify(envelope)
+                    if version(selected["version"]) < version(dependency["minVersion"]):
+                        raise fail("RESOURCE_MIGRATION_REQUIRED")
                     for child in selected["dependencies"]:
-                        require(child)
+                        await require(child)
 
                 try:
-                    for dependency in requirements:
-                        require(dependency)
+                    # Private expert workspaces already contain exact skill
+                    # copies. Pin those snapshots before ordinary skill roots,
+                    # regardless of the order declared by the application.
+                    for dependency in sorted(
+                        requirements, key=lambda item: item["kind"] != "expert"
+                    ):
+                        await require(dependency)
                 except BridgeAuthError as exc:
                     result["code"] = exc.code
                     return result
@@ -327,6 +419,11 @@ class ResourceRuntime:
                 for key in selected_envelopes:
                     order(key)
                 try:
+                    # A compatible installed gray version may be newer than the
+                    # current stable resolution. Recheck its exact authority before
+                    # either reusing it or writing any new dependent resources.
+                    for envelope in ordered:
+                        await authorize_resource(envelope)
                     if not read_only:
                         for envelope in ordered:
                             payload = self.catalog.verify(envelope)
@@ -334,21 +431,68 @@ class ResourceRuntime:
                             active = ledger["resources"].get(key)
                             if active and version(active["version"]) >= version(minimums[key]):
                                 continue
-                            package = await self.catalog.package(envelope)
+                            package = await self.catalog.package(
+                                envelope,
+                                **({"account_id": account_id} if account_id is not None else {}),
+                            )
                             await assert_live()
+                            identity = instance_identity(payload, scope)
+                            pending = ledger.get("pendingResources", {}).get(key)
+                            if pending and not pending.get("sharedIdentity"):
+                                identity = None  # Resume a legacy intent in its original scope.
+                            installation = ledger
+                            install_save = save
+                            needed = []
+                            if identity is not None:
+                                record = await instances.read(identity)
+                                if record and (
+                                    record["version"] != payload["version"]
+                                    or record["digest"] != payload["package"]["sha256"]
+                                ):
+                                    raise fail("RESOURCE_MIGRATION_REQUIRED")
+                                installation = {
+                                    "resources": {},
+                                    "pendingResources": {key: record} if record else {},
+                                }
+
+                                async def save_shared() -> None:
+                                    shared = installation.get("pendingResources", {}).get(
+                                        key
+                                    ) or installation["resources"].get(key)
+                                    if shared is None:
+                                        raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                                    shared["sharedIdentity"] = identity
+                                    if payload["kind"] == "expert":
+                                        shared["dependencyResources"] = {
+                                            "skill-package:"
+                                            + dependency["resourceId"]: copy.deepcopy(
+                                                ledger["resources"][
+                                                    "skill-package:" + dependency["resourceId"]
+                                                ]
+                                            )
+                                            for _, dependency in needed
+                                        }
+                                    await assert_live()
+                                    # Persist the common intent before either the
+                                    # application ledger or an external API write.
+                                    await instances.write(identity, shared)
+                                    ledger.setdefault("pendingResources", {})[key] = shared
+                                    await save()
+
+                                install_save = save_shared
                             if payload["kind"] == "skill-package":
                                 await self._skill(
                                     package,
                                     payload,
-                                    ledger,
+                                    installation,
                                     key,
-                                    scope_id,
-                                    save,
+                                    _digest(identity) if identity else scope_id,
+                                    install_save,
                                     assert_live,
                                     envelope,
+                                    shared_pool=identity is not None,
                                 )
                             else:
-                                needed = []
                                 seen_skills: set[str] = set()
 
                                 async def collect_skills(
@@ -373,7 +517,12 @@ class ResourceRuntime:
                                             seen_skills.add(dep["resourceId"])
                                             await collect_skills(dep_payload["dependencies"])
                                             dep_package = await self.catalog.package(
-                                                installed["envelope"]
+                                                installed["envelope"],
+                                                **(
+                                                    {"account_id": account_id}
+                                                    if account_id is not None
+                                                    else {}
+                                                ),
                                             )
                                             needed.append((installed["packageId"], dep_package))
 
@@ -381,18 +530,26 @@ class ResourceRuntime:
                                 await self._expert(
                                     package,
                                     payload,
-                                    ledger,
+                                    installation,
                                     key,
                                     me["id"],
                                     product,
                                     needed,
                                     request,
-                                    save,
+                                    install_save,
                                     assert_live,
                                     envelope,
                                 )
+                            if identity is not None:
+                                ledger["resources"][key] = installation["resources"][key]
                     selected = await self._current(
-                        ledger, requirements, me["id"], product, request, assert_live
+                        ledger,
+                        requirements,
+                        me["id"],
+                        product,
+                        request,
+                        assert_live,
+                        authorize_resource,
                     )
                     result.update(selected)
                     if not read_only:
@@ -409,7 +566,13 @@ class ResourceRuntime:
                     # authoritative minimum requirements permit this fallback.
                     try:
                         selected = await self._current(
-                            ledger, requirements, me["id"], product, request, assert_live
+                            ledger,
+                            requirements,
+                            me["id"],
+                            product,
+                            request,
+                            assert_live,
+                            authorize_resource,
                         )
                     except (BridgeAuthError, BridgeUpstreamError, httpx.HTTPError, OSError):
                         result["code"] = error_code
@@ -433,6 +596,7 @@ class ResourceRuntime:
         product: str,
         request: Any,
         assert_live: Any,
+        authorize_resource: Any,
     ) -> dict[str, Any]:
         resources, bindings, visited, visiting = [], [], set(), set()
 
@@ -457,6 +621,7 @@ class ResourceRuntime:
                 raise fail("RESOURCE_DEPENDENCY_CYCLE")
             if key in visited:
                 return
+            await authorize_resource(record["envelope"])
             visiting.add(key)
             for dep in payload["dependencies"]:
                 await visit(dep)
@@ -570,6 +735,8 @@ class ResourceRuntime:
         save: Any,
         assert_live: Any,
         envelope: dict[str, Any],
+        *,
+        shared_pool: bool = False,
     ) -> dict[str, Any]:
         record = ledger["resources"].get(key)
         digest = payload["package"]["sha256"]
@@ -586,13 +753,26 @@ class ResourceRuntime:
         record = pending.get(key)
         if record and record["version"] != payload["version"]:
             raise fail("RESOURCE_PREVIOUS_PREPARATION_PENDING")
+        if record and record["digest"] != digest:
+            raise fail("RESOURCE_VERSION_CHANGED")
         if record is None:
             record = {
                 "version": payload["version"],
                 "digest": digest,
+                "envelope": envelope,
                 "status": "preparing",
                 "name": package["name"] + " " + package["version"] + " " + scope_id[:10],
-                "marker": "wanx-resource:" + secrets.token_hex(24),
+                # Shared global packages are an immutable internal pool. The
+                # native guard allows stable read/copy, but no shared mutation.
+                # Gray bytes remain private to the verified resource workflow.
+                "marker": (
+                    CONTROLLED_MARKER
+                    if payload.get("releaseAccess") == "account"
+                    else SHARED_MARKER
+                    if shared_pool
+                    else "wanx-resource:"
+                )
+                + secrets.token_hex(24),
                 "skills": {},
                 "previousPackageIds": (
                     [old["packageId"]] + old.get("previousPackageIds", []) if old else []
@@ -706,10 +886,13 @@ class ResourceRuntime:
             or record.get("dependencyDigests", {}) != dependency_digests
         ):
             raise fail("RESOURCE_PREVIOUS_PREPARATION_PENDING")
+        if record and record["digest"] != digest:
+            raise fail("RESOURCE_VERSION_CHANGED")
         if record is None:
             record = {
                 "version": payload["version"],
                 "digest": digest,
+                "envelope": envelope,
                 "dependencyDigests": dependency_digests,
                 "status": "preparing",
                 "nonce": secrets.token_hex(24),

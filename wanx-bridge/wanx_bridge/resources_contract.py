@@ -112,6 +112,11 @@ def resource_header(value: dict[str, Any]) -> None:
         raise fail()
     dependencies(value["dependencies"], value["kind"], value["resourceId"])
     metadata(value["metadata"])
+    if "expertInstanceScope" in value["metadata"] and (
+        value["kind"] != "expert"
+        or value["metadata"]["expertInstanceScope"] not in ("application", "account")
+    ):
+        raise fail("RESOURCE_INSTANCE_SCOPE_INVALID")
 
 
 def relative_path(value: Any) -> str:
@@ -218,9 +223,16 @@ def verify_envelope(envelope: Any, trust: dict[str, Any]) -> dict[str, Any]:
                 "metadata",
                 "package",
                 "publishedAt",
-            },
+            }
+            | (
+                {"releaseAccess"}
+                if isinstance(payload, dict) and "releaseAccess" in payload
+                else set()
+            ),
         )
         resource_header(payload)
+        if "releaseAccess" in payload and payload["releaseAccess"] != "account":
+            raise fail()
         if payload["purpose"] != "wanx.resource.v1" or not isinstance(payload["publishedAt"], str):
             raise fail()
         fields(payload["package"], {"format", "sha256", "sizeBytes"})

@@ -214,8 +214,16 @@ async function createProvisioningHost({
         if (!pending.delete(requestId)) return;
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
-        if (error && operation === "connect")
+        if (error && operation === "connect") {
           lateConnections.set(requestId, clock.monotonicMs() + 30000);
+          // A timeout ends the physical attempt too, before a retry can reuse
+          // the same BluetoothDevice. Late-result cleanup remains a fallback.
+          try {
+            send("wanx:setup:transport", {
+              requestId: randomUUID(), operation: "cancelConnect", args: [requestId],
+            });
+          } catch { /* Renderer teardown cannot prevent settling the caller. */ }
+        }
         error ? reject(error) : resolve(value);
       };
       const abort = () => finish(new DOMException("Aborted", "AbortError"));

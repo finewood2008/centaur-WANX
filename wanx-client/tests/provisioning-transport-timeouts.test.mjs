@@ -20,7 +20,7 @@ function tokenFrame(size = 1332) {
 // Exercise the shipped bundle and its actual SDK, including fragmentation,
 // one-use selection, response routing, cancellation and the Main IPC deadline.
 // Only physical Bluetooth and time are simulated; no real scan is performed.
-async function harness(t, { writeMs = 100, respond = true, silentOperation } = {}) {
+async function harness(t, { writeMs = 100, respond = true, silentOperation, slowFirstConnect = false } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const ipcMain = new EventEmitter(), contents = new EventEmitter();
   ipcMain.handle = () => {}; ipcMain.removeHandler = () => {};
@@ -28,14 +28,17 @@ async function harness(t, { writeMs = 100, respond = true, silentOperation } = {
   const event = { sender: contents, senderFrame: contents.mainFrame };
   const writes = [], completed = [], operations = [];
   let listener, transport, disconnects = 0, notificationsStopped = 0;
-  let frame = tokenFrame(), response, rejectWrite;
+  let frame = tokenFrame(), response, rejectWrite, releaseFirstConnect, notifications = 0;
   const device = new EventEmitter(), status = new EventEmitter();
   for (const target of [device, status]) {
     target.addEventListener = target.on.bind(target);
     target.removeEventListener = target.off.bind(target);
   }
   device.id = 'timeout-test-device'; device.name = 'CentaurOS-Setup-123456';
-  status.startNotifications = async () => status;
+  status.startNotifications = async () => {
+    if (slowFirstConnect && ++notifications === 1) await new Promise(resolve => { releaseFirstConnect = resolve; });
+    return status;
+  };
   status.stopNotifications = async () => { notificationsStopped++; return status; };
   const command = { async writeValueWithResponse(value) {
     const fragment = new Uint8Array(value);
@@ -60,7 +63,7 @@ async function harness(t, { writeMs = 100, respond = true, silentOperation } = {
       if (uuid === DEVICE_INFO_UUID) return { readValue: async () => new DataView(new Uint8Array([123, 125]).buffer) };
       return status;
     } }; },
-    disconnect() { disconnects++; rejectWrite?.(); },
+    disconnect() { disconnects++; rejectWrite?.(); device.emit('gattserverdisconnected'); },
   };
   const window = { wanxSetupTransport: {
     subscribe(callback) { listener = callback; return () => { listener = undefined; }; },
@@ -97,6 +100,8 @@ async function harness(t, { writeMs = 100, respond = true, silentOperation } = {
   return { host, writes, completed, operations,
     begin: async () => host.begin(await window.wanxDeviceSetupTransport.requestDeviceFromUserGesture()),
     frame(value) { frame = value; },
+    read: () => transport.readDeviceInfo(new AbortController().signal),
+    releaseFirstConnect: () => releaseFirstConnect(),
     get response() { return response; },
     get disconnects() { return disconnects; },
     get notificationsStopped() { return notificationsStopped; },
@@ -177,4 +182,19 @@ test('connect retains its shorter 10s IPC deadline', async t => {
   assert.equal(settled, false);
   t.mock.timers.tick(1); await flush();
   assert.equal((await outcome).code, 'LOCAL_CONNECT_TIMEOUT');
+});
+
+
+test('a timed-out connect cannot disconnect a new connection when its notification subscription resolves late', async t => {
+  const h = await harness(t, { slowFirstConnect: true });
+  const first = h.begin().then(() => null, error => error);
+  await flush();
+  t.mock.timers.tick(10000); await flush();
+  assert.equal((await first).code, 'LOCAL_CONNECT_TIMEOUT');
+  assert.equal(h.disconnects, 1, 'timeout immediately retires the physical attempt');
+  await h.begin();
+  const before = h.disconnects;
+  h.releaseFirstConnect(); await flush();
+  assert.equal(h.disconnects, before, 'retired connect must not disconnect the new connection');
+  assert.deepEqual(Array.from(await h.read()), [123, 125]);
 });
