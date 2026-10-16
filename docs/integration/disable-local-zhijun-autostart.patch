@@ -1,0 +1,28 @@
+--- a/wanx-client/shell/main.mjs
++++ b/wanx-client/shell/main.mjs
+@@ -273,5 +273,4 @@
+       });
+       sourceDevelopment = await createRealSourceDevelopment(client, trustedKeys);
+-      app.on("second-instance", () => { void sourceDevelopment.open().catch(() => {}); });
+       const installedApplications = applications;
+       applications = createApplicationRouter(installedApplications, sourceDevelopment.manager, sourceDevelopment.applicationId);
+--- a/wanx-client/zhijun-source-dev.mjs
++++ b/wanx-client/zhijun-source-dev.mjs
+@@ -46,12 +46,10 @@
+    await writeFile(initialized,JSON.stringify({applicationId:manifest.applicationId})+'\n',{mode:0o600});
+  }
+- let opening=false,opened=false,closed=false;
+- const maybeOpen=()=>{
++ // Observe connection state only. Hosted apps launch through the user's Open action.
++ const updateConnectionState=()=>{
+    const snapshot=client.snapshot();report.phase=snapshot.phase;report.accountAuthenticated=snapshot.account?.phase==='authenticated';report.boxConnected=Boolean(snapshot.connection?.deviceId);void save();
+-   if(closed||opening||opened||snapshot.phase!=='ready'||!report.accountAuthenticated||!report.boxConnected)return;
+-   opening=true;void manager.listInstalled().then(items=>items.some(item=>item.applicationId===manifest.applicationId)?manager.launch(manifest.applicationId):null).then(()=>{opened=true;report.ready=true;void save();},error=>{report.launchError=error.code||'SOURCE_START_FAILED';void save();}).finally(()=>{opening=false;});
+  };
+- const unsubscribe=client.subscribe(maybeOpen);
+- maybeOpen();
+- return {applicationId:manifest.applicationId,manager,listInstalled:manager.listInstalled,async open(){const value=await manager.launch(manifest.applicationId);opened=true;report.ready=true;await save();return value;},async close(){closed=true;unsubscribe();await manager.close();await writes;}};
++ const unsubscribe=client.subscribe(updateConnectionState);
++ updateConnectionState();
++ return {applicationId:manifest.applicationId,manager,listInstalled:manager.listInstalled,async close(){unsubscribe();await manager.close();await writes;}};
+ }
