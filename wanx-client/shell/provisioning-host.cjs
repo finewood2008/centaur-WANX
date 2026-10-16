@@ -228,7 +228,10 @@ async function createProvisioningHost({
                 : "LOCAL_CONNECT_TIMEOUT",
             ),
           ),
-        timeoutMs,
+        // Allow the renderer's 30-second GATT request to finish (including all
+        // token fragments) before the IPC fallback fires. Connect/read/close
+        // retain their shorter deadline.
+        operation === "request" ? 35_000 : timeoutMs,
       );
       pending.set(requestId, { operation, finish });
       signal?.addEventListener("abort", abort, { once: true });
@@ -463,6 +466,8 @@ async function createProvisioningHost({
     const current = await check(context);
     if (current.suspending) await current.suspending;
     await check(current);
+    if (current.mode === 'wifi' && !['confirmPhysicalDevice', 'provideWifi'].includes(method))
+      throw failure('CLAIM_INVALID_STATE');
     if (method === "confirmPhysicalDevice") {
       const value = current.coordinator.getSnapshot();
       const preview = value.preview ?? value.compatiblePreview;
@@ -583,6 +588,7 @@ async function createProvisioningHost({
       claimPending = true;
       try {
         const current = await check(context);
+        if (current.mode === 'wifi') throw failure('CLAIM_INVALID_STATE');
         const deviceId = claimPreviewId(current);
         if (typeof redeemConsoleClaim !== "function")
           throw failure("CONSOLE_CLAIM_UNAVAILABLE");
@@ -720,6 +726,7 @@ async function createProvisioningHost({
     // local transport and secrets, retaining the original cloud task to query.
     if (
       current &&
+      current.mode !== 'wifi' &&
       (previous.pairingSessionId ||
         ["waitingCloud", "attentionRequired", "completed"].includes(
           previous.state,

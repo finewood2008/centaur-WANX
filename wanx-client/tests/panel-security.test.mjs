@@ -102,7 +102,7 @@ test("management retains account, market, and version selection operations", asy
   await h.invoke("applications-select-current", { applicationId: "example.app", version: "1.2.3", sourceDir: "injected" });
   await h.invoke("logout");
   assert.deepEqual(h.calls, [
-    ["loginPassword", { phone: "13800138000", password: "secret" }],
+    ["loginPassword", { phone: "13800138000", password: "secret" }, { waitForDevices: false }],
     ["market.install", "example.app"], ["selectCurrent", "example.app", "1.2.3"], ["invalidateOpen"], ["logout"],
   ]);
 });

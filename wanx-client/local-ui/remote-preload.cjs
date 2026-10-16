@@ -104,6 +104,10 @@ const actions = {
   "desktop.quit": () => ipcRenderer.invoke("wanx-client:desktop-quit"),
   "applications.select-current": (input) => ipcRenderer.invoke("wanx-client:applications-select-current", input),
   "applications.stop": (input) => ipcRenderer.invoke("wanx-client:applications-stop", input),
+  ...Object.fromEntries([
+    ...["check", "download", "install"].map(method => ["client", method]),
+    ...["check", "plan", "execute", "status", "cancel", "resume"].map(method => ["box", method]),
+  ].map(([product, method]) => [`updates.${product}.${method}`, input => ipcRenderer.invoke(`wanx-client:updates-${product}-${method}`, input)])),
 };
 
 async function action(name, input = {}) {

@@ -24,7 +24,7 @@ function pause(ms, signal) {
 /** Owner-only Wi-Fi reconfiguration. No claim task, owner mutation or resume record. */
 export function createOwnerWifiCoordinator(deps) {
   let snapshot = { flowId: '', state: 'idle', mode: 'wifi' };
-  let transport, channel, operation, expiryTimer, deadline = 0, sessionId, preview;
+  let transport, channel, operation, termination, expiryTimer, deadline = 0, sessionId, preview;
   let clientId, accountId;
   const lifetime = new AbortController(), listeners = new Set();
   const publish = (state, extra = {}) => {
@@ -40,6 +40,33 @@ export function createOwnerWifiCoordinator(deps) {
     channel?.destroy(); channel = undefined;
     const connected = transport; transport = undefined;
     await connected?.close().catch(() => {});
+  };
+  const terminate = () => {
+    if (termination) return termination;
+    termination = (async () => {
+      lifetime.abort();
+      // An authenticated cancel stops a queued Wi-Fi job on the box. Closing
+      // GATT alone deliberately preserves jobs for transport recovery.
+      if (channel && transport) {
+        let drained = !operation, timer;
+        try {
+          if (operation) await Promise.race([
+            operation.then(() => { drained = true; }, () => { drained = true; }),
+            new Promise(resolve => { timer = setTimeout(resolve, 3000); }),
+          ]);
+          if (drained && channel && transport) {
+            const requestId = randomUUID(), signal = AbortSignal.timeout(3000);
+            const currentChannel = channel;
+            const frame = await currentChannel.sealRequest(requestId, 'pairing.cancel', { reason: 'user_cancelled' });
+            const reply = await transport.request(frame, { requestId, responseMessageType: 'pairing.cancel.result' }, signal);
+            await currentChannel.openIncoming(reply, { requestId, messageType: 'pairing.cancel' });
+          }
+        } catch { /* expiry/disconnect still destroys local authority */ }
+        finally { clearTimeout(timer); }
+      }
+      await cleanup();
+    })();
+    return termination;
   };
   const run = (fn, caller) => {
     if (operation) return Promise.reject(fail('CLAIM_OPERATION_IN_PROGRESS'));
@@ -229,9 +256,10 @@ export function createOwnerWifiCoordinator(deps) {
     },
     provideWifi(input) {
       return run(async (signal) => {
+        let payload;
         try {
           if (snapshot.state !== 'awaitingWifi') throw fail('CLAIM_INVALID_STATE');
-          const payload = { ssid: input.ssid, security: input.security, hidden: input.hidden,
+          payload = { ssid: input.ssid, security: input.security, hidden: input.hidden,
             ...(input.passwordUtf8 ? { password: new TextDecoder('utf-8', { fatal: true }).decode(input.passwordUtf8) } : {}) };
           validateWifi(payload);
           publish('provisioningWifi');
@@ -254,25 +282,14 @@ export function createOwnerWifiCoordinator(deps) {
           if (error.retryable && !signal.aborted && deps.clock.monotonicMs() < deadline)
             publish('awaitingWifi', { errorCode: error.code, retryable: true });
           throw error;
-        } finally { if (input.passwordUtf8) deps.crypto.zeroize(input.passwordUtf8); }
+        } finally { if (payload) delete payload.password; }
       }).finally(() => { if (input.passwordUtf8) deps.crypto.zeroize(input.passwordUtf8); });
     },
     async cancel() {
-      lifetime.abort();
-      // Let an aborted exchange leave the transport before sending cancellation.
-      // This uses a separate bounded signal because the operation signal is revoked.
-      if (channel && transport) {
-        await operation?.catch(() => {});
-        try {
-          const requestId = randomUUID(), signal = AbortSignal.timeout(3000);
-          const frame = await channel.sealRequest(requestId, 'pairing.cancel', { reason: 'user_cancelled' });
-          const reply = await transport.request(frame, { requestId, responseMessageType: 'pairing.cancel.result' }, signal);
-          await channel.openIncoming(reply, { requestId, messageType: 'pairing.cancel' });
-        } catch { /* expiry/disconnect still destroys local authority */ }
-      }
-      await cleanup(); publish('cancelled');
+      await terminate();
+      if (snapshot.state !== 'completed') publish('cancelled');
     },
-    async suspend() { lifetime.abort(); await cleanup(); },
-    async dispose() { lifetime.abort(); await cleanup(); listeners.clear(); },
+    suspend: terminate,
+    async dispose() { await terminate(); listeners.clear(); },
   };
 }

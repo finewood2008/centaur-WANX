@@ -53,7 +53,7 @@ export interface SetupTransportBridge {
 
 export interface DeviceSetupTransport {
   requestDeviceFromUserGesture(): Promise<SelectedDiscoveryCandidate>;
-  cancelSelection(): void;
+  cancelSelection(): Promise<void>;
   dispose(): Promise<void>;
 }
 

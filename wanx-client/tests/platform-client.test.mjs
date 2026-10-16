@@ -244,6 +244,42 @@ test("one product login automatically enrolls and opens only a server-authorized
   });
 });
 
+test("interactive login finishes authentication while box and network startup continue", async (t) => {
+  const h = harness(t);
+  const boxes = deferred();
+  const measured = [];
+  const originalLogin = h.account.loginPassword;
+  h.account.loginPassword = async (input) => {
+    measured.push("account");
+    return originalLogin(input);
+  };
+  h.override(async (input) => {
+    if (input.path === "/app-api/network/boxes" || input.path === "/app-api/network/boxes/prepare")
+      await boxes.promise;
+  });
+  await h.client.initialize();
+  const login = h.client.loginPassword(
+    { phone: "13800000001", password: "test" },
+    { waitForDevices: false },
+  );
+  let completed = false;
+  void login.then(() => { completed = true; });
+  await tick();
+  assert.equal(completed, true, "login must not wait for box discovery");
+  const logged = await login;
+  assert.equal(logged.account.phase, "authenticated");
+  assert.equal(logged.directory.phase, "loading");
+  assert.deepEqual(measured, ["account"]);
+  const ready = new Promise((resolve) => {
+    const unsubscribe = h.client.subscribe((state) => {
+      if (state.platform.phase === "ready") { unsubscribe(); resolve(state); }
+    });
+  });
+  boxes.resolve();
+  const connected = await ready;
+  assert.equal(connected.devices.length, 1);
+});
+
 test("P2P-off login preserves local development and never requests enrollment", async (t) => {
   const h = harness(t, { enabled: false });
   await h.client.initialize();
@@ -1266,6 +1302,32 @@ test('application connection seam: box-session expiry cannot be revived by recon
   await h.client.connectBox('box-1');
   assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
   assert.equal((await h.client.applicationConnection()).context().boxId,'box-1');
+});
+
+test("signed resource backend selection preserves legacy product scope and cannot escalate through request fields", async t => {
+  const requests = [];
+  const h = harness(t, { gatewayRequest: async input => {
+    requests.push(input);
+    return { status: 200, body: Buffer.from('{"id":4}') };
+  } });
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  await h.client.connectBox("box-1");
+  const id = "centaurai.wanx.superadvisors";
+  const legacy = await h.client.applicationConnection(id);
+  await legacy.request({ path: "/api/agents", applicationScope: "wanx", applicationExchange: true });
+  assert.equal(requests.at(-1).applicationScope, "super-advisory");
+  assert.equal(requests.at(-1).applicationExchange, false);
+  const resourceApp = await h.client.applicationConnection(id, { backendProductId: "wanx" });
+  await resourceApp.request({ path: "/api/agents", applicationScope: "super-advisory", applicationExchange: true });
+  assert.equal(requests.at(-1).applicationScope, undefined);
+  assert.equal(requests.at(-1).applicationExchange, false);
+  const scoped = await h.client.applicationConnection("test.resource-app", { backendProductId: "super-advisory" });
+  await scoped.request({ path: "/api/agents" });
+  assert.equal(requests.at(-1).applicationScope, "super-advisory");
+  const before = requests.length;
+  for (const options of [{ backendProductId: "admin" }, { backendProductId: "wanx", arbitrary: true }, {}, null, []])
+    await assert.rejects(h.client.applicationConnection(id, options), { code: "BOX_APPLICATION_SCOPE_FORBIDDEN" });
+  assert.equal(requests.length, before);
 });
 
 test("ownership transfer closes the selected box and refreshes authoritative access", async t => {

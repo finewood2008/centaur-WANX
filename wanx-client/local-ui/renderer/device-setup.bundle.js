@@ -501,12 +501,16 @@ ${match.responseMessageType}`;
     const makeEndpoint = (currentSelection) => options.endpointFactory ? options.endpointFactory(currentSelection, clock) : createElectronGattTransportEndpoint({
       factory: createElectronGattTransportFactory({
         consumeSelectionLease: (selected) => selection.consumeSelectionLease(selected),
-        clock
+        clock,
+        // The SDK starts this deadline before writing every 12-byte GATT
+        // fragment. Signed pairing tokens can take more than 5 seconds.
+        requestTimeoutMs: 3e4
       })
     });
     let selection = makeSelection(), endpoint = makeEndpoint(selection);
     let epoch = 0, selectionEpoch = 0, disposed = false, disposing;
     let selectionCancel;
+    let selectionSettled;
     const flights = /* @__PURE__ */ new Map();
     const subscriptions = /* @__PURE__ */ new Map();
     const abortFlights = (connectionId) => {
@@ -524,6 +528,7 @@ ${match.responseMessageType}`;
       ++selectionEpoch;
       selection.cancelSelection();
       selection = makeSelection();
+      return selectionSettled ?? Promise.resolve();
     }
     async function closeAll() {
       ++epoch;
@@ -680,6 +685,8 @@ ${match.responseMessageType}`;
       requestDeviceFromUserGesture() {
         if (disposed)
           return Promise.reject(failure("LOCAL_TRANSPORT_DISCONNECTED"));
+        if (selectionSettled)
+          return Promise.reject(failure("LOCAL_SELECTION_BUSY"));
         const expected = selectionEpoch, current = selection;
         return new Promise((resolve, reject) => {
           let settled = false;
@@ -698,8 +705,9 @@ ${match.responseMessageType}`;
           }, options.selectionTimeoutMs ?? 12e3);
           selectionCancel = cancel;
           try {
-            void current.requestDeviceFromUserGesture().then(
+            const completed = current.requestDeviceFromUserGesture().then(
               (selected) => {
+                if (selectionSettled === completed) selectionSettled = void 0;
                 if (disposed || expected !== selectionEpoch || settled) {
                   current.cancelSelection();
                   finish(failure("LOCAL_SELECTION_LEASE_INVALID"));
@@ -707,8 +715,12 @@ ${match.responseMessageType}`;
                 }
                 finish(void 0, selected);
               },
-              (error) => finish(error)
+              (error) => {
+                if (selectionSettled === completed) selectionSettled = void 0;
+                finish(error);
+              }
             );
+            selectionSettled = completed;
           } catch (error) {
             finish(error);
           }

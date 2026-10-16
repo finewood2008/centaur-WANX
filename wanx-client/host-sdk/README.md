@@ -51,3 +51,15 @@ const host = fromEnvironment();
 helper 在万象启动时设置独立数据目录，窗口加载成功后报告就绪，并处理重复打开时的窗口唤起；未接入会触发万象的 30 秒启动超时。非万象启动时返回 `false`，保留应用自身的启动流程。业务请求和失效通知仍由 `host` 处理。`launchMode: "shared"` 或未声明模式的应用使用万象内置 Electron，已有启动包装自动完成窗口生命周期处理，无需调用此 helper。
 
 打包：在本目录运行 `npm pack`，将生成的 tgz 作为应用的生产依赖安装。当前包用于本地交付，尚未上传 npm registry。
+
+## v3 资源绑定
+
+应用发行清单明确声明 `compatibility.resourceDependencies` 后，Host 在打开应用前准备全部必需资源，并将本账号、本盒子、当前制品的真实绑定放入 `context().resourceBindings`。不要按专家名称自行选择或创建实例。
+
+```js
+const expert = await host.resolveResourceBinding('expert', 'zhijun-personal-companion');
+// expert.instanceId is verified by the box preparation flow.
+const response = await host.requestExpert('zhijun-personal-companion', '/threads');
+```
+
+`resolveResourceBinding` 每次检查当前 Host 会话；缺少精准绑定会抛出 `APPLICATION_RESOURCE_NOT_BOUND`。技能包绑定包含 `packageId`。旧 schema1/2 应用的 `context/request/openStream` 行为不变；它们不会自动改用新实例。

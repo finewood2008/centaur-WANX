@@ -119,6 +119,27 @@ button { transition: background .14s, border-color .14s; }
 .settings-panel .muted { margin-top: 5px; }
 .settings-actions { display: flex; align-items: center; gap: 15px; flex: 0 0 auto; }
 .settings-foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 24px; }
+.updates-section { padding: 20px 0; border-bottom: 1px solid var(--fn-border-primary); }
+.updates-section > h3 { margin-bottom: 14px; }
+.update-card { padding: 16px; border: 1px solid var(--fn-border-primary); border-radius: 10px; background: var(--fn-bg-elevated); }
+.update-card + .update-card { margin-top: 10px; }
+.update-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.update-heading > div:first-child { min-width: 0; }
+.update-heading h3 { overflow-wrap: anywhere; }
+.update-heading .settings-actions { gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.update-version { margin-left: 6px; color: var(--fn-text-secondary); font-weight: 400; }
+.update-card .muted, .update-candidate { margin-top: 5px; }
+.update-candidate, .update-notes { font-size: 12px; margin-top: 10px; }
+.update-notes { white-space: pre-wrap; color: var(--fn-text-secondary); }
+.update-issues, .update-operation { margin-top: 12px; padding: 12px; border-radius: 7px; background: var(--fn-bg-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.update-operation .market-actions { margin-top: 10px; }
+.update-facts { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; font-size: 11px; }
+.update-facts dt { color: var(--fn-text-tertiary); }
+.update-facts dd { margin: 0; overflow-wrap: anywhere; }
+.update-components { width: 100%; margin-top: 10px; border-collapse: collapse; text-align: left; font-size: 11px; }
+.update-components th, .update-components td { padding: 6px 5px; border-bottom: 1px solid var(--fn-border-primary); overflow-wrap: anywhere; }
+.update-progress { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 11px; color: var(--fn-text-secondary); }
+.update-progress progress { flex: 1; min-width: 0; accent-color: var(--fn-color-brand); }
 .switch { width: 34px; height: 20px; flex: 0 0 auto; padding: 2px; border: 1px solid #c8c0b5; border-radius: 99px; background: #c8c0b5; }
 .switch span { display: block; width: 14px; height: 14px; border-radius: 50%; background: white; box-shadow: 0 1px 2px #0002; }
 .switch[aria-checked="true"] { background: var(--fn-color-brand); border-color: var(--fn-color-brand); }
@@ -184,6 +205,8 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
   .wizard-steps { gap: 6px; }
   .wizard-step { flex-direction: column; }
   .setup-wifi { grid-template-columns: 1fr; }
+  .update-heading { flex-direction: column; }
+  .update-heading .settings-actions { justify-content: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } .scan-spinner { animation: none; } }
 
