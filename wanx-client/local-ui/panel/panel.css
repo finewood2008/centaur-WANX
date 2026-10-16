@@ -1,3 +1,68 @@
-:root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#352f2b;background:#faf8f4;font-synthesis:none}
-header .brand{display:flex;align-items:center;gap:8px;flex:1;padding:0;text-align:left;color:inherit}header .brand-copy{display:grid;gap:2px}header .brand strong{font-size:15px;white-space:nowrap}header .brand small{font-size:10px;letter-spacing:.3px;color:#8b8076}
-*{box-sizing:border-box}body{margin:0;font-size:13px}button,select{font:inherit}button{cursor:pointer;border:0;border-radius:8px;background:transparent;color:inherit;padding:7px 10px}button:hover{background:#eee7df}button:focus-visible,select:focus-visible{outline:2px solid #b27352;outline-offset:2px}button:disabled{opacity:.55;cursor:default}#panel{max-height:560px;display:flex;flex-direction:column;padding:16px 18px 12px;overflow:hidden}header{display:flex;align-items:center;gap:8px;padding-bottom:12px}header img{width:30px;height:30px;object-fit:contain}header strong{font-size:16px;font-weight:650;flex:1}header button{font-size:12px;color:#7a6b61}.box-status{display:flex;align-items:center;gap:8px;text-align:left;border:1px solid #e8e0d7;width:100%;padding:10px 12px;background:#f4f0e9;flex-shrink:0}.box-status .box-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dot{width:6px;height:6px;border-radius:50%;background:#aaa198;flex-shrink:0}.dot.ready{background:#738d73}.muted{font-size:11px;color:#8b8076}h2{font:500 15px "Songti SC","STSong",serif;margin:18px 0 8px;color:#756556;letter-spacing:.4px}.apps{overflow:auto;min-height:44px;max-height:310px;flex:1}.app-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #eee8e1}.app-row:last-child{border:0}.app-icon{display:grid;place-items:center;width:34px;height:34px;flex-shrink:0;border:1px solid #e5dbce;background:#f0e7da;color:#796043;border-radius:10px;font:500 17px "Songti SC",serif}.app-body{flex:1;min-width:0}.app-name{font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.app-message{font-size:11px;color:#89786a;margin-top:4px;line-height:1.5}.app-message.error,.error{color:#a35440}.open{color:#99684d;background:#eee5da;min-width:52px}.empty{color:#8b8076;line-height:1.7;margin:8px 0 14px;padding:5px 0}.empty button{margin-top:8px}footer{display:flex;justify-content:center;gap:8px;border-top:1px solid #e8e0d7;margin-top:10px;padding-top:10px;flex-shrink:0}footer button{font-size:12px;color:#756353;padding:7px 5px}.intent{margin-top:12px;padding:12px;background:#f0e9e0;border-radius:10px;flex-shrink:0}.intent strong{font-size:13px;font-weight:550}.intent p{font-size:12px;line-height:1.5;color:#7c6d60;margin:7px 0}.intent select{width:100%;padding:8px;margin:3px 0 9px;background:#faf8f4;border:1px solid #ded4c8;border-radius:6px;color:#493e35}.actions{display:flex;gap:7px;justify-content:flex-end}.primary{background:#a97151;color:#fff}.primary:hover{background:#986044}.notice{font-size:12px;margin:10px 0 0;line-height:1.5}
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  color: #352f2b;
+  background: #faf8f4;
+  --muted: #8b8076;
+  --accent: #a35c43;
+  --line: #e9e1d7;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-size: 13px; }
+button, select { font: inherit; }
+button { cursor: pointer; border: 0; border-radius: 9px; background: transparent; color: inherit; padding: 7px 10px; transition: background .12s, border-color .12s; }
+button:hover { background: #eee7df; }
+button:focus-visible, select:focus-visible { outline: 2px solid #b27352; outline-offset: 2px; }
+button:disabled { opacity: .55; cursor: default; }
+#panel { max-height: 560px; display: flex; flex-direction: column; padding: 18px 18px 12px; overflow: hidden; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; flex-shrink: 0; }
+.brand { display: flex; align-items: center; gap: 9px; min-width: 0; user-select: none; }
+.brand img { width: 32px; height: 36px; object-fit: contain; }
+.brand-copy { display: grid; gap: 3px; }
+.brand strong { font-size: 15px; font-weight: 650; white-space: nowrap; letter-spacing: .1px; }
+.brand small { font-size: 10px; letter-spacing: .4px; color: var(--muted); }
+.settings-button { display: flex; align-items: center; gap: 5px; padding: 7px 8px; color: #7b6d61; font-size: 11px; }
+.summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; flex-shrink: 0; }
+.box-status, .balance-card { display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; min-width: 0; height: 106px; padding: 13px 14px; border-radius: 14px; border: 1px solid var(--line); text-align: left; }
+.box-status { background: #f3f0ea; }
+.balance-card { background: linear-gradient(130deg, #f6ebe0, #f5eee6); border-color: #e7d7c6; }
+.balance-card:hover { background: #f0e3d5; border-color: #d4b99f; }
+.card-label { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #8a7868; line-height: 16px; }
+.box-name { display: block; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 7px 0; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: #aaa198; flex-shrink: 0; }
+.dot.ready { background: #738d73; box-shadow: 0 0 0 3px #738d7314; }
+.card-caption { display: flex; align-items: center; justify-content: space-between; font-size: 10px; line-height: 15px; color: #8a7e72; }
+.balance-card .card-caption { color: #9a6b4d; }
+.points-mark { display: grid; place-items: center; width: 17px; height: 17px; font-size: 9px; color: #ac8057; border: 1px solid #d7bb9c; border-radius: 50%; }
+.points-value { display: block; color: #945837; font-size: 26px; font-weight: 650; line-height: 30px; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+.points-value small { margin-left: 5px; font-size: 10px; font-weight: 400; letter-spacing: 0; color: #a37c5b; }
+.apps-heading { display: flex; justify-content: space-between; align-items: center; margin: 21px 2px 7px; flex-shrink: 0; }
+h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: .3px; color: #77685b; }
+.apps-heading > span { font-size: 10px; color: #a3988c; }
+.apps { overflow: auto; min-height: 44px; max-height: 300px; flex: 1; scrollbar-width: thin; scrollbar-color: #dcd2c6 transparent; }
+.app-row { display: flex; align-items: center; gap: 10px; padding: 9px 6px; border-radius: 11px; min-height: 54px; }
+.app-row:hover { background: #f2ede5; }
+.app-icon { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border: 1px solid #e5dbce; background: #f0e7da; color: #796043; border-radius: 10px; font: 500 17px "Songti SC", "STSong", serif; }
+.app-row:nth-child(3n + 2) .app-icon { background: #ecece3; border-color: #dddfd2; color: #71715a; }
+.app-row:nth-child(3n) .app-icon { background: #eee5df; border-color: #e2d5cb; color: #92735e; }
+.app-body { flex: 1; min-width: 0; }
+.app-name { font-weight: 550; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-message { font-size: 11px; color: #89786a; margin-top: 4px; line-height: 1.5; }
+.app-message.error, .error { color: #a35440; }
+.open { color: #96664a; background: #fffdfa; border: 1px solid #e5dace; min-width: 48px; padding: 6px 10px; font-size: 11px; }
+.open:hover { background: #efe4d7; border-color: #d3bca5; }
+.empty { color: var(--muted); line-height: 1.7; margin: 8px 0 14px; padding: 5px 0; }
+.empty button { margin-top: 8px; }
+footer { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; flex-shrink: 0; }
+footer button { display: flex; align-items: center; justify-content: space-between; width: 100%; font-size: 11px; color: #8b7662; padding: 9px 6px; }
+footer button span:last-child { font-size: 14px; }
+.intent { margin-top: 12px; padding: 12px; background: #f0e9e0; border-radius: 10px; flex-shrink: 0; }
+.intent strong { font-size: 13px; font-weight: 550; }
+.intent p { font-size: 12px; line-height: 1.5; color: #7c6d60; margin: 7px 0; }
+.intent select { width: 100%; padding: 8px; margin: 3px 0 9px; background: #faf8f4; border: 1px solid #ded4c8; border-radius: 6px; color: #493e35; }
+.actions { display: flex; gap: 7px; justify-content: flex-end; }
+.primary { background: #a97151; color: #fff; }
+.primary:hover { background: #986044; }
+.notice { font-size: 12px; margin: 10px 0 0; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } }

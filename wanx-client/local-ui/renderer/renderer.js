@@ -1,6 +1,14 @@
 const app = document.querySelector("#app");
 let currentState;
 let page = "applications";
+let profileMenuOpen = false;
+const creditsView = window.createCreditsView({ request: async (action, input) => {
+  const response = await window.wanxClient.action(action, input);
+  if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
+  if (!response.ok) throw new Error(response.code);
+  return response.value;
+}, changed: () => { if (currentState) render(currentState); } });
+
 let marketItems = [];
 let marketCandidates = new Map();
 let marketLoading = false;
@@ -270,13 +278,30 @@ function activeDeviceName() {
   return currentState.devices?.find((device) => device.deviceId === currentState.activeDeviceId)?.name || currentState.connection?.name || "万象盒子";
 }
 
+function profileAvatar(large = false) {
+  const profile = currentState.account?.profile || {};
+  const avatar = typeof profile.avatarDataUrl === "string" && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(profile.avatarDataUrl) && profile.avatarDataUrl.length <= 512000 ? profile.avatarDataUrl : null;
+  return `<span class="user-avatar ${large ? "large" : ""}">${avatar ? `<img src="${avatar}" alt="用户头像" />` : `<span aria-hidden="true">${escapeHTML(Array.from(profile.displayName || "万")[0])}</span>`}</span>`;
+}
 function shellHeader(title) {
-  const activePage = ["boxes", "provisioning"].includes(page) ? "settings" : page;
+  const activePage = page === "provisioning" ? "boxes" : page;
+  const name = currentState.account?.profile?.displayName || "万象用户";
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用商店"], ["settings", "设置"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
-    <span class="topbar-caption">AI 应用底座</span></header>`;
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用商店"], ["boxes", "盒子"], ["credits", "我的积分"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
+    <div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" ${busy ? "disabled" : ""}>退出登录</button></div>` : ""}</div></header>`;
+}
+function profileView() {
+  const account = currentState.account || {}, profile = account.profile || {};
+  return `<div class="app-layout">${shellHeader("个人资料")}<div class="page-content profile-page">
+    <div class="page-heading"><h2>个人资料</h2><p class="muted">用你熟悉的样子，在万象相见。</p></div>
+    ${notice ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
+    <section class="profile-card"><div class="profile-avatar-row"><button class="profile-avatar-button" data-action="profile-avatar" aria-label="上传头像" ${busy ? "disabled" : ""}>${profileAvatar(true)}<span>更换头像</span></button><div><h3>你的头像</h3><p class="muted">支持 JPG、PNG，最大 5 MB。图片将居中裁为方形。</p><div class="settings-actions"><button class="button small" data-action="profile-avatar" ${busy ? "disabled" : ""}>上传头像</button>${profile.avatarDataUrl ? `<button class="text-button" data-action="profile-avatar-remove" ${busy ? "disabled" : ""}>恢复默认</button>` : ""}</div></div></div>
+    <form data-form="profile"><label for="profile-name">昵称</label><input id="profile-name" name="displayName" value="${escapeHTML(profile.displayName || "万象用户")}" maxlength="80" required autocomplete="nickname" /><p class="muted">最多 40 个字符，昵称不会改变登录账号。</p><button class="button primary" type="submit" ${busy ? "disabled" : ""}>保存资料</button></form></section>
+    <section class="profile-card profile-account"><h3>万象账号</h3><dl><dt>绑定手机号</dt><dd>${escapeHTML(account.maskedPhone || "暂未提供")}</dd><dt>资料保存</dt><dd>当前电脑</dd></dl><p class="muted">头像和昵称仅保存在这台电脑，按万象账号分别保存。</p></section>
+    </div></div>`;
 }
 
 function resendSeconds() {
@@ -975,7 +1000,7 @@ function render(state) {
   scheduleBoxUpdatePolling();
   if (activeInteraction) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
-    : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+    : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("我的积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if (markup === renderedMarkup) { syncFormState(); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
@@ -988,7 +1013,8 @@ function render(state) {
     ? app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]') : null;
   const scanAnimations = new Map(scanButton?.querySelector('.scan-spinner').getAnimations().map(animation => [animation.animationName, animation.currentTime]));
   const passwordForm = !auth && page === "settings" && passwordEditing ? app.querySelector?.('[data-form="password-change"]') : null;
-  const retainedForm = wifiForm || authForm || transferForm || passwordForm;
+  const profileForm = !auth && page === "profile" ? app.querySelector?.('[data-form="profile"]') : null;
+  const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   const scroller = document.scrollingElement;
   const scroll = retainedForm && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
@@ -1000,7 +1026,7 @@ function render(state) {
     }
   }
   if (retainedForm) {
-    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : "auth";
+    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : profileForm ? "profile" : "auth";
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
@@ -1116,6 +1142,12 @@ function operationErrorMessage(error) {
       PASSWORD_NOT_SET: "该账号尚未设置密码，请先完成注册。",
       ACCOUNT_INVALID_INPUT: "请检查手机号、密码和验证码格式。",
       ACCOUNT_LOGIN_REQUIRED: "请先登录万象。",
+      PROFILE_INVALID_NAME: "昵称需为 1–40 个字符，不能包含控制字符。",
+      PROFILE_AVATAR_TOO_LARGE: "头像文件不能超过 5 MB。",
+      PROFILE_INVALID_AVATAR: "无法读取这张图片，请选择有效的 JPG 或 PNG 图片。",
+      PROFILE_INVALID_INPUT: "资料格式无效，请重试。",
+      PROFILE_UNAVAILABLE: "资料功能尚未就绪，请重启万象。",
+
       ACCOUNT_SESSION_CHANGED: "登录状态已变化，请重新打开应用。",
       APPLICATION_OPEN_CANCELLED: "已取消打开应用。",
       APPLICATION_OPEN_BUSY: "正在打开另一个应用，请稍后再试。",
@@ -1220,8 +1252,16 @@ app.addEventListener("click", async (event) => {
   activeInteraction = false;
   finishInteraction();
   const target = event.target.closest("[data-action]");
-  if (!target || target.disabled) return;
+  if (!target) { if (profileMenuOpen) { profileMenuOpen = false; render(currentState); } return; }
+  if (target.disabled) return;
   const action = target.dataset.action;
+  if (action === "profile-menu" && page !== "provisioning") { profileMenuOpen = !profileMenuOpen; render(currentState); if (profileMenuOpen) app.querySelector?.('[data-action="show-profile"]')?.focus(); return; }
+  if (profileMenuOpen) profileMenuOpen = false;
+  if (action === "profile-avatar" || action === "profile-avatar-remove") {
+    if (busy || page !== "profile") return;
+    await run(action === "profile-avatar" ? "profile.avatar" : "profile.avatar-remove"); return;
+  }
+
   if (marketConfirmation && !["market-cancel", "market-confirm"].includes(action)) return;
   if (action === "market-cancel") { marketConfirmation = null; render(currentState); return; }
   if (action === "market-confirm") {
@@ -1307,12 +1347,19 @@ app.addEventListener("click", async (event) => {
     render(currentState); return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
-  if (["show-applications", "show-boxes", "show-settings"].includes(action)) {
+  if (["show-applications", "show-boxes", "show-settings", "show-credits", "show-profile"].includes(action)) {
     if (page === "provisioning") return;
     page = action.slice(5);
+    if (page === "credits") void creditsView.refresh();
     if (page === "boxes") void refreshTransfers();
     notice = null;
     render(currentState);
+    return;
+  }
+  if (action?.startsWith("credits-")) {
+    const pending = creditsView.action(action, target.dataset);
+    if (action === "credits-detail") document.querySelector(".credits-detail")?.scrollIntoView?.({ block: "start" });
+    await pending;
     return;
   }
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
@@ -1469,6 +1516,7 @@ app.addEventListener("toggle", (event) => {
 
 app.addEventListener("keydown", (event) => {
   if (event.key === " " && event.target?.closest?.("button")) { clearTimeout(interactionTimer); activeInteraction = true; }
+  if (profileMenuOpen && event.key === "Escape") { profileMenuOpen = false; render(currentState); app.querySelector?.('[data-action="profile-menu"]')?.focus(); return; }
   if (!marketConfirmation) return;
   if (event.key === "Escape") { marketConfirmation = null; render(currentState); }
   if (event.key === "Tab") {
@@ -1494,6 +1542,12 @@ function validateNewPassword(data) {
 app.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (busy) return;
+  if (event.target.dataset.form === "profile") {
+    const data = Object.fromEntries(new FormData(event.target));
+    const result = await run("profile.save", { displayName: String(data.displayName || "").trim() });
+    if (result) { notice = "资料已保存在这台电脑。"; codeSent = true; render(currentState); }
+    return;
+  }
   if (event.target.dataset.form === "transfer") {
     event.preventDefault();
     const generation = marketGeneration;
@@ -1544,6 +1598,8 @@ app.addEventListener("submit", async (event) => {
 });
 
 function acceptRemoteState(state) {
+  const creditsIdentity = state.route === "auth" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]);
+  const creditsChanged = creditsView.reset(creditsIdentity);
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
   const accountChanged = account !== marketAccount;
   if (marketConfirmation?.updateReleaseId && (state.upgrades?.client?.phase !== "downloaded" || state.upgrades?.client?.candidate?.releaseId !== marketConfirmation.updateReleaseId)) marketConfirmation = null;
@@ -1551,6 +1607,7 @@ function acceptRemoteState(state) {
   if (marketConfirmation?.updateDeviceId && state.upgrades?.box?.canUpgrade !== true) marketConfirmation = null;
   if (marketConfirmation?.updateResumeOperationId && (state.upgrades?.box?.operation?.operationId !== marketConfirmation.updateResumeOperationId || !state.upgrades.box.operation.allowedActions?.includes("resume"))) marketConfirmation = null;
   if (accountChanged) {
+    profileMenuOpen = false; notice = null;
     resetDiscoveryMetadata();
     setupSelection = null;
     const passwordChanged = state.account?.reason === "password_reset" && busyRequest?.action === "auth.change-password";
@@ -1592,6 +1649,7 @@ function acceptRemoteState(state) {
     setupState = { state: "idle" };
   }
   render(state);
+  if (creditsChanged && creditsIdentity) void creditsView.refresh();
   if (state.route !== "auth" && accountChanged) {
     void refreshMarket();
   }
@@ -1604,8 +1662,10 @@ window.wanxBluetooth?.subscribe(state => {
 window.wanxClient.onLocalState(acceptRemoteState);
 window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
-  if (!["applications", "boxes", "settings"].includes(destination)) return;
+  if (!["applications", "boxes", "settings", "credits", "profile"].includes(destination)) return;
+  profileMenuOpen = false;
   page = destination;
+  if (page === "credits") void creditsView.refresh();
   if (page === "boxes") void refreshTransfers();
   notice = null;
   render(currentState);

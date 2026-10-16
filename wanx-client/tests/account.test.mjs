@@ -776,3 +776,87 @@ test("password reset preserves its safe rate-limit code from the service warning
   t.after(() => account.close());
   await assert.rejects(account.resetPassword({ phone: "13800138000", password: "valid-password", code: "123456" }), { code: "PASSWORD_RESET_RATE_LIMITED", message: "PASSWORD_RESET_RATE_LIMITED" });
 });
+
+test("local profile persists by account, survives restore, and makes no profile network request", async t => {
+  const h = fixture(); t.after(() => h.account.close());
+  await h.account.loginPassword({ phone: "13800138000", password: "password" });
+  const before = h.calls.length;
+  await h.account.saveProfile({ displayName: "  小万  " });
+  assert.equal(h.calls.length, before);
+  assert.equal(h.account.snapshot().profile.displayName, "小万");
+  assert.equal((await h.store.load()).profiles["account-one"].displayName, "小万");
+  await h.account.close();
+  const restored = fixture({ store: h.store }); t.after(() => restored.account.close());
+  await restored.account.restore();
+  assert.equal(restored.account.snapshot().profile.displayName, "小万");
+  await restored.account.logout();
+  assert.equal(restored.account.snapshot().profile, null);
+  await assert.rejects(restored.account.saveProfile({ displayName: "别人" }), { code: "ACCOUNT_LOGIN_REQUIRED" });
+  const saved = await h.store.load();
+  saved.profiles["account-two"] = { displayName: "另一账号" };
+  await h.store.save(saved);
+  const again = fixture({ store: h.store }); t.after(() => again.account.close());
+  await again.account.loginPassword({ phone: "13800138000", password: "password" });
+  assert.equal(again.account.snapshot().profile.displayName, "小万");
+  await again.account.saveProfile({ displayName: "新昵称" });
+  assert.equal((await h.store.load()).profiles["account-two"].displayName, "另一账号");
+});
+
+test("avatar selection is cancelled across logout and same-account relogin", async t => {
+  const h = fixture(); t.after(() => h.account.close());
+  await h.account.loginPassword({ phone: "13800138000", password: "password" });
+  let finish; const chosen = h.account.chooseAvatar(() => new Promise(resolve => finish = resolve));
+  await h.account.logout();
+  await h.account.loginPassword({ phone: "13800138000", password: "password" });
+  finish("data:image/png;base64,iVBORw0KGgo=");
+  await assert.rejects(chosen, { code: "ACCOUNT_CANCELLED" });
+  assert.equal(h.account.snapshot().profile.avatarDataUrl, null);
+  assert.deepEqual(await h.account.chooseAvatar(async () => null), { canceled: true });
+});
+
+test("profile rejects invalid names, active content and unknown fields before storage", async t => {
+  const h = fixture(); t.after(() => h.account.close());
+  await h.account.loginPassword({ phone: "13800138000", password: "password" });
+  for (const patch of [{ displayName: " " }, { displayName: "a".repeat(41) }, { displayName: "a\n" }, { avatarDataUrl: "https://example.test/a.png" }, { avatarDataUrl: "data:image/svg+xml,<svg/>" }, { accountId: "other" }]) {
+    await assert.rejects(h.account.saveProfile(patch));
+  }
+  assert.equal((await h.store.load()).profiles, undefined);
+  await h.account.saveProfile({ displayName: "😀".repeat(40) });
+  assert.equal(Array.from(h.account.snapshot().profile.displayName).length, 40);
+});
+
+test("storage failure leaves visible and persisted profile unchanged", async t => {
+  const store = memoryStore(); let fail = false;
+  const h = fixture({ store: { ...store, save: next => { if (fail) throw new Error("disk full"); return store.save(next); } } });
+  t.after(() => h.account.close());
+  await h.account.loginPassword({ phone: "13800138000", password: "password" });
+  await h.account.saveProfile({ displayName: "旧昵称" }); fail = true;
+  await assert.rejects(h.account.saveProfile({ displayName: "新昵称" }));
+  assert.equal(h.account.snapshot().profile.displayName, "旧昵称");
+  assert.equal((await store.load()).profiles["account-one"].displayName, "旧昵称");
+});
+
+test("switching between two platform accounts restores only each account's local profile", async t => {
+  const store = memoryStore();
+  const account = createAccount({ store, fetch: async (url, options) => {
+    if (url.endsWith('/login')) {
+      const body = JSON.parse(options.body);
+      return reply({ accountId: `account-${body.phone}`, clientId: body.clientId, accessToken: 'test-access', refreshToken: 'test-refresh', expiresIn: 3600 });
+    }
+    if (url.endsWith('/devices')) return reply([]);
+    return reply({});
+  } });
+  t.after(() => account.close());
+  const login = phone => account.loginPassword({ phone, password: 'password' });
+  await login('13800138000');
+  await account.saveProfile({ displayName: '账号甲', avatarDataUrl: 'data:image/png;base64,iVBORw0KGgo=' });
+  await account.logout();
+  await login('13900139000');
+  assert.equal(account.snapshot().profile.displayName, '');
+  assert.equal(account.snapshot().profile.avatarDataUrl, null);
+  await account.saveProfile({ displayName: '账号乙' });
+  await account.logout();
+  await login('13800138000');
+  assert.equal(account.snapshot().profile.displayName, '账号甲');
+  assert.equal(account.snapshot().profile.avatarDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+});

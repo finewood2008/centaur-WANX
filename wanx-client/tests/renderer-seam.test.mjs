@@ -150,6 +150,7 @@ async function harness(initial = state(), installed = [application], options = {
       uninstall: async () => { records = []; },
       rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
     },
+    credits: options.credits, accountProfile: options.accountProfile,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -279,12 +280,12 @@ test("pending app launch may be cancelled without connecting a box", async () =>
   assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
 });
 
-test("management keeps box settings nested and preserves the trusted console gateway", async () => {
+test("management exposes boxes and credits while preserving the trusted console gateway", async () => {
   const h = await harness();
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
   assert.match(header, /<nav/);
-  for (const page of ["applications", "settings"]) assert.ok(header.includes(`data-action="show-${page}"`));
-  assert.ok(!header.includes('data-action="show-boxes"'));
+  for (const page of ["applications", "boxes", "credits"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  assert.ok(!header.includes('data-action="show-settings"'));
   await h.click("show-boxes");
   await h.click("connect", { deviceId: "box-102" });
   assert.match(h.app.innerHTML, /data-action="dashboard-open"[^>]*>打开盒子控制台/);
@@ -1255,9 +1256,9 @@ test("provisioning explains unregistered and closed-window boxes and does not bl
   assert.doesNotMatch(h.app.innerHTML, /应用市场操作失败|应用市场操作，请/);
 });
 
-test("settings owns box management and distinguishes account logout from application quit", async () => {
+test("settings retains box management and distinguishes account logout from application quit", async () => {
   const h = await harness(state("ready", "ready", "box-102"));
-  assert.doesNotMatch(h.app.innerHTML, /data-action="show-boxes"/);
+  assert.match(h.app.innerHTML, /data-action="show-boxes"/);
   await h.click("show-settings");
   assert.match(h.app.innerHTML, /管理与切换盒子/);
   assert.match(h.app.innerHTML, /CentuarAI-AMD-102 · 已连接/);
@@ -1265,10 +1266,10 @@ test("settings owns box management and distinguishes account logout from applica
   assert.match(h.app.innerHTML, /退出账号会断开盒子，万象仍在后台运行/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="desktop-quit"/);
   const nav = h.app.innerHTML.match(/<nav[^>]*>(.*?)<\/nav>/)[1];
-  assert.doesNotMatch(nav, /show-boxes/);
+  assert.match(nav, /show-boxes/);
   await h.click("show-boxes");
   assert.match(h.app.innerHTML, /返回设置/);
-  assert.match(h.app.innerHTML, /data-action="show-settings" aria-current="page"/);
+  assert.match(h.app.innerHTML, /data-action="show-boxes" aria-current="page"/);
   await h.click("show-settings");
   assert.match(h.app.innerHTML, /管理与切换盒子/);
 });
@@ -1882,4 +1883,61 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   assert.match(h.app.innerHTML, /本次配网会话已超时，请重新扫描并重试/);
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
+});
+
+test("avatar menu owns profile and settings; credits is a primary tab", async () => {
+  const initial = state();
+  initial.account = { ...initial.account, maskedPhone: "138****8000", profile: { displayName: '<小万>', avatarDataUrl: null } };
+  const h = await harness(initial);
+  const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
+  assert.match(header, /data-action="show-credits"/);
+  assert.doesNotMatch(header, /data-action="show-settings"/);
+  await h.click("profile-menu");
+  assert.match(h.app.innerHTML, /&lt;小万&gt;/);
+  assert.match(h.app.innerHTML, /138\*\*\*\*8000/);
+  assert.match(h.app.innerHTML, /data-action="show-settings"/);
+  h.keydown("Escape");
+  assert.doesNotMatch(h.app.innerHTML, /id="profile-menu"/);
+  await h.click("profile-menu"); await h.click("show-profile");
+  assert.match(h.app.innerHTML, /data-form="profile"/);
+  assert.match(h.app.innerHTML, /仅保存在这台电脑/);
+  assert.match(h.app.innerHTML, /data-action="profile-avatar"/);
+  const form = h.form("profile"); form.values.displayName = "正在编辑";
+  h.update({ ...initial, phase: "connecting" });
+  assert.equal(h.form("profile"), form);
+  assert.equal(h.form("profile").values.displayName, "正在编辑");
+  await h.click("profile-menu");
+  h.update({ ...initial, account: { phase: "authenticated", accountId: "different" } });
+  assert.doesNotMatch(h.app.innerHTML, /&lt;小万&gt;|138\*\*\*\*8000|正在编辑|id="profile-menu"/);
+});
+
+test("profile save and avatar picker use trusted IPC without accepting a renderer path", async () => {
+  const updates = [];
+  const h = await harness(state(), undefined, { accountProfile: {
+    save: input => { updates.push(input); return { displayName: input.displayName }; },
+    chooseAvatar: input => { assert.equal(input, undefined); return { canceled: true }; },
+    removeAvatar: () => ({ avatarDataUrl: null }),
+  } });
+  await h.click("show-profile");
+  await h.submit("profile", { displayName: "  我的昵称  ", avatarDataUrl: "file:///secret", accountId: "other" });
+  assert.deepEqual(JSON.parse(JSON.stringify(updates)), [{ displayName: "我的昵称" }]);
+  assert.match(h.app.innerHTML, /资料已保存在这台电脑/);
+  await h.click("profile-avatar", { path: "/secret" });
+  assert.ok(h.calls.some(([name]) => name === "wanx-client:profile-avatar"));
+  const response = await h.window.wanxClient.action("profile.save", { displayName: "用户", avatarDataUrl: "evil" });
+  assert.equal(response.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(updates.at(-1))), { displayName: "用户" });
+});
+
+test("credits entry opens a read-only account ledger with real IPC data", async () => {
+  const h = await harness(state(), [application], { credits: {
+    balance: async () => ({ available: 1250, held: 40, paid_available: 1000, gift_available: 250 }),
+    transactions: async () => ({ items: [], after: 0, hasMore: false }),
+  } });
+  assert.match(h.app.innerHTML, /1,250 点/);
+  await h.click("show-credits");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /我的积分/);
+  assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
+  assert.match(h.app.innerHTML, /还没有积分记录/);
 });

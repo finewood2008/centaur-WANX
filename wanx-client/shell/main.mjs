@@ -1,3 +1,5 @@
+import { readAvatar } from "./avatar.mjs";
+import { createCreditsReader } from "../account/credits.mjs";
 import { createApplicationBackend } from "../applications/backend.mjs";
 import { createApplicationReleaseAccess } from "../applications/release-access.mjs";
 import {
@@ -16,7 +18,7 @@ import {
 } from "electron";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -155,6 +157,18 @@ if (process.argv.includes("--wanx-managed-app")) {
         }),
         deviceModel: os.hostname(),
       });
+      let creditsServiceURL = process.env.WANX_CREDITS_URL || "";
+      if (!creditsServiceURL) {
+        try {
+          const file = path.join(userData, "credits-service.json");
+          const info = await lstat(file);
+          if (!info.isFile() || info.size > 4096 || (process.platform !== "win32" && (info.uid !== process.getuid() || (info.mode & 0o077))))
+            throw new Error("CREDITS_INVALID_CONFIG");
+          const config = JSON.parse(await readFile(file, "utf8"));
+          if (config.version !== 1 || typeof config.serviceURL !== "string") throw new Error("CREDITS_INVALID_CONFIG");
+          creditsServiceURL = config.serviceURL;
+        } catch (error) { if (error.code !== "ENOENT") reportError(new Error("CREDITS_INVALID_CONFIG")); }
+      }
       const preferenceFile = path.join(userData, "p2p-preference.json");
       const requestAccount = account.request;
       account.request = (input) => {
@@ -423,6 +437,19 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       registerControlActions({
+        accountProfile: {
+          save: input => account.saveProfile(input),
+          removeAvatar: () => account.saveProfile({ avatarDataUrl: null }),
+          chooseAvatar: () => account.chooseAvatar(async () => {
+            const result = await dialog.showOpenDialog(control, {
+              title: "上传头像", buttonLabel: "使用头像",
+              filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg"] }], properties: ["openFile"],
+            });
+            return result.canceled || !result.filePaths.length ? null : readAvatar(result.filePaths[0], nativeImage);
+          }),
+        },
+        credits: createCreditsReader({ client, authorityDeviceId: process.env.WANX_CREDITS_DEVICE_ID || "",
+          accountRequest: creditsServiceURL ? input => account.creditsRequest({ ...input, serviceURL: creditsServiceURL }) : null }),
         ipcMain,
         control,
         controlURL,
