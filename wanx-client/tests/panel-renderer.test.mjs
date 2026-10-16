@@ -29,11 +29,15 @@ const deferred = () => {
 
 // The real renderer consumes the raw main-process snapshot; this fake DOM only
 // models event delivery and the browser's selection of a <select> option.
-async function harness(initial = baseState()) {
-  let current = structuredClone(initial), markup = "", select = null, listener;
-  const events = new Map(), documentEvents = new Map(), responses = new Map(), calls = [];
+async function harness(initial = baseState(), getBalance = async () => ({ available: 0 }), initialSpace = null) {
+  let current = structuredClone(initial), markup = "", select = null, listener, spaceListener;
+  let spaceValue = initialSpace, uploads = [];
+  const classes = new Set(), overlayClasses = new Set();
+  const overlay = { hidden: true, innerHTML: "", classList: { toggle(name, yes) { if (yes) overlayClasses.add(name); else overlayClasses.delete(name); } } };
+  const events = new Map(), documentEvents = new Map(), responses = new Map(), focusEvents = new Map(), calls = [];
   const root = {
     scrollHeight: 264,
+    classList: { toggle(name, yes) { if (yes) classes.add(name); else classes.delete(name); } },
     get innerHTML() { return markup; },
     set innerHTML(value) {
       markup = value;
@@ -47,6 +51,13 @@ async function harness(initial = baseState()) {
   };
   const api = {
     getState: async () => structuredClone(current),
+    ...(initialSpace ? {
+      getSpace: async () => spaceValue, refreshSpace: async () => spaceValue,
+      onSpace(fn) { spaceListener = fn; },
+      uploadDroppedFiles: async (files, scope) => { uploads.push({ files, scope }); return { ok: true }; },
+      transfer: async (...args) => { calls.push(["transfer", ...args]); },
+    } : {}),
+    getBalance: async () => { calls.push(["panel-balance"]); return getBalance(); },
     onState(fn) { listener = fn; },
     async action(name, input) {
       calls.push([name, input === undefined ? undefined : structuredClone(input)]);
@@ -54,18 +65,25 @@ async function harness(initial = baseState()) {
     },
   };
   vm.runInNewContext(source, {
-    window: { wanxPanel: api },
+    window: { wanxPanel: api, addEventListener: (name, fn) => focusEvents.set(name, fn) },
     document: {
-      getElementById(id) { return id === "panel" ? root : null; },
+      getElementById(id) { return id === "panel" ? root : id === "panel-drop" && initialSpace ? overlay : null; },
       addEventListener(name, fn) { documentEvents.set(name, fn); },
     },
-    requestAnimationFrame: callback => queueMicrotask(callback),
+    requestAnimationFrame: callback => queueMicrotask(callback), setTimeout,
   });
   await settle();
   return {
-    root, calls, get html() { return markup; },
-    actions() { return calls.filter(([name]) => name !== "desktop-resize"); },
+    root, calls, overlay, uploads,
+    async space(value) { spaceValue = value; spaceListener(value); await settle(); },
+    async drag(type, { types = ["Files"], files = [], items = [] } = {}) {
+      const event = { dataTransfer: { types, files, items }, preventDefault() { this.prevented = true; } };
+      await events.get(type)(event); await settle(); return event;
+    },
+    get html() { return markup; },
+    actions() { return calls.filter(([name]) => !["desktop-resize", "panel-balance"].includes(name)); },
     respond(name, fn) { responses.set(name, fn); },
+    async focus() { focusEvents.get("focus")?.(); await settle(); },
     async update(value) { current = structuredClone(value); listener(current); await settle(); },
     async click(dataset, { disabled = false } = {}) {
       events.get("click")({ target: { closest: () => ({ dataset, disabled }) } });
@@ -85,16 +103,20 @@ async function harness(initial = baseState()) {
   };
 }
 
-test("panel focuses on applications and sends low-frequency box management to settings", async () => {
+test("panel header opens box management directly", async () => {
   const h = await harness();
   assert.match(h.html, /data-app="centaurai\.wanx\.zhijun"/);
   assert.doesNotMatch(h.html, /data-action="boxes"|data-device=|>管理盒子</);
   await h.click({ app: application.applicationId });
   assert.deepEqual(h.actions(), [["applications-request-open", { applicationId: application.applicationId }]]);
-  await h.click({ page: "settings" });
-  assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "settings" }]);
+  assert.match(h.html, /class="box-button" data-page="boxes" aria-label="打开盒子"/);
+  assert.doesNotMatch(h.html, /打开设置/);
+  await h.click({ page: "boxes" });
+  assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "boxes" }]);
+  assert.doesNotMatch(h.html, /<button[^>]*class="brand"|data-action="about"/);
+  const before = h.actions().length;
   await h.click({ action: "about" });
-  assert.deepEqual(h.actions().at(-1), ["desktop-about", undefined]);
+  assert.equal(h.actions().length, before);
 });
 
 test("opening without a box requires explicit confirmation and cancellation forwards the current intent", async () => {
@@ -132,7 +154,7 @@ test("a launch failure remains actionable and retry submits the actual applicati
   state.ui.applicationOperations[application.applicationId] = { phase: "failed", error: "APPLICATION_START_TIMEOUT" };
   const h = await harness(state);
   assert.match(h.html, /应用启动超时，请重试/);
-  assert.match(h.html, /data-app="centaurai\.wanx\.zhijun" >重试/);
+  assert.match(h.html, /data-app="centaurai\.wanx\.zhijun"[^>]*>重试/);
   await h.click({ app: application.applicationId });
   assert.deepEqual(h.actions().at(-1), ["applications-request-open", { applicationId: application.applicationId }]);
   h.respond("applications-request-open", () => { throw new Error("secret-internal-diagnostic"); });
@@ -258,4 +280,78 @@ test("an action rejected after logout and same-account login cannot publish its 
   current.reject(new Error("APPLICATION_START_TIMEOUT"));
   await settle();
   assert.match(h.html, /应用启动超时，请重试/);
+});
+
+
+test("whole panel drop overlay is stable through updates and submits multiple files to the captured scope", async () => {
+  const h = await harness(connectedState(), undefined, uploadState());
+  const before = h.html, count = h.calls.filter(([name]) => name === "desktop-resize").length;
+  await h.drag("dragenter");
+  assert.equal(h.overlay.hidden, false);
+  assert.match(h.overlay.innerHTML, /松开上传到文件空间/);
+  assert.match(h.overlay.innerHTML, /本机万象 · 全部文件根目录/);
+  await h.drag("dragenter"); await h.drag("dragleave");
+  assert.equal(h.overlay.hidden, false, "nested drag events retain the overlay");
+  await h.space({ ...uploadState(), tasks: [{ id: "a".repeat(32), name: "file.bin", size: 100, offset: 40, phase: "running" }] });
+  assert.equal(h.html, before, "do not replace the underlying content during a drag");
+  assert.equal(h.calls.filter(([name]) => name === "desktop-resize").length, count);
+  const files = [{ name: "one.txt" }, { name: "two.txt" }];
+  await h.drag("drop", { files });
+  assert.equal(h.uploads.length, 1);
+  assert.equal(h.uploads[0].scope, "scope-a");
+  assert.equal(h.uploads[0].files.length, 2);
+  assert.equal(h.overlay.hidden, true);
+  assert.match(h.html, /value="40"/);
+  await h.click({ transfer: "a".repeat(32), command: "pause" });
+  assert.deepEqual(h.calls.at(-1), ["transfer", "pause", "a".repeat(32), "scope-a"]);
+  await h.space({ ...uploadState(), tasks: [{ id: "a".repeat(32), name: "file.bin", size: 100, offset: 40, phase: "paused" }] });
+  assert.match(h.html, /data-command="resume"/);
+  await h.click({ transfer: "a".repeat(32), command: "resume" });
+  assert.deepEqual(h.calls.at(-1), ["transfer", "resume", "a".repeat(32), "scope-a"]);
+  await h.space({ ...uploadState(), tasks: [{ name: "file.bin", size: 100, offset: 100, phase: "complete" }] });
+  assert.doesNotMatch(h.html, /panel-transfers|value="100"|已将.*加入上传队列/);
+  assert.match(h.html, /class="space-entry" data-page="space"/);
+  assert.match(h.html, /class="apps-link" data-page="applications"/);
+  await h.click({ page: "space" });
+  assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "space" }]);
+});
+test("panel ignores text, clears drag leave, rejects directories and changed connections", async () => {
+  const h = await harness(connectedState(), undefined, uploadState());
+  await h.drag("dragenter", { types: ["text/plain"] }); assert.equal(h.overlay.hidden, true);
+  await h.drag("dragenter"); await h.drag("dragleave"); assert.equal(h.overlay.hidden, true);
+  await h.drag("dragenter");
+  await h.drag("drop", { files: [{ name: "folder" }], items: [{ webkitGetAsEntry: () => ({ isDirectory: true }) }] });
+  assert.equal(h.uploads.length, 0); assert.match(h.html, /暂不支持文件夹/);
+  await h.drag("dragenter");
+  await h.update({ ...connectedState(), connection: { mode: "local", deviceId: "box-103" } });
+  assert.match(h.overlay.innerHTML, /盒子或账号已变化/);
+  await h.drag("drop", { files: [{ name: "one.txt" }] }); assert.equal(h.uploads.length, 0);
+});
+for (const [label, connection, storage] of [
+  ["signed out", { ...connectedState(), account: { phase: "signed_out" } }, uploadState()],
+  ["disconnected", baseState(), uploadState()],
+  ["unsupported", connectedState(), { ...uploadState(), phase: "unsupported" }],
+]) test(`panel does not submit files when ${label}`, async () => {
+  const h = await harness(connection, undefined, storage);
+  await h.drag("dragenter"); const event = await h.drag("dragover");
+  assert.equal(event.dataTransfer.dropEffect, "none");
+  await h.drag("drop", { files: [{ name: "one.txt" }] }); assert.equal(h.uploads.length, 0);
+});
+
+test("completed history disappears while the app heading entry and dedicated space footer remain", async () => {
+  const h = await harness(connectedState(), undefined, { ...uploadState(), tasks: [
+    { id: "a".repeat(32), name: "already-complete.txt", phase: "complete", size: 10, offset: 10 },
+  ] });
+  assert.doesNotMatch(h.html, /panel-transfers|already-complete/);
+  const apps = h.html.match(/<section class="my-apps"[\s\S]*?<\/section>/)?.[0];
+  assert.match(apps, /class="apps-link" data-page="applications"/);
+  const footer = h.html.match(/<footer[\s\S]*?<\/footer>/)?.[0];
+  assert.match(footer, /class="space-entry" data-page="space"/);
+  assert.match(footer, /本机万象 · 全部文件/);
+  assert.match(footer, /已就绪/);
+  assert.match(footer, /class="space-drop-hint "><svg/);
+  assert.match(footer, /拖入文件，保存到空间/);
+  assert.doesNotMatch(footer, /data-page="applications"/);
+  await h.click({ page: "applications" });
+  assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "applications" }]);
 });

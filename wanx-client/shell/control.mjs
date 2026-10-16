@@ -1,3 +1,4 @@
+import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
 
 function text(value, max, code) {
@@ -57,8 +58,9 @@ export function registerControlActions({
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about",
+    "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
   ]);
-  const reads = new Set(["get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-space-snapshot", "panel-space-refresh", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -70,6 +72,34 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  const requirePanelSpace = scope => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    requireConnectedBox(client.snapshot());
+    if (!scope || scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
+  };
+  register("panel-space-snapshot", () => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    return panelSpaceState(personalSpace.snapshot());
+  });
+  register("panel-space-refresh", async () => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    requireConnectedBox(client.snapshot());
+    return panelSpaceState(await personalSpace.refresh());
+  });
+  register("panel-space-upload", async (input = {}) => {
+    requirePanelSpace(input.scope);
+    if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
+    await personalSpace.refresh();
+    requirePanelSpace(input.scope);
+    await personalSpace.uploads("", input.paths, input.scope);
+  });
+  register("panel-space-transfer", (input = {}) => {
+    requirePanelSpace(input.scope);
+    if (!["pause", "resume"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if (!personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload"))
+      throw new Error("SPACE_NOT_FOUND");
+    return personalSpace.transfer(input.action, input.id);
+  });
   for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview"]) {
     register(`space-${method}`, async (input = {}) => {
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");

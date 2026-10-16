@@ -42,4 +42,12 @@ Host SDK 版本为 `@centaurai/wanx-host-sdk@0.3.0`，用法和类型见 `wanx-c
 
 后端 `make all` 通过：4,695 项通过，17 项跳过。客户端 `npm test` 通过：757 项通过，6 项跳过，0 项失败。
 
-本次实测证据目录：`/Users/finewood/Library/CloudStorage/OneDrive-个人/AI/centaurAI/万象app/outputs/wanx-drive-live-20261016/`。目录中的 JSON 区分界面传输、SDK 传输和应用直接读写结果。源码尚未提交或推送。
+本次实测证据目录：`/Users/finewood/Library/CloudStorage/OneDrive-个人/AI/centaurAI/万象app/outputs/wanx-drive-live-20261016/`。目录中的 JSON 区分界面传输、SDK 传输和应用直接读写结果。以上为当时的部署与验收记录。
+
+## 快捷面板与构建
+
+整个快捷面板支持多文件拖入，固定保存到当前盒子的根目录；拖入时显示遮罩，上传中显示进度及暂停、继续操作，完成后隐藏传输区域。切换到访达时保持展开，按 Esc、再次点击菜单栏图标或打开应用时收起，后台上传继续。应用入口位于“我的应用”标题右侧，底部为紧凑的空间入口、目标位置、就绪状态和拖入提示。
+
+终端与远程桌面的独立页面源代码位于 `dashboard/src/maintenance/`。运行 `npm --prefix dashboard run build:maintenance` 可重建客户端工具资源；开发启动与客户端打包也会执行构建，构建产物不纳入 Git。
+
+2026-10-17，用户确认当前空间和小弹窗功能无问题，并要求分组提交代码。本轮通过代码与自动检查确认提交范围，没有继续操作窗口；此前未完成的原生拖放复测不补记为工具实测通过。

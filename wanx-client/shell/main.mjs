@@ -1,3 +1,4 @@
+import { panelSpaceState } from "./panel-space.mjs";
 import {
   app,
   BrowserWindow,
@@ -379,6 +380,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
         onChanged: state => {
           if (!control.isDestroyed()) control.webContents.send("wanx-client:space-state", state);
+          if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-space-state", panelSpaceState(state));
         },
       });
       registerControlActions({
