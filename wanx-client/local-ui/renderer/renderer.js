@@ -1,7 +1,11 @@
 const app = document.querySelector("#app");
 let currentState;
 let page = "applications";
+let selectedApplicationId = null;
+let posterPreview = null;
 let profileMenuOpen = false;
+const storeCarousel = window.createStoreCarousel();
+const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
 const creditsView = window.createCreditsView({ request: async (action, input) => {
   const response = await window.wanxClient.action(action, input);
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
@@ -284,7 +288,7 @@ function profileAvatar(large = false) {
   return `<span class="user-avatar ${large ? "large" : ""}">${avatar ? `<img src="${avatar}" alt="用户头像" />` : `<span aria-hidden="true">${escapeHTML(Array.from(profile.displayName || "万")[0])}</span>`}</span>`;
 }
 function shellHeader(title) {
-  const activePage = page === "provisioning" ? "boxes" : page;
+  const activePage = page === "provisioning" ? "boxes" : page === "application-detail" ? "applications" : page;
   const name = currentState.account?.profile?.displayName || "万象用户";
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
@@ -778,29 +782,85 @@ function candidateDetails(candidate) {
 }
 
 function applicationIcon(item) {
-  // Only use a catalog-provided HTTPS image or a local image supplied by the host.
+  const bundled = window.wanxAppCatalog?.[item.applicationId];
+  if (bundled) return `<img class="application-icon generated-app-icon" src="./${bundled.icon}" alt="" decoding="async" />`;
+  // Other apps retain the catalog-provided HTTPS or host-provided local icon.
   const icon = item.iconURL || item.iconUrl;
   return typeof icon === "string" && /^(https:\/\/|file:\/\/)/.test(icon)
     ? `<img class="application-icon" src="${escapeHTML(icon)}" alt="" />`
     : `<div class="application-icon" aria-hidden="true">${escapeHTML(Array.from(item.name || "应")[0])}</div>`;
 }
 
+function applicationTone(item) {
+  const id = item.applicationId || "";
+  return id.includes("zhijun") ? "conversation" : id.includes("superadvisor") ? "council" : id.includes("dialogue") ? "perspectives" : id.includes("loop") ? "automation" : "creation";
+}
+function applicationActions(item, installed) {
+  const candidate = marketCandidates.get(item.applicationId);
+  const id = escapeHTML(item.applicationId);
+  const operation = operationFor(item.applicationId);
+  const status = operationMessage(operation);
+  const disabled = operationBusy(item.applicationId) ? "disabled" : "";
+  return item.selectionRequired
+    ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => `<button class="button small" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" ${disabled}>使用 ${escapeHTML(version)}</button>`).join("")}</div>`
+    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
+}
+function applicationManagement(item, installed) {
+  const candidate = marketCandidates.get(item.applicationId);
+  const id = escapeHTML(item.applicationId);
+  const previous = typeof item.previous === "string" ? item.previous : item.previous?.version;
+  const disabled = operationBusy(item.applicationId) ? "disabled" : "";
+  return `<div class="store-detail-body"><p class="store-full-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>${installed && item.version ? `<p class="muted">当前版本 v${escapeHTML(item.version)}</p>` : ""}<p class="market-status">${escapeHTML(candidateLabel(candidate))}</p>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</div>`;
+}
 function applicationCard(item, installed = true) {
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
-  const disabled = operationBusy(item.applicationId) ? "disabled" : "";
-  const previous = typeof item.previous === "string" ? item.previous : item.previous?.version;
-  const status = operationMessage(operation);
-  const actions = item.selectionRequired
-    ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => `<button class="button small" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" ${disabled}>使用 ${escapeHTML(version)}</button>`).join("")}</div>`
-    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
-  return `<article class="application-card" data-application="${id}">${applicationIcon(item)}<div class="application-main">
-    <div class="application-title"><h3>${escapeHTML(item.name)}</h3>${installed && item.version ? `<span class="muted">v${escapeHTML(item.version)}</span>` : ""}</div>
+  const status = operationMessage(operation) || (item.resourcePreparation?.status === "pending" ? "打开时将自动检查并准备盒端专家和技能包。" : "");
+  const actions = applicationActions(item, installed);
+  return `<article class="application-card" data-application="${id}" data-tone="${applicationTone(item)}"><button class="store-icon-link" data-action="store-details" data-application-id="${id}" aria-label="了解${escapeHTML(item.name)}">${applicationIcon(item)}</button><div class="application-main">
+    <div class="application-title"><h3><button class="store-title-link" data-action="store-details" data-application-id="${id}">${escapeHTML(item.name)}</button></h3></div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
-    <p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || (item.resourcePreparation?.status === "pending" ? "打开时将自动检查并准备盒端专家和技能包。" : candidateLabel(candidate)))}</p>
-    <details class="application-details" data-detail-id="${id}" ${expandedDetails.has(item.applicationId) ? "open" : ""}><summary>应用详情</summary>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</details>
-    </div>${actions}</article>`;
+    ${status ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status)}</p>` : ""}
+    </div>${actions}
+    <button class="store-detail-link" data-action="store-details" data-application-id="${id}">了解应用 <span aria-hidden="true">›</span></button>
+    <details class="application-details" data-detail-id="${id}" ${expandedDetails.has(item.applicationId) ? "open" : ""}><summary>版本与管理${candidate?.status === "available" && installed ? '<span class="store-update-dot">可更新</span>' : ""}</summary>${applicationManagement(item, installed)}</details></article>`;
+}
+function storeApplication(id) {
+  const item = currentState.applications?.find(item => item.applicationId === id) || marketItems.find(item => item.applicationId === id);
+  if (item) return item;
+  const metadata = featuredApplicationIds.includes(id) && window.wanxAppCatalog?.[id];
+  return metadata ? { applicationId: id, name: metadata.name, description: metadata.introduction, editorialOnly: true } : null;
+}
+function storeFeatures() {
+  const slides = featuredApplicationIds.map(id => ({ id, metadata: window.wanxAppCatalog?.[id] })).filter(item => item.metadata?.posters?.length);
+  if (!slides.length) return "";
+  // Keep markup stable: the carousel paints its own state without replacing focused controls.
+  return `<section class="store-carousel" aria-label="应用精选" aria-roledescription="轮播" data-active="0">
+    <div class="carousel-heading"><h3>为你精选</h3><div class="carousel-buttons"><button data-action="carousel-previous" aria-label="上一页推荐">‹</button><button data-action="carousel-toggle" aria-label="暂停轮播" aria-pressed="false">Ⅱ</button><button data-action="carousel-next" aria-label="下一页推荐">›</button></div></div>
+    <div class="carousel-viewport"><div class="carousel-track">${slides.map(({ id, metadata }, index) => `<article class="carousel-slide" data-name="${escapeHTML(metadata.name)}" aria-roledescription="幻灯片" aria-label="${index + 1} / ${slides.length} · ${escapeHTML(metadata.name)}"><button class="carousel-poster" data-action="store-details" data-application-id="${id}" aria-label="了解${escapeHTML(metadata.name)}"><img class="carousel-artwork" src="./assets/posters/${metadata.posters[0][0]}" alt="${escapeHTML(metadata.name)}：${escapeHTML(metadata.tagline)}" decoding="async" draggable="false" /><span class="carousel-app-info">${applicationIcon({ applicationId: id, name: metadata.name })}<span class="carousel-copy"><strong>${escapeHTML(metadata.name)}</strong><span>${escapeHTML(metadata.tagline)}</span></span><span class="carousel-detail-label" aria-hidden="true">查看</span></span></button></article>`).join("")}</div></div>
+    <div class="carousel-controls"><span class="carousel-caption">1 / ${Math.ceil(slides.length / 2)}</span><div class="carousel-dots" aria-label="选择推荐应用">${slides.filter((_, index) => index % 2 === 0).map(({ metadata }, index) => `<button class="carousel-dot" data-action="carousel-select" data-carousel-index="${index}" aria-label="第 ${index + 1} 页推荐：${escapeHTML(metadata.name)}与${escapeHTML(slides[index * 2 + 1]?.metadata.name || "")}" aria-current="${index === 0}"><span></span></button>`).join("")}</div></div></section>`;
+}
+
+function applicationDetailView() {
+  const installedItem = currentState.applications?.find(item => item.applicationId === selectedApplicationId);
+  const item = storeApplication(selectedApplicationId);
+  const metadata = window.wanxAppCatalog?.[selectedApplicationId];
+  const media = metadata?.posters || [];
+  const candidate = marketCandidates.get(selectedApplicationId);
+  const operation = operationFor(selectedApplicationId);
+  const status = operationMessage(operation);
+  const modal = posterPreview !== null && media[posterPreview];
+  return `<div class="app-layout store-layout" ${marketConfirmation || modal ? "inert" : ""}>${shellHeader("应用介绍")}<div class="page-content app-detail-page">
+    <button class="store-back" data-action="store-back"><span aria-hidden="true">‹</span> 应用商店</button>
+    ${item ? `<section class="app-detail-hero" data-application-detail="${escapeHTML(item.applicationId)}" data-tone="${applicationTone(item)}">${applicationIcon(item)}<div class="app-detail-identity"><p class="app-detail-category">${escapeHTML(metadata?.category || "万象应用")}</p><h2 class="app-detail-title" tabindex="-1">${escapeHTML(item.name)}</h2><p class="app-detail-tagline">${escapeHTML(metadata?.tagline || item.description || "在你的盒子上使用 AI 服务。")}</p>${applicationActions(item, Boolean(installedItem))}${item.editorialOnly ? '<p class="muted app-editorial-notice">产品介绍 · 暂未提供可安装版本</p>' : ""}</div></section>
+    ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}${status ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status)}</p>` : ""}
+    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${installedItem ? installedItem.selectionRequired ? "待选择当前版本" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
+    ${media.length ? `<section class="app-detail-section"><div class="section-heading"><h3>产品介绍</h3><span class="app-preview-hint">点击图片，放大查看</span></div><div class="app-poster-gallery ${media.length === 1 ? "single" : ""}" role="region" aria-label="${escapeHTML(item.name)}产品海报" tabindex="0">${media.map(([file, caption, context], index) => `<figure><button class="app-poster" data-action="poster-open" data-poster-index="${index}" aria-label="放大：${escapeHTML(caption)}"><img src="./assets/posters/${file}" alt="${escapeHTML(caption)}" decoding="async" /></button><figcaption><strong>${escapeHTML(caption)}</strong><span>${escapeHTML(context)}</span></figcaption></figure>`).join("")}</div></section>` : ""}
+    <section class="app-detail-section app-detail-about"><p class="app-detail-category">为你的日常而设计</p><h3>关于${escapeHTML(item.name)}</h3><p>${escapeHTML(metadata?.introduction || item.description || "在你的盒子上使用 AI 服务。")}</p>${metadata ? `<div class="app-feature-grid">${metadata.features.map(([title, description], index) => `<article><span class="app-feature-number">0${index + 1}</span><h4>${escapeHTML(title)}</h4><p>${escapeHTML(description)}</p></article>`).join("")}</div>` : ""}</section>
+    <section class="app-detail-section app-version-section"><h3>版本与管理</h3>${applicationManagement(item, Boolean(installedItem))}</section>
+    <p class="app-detail-note">通过万象打开应用，使用已连接盒子提供的服务。云端能力的用量可在「我的积分」查看。</p>` : '<div class="empty-state"><h2>此应用当前不可用</h2><p>返回应用商店刷新后重试。</p></div>'}
+  </div></div>${modal ? `<section class="poster-modal" role="dialog" aria-modal="true" aria-label="${escapeHTML(modal[1])}"><div class="poster-modal-card"><button class="button poster-close" data-action="poster-close" aria-label="关闭海报">关闭 <span aria-hidden="true">×</span></button><img src="./assets/posters/${modal[0]}" alt="${escapeHTML(modal[1])}" /><p>${escapeHTML(modal[1])}<small>${escapeHTML(modal[2])}</small></p></div></section>` : ""}${confirmationView()}`;
 }
 
 function confirmationView() {
@@ -812,16 +872,16 @@ function applicationsView() {
   const applications = currentState.applications || [];
   const installed = new Set(applications.map((item) => item.applicationId));
   const available = marketItems.filter((item) => !installed.has(item.applicationId));
-  return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用商店")}<div class="page-content">
-    <div class="page-heading"><div><h2>应用商店</h2><p class="muted">通用应用包支持 Windows 和 macOS。安装与更新无需连接盒子。</p></div><button class="text-button" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div>
-    <div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div>
+  return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用商店")}<div class="page-content store-page">
+    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用商店</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="content-section" aria-label="我的应用"><div class="section-heading"><h3>我的应用 <span class="count">${applications.length}</span></h3></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
-    <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><h3 id="market-heading">发现应用</h3></div>
+    ${storeFeatures()}
+    <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
+    <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>
     ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)} <button class="text-button" data-action="market-refresh">刷新重试</button></div>` : ""}
     ${available.length ? `<div class="application-list">${available.map((item) => applicationCard(item, false)).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用商店…" : marketError ? "稍后刷新即可重试。" : marketItems.length ? "商店中的应用均已安装。" : "暂无已上架应用。"}</p>`}</section>
+    <div class="store-footnote"><span>Windows 与 macOS 通用</span><span aria-hidden="true">·</span><span>安装和更新无需连接盒子</span></div>
   </div></div>${confirmationView()}`;
-
 }
 
 async function refreshMarket() {
@@ -1000,8 +1060,8 @@ function render(state) {
   scheduleBoxUpdatePolling();
   if (activeInteraction) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
-    : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("我的积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
-  if (markup === renderedMarkup) { syncFormState(); return; }
+    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("我的积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+  if (markup === renderedMarkup) { syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
   // selection and focus; network polling does not rebuild active setup forms.
@@ -1019,6 +1079,7 @@ function render(state) {
   const scroller = document.scrollingElement;
   const scroll = retainedForm && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
   app.innerHTML = markup;
+  storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen);
   if (scanButton) {
     app.querySelector?.('[data-action="start-provisioning"][aria-busy="true"]')?.replaceWith(scanButton);
     for (const animation of scanButton.querySelector('.scan-spinner').getAnimations()) {
@@ -1263,6 +1324,34 @@ app.addEventListener("click", async (event) => {
   }
 
   if (marketConfirmation && !["market-cancel", "market-confirm"].includes(action)) return;
+  if (action.startsWith("carousel-")) {
+    if (page !== "applications") return;
+    if (action === "carousel-next") storeCarousel.select(storeCarousel.index + 1);
+    else if (action === "carousel-previous") storeCarousel.select(storeCarousel.index - 1);
+    else if (action === "carousel-select") storeCarousel.select(Number(target.dataset.carouselIndex));
+    else if (action === "carousel-toggle") storeCarousel.toggle();
+    return;
+  }
+  if (action === "store-details") {
+    const id = target.dataset.applicationId;
+    if (page !== "applications" || !storeApplication(id)) return;
+    selectedApplicationId = id;
+    posterPreview = null;
+    page = "application-detail";
+    render(currentState);
+    document.querySelector(".app-detail-title")?.focus?.({ preventScroll: true });
+    document.scrollingElement?.scrollTo?.(0, 0);
+    return;
+  }
+  if (action === "store-back") { selectedApplicationId = null; posterPreview = null; page = "applications"; render(currentState); document.scrollingElement?.scrollTo?.(0, 0); return; }
+  if (action === "poster-open") {
+    const media = window.wanxAppCatalog?.[selectedApplicationId]?.posters;
+    const index = Number(target.dataset.posterIndex);
+    if (page !== "application-detail" || !Number.isInteger(index) || !media?.[index]) return;
+    posterPreview = index; render(currentState);
+    app.querySelector?.('[data-action="poster-close"]')?.focus?.(); return;
+  }
+  if (action === "poster-close") { posterPreview = null; render(currentState); app.querySelector?.('[data-action="poster-open"]')?.focus?.(); return; }
   if (action === "market-cancel") { marketConfirmation = null; render(currentState); return; }
   if (action === "market-confirm") {
     const confirmation = marketConfirmation;
@@ -1349,6 +1438,7 @@ app.addEventListener("click", async (event) => {
   if (action === "logout") { await run("auth.logout"); return; }
   if (["show-applications", "show-boxes", "show-settings", "show-credits", "show-profile"].includes(action)) {
     if (page === "provisioning") return;
+    selectedApplicationId = null; posterPreview = null;
     page = action.slice(5);
     if (page === "credits") void creditsView.refresh();
     if (page === "boxes") void refreshTransfers();
@@ -1516,6 +1606,8 @@ app.addEventListener("toggle", (event) => {
 
 app.addEventListener("keydown", (event) => {
   if (event.key === " " && event.target?.closest?.("button")) { clearTimeout(interactionTimer); activeInteraction = true; }
+  if (posterPreview !== null && event.key === "Escape") { event.preventDefault(); posterPreview = null; render(currentState); app.querySelector?.('[data-action="poster-open"]')?.focus?.(); return; }
+  if (posterPreview !== null && event.key === "Tab") { event.preventDefault(); app.querySelector?.('[data-action="poster-close"]')?.focus?.(); return; }
   if (profileMenuOpen && event.key === "Escape") { profileMenuOpen = false; render(currentState); app.querySelector?.('[data-action="profile-menu"]')?.focus(); return; }
   if (!marketConfirmation) return;
   if (event.key === "Escape") { marketConfirmation = null; render(currentState); }
@@ -1607,6 +1699,7 @@ function acceptRemoteState(state) {
   if (marketConfirmation?.updateDeviceId && state.upgrades?.box?.canUpgrade !== true) marketConfirmation = null;
   if (marketConfirmation?.updateResumeOperationId && (state.upgrades?.box?.operation?.operationId !== marketConfirmation.updateResumeOperationId || !state.upgrades.box.operation.allowedActions?.includes("resume"))) marketConfirmation = null;
   if (accountChanged) {
+    selectedApplicationId = null; posterPreview = null; storeCarousel.select(0);
     profileMenuOpen = false; notice = null;
     resetDiscoveryMetadata();
     setupSelection = null;
@@ -1642,6 +1735,7 @@ function acceptRemoteState(state) {
     localOperations.clear();
     pendingSelection = null;
     expandedDetails.clear();
+    selectedApplicationId = null; posterPreview = null;
     marketError = null;
     marketLoading = false;
     marketAccount = account;

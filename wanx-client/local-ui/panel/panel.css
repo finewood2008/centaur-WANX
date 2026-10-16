@@ -66,3 +66,5 @@ footer button span:last-child { font-size: 14px; }
 .primary:hover { background: #986044; }
 .notice { font-size: 12px; margin: 10px 0 0; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) { button { transition: none; } }
+
+.app-icon.generated-app-icon { object-fit: cover; padding: 0; background: transparent; border: 0; box-shadow: 0 2px 5px #4a352512; }

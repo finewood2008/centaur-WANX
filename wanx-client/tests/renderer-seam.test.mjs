@@ -199,8 +199,8 @@ async function harness(initial = state(), installed = [application], options = {
   vm.runInNewContext(source, {
     window,
     Date,
-    setTimeout, clearTimeout, TextEncoder,
-    document: { querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
+    setTimeout, clearTimeout, TextEncoder, queueMicrotask,
+    document: { addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -1940,4 +1940,95 @@ test("credits entry opens a read-only account ledger with real IPC data", async 
   assert.match(h.app.innerHTML, /我的积分/);
   assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
   assert.match(h.app.innerHTML, /还没有积分记录/);
+});
+
+test("store feature opens existing app details without starting or installing anything", async () => {
+  const h = await harness();
+  assert.match(h.app.innerHTML, /aria-label="应用精选"/);
+  assert.match(h.app.innerHTML, /data-action="store-details"/);
+  assert.match(h.app.innerHTML, /store-detail-body/);
+  const before = h.calls.length;
+  await h.click("store-details", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /data-application-detail="centaurai\.wanx\.zhijun"/);
+  assert.match(h.app.innerHTML, /产品介绍/);
+  assert.match(h.app.innerHTML, /关于知君/);
+  assert.equal(h.calls.length, before);
+  assert.equal(h.launches.length, 0);
+  assert.doesNotMatch(h.app.innerHTML, /评分|下载量|编辑推荐/);
+});
+
+test("curated posters do not invent installed apps or install permissions", async () => {
+  const item = { ...application, applicationId: "example.app", name: "测试应用", description: "长描述".repeat(80), previous: { version: "0.4.2" } };
+  const h = await harness(state(), [item], { list: async () => ({ items: [] }) });
+  assert.match(h.app.innerHTML, /aria-label="应用精选"/);
+  assert.match(h.app.innerHTML, /我的应用 <span class="count">1<\/span>/);
+  assert.equal((h.app.innerHTML.match(/class="carousel-slide"/g) || []).length, 4);
+  assert.match(h.app.innerHTML, /恢复上一版本/);
+  assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
+  assert.ok(h.app.innerHTML.includes(item.description));
+  await h.click("store-details", { applicationId: "unknown.app" });
+  assert.doesNotMatch(h.app.innerHTML, /data-detail-id="unknown.app"/);
+});
+
+
+test("six product pages have bundled icons, product posters and a safe back path", async () => {
+  const catalogContext = { window: {} };
+  vm.runInNewContext(await readFile(new URL("../local-ui/renderer/app-catalog.js", import.meta.url), "utf8"), catalogContext);
+  const catalog = catalogContext.window.wanxAppCatalog;
+  assert.equal(Object.keys(catalog).length, 6);
+  assert.equal(catalog.constructor, undefined);
+  const items = Object.entries(catalog).map(([applicationId, info]) => ({ applicationId, name: info.key, version: "1.0.0", description: "产品原始描述", previous: "0.9.0" }));
+  const h = await harness(state(), items);
+  for (const [applicationId, info] of Object.entries(catalog)) {
+    await readFile(new URL("../local-ui/renderer/" + info.icon, import.meta.url));
+    assert.ok(info.posters.length >= 1 && info.posters.length <= 3);
+    assert.equal(info.screenshots, undefined);
+    for (const [file] of info.posters) await readFile(new URL("../local-ui/renderer/assets/posters/" + file, import.meta.url));
+    await h.click("store-details", { applicationId });
+    assert.ok(h.app.innerHTML.includes(`data-application-detail="${applicationId}"`));
+    assert.ok(h.app.innerHTML.includes(info.introduction));
+    assert.doesNotMatch(h.app.innerHTML, /assets\/screenshots\/|界面预览|界面截图/);
+    assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+    assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
+    assert.match(h.app.innerHTML, /恢复上一版本/);
+    assert.match(h.app.innerHTML, /aria-current="page"[^>]*>应用商店/);
+    assert.match(h.app.innerHTML, /data-action="poster-open"/);
+    await h.click("poster-open", { posterIndex: "0" });
+    assert.match(h.app.innerHTML, /role="dialog" aria-modal="true"/);
+    assert.match(h.app.innerHTML, /store-layout" inert/);
+    await h.click("poster-close");
+    assert.doesNotMatch(h.app.innerHTML, /poster-modal-card/);
+    await h.click("store-back");
+    assert.doesNotMatch(h.app.innerHTML, /data-application-detail=/);
+  }
+  assert.equal(h.launches.length, 0);
+});
+
+test("product page revokes account-scoped actions on logout and rejects unknown posters", async () => {
+  const h = await harness();
+  await h.click("store-details", { applicationId: application.applicationId });
+  await h.click("poster-open", { posterIndex: "999" });
+  assert.doesNotMatch(h.app.innerHTML, /poster-modal-card/);
+  await h.click("logout");
+  assert.doesNotMatch(h.app.innerHTML, /data-application-detail=/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"/);
+});
+
+
+test("four official posters rotate in the requested order without adding app operations", async () => {
+  const h = await harness(state(), [], { list: async () => ({ items: [] }) });
+  const posters = [...h.app.innerHTML.matchAll(/class="carousel-slide" data-name="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(posters, ["知君", "半人马环", "众见", "万象 AI 浏览器"]);
+  assert.match(h.app.innerHTML, /zhijun-product-v1.png/);
+  assert.match(h.app.innerHTML, /loop-product-v1.png/);
+  assert.match(h.app.innerHTML, /dialogue-product-v1.png/);
+  assert.match(h.app.innerHTML, /browser-product-v1.png/);
+  assert.doesNotMatch(h.app.innerHTML, /store-zhijun-v1.png|store-council-v1.png/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"/);
+  const before = h.calls.length;
+  await h.click("store-details", { applicationId: "centaurai.wanx.dialogue" });
+  assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.dialogue"/);
+  assert.match(h.app.innerHTML, /暂未提供可安装版本/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"|data-action="applications-launch"/);
+  assert.equal(h.calls.length, before);
 });
