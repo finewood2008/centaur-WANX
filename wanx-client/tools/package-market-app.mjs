@@ -57,13 +57,43 @@ async function stageZhijun(project, destination, version) {
     throw new Error(`知君发行包的服务模块加载失败：${verification.error?.message || verification.stderr?.trim() || "未知错误"}`);
 }
 
-async function stageApplication(project, destination, version) {
-  runBuild(project, ["run", "--silent", "package"], { ...process.env, WANX_MARKET_VERSION: version });
+export async function stageApplication(project, destination, manifest) {
+  runBuild(project, ["run", "--silent", "package"], { ...process.env, WANX_MARKET_VERSION: manifest.version });
   await cp(path.join(project, "dist/application"), destination, { recursive: true });
   const appManifest = path.join(destination, "application.manifest.json");
   const value = await readJson(appManifest);
-  value.version = version;
-  await writeFile(appManifest, JSON.stringify(value, null, 2) + "\n");
+  assertSameApplication(value, manifest);
+  // Keep the development manifest out of the signed release. Both archive
+  // entry points must describe the same account-controlled application.
+  await writeFile(appManifest, JSON.stringify(manifest, null, 2) + "\n");
+}
+
+function assertSameApplication(local, market) {
+  for (const field of ["applicationId", "name", "runtime", "entrypoint"])
+    if (local[field] !== market[field]) throw new Error(`市场清单与应用工程的 ${field} 不一致。`);
+  if ((local.launchMode ?? "shared") !== (market.launchMode ?? "shared"))
+    throw new Error("市场清单与应用工程的 launchMode 不一致。");
+}
+
+export async function readProjectManifest(project, version) {
+  // An explicit market manifest leaves the unsigned local-development ZIP
+  // contract intact while opting this application's signed releases into v3.
+  const dedicated = path.join(project, "market.manifest.json");
+  try {
+    await access(dedicated);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    for (const [relative, layout] of [["market/wanx-app.json", "zhijun"], ["application.manifest.json", "application"]]) {
+      const file = path.join(project, relative);
+      try { await access(file); }
+      catch (cause) { if (cause.code === "ENOENT") continue; throw cause; }
+      return { layout, manifest: validateApplicationManifest({ ...await readJson(file), version }, { signed: true }) };
+    }
+    throw new Error("未找到 market.manifest.json、market/wanx-app.json 或 application.manifest.json，无法识别应用工程。");
+  }
+  const input = await readJson(dedicated);
+  assertSameApplication(await readJson(path.join(project, "application.manifest.json")), input);
+  return { layout: "application", manifest: validateApplicationManifest({ ...input, version }, { signed: true }) };
 }
 
 export async function readMarketOptions(cli = {}) {
@@ -99,15 +129,7 @@ export async function readMarketOptions(cli = {}) {
 export async function packageMarketApp(cli = {}) {
   const options = await readMarketOptions(cli);
   const { project, version, keyId, keyFile, outputDir } = options;
-  let manifestPath, layout;
-  try { await access(path.join(project, "market/wanx-app.json")); manifestPath = path.join(project, "market/wanx-app.json"); layout = "zhijun"; }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  if (!manifestPath) {
-    try { await access(path.join(project, "application.manifest.json")); manifestPath = path.join(project, "application.manifest.json"); layout = "application"; }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-  }
-  if (!manifestPath) throw new Error("未找到 market/wanx-app.json 或 application.manifest.json，无法识别应用工程。");
-  const manifest = validateApplicationManifest({ ...await readJson(manifestPath), version }, { signed: true });
+  const { layout, manifest } = await readProjectManifest(project, version);
   const trusted = (await readJson(path.join(clientRoot, "applications/market-trust.json"))).keys || {};
   if (!trusted[keyId]) throw new Error(`万象客户端未配置信任公钥 ${keyId}。`);
   const privateKey = createPrivateKey(await readFile(keyFile));
@@ -119,7 +141,7 @@ export async function packageMarketApp(cli = {}) {
   try {
     console.log(`构建 ${manifest.name} 市场包 ${version}（${options.os}/${options.arch}）`);
     if (layout === "zhijun") await stageZhijun(project, sourceDir, version);
-    else await stageApplication(project, sourceDir, version);
+    else await stageApplication(project, sourceDir, manifest);
     await writeFile(path.join(sourceDir, "wanx-app.json"), JSON.stringify(manifest, null, 2) + "\n");
     const result = await packageApplication({
       sourceDir, outputDir, os: options.os, arch: options.arch,
