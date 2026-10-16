@@ -678,10 +678,12 @@ function marketErrorMessage(error) {
     MARKET_NOT_CONFIGURED: "应用市场尚未配置完成，请联系管理员。",
     CLIENT_VERSION_INCOMPATIBLE: "请先在设置中更新万象，再安装或打开此应用。",
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
-    APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会自动准备所需专家和技能包。",
-    APPLICATION_RESOURCES_NOT_READY: "应用所需的专家或技能包尚未准备好，请保持盒子联网后重试。",
+    APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会检查盒端准备状态。",
+    APPLICATION_RESOURCES_NOT_READY: "盒端尚未完成应用准备，请保持盒子联网后重试。",
     APPLICATION_RESOURCE_ARTIFACT_REQUIRED: "请从应用商店安装已发布的应用版本，再准备盒端资源。",
     APPLICATION_PREPARATION_INVALID: "盒端准备结果无法核验，请更新盒端后重试。",
+    APPLICATION_PREPARATION_UNAVAILABLE: "盒端应用准备服务暂不可用，请检查盒端服务后重试。",
+    RESOURCE_SERVICE_NOT_CONFIGURED: "盒端应用准备服务尚未启用，请联系盒主或管理员检查盒端配置。",
     APP_ENTITLEMENT_REQUIRED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
     RESOURCE_PRODUCT_PROFILE_UNSUPPORTED: "此应用暂不支持自动准备专家，请联系应用提供方更新应用。",
     RESOURCE_PREPARATION_BUSY: "盒子正在准备应用所需资源，请稍后重试。",
@@ -888,10 +890,21 @@ function provisioningView() {
   const cancelling = setupRequest?.action === "provisioning.cancel";
   const refreshing = setupRequest?.action === "provisioning.refresh";
   const cancelButton = `<button class="button danger" data-action="cancel-provisioning" aria-busy="${cancelling}" ${cancelling ? "disabled" : ""}>${cancelling ? "正在取消…" : "取消"}</button>`;
+  // waitingCloud describes polling, not an ownership commit. The device may
+  // still owe its proof even though the account proof has been submitted.
+  const initializing = setupState.claimState === "deviceAckPending";
+  const cloudStage = initializing ? "initialize" : "claim";
+  const cloudCopy = {
+    waitingAppProof: "正在等待账号认领证明，认领尚未完成。",
+    waitingDeviceProof: "正在等待盒子提交认领证明，认领尚未完成。请保持盒子联网后刷新。",
+    ownershipCommitted: "账号绑定已确认，正在准备盒端授权。",
+    projectionPending: "账号绑定已确认，正在同步访问权限。",
+    deviceAckPending: "账号绑定已确认，正在等待盒子接收并确认授权。",
+  }[setupState.claimState] || "认领尚未确认完成，请刷新认领状态。";
   const stagesByState = {
     idle: "discover", previewReady: "identity", awaitingWifi: "network",
     awaitingOwnershipConfirmation: "claim", submittingAppProof: "claim",
-    verifyingLocalDevice: "identity", establishingSecureChannel: "identity", provisioningWifi: "network", waitingCloud: "initialize", attentionRequired: "initialize",
+    verifyingLocalDevice: "identity", establishingSecureChannel: "identity", provisioningWifi: "network", waitingCloud: cloudStage, attentionRequired: cloudStage,
   };
   const failed = ["terminalError", "restartRequired"].includes(setupState.state);
   const provisioning = {
@@ -908,7 +921,7 @@ function provisioningView() {
   const stages = Object.entries(stageLabels).filter(([key]) => !wifiOnly || !["claim", "initialize"].includes(key));
   const setupCopy = starting ? "正在通过蓝牙读取盒子身份，请稍候。" : cancelling ? "正在停止本次配网，请稍候。" : {
     idle: "让盒子保持通电，点击扫描并选择附近的盒子。已认领的盒子可由主人修改 Wi-Fi。",
-    attentionRequired: "盒子授权尚未完成，请检查盒子联网状态后刷新。",
+    attentionRequired: cloudCopy,
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
     verifyingLocalDevice: "正在验证设备身份和主人权限…",
     establishingSecureChannel: "正在建立加密连接…",
@@ -916,7 +929,7 @@ function provisioningView() {
     awaitingOwnershipConfirmation: "设备已准备联网，请确认绑定到当前账号。",
     submittingAppProof: "正在提交账号绑定证明…",
     provisioningWifi: "正在通过加密通道配置 Wi‑Fi…",
-    waitingCloud: "正在等待设备联网并完成平台授权…",
+    waitingCloud: cloudCopy,
     completed: wifiOnly ? "Wi-Fi 配置成功，认领关系和盒子数据已保留。" : "设备已完成联网和账号绑定。",
     cancelled: "本次配网已取消。",
   }[setupPhase] || "请让设备进入配置模式后开始扫描。";
@@ -937,7 +950,7 @@ function provisioningView() {
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
         <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${bluetoothNotice()}${discoveryBlock}${previewBlock}${controls}</div>
         <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || bluetoothState.status !== "available" || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
-        ${setupPhase === "attentionRequired" ? `<button class="button" data-action="provisioning-refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? "正在刷新…" : "刷新授权状态"}</button>` : ""}
+        ${setupPhase === "attentionRequired" ? `<button class="button" data-action="provisioning-refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? "正在刷新…" : initializing ? "刷新授权状态" : "刷新认领状态"}</button>` : ""}
         ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
         ${!setupReady ? '<p class="hint">正在准备蓝牙配网服务…</p>' : ""}
       </section></div>

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 // Reproducible local patch of the pinned SDK; never patch node_modules in place.
 const root = fileURLToPath(new URL('../', import.meta.url));
-const version = '2.0.1-wanx.1';
+const version = '2.0.1-wanx.2';
 const archive = path.join(root, 'vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz');
 const check = process.argv.includes('--check');
 if (process.argv.slice(2).some(arg => arg !== '--check')) throw Error('Only --check is supported');
@@ -51,9 +51,17 @@ try {
                 throw new LocalProvisioningFailure("GATT_CHARACTERISTIC_MISMATCH");
             }`;
   const after = `            let server, service, deviceInfo, command, status;
-            let stage = "connect";
+            let stage = "connect", retired = false, closeOnRetire;
+            const retireConnection = () => {
+                if (retired) return;
+                retired = true;
+                signal.removeEventListener("abort", retireConnection);
+                closeOnRetire?.();
+                device.gatt.disconnect();
+            };
+            signal.addEventListener("abort", retireConnection, { once: true });
             const assertActive = () => {
-                if (signal.aborted)
+                if (signal.aborted || retired)
                     throw new DOMException("Aborted", "AbortError");
             };
             try {
@@ -72,7 +80,7 @@ try {
                 assertActive();
             }
             catch (error) {
-                device.gatt.disconnect();
+                retireConnection();
                 if (signal.aborted || error?.name === "AbortError")
                     throw new DOMException("Aborted", "AbortError");
                 const code = error?.name === "NotFoundError" && stage !== "connect"
@@ -81,7 +89,19 @@ try {
                 throw new LocalProvisioningFailure(code);
             }`;
   if (source.split(before).length !== 2) throw Error('SDK GATT patch anchor is not unique');
-  writeFileSync(target, source.replace(before, after));
+  let patched = source.replace(before, after);
+  const changes = [
+    ['                server.disconnect();', '                retireConnection();'],
+    ['            device.addEventListener("gattserverdisconnected", onDisconnect);',
+      '            closeOnRetire = () => closeWith(new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED"));\n            device.addEventListener("gattserverdisconnected", onDisconnect);'],
+    ['                await status.startNotifications();',
+      '                await status.startNotifications();\n                assertActive();'],
+  ];
+  for (const [from, to] of changes) {
+    if (patched.split(from).length !== 2) throw Error('SDK GATT lifecycle patch anchor is not unique');
+    patched = patched.replace(from, to);
+  }
+  writeFileSync(target, patched);
   const packed = JSON.parse(execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm',
     ['pack', '--offline', '--ignore-scripts', '--json', '--pack-destination', temporary],
     { cwd: directory, encoding: 'utf8' }));

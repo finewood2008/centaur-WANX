@@ -184,6 +184,22 @@ class PackageResourcesTests(unittest.TestCase):
             with self.assertRaises(module.PackageError):
                 module.validate(candidate)
 
+    def test_expert_sharing_scope_is_explicit_and_validated(self):
+        for scope in ("application", "account"):
+            candidate = package()
+            candidate["metadata"]["expertInstanceScope"] = scope
+            module.validate(candidate)
+        for scope in (None, True, "global", [], {}):
+            candidate = package()
+            candidate["metadata"]["expertInstanceScope"] = scope
+            with self.subTest(scope=scope), self.assertRaises(module.PackageError):
+                module.validate(candidate)
+        candidate = package()
+        candidate["kind"] = "skill-package"
+        candidate["metadata"]["expertInstanceScope"] = "account"
+        with self.assertRaises(module.PackageError):
+            module.validate(candidate)
+
     def test_paths_duplicate_casefold_parent_and_base64(self):
         for path in (
             "../bad",

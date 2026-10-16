@@ -23,9 +23,11 @@ export function createApplicationBackend({ client, account, clientVersion }) {
       const response = await connection.request({ path, method: "POST", headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(body)) });
       check();
       let value;
-      try { value = JSON.parse(response.body.toString("utf8")); } catch { throw fail("APPLICATION_PREPARATION_INVALID"); }
+      try { value = JSON.parse(response.body.toString("utf8")); }
+      catch { if (response.status >= 200 && response.status < 300) throw fail("APPLICATION_PREPARATION_INVALID"); }
       if (response.status < 200 || response.status >= 300)
-        throw fail(safeCode(value?.code) ? value.code : [401, 403].includes(response.status) ? "APP_ENTITLEMENT_REQUIRED" : "APPLICATION_RESOURCES_NOT_READY");
+        throw fail(safeCode(value?.code) ? value.code : [401, 403].includes(response.status) ? "APP_ENTITLEMENT_REQUIRED"
+          : response.status === 404 ? "BACKEND_CONTRACT_INCOMPATIBLE" : "APPLICATION_PREPARATION_UNAVAILABLE");
       return value;
     }
     return { connection, current, check, post };

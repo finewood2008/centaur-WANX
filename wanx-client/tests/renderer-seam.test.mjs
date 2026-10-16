@@ -1883,3 +1883,24 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
 });
+
+
+for (const phase of ['waitingCloud', 'attentionRequired']) {
+  for (const claimState of [undefined, 'waitingAppProof', 'waitingDeviceProof', 'ownershipCommitted', 'projectionPending', 'deviceAckPending']) {
+    test(`claim wizard ${phase}/${claimState} marks only confirmed stages complete`, async () => {
+      const h = await harness(state());
+      await h.click('provisioning');
+      h.setup({ state: phase, ...(claimState ? { claimState } : {}) });
+      const steps = [...h.app.innerHTML.matchAll(/<div class="wizard-step ([^"]*)"><span>([^<]+)<\/span><label>([^<]+)<\/label>/g)];
+      const claim = steps.find(step => step[3] === '认领设备');
+      const initialize = steps.find(step => step[3] === '初始化盒端');
+      assert.ok(claim && initialize);
+      assert.equal(claim[1].includes('done'), claimState === 'deviceAckPending');
+      assert.equal(initialize[1].includes('active'), claimState === 'deviceAckPending');
+      if (claimState === 'waitingDeviceProof') {
+        assert.match(h.app.innerHTML, /等待盒子提交认领证明/);
+        assert.doesNotMatch(h.app.innerHTML, /盒子授权尚未完成/);
+      }
+    });
+  }
+}

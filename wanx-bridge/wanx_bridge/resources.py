@@ -14,10 +14,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
+from uuid import UUID
 
 import httpx
 
 from .config import BridgeAuthError
+from .resource_cache import (
+    CACHE_MAX_BYTES,
+    CACHE_MIN_FREE_BYTES,
+    cache_bytes,
+    cache_io,
+    cache_lock,
+    cleanup_cache,
+)
 from .resources_contract import (
     MAX_PACKAGE,
     canonical,
@@ -137,6 +146,7 @@ class ResourceCatalog:
         )
         self.lock = asyncio.Lock()
         self.last_error: str | None = None
+        self.last_cleanup: dict[str, Any] | None = None
 
     def verify(self, envelope: Any) -> dict[str, Any]:
         try:
@@ -158,7 +168,7 @@ class ResourceCatalog:
             raise fail("RESOURCE_SERVICE_UNAVAILABLE", 503) from exc
 
     async def request(self, operation: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        if operation not in {"catalog", "resolve", "download"}:
+        if operation not in {"catalog", "resolve", "download", "access"}:
             raise fail()
         key = private_bytes(self.config.key_file, 8192, secret=True).decode().strip()
         if not key or any(c.isspace() for c in key):
@@ -172,7 +182,7 @@ class ResourceCatalog:
             + operation,
             limit=24 * 1024 * 1024,
             headers={"Authorization": "CentaurOS-DeviceKey " + key, "Accept": "application/json"},
-            **({} if body is None else {"json": body}),
+            **({"params": {"resourceProtocol": 2}} if body is None else {"json": body}),
         )
         if status in {401, 403}:
             # Authorization denial is final, never a transient transport failure.
@@ -182,8 +192,12 @@ class ResourceCatalog:
             except (ValueError, TypeError):
                 denied = {}
             code = "RESOURCE_PUBLICATION_UNAVAILABLE"
-            if isinstance(denied, dict) and denied.get("errorCode") == "MARKET_GRAY_ACCESS_DENIED":
-                code = "MARKET_GRAY_ACCESS_DENIED"
+            if isinstance(denied, dict) and denied.get("errorCode") in {
+                "MARKET_GRAY_ACCESS_DENIED",
+                "RESOURCE_GRAY_ACCESS_DENIED",
+                "RESOURCE_DEVICE_ACCESS_DENIED",
+            }:
+                code = denied["errorCode"]
             raise fail(code, status)
         if status != 200:
             raise fail(
@@ -207,7 +221,7 @@ class ResourceCatalog:
     async def resolve(
         self, application_id: str, artifact_id: str, *, account_id: str | None = None
     ) -> dict[str, Any]:
-        body = {"applicationId": application_id, "artifactId": artifact_id}
+        body = {"applicationId": application_id, "artifactId": artifact_id, "resourceProtocol": 2}
         if account_id is not None:
             body["accountId"] = account_id
         result = await self.request("resolve", body)
@@ -249,6 +263,11 @@ class ResourceCatalog:
 
         for envelope in result["resources"]:
             payload = self.verify(envelope)
+            if (
+                payload.get("releaseAccess") == "account"
+                and result.get("releaseAccess") != "account"
+            ):
+                raise fail("RESOURCE_RESPONSE_INVALID", 502)
             key = (payload["kind"], payload["resourceId"])
             if key in seen:
                 raise fail("RESOURCE_RESPONSE_INVALID", 502)
@@ -265,25 +284,80 @@ class ResourceCatalog:
                 raise fail("RESOURCE_DEPENDENCY_UNRESOLVED")
         return result
 
-    async def package(self, envelope: dict[str, Any]) -> dict[str, Any]:
+    async def _resource_request(
+        self, operation: str, envelope: dict[str, Any], *, account_id: str | None = None
+    ) -> dict[str, Any]:
+        """Bind every acquisition or reuse check to the verified account and envelope."""
+        payload = self.verify(envelope)
+        controlled = payload.get("releaseAccess") == "account"
+        if controlled:
+            try:
+                if not isinstance(account_id, str) or str(UUID(account_id)) != account_id:
+                    raise ValueError()
+            except ValueError as exc:
+                raise fail("RESOURCE_ACCOUNT_IDENTITY_INVALID", 403) from exc
+        body = {key: payload[key] for key in ("kind", "resourceId", "version")}
+        body["resourceProtocol"] = 2
+        if account_id is not None:
+            body["accountId"] = account_id
+        try:
+            response = await self.request(operation, body)
+        except BridgeAuthError as exc:
+            if controlled and exc.status == 503:
+                raise fail("RESOURCE_ONLINE_ACCESS_REQUIRED", 503) from exc
+            raise
+        if canonical(response.get("envelope")) != canonical(envelope):
+            raise fail("RESOURCE_PACKAGE_IDENTITY_MISMATCH")
+        self.verify(response["envelope"])
+        return response
+
+    async def _download(
+        self, envelope: dict[str, Any], *, account_id: str | None = None
+    ) -> dict[str, Any]:
+        download = await self._resource_request("download", envelope, account_id=account_id)
+        fields(download, {"envelope", "url", "expiresAt"})
+        if (
+            type(download["expiresAt"]) is not int
+            or not time.time() < download["expiresAt"] <= time.time() + 900
+        ):
+            raise fail("RESOURCE_DOWNLOAD_EXPIRED")
+        return download
+
+    async def authorize(self, envelope: dict[str, Any], *, account_id: str | None = None) -> None:
+        """An installed controlled resource still needs current preparation authority."""
+        if self.verify(envelope).get("releaseAccess") == "account":
+            access = await self._resource_request("access", envelope, account_id=account_id)
+            fields(access, {"envelope", "channel"})
+            if access["channel"] not in {"stable", "gray"}:
+                raise fail("RESOURCE_RESPONSE_INVALID", 502)
+
+    async def package(
+        self, envelope: dict[str, Any], *, account_id: str | None = None
+    ) -> dict[str, Any]:
         payload = self.verify(envelope)
         digest = payload["package"]["sha256"]
         cached = self.directory / "packages" / (digest + ".json")
-        async with self.lock:
-            if cached.exists() or cached.is_symlink():
-                return validate_package(private_bytes(cached, MAX_PACKAGE), payload)
-            download = await self.request(
-                "download", {key: payload[key] for key in ("kind", "resourceId", "version")}
+        async with self.lock, cache_lock(self.directory):
+            try:
+                cache_size = await cache_io(cache_bytes, self.directory)
+            except (OSError, ValueError) as exc:
+                raise fail("RESOURCE_LOCAL_STATE_INVALID", 503) from exc
+            # Shared immutable bytes prove integrity, not account membership. A
+            # gray package remains controlled after promotion to stable.
+            download = (
+                await self._download(envelope, account_id=account_id)
+                if payload.get("releaseAccess") == "account"
+                else None
             )
-            fields(download, {"envelope", "url", "expiresAt"})
-            if canonical(download["envelope"]) != canonical(envelope):
-                raise fail("RESOURCE_PACKAGE_IDENTITY_MISMATCH")
-            self.verify(download["envelope"])
-            if (
-                type(download["expiresAt"]) is not int
-                or not time.time() < download["expiresAt"] <= time.time() + 900
-            ):
-                raise fail("RESOURCE_DOWNLOAD_EXPIRED")
+            if cached.exists() or cached.is_symlink():
+                package = validate_package(
+                    await cache_io(private_bytes, cached, MAX_PACKAGE), payload
+                )
+                # Retention is based on recent use, not just the original download.
+                await cache_io(os.utime, cached, None)
+                return package
+            if download is None:
+                download = await self._download(envelope, account_id=account_id)
             try:
                 parsed = urlsplit(download["url"])
                 port = parsed.port
@@ -299,30 +373,29 @@ class ResourceCatalog:
             ):
                 raise fail("RESOURCE_DOWNLOAD_ORIGIN_FORBIDDEN")
             size = payload["package"]["sizeBytes"]
-            cache_dir = self.directory / "packages"
-            cache_size = (
-                sum(
-                    item.stat().st_size
-                    for item in cache_dir.glob("*.json")
-                    if item.is_file() and not item.is_symlink()
-                )
-                if cache_dir.exists()
-                else 0
-            )
             if (
-                cache_size + size > 1024 * 1024 * 1024
-                or shutil.disk_usage(self.directory).free - size < 256 * 1024 * 1024
+                cache_size + size > CACHE_MAX_BYTES
+                or shutil.disk_usage(self.directory).free - size < CACHE_MIN_FREE_BYTES
             ):
+                # Runtime preparation may already hold prepare.lock. Never run
+                # GC here: periodic/explicit cleanup takes prepare -> cache locks.
                 raise fail("RESOURCE_CACHE_FULL", 503)
             status, raw = await self._read("GET", download["url"], limit=size)
             if status != 200:
                 raise fail("RESOURCE_DOWNLOAD_FAILED", 502)
             package = validate_package(raw, payload)
-            await asyncio.to_thread(atomic, cached, raw)
-            await asyncio.to_thread(
-                atomic, self.directory / "envelopes" / (digest + ".json"), canonical(envelope)
-            )
+
+            def store() -> None:
+                atomic(cached, raw)
+                atomic(self.directory / "envelopes" / (digest + ".json"), canonical(envelope))
+
+            await cache_io(store)
             return package
+
+    async def cleanup(self) -> dict[str, Any]:
+        """Run separately from preparation; a busy installer is never interrupted."""
+        self.last_cleanup = await cleanup_cache(self.directory, self.verify)
+        return self.last_cleanup
 
     async def synchronize(self) -> dict[str, Any]:
         result = await self.request("catalog")
@@ -333,17 +406,24 @@ class ResourceCatalog:
             or len(result["items"]) > 4096
         ):
             raise fail("RESOURCE_RESPONSE_INVALID", 502)
-        # Cache all published resources, but never create/modify a user's instance
-        # without that user's current, application-authorized platform session.
-        failures = []
+        # Poll only signed metadata. Packages are downloaded on demand through
+        # an application-authorized user session; no full-market disk/network load.
+        seen = set()
         for envelope in result["items"]:
-            try:
-                await self.package(envelope)
-            except BridgeAuthError as exc:
-                failures.append(exc.code)
-        await asyncio.to_thread(atomic, self.directory / "catalog.json", canonical(result))
-        self.last_error = failures[0] if failures else None
-        return {"count": len(result["items"]), "failures": failures}
+            payload = self.verify(envelope)
+            key = (payload["kind"], payload["resourceId"])
+            if key in seen:
+                raise fail("RESOURCE_RESPONSE_INVALID", 502)
+            seen.add(key)
+        async with cache_lock(self.directory):
+            await cache_io(atomic, self.directory / "catalog.json", canonical(result))
+        try:
+            await self.cleanup()
+        except (BridgeAuthError, OSError, ValueError):
+            # Cache maintenance cannot invalidate a successfully fetched catalog.
+            self.last_cleanup = {"status": "skipped", "code": "RESOURCE_CACHE_STATE_UNVERIFIED"}
+        self.last_error = None
+        return {"count": len(result["items"]), "failures": []}
 
     async def poll(self) -> None:
         while True:

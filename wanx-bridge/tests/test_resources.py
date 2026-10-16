@@ -23,7 +23,14 @@ from wanx_bridge.resources_runtime import ResourceRuntime
 
 
 def signed(
-    private, *, kind="expert", resource_id="companion", version="1.0.0", files=None, deps=None
+    private,
+    *,
+    kind="expert",
+    resource_id="companion",
+    version="1.0.0",
+    files=None,
+    deps=None,
+    metadata=None,
 ):
     package = {
         "schemaVersion": 1,
@@ -33,7 +40,7 @@ def signed(
         "name": "知君",
         "description": "source",
         "dependencies": deps or [],
-        "metadata": {},
+        "metadata": metadata or {},
         "files": files
         or [
             {"path": "AGENTS.md", "contentBase64": base64.b64encode(b"Be helpful").decode()},
@@ -225,7 +232,7 @@ class FakeCatalog:
     def verify(self, envelope):
         return verify_envelope(envelope, self.trust)
 
-    async def resolve(self, application, artifact):
+    async def resolve(self, application, artifact, *, account_id=None):
         return {
             "schemaVersion": 1,
             "applicationId": application,
@@ -237,7 +244,7 @@ class FakeCatalog:
             "resources": [self.envelope],
         }
 
-    async def package(self, envelope):
+    async def package(self, envelope, *, account_id=None):
         self.calls += 1
         return self.package_value
 

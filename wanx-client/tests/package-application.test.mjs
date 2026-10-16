@@ -90,6 +90,12 @@ test("v2 package signs backend and expert requirements with the manifest", async
 
 test("release CLI defaults to a signed universal shared application without platform flags", async (t) => {
   const f = await fixture(t);
+  const manifestPath = path.join(f.sourceDir, "wanx-app.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, protocolVersion: 3, releaseAccess: "account", compatibility: {
+    backendProductId: "wanx", clientRange: ">=0.1.4 <1.0.0", hostProtocolRange: ">=1.0.0 <2.0.0",
+    backendContracts: [], resourceDependencies: [], localDataSchema: { readRange: ">=1.0.0 <2.0.0", writeVersion: "1.0.0" },
+  } }));
   const tool = fileURLToPath(new URL("../tools/package-application.mjs", import.meta.url));
   const { stdout } = await promisify(execFile)(process.execPath, [tool, "--source", f.sourceDir,
     "--out", f.outputDir, "--key", f.keyFile, "--key-id", f.keyId]);
@@ -100,9 +106,18 @@ test("release CLI defaults to a signed universal shared application without plat
   assert.equal(descriptor.manifest.launchMode, "shared");
   assert.equal(descriptor.manifest.platform, undefined);
   assert.equal(descriptor.manifest.arch, undefined);
+  assert.equal(descriptor.schemaVersion, 3);
+  assert.equal(descriptor.manifest.releaseAccess, "account");
   assert.match(result.package, /-universal-universal\.wanxapp$/);
   await verifyPackageHash(result.package, descriptor);
   await extractApplicationArchive(result.package, path.join(f.directory, "unpacked"), descriptor);
+});
+
+test("release CLI rejects legacy market manifests without affecting legacy package verification", async t => {
+  const f = await fixture(t);
+  const tool = fileURLToPath(new URL("../tools/package-application.mjs", import.meta.url));
+  await assert.rejects(promisify(execFile)(process.execPath, [tool, "--source", f.sourceDir,
+    "--out", f.outputDir, "--key", f.keyFile, "--key-id", f.keyId]), /仅支持协议 3 和账号许可/);
 });
 
 test("universal packages reject mixed targets and platform-restricted or bundled manifests", async (t) => {

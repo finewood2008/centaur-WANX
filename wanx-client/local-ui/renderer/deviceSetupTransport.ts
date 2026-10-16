@@ -132,7 +132,7 @@ export function createDeviceSetupTransport(options: {
   let selectionSettled: Promise<void> | undefined;
   const flights = new Map<
     string,
-    { abort: AbortController; connectionId?: string }
+    { abort: AbortController; connectionId?: string; operation: string }
   >();
   const subscriptions = new Map<string, () => Promise<void>>();
   const abortFlights = (connectionId?: string) => {
@@ -170,6 +170,7 @@ export function createDeviceSetupTransport(options: {
     if (flights.has(requestId)) return;
     const allowed = [
       "connect",
+      "cancelConnect",
       "readDeviceInfo",
       "request",
       "subscribeStatus",
@@ -185,6 +186,16 @@ export function createDeviceSetupTransport(options: {
       )
     ) {
       options.bridge.reply({ requestId, ok: false, code: "INVALID_REQUEST" });
+      return;
+    }
+    if (input.operation === "cancelConnect") {
+      if (input.args.length !== 1 || !identifier(input.args[0])) {
+        options.bridge.reply({ requestId, ok: false, code: "INVALID_REQUEST" });
+        return;
+      }
+      const flight = flights.get(input.args[0]);
+      if (flight?.operation === "connect") flight.abort.abort();
+      options.bridge.reply({ requestId, ok: true });
       return;
     }
     if (input.operation === "closeAll") {
@@ -207,7 +218,9 @@ export function createDeviceSetupTransport(options: {
     const expected = epoch,
       current = endpoint,
       abort = new AbortController();
-    const flight: { abort: AbortController; connectionId?: string } = { abort };
+    const flight: {
+      abort: AbortController; connectionId?: string; operation: string;
+    } = { abort, operation: input.operation };
     flights.set(requestId, flight);
     const active = () => {
       if (disposed || epoch !== expected || abort.signal.aborted)

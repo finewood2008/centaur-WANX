@@ -238,9 +238,17 @@
         if (!device.gatt)
           throw new LocalProvisioningFailure("GATT_SERVICE_NOT_FOUND");
         let server, service, deviceInfo, command, status;
-        let stage = "connect";
+        let stage = "connect", retired = false, closeOnRetire;
+        const retireConnection = () => {
+          if (retired) return;
+          retired = true;
+          signal.removeEventListener("abort", retireConnection);
+          closeOnRetire?.();
+          device.gatt.disconnect();
+        };
+        signal.addEventListener("abort", retireConnection, { once: true });
         const assertActive = () => {
-          if (signal.aborted)
+          if (signal.aborted || retired)
             throw new DOMException("Aborted", "AbortError");
         };
         try {
@@ -257,7 +265,7 @@
           status = await service.getCharacteristic(STATUS_UUID);
           assertActive();
         } catch (error) {
-          device.gatt.disconnect();
+          retireConnection();
           if (signal.aborted || error?.name === "AbortError")
             throw new DOMException("Aborted", "AbortError");
           const code = error?.name === "NotFoundError" && stage !== "connect" ? stage === "service" ? "GATT_SERVICE_NOT_FOUND" : "GATT_CHARACTERISTIC_MISMATCH" : "LOCAL_TRANSPORT_DISCONNECTED";
@@ -277,7 +285,7 @@
           status.removeEventListener("characteristicvaluechanged", onStatus);
           device.removeEventListener("gattserverdisconnected", onDisconnect);
           void status.stopNotifications().catch(() => void 0);
-          server.disconnect();
+          retireConnection();
           allocator.clear();
           reassemblers.clear();
         };
@@ -322,10 +330,12 @@ ${outer.messageType}`, now = input.clock.monotonicMs();
             closeWith(error);
           }
         };
+        closeOnRetire = () => closeWith(new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED"));
         device.addEventListener("gattserverdisconnected", onDisconnect);
         status.addEventListener("characteristicvaluechanged", onStatus);
         try {
           await status.startNotifications();
+          assertActive();
         } catch {
           closeWith();
           throw new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
@@ -558,6 +568,7 @@ ${match.responseMessageType}`;
       if (flights.has(requestId)) return;
       const allowed = [
         "connect",
+        "cancelConnect",
         "readDeviceInfo",
         "request",
         "subscribeStatus",
@@ -568,6 +579,16 @@ ${match.responseMessageType}`;
         (key) => !["requestId", "operation", "args"].includes(key)
       )) {
         options.bridge.reply({ requestId, ok: false, code: "INVALID_REQUEST" });
+        return;
+      }
+      if (input.operation === "cancelConnect") {
+        if (input.args.length !== 1 || !identifier(input.args[0])) {
+          options.bridge.reply({ requestId, ok: false, code: "INVALID_REQUEST" });
+          return;
+        }
+        const flight2 = flights.get(input.args[0]);
+        if (flight2?.operation === "connect") flight2.abort.abort();
+        options.bridge.reply({ requestId, ok: true });
         return;
       }
       if (input.operation === "closeAll") {
@@ -588,7 +609,7 @@ ${match.responseMessageType}`;
         return;
       }
       const expected = epoch, current = endpoint, abort = new AbortController();
-      const flight = { abort };
+      const flight = { abort, operation: input.operation };
       flights.set(requestId, flight);
       const active = () => {
         if (disposed || epoch !== expected || abort.signal.aborted)
