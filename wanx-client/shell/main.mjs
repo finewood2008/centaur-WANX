@@ -471,6 +471,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         spaceLinks = await createSpaceLinkBridge({
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
+          profileDirectory: path.join(userData, "space-agent-profiles"),
           mcpConfig: { mcpServers: { "wanx-space": {
             command: process.execPath,
             args: [fileURLToPath(new URL("./space-links-mcp.mjs", import.meta.url))],

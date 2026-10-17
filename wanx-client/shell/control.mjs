@@ -76,7 +76,7 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
-  for (const action of ["create", "list", "revoke", "audit", "config"]) {
+  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
       return spaceLinks.manage(action, input);
@@ -110,7 +110,7 @@ export function registerControlActions({
       throw new Error("SPACE_NOT_FOUND");
     return personalSpace.transfer(input.action, input.id);
   });
-  for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"]) {
+  for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"]) {
     register(`space-${method}`, async (input = {}) => {
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
       if (method === "snapshot" || method === "refresh") return personalSpace[method]();

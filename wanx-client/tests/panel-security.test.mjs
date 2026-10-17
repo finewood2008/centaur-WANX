@@ -280,9 +280,9 @@ test("panel preload exposes a fixed balance reader, retaining the generic-action
 test("link management is limited to the trusted main window", async () => {
   const actions = [];
   const h = harness({ spaceLinks: { manage: async (...args) => { actions.push(args); return {}; } } });
-  for (const name of ["create", "list", "revoke", "audit", "config"]) {
+  for (const name of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer"]) {
     assert.throws(() => h.invoke("space-links-"+name, {}, h.panel), denied);
     await h.invoke("space-links-"+name, {});
   }
-  assert.equal(actions.length, 5);
+  assert.equal(actions.length, 17);
 });
