@@ -9,7 +9,7 @@ import { patchWifiScan } from './provisioning-wifi-patch.mjs';
 // Local compatibility patch until the upstream SDK accepts public box names.
 // Keep the pinned upstream archives: rebuilding never uses node_modules.
 const root = fileURLToPath(new URL('../', import.meta.url));
-const version = '2.0.1-wanx.2';
+const versions = { contracts: '2.0.1-wanx.2', core: '2.0.1-wanx.3' };
 const baselines = {
   contracts: '144d7763fda3f761f26e4b5b35016d1dc00fd33f9320830b9fd0c04fa9e9fa26',
   core: 'aef4c38afc64ec38cb1e0a1a13c3bd88ff03fe748061c39b4fa4be9f5ce68c21',
@@ -24,6 +24,7 @@ function replaceOnce(source, from, to) {
 const temporary = mkdtempSync(path.join(os.tmpdir(), 'wanx-provisioning-sdk-'));
 try {
   for (const [kind, expected] of Object.entries(baselines)) {
+    const version = versions[kind];
     const archive = path.join(root, 'vendor', `nexusaos-local-provisioning-${kind}-2.0.0.tgz`);
     if (sha256(readFileSync(archive)) !== expected) throw Error(`SDK baseline hash mismatch: ${kind}`);
     const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n');
@@ -43,7 +44,7 @@ try {
       throw Error(`Unexpected SDK package identity: ${kind}`);
     }
     manifest.version = version;
-    if (kind === 'core') manifest.dependencies['@nexusaos/local-provisioning-contracts'] = version;
+    if (kind === 'core') manifest.dependencies['@nexusaos/local-provisioning-contracts'] = versions.contracts;
     writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
     if (kind === 'contracts') {
       const target = path.join(directory, 'dist/index.d.ts');
@@ -60,6 +61,14 @@ try {
         '        /[\\u0000-\\u001f\\u007f-\\u009f\\ud800-\\udfff]/u.test(value.display_name) ||'));
     }
     patchWifiScan(directory, kind);
+    if (kind === 'core') {
+      const target = path.join(directory, 'dist/coordinator.js');
+      writeFileSync(target, replaceOnce(readFileSync(target, 'utf8'),
+        '    if (error.code === "hello_context_expired")',
+        '    if (error.code === "OWNER_AUTHORIZATION_SYNC_PENDING")\n' +
+        '        return new ClaimCoordinatorFailure("OWNER_AUTHORIZATION_SYNC_PENDING", true);\n' +
+        '    if (error.code === "hello_context_expired")'));
+    }
     // npm pack uses a fixed archive timestamp; scripts are intentionally disabled
     // because these upstream archives contain the published dist files only.
     const packed = JSON.parse(execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm',

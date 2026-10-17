@@ -184,7 +184,7 @@ const selection = createDiscoverySelection({
       expired: "扫描结果已过期，请重新扫描盒子。",
       reselect_failed: "未能连接所选盒子，请靠近盒子并重新扫描后重试。",
       selection_cancel_failed: "蓝牙扫描未能正常结束，请关闭并重新打开万象后再扫描。",
-      empty: "未发现可用盒子，请确认盒子已进入配网模式后重新扫描。",
+      empty: "未发现可用盒子，请确认盒子通电、靠近电脑，并检查电脑蓝牙后重新扫描。",
     };
     notice = issue ? messages[issue.kind] || issue.message : null;
   },
@@ -951,29 +951,32 @@ function provisioningView() {
   };
   const running = provisioning.phase === "running";
   const preview = setupState.preview || setupState.compatiblePreview;
-  const previewBlocked = preview?.cloud_enrollment_status === "not_enrolled" ? "DEVICE_NOT_ENROLLED" :
-    !wifiOnly && preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null;
+  const ownershipBlock = !wifiOnly && ({ owned_self: "DEVICE_ALREADY_OWNED", owned_other: "DEVICE_OWNED_BY_OTHER",
+    legacy_bound: "LEGACY_BINDING_REVIEW_REQUIRED", history_review: "CLAIM_HISTORY_REVIEW_REQUIRED",
+    reset_pending: "DEVICE_RESET_PENDING" })[setupState.ownershipState];
+  const previewBlocked = setupState.claimStatusError || ownershipBlock || (preview?.cloud_enrollment_status === "not_enrolled" ? "DEVICE_NOT_ENROLLED" :
+    !wifiOnly && preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null);
   const setupPhase = setupState.state || "idle";
   const stages = Object.entries(stageLabels).filter(([key]) => !wifiOnly || !["claim", "initialize"].includes(key));
-  const setupCopy = starting ? "正在通过蓝牙读取盒子身份，请稍候。" : cancelling ? "正在停止本次配网，请稍候。" : {
+  const setupCopy = starting ? (setupState.connectionAttempt === 2 ? "蓝牙连接暂未成功，正在自动重连…" : "正在通过蓝牙读取盒子身份，请稍候。") : cancelling ? "正在停止本次配网，请稍候。" : {
     idle: "让盒子保持通电，点击扫描并选择附近的盒子。已认领的盒子可由主人修改 Wi-Fi。",
     attentionRequired: cloudCopy,
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
     verifyingLocalDevice: "正在验证设备身份和主人权限…",
     establishingSecureChannel: "正在建立加密连接…",
-    awaitingWifi: wifiOnly ? "主人权限已验证，请选择新的 Wi-Fi。认领关系和盒子数据将保留。" : "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
+    awaitingWifi: setupState.sessionRenewed ? "安全会话已自动更新，请重新选择网络并确认。上次提交不会自动重复。" : wifiOnly ? "主人权限已验证，请选择新的 Wi-Fi。认领关系和盒子数据将保留。" : "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
     awaitingOwnershipConfirmation: "设备已准备联网，请确认绑定到当前账号。",
     submittingAppProof: "正在提交账号绑定证明…",
     provisioningWifi: "正在通过加密通道配置 Wi‑Fi…",
     waitingCloud: cloudCopy,
     completed: wifiOnly ? "Wi-Fi 配置成功，认领关系和盒子数据已保留。" : "设备已完成联网和账号绑定。",
     cancelled: "本次配网已取消。",
-  }[setupPhase] || "请让设备进入配置模式后开始扫描。";
+  }[setupPhase] || "让盒子保持通电并靠近电脑，然后开始扫描。";
   const previewBlock = preview ? `<dl class="setup-preview"><dt>设备名称</dt><dd>${escapeHTML(preview.display_name)}</dd><dt>设备 ID</dt><dd>${escapeHTML(preview.device_id)}</dd><dt>型号</dt><dd>${escapeHTML(preview.model)}</dd><dt>身份公钥指纹</dt><dd>${escapeHTML(preview.identity_public_key_sha256)}</dd></dl>` : "";
   const { candidates, selecting, retained } = discoveryView;
-  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，本轮结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(candidate => discoveryCard(candidate)).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
+  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，本轮结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(candidate => discoveryCard(candidate)).join("") : "<p>正在等待附近的盒子，请让盒子保持通电并靠近电脑。</p>"}</div>` : "";
   const controls = setupPhase === "previewReady"
-    ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? "盒子尚未准备好配网" : "确认设备身份"}</button>`
+    ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? (wifiOnly ? "暂不能配置网络" : "暂不能认领") : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
       ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>${wifiOnly ? "连接 Wi-Fi" : "继续绑定账号"}</button></form>`
       : !wifiOnly && setupPhase === "awaitingOwnershipConfirmation"
@@ -1096,14 +1099,23 @@ function syncFormState() {
 function setupErrorMessage(error) {
   const code = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
-    DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，暂不能配网或绑定。请先由设备管理员完成注册，再让盒子进入配网模式并重新扫描。",
-    PAIRING_MODE_CLOSED: "盒子尚未准备好首次配网，请确认已更新盒端程序并完成初始化，然后重新扫描。",
+    DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，请联系设备管理员完成初始化。",
+    CLAIM_STATUS_CHECKING: "正在核对盒子归属…",
+    CLAIM_STATUS_UNAVAILABLE: "暂时无法核对盒子归属，请检查网络后重新选择盒子；如仍失败，请管理员检查账号服务版本。",
+    DEVICE_ALREADY_OWNED: "这台盒子已属于当前账号，无需再次认领。返回盒子列表即可连接或修改 Wi-Fi。",
+    DEVICE_OWNED_BY_OTHER: "这台盒子已属于其他账号，需要原主人完成转移后才能认领。",
+    LEGACY_BINDING_REVIEW_REQUIRED: "这台盒子保留旧版账号绑定，请联系管理员迁移归属，或完成重置后重新交付。",
+    CLAIM_HISTORY_REVIEW_REQUIRED: "这台盒子有尚待核对的交付历史，请联系管理员处理后再认领。",
+    DEVICE_RESET_PENDING: "盒子正在完成重置，请等待管理员确认交付就绪后再试。",
+    PAIRING_MODE_CLOSED: "盒子正在准备配网，请稍后重新选择；如持续未就绪，请管理员更新并检查盒端状态。",
     PROTOCOL_CHANGED: "盒子与客户端的配网协议未能匹配，接入已停止（PROTOCOL_CHANGED）。",
     DEVICE_IDENTITY_MISMATCH: "盒子身份校验未通过，接入已停止。请核对目标盒子。",
     LOCAL_TRANSPORT_DISCONNECTED: "蓝牙连接已断开，请靠近盒子并重新扫描。",
-    LOCAL_CONNECT_TIMEOUT: "连接盒子超时，请确认盒子处于配网模式后重试。",
+    LOCAL_CONNECT_TIMEOUT: "蓝牙连接盒子超时。请靠近盒子，检查电脑蓝牙后重试。",
     GATT_FRAGMENT_INCOMPLETE: "未完整收到盒子的蓝牙响应，请靠近盒子后重试。",
-    PAIRING_EXPIRED: "本次配网会话已超时，请重新扫描并重试。",
+    PAIRING_EXPIRED: "本次安全会话已到期，请重新选择盒子开始新会话。未认领盒子会持续可用。",
+    HELLO_CONTEXT_EXPIRED: "本次身份验证已到期，请重新选择盒子重试。",
+    OWNER_AUTHORIZATION_SYNC_PENDING: "盒子正在同步归属状态，请稍后重新选择。",
     OWNER_REQUIRED: "只有盒子的主人可以修改 Wi-Fi，请刷新盒子列表后重试。",
     OWNER_WIFI_UNSUPPORTED: "盒端程序尚不支持修改 Wi-Fi，请更新盒端程序后重试。",
     CONTRACT_MISMATCH: "账号服务的配网响应不兼容，请联系管理员核对服务版本（CONTRACT_MISMATCH）。",

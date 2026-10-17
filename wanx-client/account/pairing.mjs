@@ -62,6 +62,17 @@ export function createPairingConsumer(account) {
         return result;
       }
       return {
+        getClaimState(deviceId, signal) {
+          if (!deviceID(deviceId)) throw fail('INVALID_REQUEST');
+          return request(`/app-api/v1/devices/${encodeURIComponent(deviceId)}/claim-state`, data => {
+            const actions = { unclaimed: 'claim', owned_self: 'connect', owned_other: 'transfer',
+              legacy_bound: 'contact_operator', history_review: 'contact_operator', reset_pending: 'wait_for_reset' };
+            return exact(data, ['deviceId', 'ownershipState', 'canClaim', 'nextAction', 'reasonCode']) &&
+              data.deviceId === deviceId && Object.hasOwn(actions, data.ownershipState) &&
+              data.nextAction === actions[data.ownershipState] && data.canClaim === (data.ownershipState === 'unclaimed') &&
+              (data.reasonCode === null || /^[A-Z][A-Z0-9_]{0,79}$/.test(data.reasonCode));
+          }, { signal });
+        },
         getOwnerWifiAttestation(deviceId, signal) {
           if (!deviceID(deviceId)) throw fail('INVALID_REQUEST');
           return request(`/app-api/v1/devices/${encodeURIComponent(deviceId)}/wifi-attestation`, validateDeviceAttestationView, { signal });

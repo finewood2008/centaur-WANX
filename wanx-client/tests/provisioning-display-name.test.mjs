@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { decodeDeviceInfo, ProtocolError, stableJson } from '@nexusaos/local-provisioning-core';
+import { decodeDeviceInfo, createClaimCoordinator, ProtocolError, stableJson } from '@nexusaos/local-provisioning-core';
 import { createProvisioningHost } from '../shell/provisioning-host.cjs';
 
 // Public read-only DeviceInfo captured from box 22; no pairing window is open.
@@ -79,6 +79,7 @@ test('actual host and coordinator reach previewReady but a closed window sends n
   const host = await createProvisioningHost({ webContents, ipcMain, documentUrl: webContents.mainFrame.url,
     consumer: { current: async () => ({ accountId: 'account-22', clientId: 'client-22' }),
       pairingApi: async () => new Proxy({}, { get(_target, key) {
+        if (key === 'getClaimState') return async deviceId => ({ data: { deviceId, ownershipState: 'unclaimed', canClaim: true, nextAction: 'claim', reasonCode: null } });
         return key === 'then' ? undefined : () => assert.fail('read-only preview must not call pairing API');
       } }) },
     cryptoFactory: () => ({ randomBytes: (size) => new Uint8Array(randomBytes(size)) }),
@@ -99,4 +100,31 @@ test('actual host and coordinator reach previewReady but a closed window sends n
 test('vendored SDK patches reproduce byte-for-byte from the pinned upstream archives', () => {
   execFileSync(process.execPath, [fileURLToPath(new URL('../tools/patch-provisioning-display-name.mjs', import.meta.url)), '--check'],
     { stdio: 'pipe' });
+});
+
+test('real SDK preserves transient owner sync errors from hello rather than reporting protocol mismatch', async () => {
+  let requests = 0;
+  const coordinator = createClaimCoordinator({
+    transportFactory: { async connect() { return {
+      kind: 'ble-gatt', capabilities: { statusNotifications: false },
+      readDeviceInfo: async () => encode(changed({ pairing_mode_remaining_seconds: 600 })),
+      async request(frame) {
+        requests++;
+        const input = JSON.parse(new TextDecoder().decode(frame));
+        assert.equal(input.message_type, 'hello');
+        return encode(stableJson({ schema_version: 2, request_id: input.request_id, message_type: 'hello.result',
+          status: 'failed', error: { code: 'OWNER_AUTHORIZATION_SYNC_PENDING', retryable: true } }) + '\n');
+      }, close: async () => {},
+    }; } },
+    crypto: { randomBytes: size => new Uint8Array(randomBytes(size)), zeroize: bytes => bytes.fill(0) },
+    consumerApi: new Proxy({}, { get() { return () => assert.fail('sync-pending must not call claim APIs'); } }),
+    resumeStore: { save: async () => {} }, trustedRootSpkiPins: [],
+    clock: { monotonicMs: () => 0, nowUtc: () => '2026-10-17T00:00:00Z' },
+  });
+  try {
+    await coordinator.begin({ selected: {}, accountId: 'account-1', clientId: 'client-1', clientPlatform: 'windows' }, new AbortController().signal);
+    await assert.rejects(coordinator.confirmPhysicalDevice(new AbortController().signal),
+      { code: 'OWNER_AUTHORIZATION_SYNC_PENDING', retryable: true });
+    assert.equal(requests, 1);
+  } finally { await coordinator.dispose(); }
 });
