@@ -16,6 +16,7 @@ from .service import CHUNK_SIZE, PersonalSpace, SpaceError
 
 PUBLIC = (
     "id",
+    "space_id",
     "parent",
     "name",
     "kind",

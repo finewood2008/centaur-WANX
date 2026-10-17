@@ -1098,6 +1098,7 @@ function render(state) {
   window.wanxSpace?.activate(!auth && ["space", "boxes"].includes(page), page === "space");
   scheduleBoxUpdatePolling();
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
+  if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
     : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
@@ -1178,6 +1179,7 @@ function render(state) {
     scroller.scrollLeft = scroll.left;
   }
   if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
+  if (page === "space") window.wanxSpace?.mounted?.();
 }
 
 function syncFormState() {
