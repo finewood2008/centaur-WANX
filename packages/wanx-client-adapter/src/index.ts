@@ -13,3 +13,5 @@ export type * from "./application-contracts.js";
 export type { ApplicationsApi } from "./applications.js";
 
 export type * from "./brainstorm-contracts.js";
+
+export type { ProposalRef, CouncilBoard, CouncilProposal, CouncilIssue, CouncilReview, ProposalVersion } from "./brainstorm-contracts.js";

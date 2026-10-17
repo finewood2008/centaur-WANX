@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-council-review",
+  "label": {
+    "zh": "审议参谋",
+    "en": "Review advisor"
+  },
+  "description": {
+    "zh": "检查事实和假设，针对具体方案提出有依据的支持或异议。",
+    "en": "Review evidence and assumptions; support or challenge specific proposals."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "检查这个方案依赖哪些未证实的假设",
+      "哪些条件改变会让这个建议不成立",
+      "说明支持一个方案的依据与保留意见"
+    ],
+    "en": [
+      "Check the untested assumptions behind a proposal",
+      "Identify conditions that would invalidate this advice",
+      "Explain support and reservations about an option"
+    ]
+  }
+}

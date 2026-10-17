@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
@@ -147,7 +147,32 @@ class ZhijunMemoryBoundary(AgentMiddleware[Any, Any]):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
-        return await handler(self._model_request(request))
+        request = self._model_request(request)
+        response = await handler(request)
+        # Advisory models occasionally emit a malformed checkpoint. Retry once,
+        # before any tools execute; never replay a mixed batch of valid calls.
+        if "brainstorm_checkpoint" in self.allowed_tools and response.result:
+            last = response.result[-1]
+            if isinstance(last, AIMessage) and last.invalid_tool_calls and not last.tool_calls:
+                failed = _with_invalid_tool_results(response.result)
+                repaired = await handler(
+                    request.override(
+                        messages=[
+                            *request.messages,
+                            *failed,
+                            HumanMessage(
+                                content="The previous tool arguments were invalid JSON and were not "
+                                "executed. Correct the tool call once using valid JSON. Keep strings "
+                                "simple and escape quotation marks. Do not repeat visible speech."
+                            ),
+                        ]
+                    )
+                )
+                return ModelResponse(
+                    result=[*failed, *repaired.result],
+                    structured_response=repaired.structured_response,
+                )
+        return response
 
     async def awrap_tool_call(
         self,
@@ -197,6 +222,10 @@ class ZhijunMemoryBoundary(AgentMiddleware[Any, Any]):
                     "zhijun_attachment_get": "attachment_unavailable",
                     "zhijun_response_options": "expression_invitation_unavailable",
                     "current_time": "tool_unavailable",
+                    "brainstorm_context": "meeting_context_unavailable",
+                    "brainstorm_checkpoint": "meeting_update_rejected",
+                    "ask_agent": "meeting_dispatch_rejected",
+                    "agent_list": "meeting_roster_unavailable",
                 }.get(name, "memory_unavailable")
                 return ToolMessage(
                     content=json.dumps({"ok": False, "error": error}),

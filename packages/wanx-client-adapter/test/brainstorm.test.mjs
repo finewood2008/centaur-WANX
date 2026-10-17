@@ -13,8 +13,8 @@ test('brainstorm bindings work through JS and native HTTP without granting other
     const client=createCentaurAIWanxClient({transport,policy});try{
       const b=client.modules.brainstorm;
       await b.getProfile({});await b.configureProfile({body:{expert_ids:['brainstorm-product','brainstorm-challenge'],expert_models:{'brainstorm-product':'wanx/model-a','brainstorm-challenge':'wanx/model-b'}}});
-      await b.importExpert({path:{slug:'growth'}});await b.listSessions({});await b.createSession({body:{topic:'寻找新思路',context_enabled:true}});
-      await b.getSession({path:{thread_id:'room-1'}});await b.controlSession({path:{thread_id:'room-1'},body:{action:'respond',decision_id:'choice-1',option_index:1,revision:4}});
+      await b.importExpert({path:{slug:'growth'}});await b.listSessions({});await b.createSession({body:{topic:'寻找新思路',context_enabled:false,council_enabled:true,continued_from:'original',referenced_meetings:['selected']}});
+      await b.getSession({path:{thread_id:'room-1'}});await b.controlSession({path:{thread_id:'room-1'},body:{action:'adopt',decision_id:'choice-1',proposal:{proposal_id:'p1',version:2},revision:4}});
       await b.getReport({path:{thread_id:'room-1'}});assert.deepEqual(Array.from((await b.exportReport({path:{thread_id:'room-1'}})).body),[80,75,3,4,255]);
       await assert.rejects(client.modules.auth.me({}),{code:'OPERATION_NOT_ALLOWED'});
     }finally{await client.close();}
@@ -22,7 +22,8 @@ test('brainstorm bindings work through JS and native HTTP without granting other
   assert.equal(requests.length,18);assert.ok(requests.every(r=>r.token==='Bearer host-only'));
   const configured=requests.filter(r=>r.url==='/api/brainstorm/profile'&&r.method==='POST');
   assert.equal(configured.length,2);
+  for(const r of requests.filter(r=>r.url==='/api/brainstorm/sessions'&&r.method==='POST'))assert.deepEqual(JSON.parse(r.body),{topic:'寻找新思路',context_enabled:false,council_enabled:true,continued_from:'original',referenced_meetings:['selected']});
   for(const r of configured)assert.deepEqual(JSON.parse(r.body).expert_models,{'brainstorm-product':'wanx/model-a','brainstorm-challenge':'wanx/model-b'});
-  for(const index of [6,15]) assert.deepEqual(JSON.parse(requests[index].body),{action:'respond',decision_id:'choice-1',option_index:1,revision:4});
+  for(const index of [6,15]) assert.deepEqual(JSON.parse(requests[index].body),{action:'adopt',decision_id:'choice-1',proposal:{proposal_id:'p1',version:2},revision:4});
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });

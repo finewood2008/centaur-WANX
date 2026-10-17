@@ -33,6 +33,17 @@ from octop.infra.agents.teams.brainstorm_types import (
     SessionCreate,
     UserJudgment,
 )
+from octop.infra.agents.teams.council_state import (
+    apply_updates,
+    current_proposal,
+    invalidate_context,
+)
+from octop.infra.agents.teams.council_types import (
+    CouncilBoard,
+    CouncilChange,
+    CouncilUpdate,
+    RosterRecommendation,
+)
 from octop.infra.applications.context import owned_zhijun_context
 from octop.infra.applications.service import assert_product_login
 from octop.infra.errors import ErrorCode, OctopError
@@ -42,10 +53,10 @@ from octop.infra.utils.ulid import new_ulid
 APPLICATION_ID = "super-advisory"
 logger = logging.getLogger(__name__)
 DEFAULT_EXPERTS = (
-    "brainstorm-creative",
-    "brainstorm-strategy",
-    "brainstorm-practice",
-    "brainstorm-challenge",
+    "brainstorm-council-strategy",
+    "brainstorm-council-resources",
+    "brainstorm-council-review",
+    "brainstorm-council-action",
 )
 
 
@@ -364,6 +375,32 @@ class BrainstormService:
                     raise
         return sessions
 
+    def council_speeches(self, state: BrainstormSession) -> list[dict[str, str]]:
+        rows, _ = self.registry._repos.thread_message_repo.page(state.thread_id, limit=200)
+        result = []
+        for row in rows:
+            if not row.message_id or row.role not in {"ai", "assistant", "human", "user"}:
+                continue
+            data = json.loads(row.message_json).get("data", {})
+            content = data.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(b.get("text", ""))
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            if not str(content).strip():
+                continue
+            author = (
+                "user"
+                if row.role in {"human", "user"}
+                else (data.get("additional_kwargs", {}).get("speaker_agent_id") or state.team_id)
+            )
+            result.append(
+                {"message_id": row.message_id, "author_id": author, "text": str(content)[:6000]}
+            )
+        return result
+
     def _report_excerpts(self, state: BrainstormSession) -> list[tuple[str, str]]:
         names = {m.agent_id: m.name for m in state.participants}
         found: dict[str, str] = {}
@@ -455,6 +492,34 @@ class BrainstormService:
         participants = [m for m in profile.members if m.expert_id in chosen]
         if len(participants) < 2 or chosen != {m.expert_id for m in participants}:
             raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+        parents = []
+        references = list(
+            dict.fromkeys(
+                [*([body.continued_from] if body.continued_from else []), *body.referenced_meetings]
+            )
+        )
+        for reference in references:
+            parent = await self.get(user, reference)
+            if parent.status != "ended":
+                raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+            parents.append(parent)
+        inherited = []
+        for parent in parents:
+            inherited.append(
+                tr(
+                    "brainstorm.council.inherited",
+                    user.locale,
+                    title=parent.title,
+                    goal=parent.goal if parent.agenda_confirmed else "",
+                    constraints="; ".join(parent.constraints) if parent.agenda_confirmed else "",
+                    ruling=parent.ruling,
+                    questions="; ".join(
+                        parent.report_draft.open_questions
+                        if parent.report_draft
+                        else parent.questions
+                    ),
+                )
+            )
         tid = new_ulid()
         gateway = self.registry._team_processor._gateway
         await asyncio.get_running_loop().run_in_executor(
@@ -473,6 +538,13 @@ class BrainstormService:
             team_id=profile.team_id,
             user_id=user.id,
             title=body.topic,
+            council=CouncilBoard() if body.council_enabled else None,
+            matter_id=(parents[0].matter_id or parents[0].thread_id)
+            if body.continued_from
+            else tid,
+            continued_from=body.continued_from,
+            referenced_meetings=body.referenced_meetings,
+            inherited_background=inherited,
             participants=participants,
             context_enabled=body.context_enabled,
             phase="intake",
@@ -580,6 +652,44 @@ class BrainstormService:
                 or not state.agenda.strip()
             ):
                 raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+            if body.target_agent_id and body.target_agent_id not in (
+                state.confirmed_roster or [m.agent_id for m in state.participants]
+            ):
+                raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+            roster = (
+                body.participant_ids
+                or [m.agent_id for m in state.recommended_roster]
+                or [m.agent_id for m in state.participants]
+            )
+            if body.action == "start" and (
+                len(set(roster)) < 2 or not set(roster) <= {m.agent_id for m in state.participants}
+            ):
+                raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+            adopted_ref = body.proposal or (selected.proposal if selected else None)
+            adopting = body.action == "adopt" or (
+                selected is not None and selected.effect == "adopt"
+            )
+            if state.council and (adopting or body.action == "defer"):
+                if not adopted_ref:
+                    raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+                current_proposal(state.council, adopted_ref)
+                if adopting and (
+                    decision is None or decision.board_version != state.council.version
+                ):
+                    raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+            if state.council and body.action == "respond" and not adopting:
+                state.council.pending_input = text
+                state.council.input_acknowledgment = ""
+                state.council.recommendation = None
+                state.council.changes.append(
+                    CouncilChange(
+                        id=new_ulid(),
+                        kind="user",
+                        text=text,
+                        issue_id=state.council.active_issue_id,
+                    )
+                )
+                state.council.version += 1
             state.status = "ended" if body.action == "end" else "paused"
             state.revision += 1
             control_revision = state.revision
@@ -600,7 +710,11 @@ class BrainstormService:
                 state.intake_answers = 0
                 state.decision = None
                 state.report_draft = None
-                text = tr("brainstorm.revise", self._locale(user.id))
+                text = text or tr("brainstorm.revise", self._locale(user.id))
+                prior = await asyncio.get_running_loop().run_in_executor(
+                    None, self.council_speeches, state
+                )
+                invalidate_context(state, text, [m["message_id"] for m in prior])
             elif body.action == "agenda":
                 state.phase = "agenda"
                 state.decision = None
@@ -608,10 +722,20 @@ class BrainstormService:
             elif body.action == "start":
                 assert decision is not None
                 state.phase, state.agenda_confirmed = "deliberation", True
+                state.confirmed_roster = roster
+                if state.council:
+                    state.council.pending_input = ""
                 text = tr("brainstorm.start_meeting", self._locale(user.id))
                 state.judgments.append(UserJudgment(question=decision.question, answer=text))
                 state.decision = None
             elif body.action in {"respond", "adopt"}:
+                if body.target_agent_id:
+                    member = next(
+                        m for m in state.participants if m.agent_id == body.target_agent_id
+                    )
+                    text = tr(
+                        "brainstorm.council.addressed", user.locale, name=member.name, text=text
+                    )
                 state.judgments.append(
                     UserJudgment(
                         question=decision.question if decision else state.agenda, answer=text
@@ -619,15 +743,50 @@ class BrainstormService:
                 )
                 if body.action == "adopt" or (selected and selected.effect == "adopt"):
                     state.ruling = text
+                    if state.council and adopted_ref:
+                        adopted = current_proposal(state.council, adopted_ref)
+                        adopted.status = "adopted"
+                        state.council.adopted = adopted_ref
+                        state.council.pending_input = ""
+                        state.council.changes.append(
+                            CouncilChange(
+                                id=new_ulid(),
+                                kind="ruling",
+                                text=text,
+                                issue_id=adopted.issue_id,
+                                proposal_id=adopted.id,
+                            )
+                        )
+                        for issue in state.council.issues:
+                            if issue.id == adopted.issue_id:
+                                issue.status = "decided"
                     state.phase, state.status = "closed", "ended"
                 elif state.phase in {"intake", "agenda"}:
                     state.intake_answers += 1
-                    if state.intake_answers >= 2:
+                    if state.council is None and state.intake_answers >= 2:
                         state.phase = "agenda"
                 else:
                     state.phase = "deliberation"
                 state.decision = None
                 state.questions = []
+            if body.action == "defer" and state.council and adopted_ref:
+                proposal = current_proposal(state.council, adopted_ref)
+                proposal.status = "deferred"
+                state.council.recommendation = None
+                state.council.version += 1
+                text = tr(
+                    "brainstorm.council.deferred", user.locale, title=proposal.versions[-1].title
+                )
+                state.council.changes.append(
+                    CouncilChange(
+                        id=new_ulid(),
+                        kind="defer",
+                        text=text,
+                        proposal_id=proposal.id,
+                        issue_id=proposal.issue_id,
+                    )
+                )
+                state.decision = None
             await self._save(state)
         if task:
             await asyncio.gather(task, return_exceptions=True)
@@ -636,8 +795,16 @@ class BrainstormService:
                 return state.model_copy(deep=True)
             if body.action == "sources":
                 state.report_draft = None
+                prior = await asyncio.get_running_loop().run_in_executor(
+                    None, self.council_speeches, state
+                )
+                invalidate_context(
+                    state,
+                    tr("brainstorm.council.sources_changed", user.locale),
+                    [m["message_id"] for m in prior],
+                )
                 await self.context(state, state.goal)
-            elif body.action in {"respond", "start", "revise", "agenda", "adopt"}:
+            elif body.action in {"respond", "start", "revise", "agenda", "adopt", "defer"}:
                 await asyncio.get_running_loop().run_in_executor(
                     None,
                     lambda: self.registry._repos.thread_message_repo.append_if_ready(
@@ -679,7 +846,12 @@ class BrainstormService:
             and state.status == "running"
             and state.phase == "deliberation"
             and state.agenda_confirmed
-            and (member_id is None or member_id in {m.agent_id for m in state.participants})
+            and (state.council is None or not state.council.pending_input)
+            and (
+                member_id is None
+                or member_id
+                in set(state.confirmed_roster or [m.agent_id for m in state.participants])
+            )
         )
 
     def track_job(self, thread_id: str, job_id: str, *, begin: bool) -> None:
@@ -725,6 +897,11 @@ class BrainstormService:
             if state.status == "running" and not self._pending.get(thread_id):
                 # A model can omit dispatch. Expose the idle state truthfully.
                 state.status = "waiting"
+                if state.council and state.decision is None:
+                    state.status = "interrupted"
+                    notice = tr("brainstorm.turn_failed", self._locale(state.user_id))
+                    if notice not in state.context.notices:
+                        state.context.notices.append(notice)
             await self._save(state)
 
     async def prepare_turn(self, team_id: str, payload: dict[str, Any]) -> bool:
@@ -803,6 +980,18 @@ class BrainstormService:
                 ensure_ascii=False,
             ),
         )
+        if state.council is not None:
+            speeches = await asyncio.get_running_loop().run_in_executor(
+                None, self.council_speeches, state
+            )
+            briefing += "\n" + tr(
+                "brainstorm.council.turn_context",
+                self._locale(state.user_id),
+                council=state.council.model_dump_json(),
+                speeches=json.dumps(speeches[-30:], ensure_ascii=False),
+                inherited=json.dumps(state.inherited_background, ensure_ascii=False),
+                roster=json.dumps(state.confirmed_roster, ensure_ascii=False),
+            )
         messages = ChatRequest(messages=payload.get("messages") or []).normalize_messages()
         payload["messages"] = [SystemMessage(content=briefing), *messages]
         return True
@@ -844,14 +1033,19 @@ def build_brainstorm_tools(registry: Any, agent_id: str) -> list[BaseTool]:
     async def brainstorm_context(query: str) -> str:
         """Retrieve the owner's relevant Zhijun context for the next exploration question."""
         state = await state_for_call()
-        return (await service_for(registry).context(state, query)).model_dump_json()
+        service = service_for(registry)
+        # Model tool calls may run concurrently. Read the latest state under the
+        # same lock as checkpoint so a slow context lookup cannot overwrite it.
+        async with service._locks.setdefault(state.thread_id, asyncio.Lock()):
+            state = await state_for_call()
+            return (await service.context(state, query)).model_dump_json()
 
     @tool
     async def brainstorm_checkpoint(
-        summary: str,
-        ideas: list[str],
-        directions: list[str],
-        questions: list[str],
+        summary: str | None = None,
+        ideas: list[str] | None = None,
+        directions: list[str] | None = None,
+        questions: list[str] | None = None,
         wait_for_user: bool = False,
         phase: str | None = None,
         goal: str | None = None,
@@ -860,11 +1054,39 @@ def build_brainstorm_tools(registry: Any, agent_id: str) -> list[BaseTool]:
         brief: str | None = None,
         decision: DecisionProposal | None = None,
         report_draft: MeetingReportDraft | None = None,
+        council_updates: list[CouncilUpdate] | None = None,
+        recommended_roster: list[RosterRecommendation] | None = None,
     ) -> str:
         """Save evolving ideas and unexplored directions; explicitly wait when owner input is needed. Dispatch the next exploration with ask_agent when continuing."""
         state = await state_for_call()
         async with service_for(registry)._locks.setdefault(state.thread_id, asyncio.Lock()):
-            state = await state_for_call()
+            state = (await state_for_call()).model_copy(deep=True)
+            service = service_for(registry)
+            # Recording a completed speaker and dispatching the next one may be
+            # parallel tool calls. Only yielding to the owner must wait for jobs.
+            if service._pending.get(state.thread_id) and (wait_for_user or decision is not None):
+                raise OctopError.localized(ErrorCode.FORBIDDEN)
+            if council_updates:
+                background_ack = all(
+                    u.kind == "brief" and u.recommendation is None for u in council_updates
+                )
+                if not state.agenda_confirmed and not background_ack:
+                    raise OctopError.localized(ErrorCode.FORBIDDEN)
+                speeches = await asyncio.get_running_loop().run_in_executor(
+                    None, service.council_speeches, state
+                )
+                apply_updates(
+                    state, council_updates, {m["message_id"]: m["author_id"] for m in speeches}
+                )
+            if recommended_roster is not None:
+                roster_ids = [m.agent_id for m in recommended_roster]
+                if (
+                    state.agenda_confirmed
+                    or len(set(roster_ids)) not in {2, 3}
+                    or not set(roster_ids) <= {m.agent_id for m in state.participants}
+                ):
+                    raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+                state.recommended_roster = recommended_roster
             if phase not in {None, "intake", "agenda", "deliberation", "decision"}:
                 raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
             if phase == "deliberation" and not state.agenda_confirmed:
@@ -881,6 +1103,15 @@ def build_brainstorm_tools(registry: Any, agent_id: str) -> list[BaseTool]:
                 ):
                     raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
             if phase == "agenda":
+                if state.agenda_confirmed:
+                    prior = await asyncio.get_running_loop().run_in_executor(
+                        None, service.council_speeches, state
+                    )
+                    invalidate_context(
+                        state,
+                        state.council.pending_input if state.council else "",
+                        [m["message_id"] for m in prior],
+                    )
                 state.phase, state.agenda_confirmed = "agenda", False
             if state.phase in {"intake", "agenda"}:
                 if goal is not None:
@@ -894,13 +1125,13 @@ def build_brainstorm_tools(registry: Any, agent_id: str) -> list[BaseTool]:
             if report_draft is not None:
                 state.report_draft = report_draft
             state.summary, state.ideas, state.directions, state.questions = (
-                summary,
-                ideas[:30],
-                directions[:20],
-                questions[:1],
+                summary if summary is not None else state.summary,
+                ideas[:30] if ideas is not None else state.ideas,
+                directions[:20] if directions is not None else state.directions,
+                questions[:1] if questions is not None else state.questions,
             )
             if state.phase == "agenda":
-                state.agenda = state.agenda or summary
+                state.agenda = state.agenda or state.summary
                 state.decision = MeetingDecision(
                     id=new_ulid(),
                     kind="agenda",
@@ -909,13 +1140,31 @@ def build_brainstorm_tools(registry: Any, agent_id: str) -> list[BaseTool]:
                     ),
                 )
             elif decision is not None:
-                state.decision = MeetingDecision(id=new_ulid(), **decision.model_dump())
+                if state.council and decision.kind == "verdict":
+                    if state.council.pending_input:
+                        raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+                    for option in decision.options:
+                        if option.effect == "adopt":
+                            if option.proposal is None:
+                                raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+                            current_proposal(state.council, option.proposal)
+                state.decision = MeetingDecision(
+                    id=new_ulid(),
+                    board_version=state.council.version if state.council else None,
+                    **decision.model_dump(),
+                )
                 state.questions = [decision.question]
                 if decision.kind in {"judgment", "verdict"}:
                     state.phase = "decision"
             if wait_for_user or state.decision is not None or state.phase == "intake":
                 state.status = "waiting"
             await service_for(registry)._save(state)
-        return json.dumps({"status": state.status, "revision": state.revision})
+        return json.dumps(
+            {
+                "status": state.status,
+                "revision": state.revision,
+                "board_version": state.council.version if state.council else None,
+            }
+        )
 
     return [brainstorm_context, brainstorm_checkpoint]

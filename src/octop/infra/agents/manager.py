@@ -3790,6 +3790,15 @@ class AgentManager:
             **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
             **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
         )
+        if application_id(row) == "super-advisory":
+            # Native chat history remains intact. Cross-matter semantic recall must
+            # only enter via the meeting's owner-selected, attributable sources.
+            harness_cfg = replace(
+                harness_cfg,
+                memory_enabled=False,
+                memory_recall_inject_enabled=False,
+                memory=("AGENTS.md", "SOUL.md"),
+            )
         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
             from octop.infra.agents.settings.tool_catalog import effective_tools_disabled
             from octop.infra.agents.teams import host_tools_disabled

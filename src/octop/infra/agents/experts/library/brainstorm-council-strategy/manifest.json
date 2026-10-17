@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-council-strategy",
+  "label": {
+    "zh": "谋划参谋",
+    "en": "Planning advisor"
+  },
+  "description": {
+    "zh": "帮你提出值得比较的方向，解释为什么适合你的目标。",
+    "en": "Develop alternatives that fit the owner’s goal."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "帮我比较换工作与继续留下的机会",
+      "为下一期学习小组提出两个方向",
+      "怎样用小试验判断一个想法值不值得做"
+    ],
+    "en": [
+      "Compare changing jobs with staying",
+      "Propose two directions for our learning group",
+      "Design a small experiment to test an idea"
+    ]
+  }
+}

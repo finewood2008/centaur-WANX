@@ -1826,3 +1826,28 @@ def test_stamp_stream_speaker_sets_agent_alias() -> None:
     )
     assert member["agent_id"] == "doctor"
     assert member["agent"] == "doctor"
+
+
+def test_repeated_wrapup_projection_deduplicates_only_adjacent_same_speaker(processor_env):
+    import json
+    from types import SimpleNamespace
+
+    processor = processor_env["processor"]
+    repo = MagicMock()
+    repo.projection_status.return_value = "ready"
+    repo.head.return_value = 7
+    previous = {
+        "data": {
+            "content": "按两小时上限重新核算。",
+            "additional_kwargs": {"speaker_agent_id": "host", "team_wrapup": True},
+        }
+    }
+    repo.range_rows.return_value = [SimpleNamespace(role="ai", message_json=json.dumps(previous))]
+    processor.replace_thread_message_repo(repo)
+    processor.teams._persist_room_assistant("room", "host", "按两小时上限重新核算。", wrapup=True)
+    repo.append_if_ready.assert_not_called()
+    processor.teams._persist_room_assistant("room", "member", "按两小时上限重新核算。", wrapup=True)
+    assert repo.append_if_ready.call_count == 1
+    repo.range_rows.return_value = [SimpleNamespace(role="human", message_json="{}")]
+    processor.teams._persist_room_assistant("room", "host", "按两小时上限重新核算。", wrapup=True)
+    assert repo.append_if_ready.call_count == 2

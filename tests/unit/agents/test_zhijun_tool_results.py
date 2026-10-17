@@ -80,3 +80,54 @@ def test_existing_invalid_result_and_successful_tool_results_are_preserved():
     assert supplied == history
     assert_provider_protocol(supplied)
     assert all(a is b for a, b in zip(supplied, history, strict=True))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_invalid", [False, True])
+async def test_advisory_retries_malformed_checkpoint_once_without_inventing_execution(
+    second_invalid,
+):
+    malformed = AIMessage(
+        content="",
+        invalid_tool_calls=[
+            {
+                "name": "brainstorm_checkpoint",
+                "id": "bad",
+                "args": '{"summary":bad}',
+                "error": "JSON",
+            }
+        ],
+    )
+    corrected = AIMessage(
+        content="", tool_calls=[{"name": "brainstorm_checkpoint", "id": "good", "args": {}}]
+    )
+    second = malformed.model_copy(update={"id": "second"}) if second_invalid else corrected
+    handler = AsyncMock(
+        side_effect=[ModelResponse(result=[malformed]), ModelResponse(result=[second])]
+    )
+    request = ModelRequest(model=Mock(), messages=[HumanMessage(content="继续")], state={})
+    boundary = ZhijunMemoryBoundary(
+        "owned", 1, lambda: None, allowed_tools=frozenset({"brainstorm_checkpoint"})
+    )
+    response = await boundary.awrap_model_call(request, handler)
+    assert handler.await_count == 2
+    repair_request = handler.call_args.args[0]
+    assert_provider_protocol(repair_request.messages)
+    assert response.result[-1] is second
+    assert response.result[0] is malformed
+    assert json.loads(response.result[1].content)["executed"] is False
+    assert len(request.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_advisory_does_not_retry_valid_parallel_calls():
+    call = mixed_call()
+    handler = AsyncMock(return_value=ModelResponse(result=[call]))
+    boundary = ZhijunMemoryBoundary(
+        "owned", 1, lambda: None, allowed_tools=frozenset({"brainstorm_checkpoint"})
+    )
+    response = await boundary.awrap_model_call(
+        ModelRequest(model=Mock(), messages=[], state={}), handler
+    )
+    assert handler.await_count == 1
+    assert response.result == [call]
