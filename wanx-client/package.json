@@ -32,7 +32,7 @@
     "@nexusaos/device-discovery-contracts": "file:vendor/nexusaos-device-discovery-contracts-1.0.0.tgz",
     "@nexusaos/device-discovery-electron": "file:vendor/nexusaos-device-discovery-electron-1.0.6.tgz",
     "@nexusaos/local-provisioning-contracts": "file:vendor/nexusaos-local-provisioning-contracts-2.0.1-wanx.2.tgz",
-    "@nexusaos/local-provisioning-core": "file:vendor/nexusaos-local-provisioning-core-2.0.1-wanx.2.tgz",
+    "@nexusaos/local-provisioning-core": "file:vendor/nexusaos-local-provisioning-core-2.0.1-wanx.3.tgz",
     "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1-wanx.2.tgz",
     "semver": "7.8.5",
     "ws": "8.22.0",

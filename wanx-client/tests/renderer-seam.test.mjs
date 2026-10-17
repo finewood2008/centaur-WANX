@@ -1272,7 +1272,7 @@ test("numeric box display names remain visible during discovery and identity pre
   h.setup({ state: "previewReady", preview: { device_id: deviceId, display_name: "CentaurOS-22",
     cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 0 } });
   assert.match(h.app.innerHTML, /<dt>设备名称<\/dt><dd>CentaurOS-22<\/dd>/);
-  assert.match(h.app.innerHTML, /盒子尚未准备好首次配网/);
+  assert.match(h.app.innerHTML, /盒子正在准备配网，请稍后重新选择/);
   assert.doesNotMatch(h.app.innerHTML, /PROTOCOL_CHANGED/);
 });
 
@@ -1304,7 +1304,7 @@ test("provisioning explains unregistered and closed-window boxes and does not bl
   assert.match(h.app.innerHTML, /盒子尚未完成平台注册/);
   assert.match(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
   h.setup({ state: "previewReady", preview: { ...preview, cloud_enrollment_status: "ready" } });
-  assert.match(h.app.innerHTML, /盒子尚未准备好首次配网/);
+  assert.match(h.app.innerHTML, /盒子正在准备配网，请稍后重新选择/);
   assert.match(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
   h.setup({ state: "previewReady", preview: { ...preview, cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 300 } });
   assert.doesNotMatch(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
@@ -1537,6 +1537,19 @@ test("a late Wi-Fi scan cannot overwrite a new pairing session", async () => {
   completions[0]([{ ssid: "Old secret network", security: "open", signal: 99 }]); await flushWifi();
   const options = h.form("wifi").querySelector('[data-input="wifi-network"]').innerHTML;
   assert.match(options, /Office/); assert.doesNotMatch(options, /Old secret/);
+});
+
+test("renewing a pairing session clears the previous Wi-Fi choice and password", async () => {
+  const h = await harness(state(), [application], { scanWifi: async () => [officeWifi] });
+  await h.click("provisioning"); h.setup({ state: "awaitingWifi", pairingSessionId: "session-1" }); await flushWifi();
+  h.changeWifi(wifiChoice(officeWifi));
+  const form = h.form("wifi");
+  form.values.password = "old-secret";
+  h.setup({ state: "awaitingWifi", pairingSessionId: "session-1", sessionRenewed: true }); await flushWifi();
+  assert.equal(form.values.password, "");
+  assert.equal(h.form("wifi").values.password, "");
+  assert.equal(h.form("wifi").querySelector('[data-input="wifi-network"]').value, "");
+  assert.match(h.app.innerHTML, /安全会话已自动更新，请重新选择网络并确认/);
 });
 
 for (const action of ["cancel-provisioning", "logout", "back-devices"]) test(`leaving Wi-Fi through ${action} clears secrets and ignores scan completion`, async () => {
@@ -1945,7 +1958,7 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   const h = await harness(state(), [application], { setupRequest: async () => ({ state: "idle" }) });
   await h.click("provisioning");
   h.setup({ state: "restartRequired", errorCode: "PAIRING_EXPIRED" });
-  assert.match(h.app.innerHTML, /本次配网会话已超时，请重新扫描并重试/);
+  assert.match(h.app.innerHTML, /本次安全会话已到期，请重新选择盒子开始新会话/);
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
 });
@@ -2143,4 +2156,27 @@ test("four official posters rotate in the requested order without adding app ope
   assert.match(h.app.innerHTML, /暂未提供可安装版本/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"|data-action="applications-launch"/);
   assert.equal(h.calls.length, before);
+});
+
+for (const [ownershipState, copy] of [
+  ["owned_self", /已属于当前账号，无需再次认领/],
+  ["owned_other", /已属于其他账号，需要原主人完成转移/],
+  ["legacy_bound", /保留旧版账号绑定/],
+  ["history_review", /有尚待核对的交付历史/],
+  ["reset_pending", /正在完成重置/],
+]) test(`claim preview presents authoritative ${ownershipState} independently of the BLE countdown`, async () => {
+  const h = await harness(); await h.click("provisioning");
+  h.setup({ state: "previewReady", ownershipState, canClaim: false,
+    preview: { device_id: "box-102", cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 600 } });
+  assert.match(h.app.innerHTML, copy);
+  assert.match(actionButton(h, "provisioning-confirm"), /disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /进入配网模式|开启配网窗口|连接盒子超时/);
+});
+
+test("transport timeout guidance describes Bluetooth rather than a claim-window state", async () => {
+  const h = await harness(); await h.click("provisioning");
+  h.setup({ state: "terminalError", errorCode: "LOCAL_CONNECT_TIMEOUT" });
+  assert.match(h.app.innerHTML, /蓝牙连接盒子超时/);
+  assert.match(h.app.innerHTML, /检查电脑蓝牙/);
+  assert.doesNotMatch(h.app.innerHTML, /处于配网模式|开启配网窗口/);
 });
