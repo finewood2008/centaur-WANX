@@ -1,6 +1,7 @@
 import { createNetwork } from "./network/index.mjs";
 import { createDashboardGateway } from "./octop/gateway.mjs";
 import { probeEndpoint } from "./octop/probe.mjs";
+import { validateApplicationConnectionOptions } from "./applications/backend-scope.mjs";
 
 /** Owns only this application's connections, never the shared NetBird daemon. */
 export function createClient({
@@ -178,10 +179,11 @@ export function createClient({
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
       return gateway.openWebSocket(input);
     },
-    applicationConnection(applicationId) {
+    applicationConnection(applicationId, options) {
+      const selectedProduct = validateApplicationConnectionOptions(options)?.backendProductId;
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
       const lease = gateway;
-      const applicationScope = applicationId === "centaurai.wanx.superadvisors" ? "super-advisory" : undefined;
+      const applicationScope = selectedProduct === "wanx" ? undefined : selectedProduct || (applicationId === "centaurai.wanx.superadvisors" ? "super-advisory" : undefined);
       const assertLive = () => { if (closed || gateway !== lease) throw new Error("SESSION_CLOSED"); };
       return {
         request: (input) => { assertLive(); return lease.request({ ...input, applicationScope, applicationExchange: false }); },

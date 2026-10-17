@@ -10,6 +10,7 @@ import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import { installElectronBluetoothPicker } from "@nexusaos/device-discovery-electron/main";
 import { registerControlActions } from "../shell/control.mjs";
+import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 const indexURL = new URL("../local-ui/renderer/index.html", import.meta.url);
 const html = await readFile(indexURL, "utf8");
@@ -104,7 +105,7 @@ async function harness(initial = state(), installed = [application], options = {
       return { passwordReset: true };
     },
     logout: async () => { rawState = { account: { phase: "signed_out", logoutPending: true } }; notify(); await options.logoutRequest?.(); },
-    connectBox: async (deviceId) => { rawState = state("ready", "ready", deviceId); notify(); },
+    connectBox: async (deviceId) => { if (options.connectFailure) throw new Error(options.connectFailure); rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
     refreshDevices: async () => {},
     lookupDeviceDiscovery: async (deviceIds) => {
@@ -149,6 +150,7 @@ async function harness(initial = state(), installed = [application], options = {
       uninstall: async () => { records = []; },
       rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
     },
+    credits: options.credits, accountProfile: options.accountProfile,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -278,12 +280,12 @@ test("pending app launch may be cancelled without connecting a box", async () =>
   assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
 });
 
-test("management keeps box settings nested and preserves the trusted console gateway", async () => {
+test("management exposes boxes and credits while preserving the trusted console gateway", async () => {
   const h = await harness();
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
   assert.match(header, /<nav/);
-  for (const page of ["applications", "settings"]) assert.ok(header.includes(`data-action="show-${page}"`));
-  assert.ok(!header.includes('data-action="show-boxes"'));
+  for (const page of ["applications", "boxes", "credits"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  assert.ok(!header.includes('data-action="show-settings"'));
   await h.click("show-boxes");
   await h.click("connect", { deviceId: "box-102" });
   assert.match(h.app.innerHTML, /data-action="dashboard-open"[^>]*>打开盒子控制台/);
@@ -295,6 +297,17 @@ test("management keeps box settings nested and preserves the trusted console gat
   assert.match(h.app.innerHTML, /已登录万象平台/);
   assert.match(h.app.innerHTML, /data-action="startup-toggle" disabled/);
   assert.doesNotMatch(h.app.innerHTML, /account-1|data-action="dashboard-open"/);
+});
+
+test("box login failures show connection guidance instead of an application market error", async () => {
+  for (const code of BOX_SESSION_ERROR_CODES) {
+    const h = await harness(state(), [], { connectFailure: code });
+    await h.click("show-boxes");
+    await h.click("connect", { deviceId: "box-102" });
+    assert.match(h.app.innerHTML, new RegExp(`（${code}）`));
+    assert.doesNotMatch(h.app.innerHTML, /暂时无法完成应用市场操作/);
+    assert.match(h.app.innerHTML, /尚未连接盒子/);
+  }
 });
 
 test("console follows gateway readiness and rejects a stale button after disconnect", async () => {
@@ -1243,9 +1256,9 @@ test("provisioning explains unregistered and closed-window boxes and does not bl
   assert.doesNotMatch(h.app.innerHTML, /应用市场操作失败|应用市场操作，请/);
 });
 
-test("settings owns box management and distinguishes account logout from application quit", async () => {
+test("settings retains box management and distinguishes account logout from application quit", async () => {
   const h = await harness(state("ready", "ready", "box-102"));
-  assert.doesNotMatch(h.app.innerHTML, /data-action="show-boxes"/);
+  assert.match(h.app.innerHTML, /data-action="show-boxes"/);
   await h.click("show-settings");
   assert.match(h.app.innerHTML, /管理与切换盒子/);
   assert.match(h.app.innerHTML, /CentuarAI-AMD-102 · 已连接/);
@@ -1253,10 +1266,10 @@ test("settings owns box management and distinguishes account logout from applica
   assert.match(h.app.innerHTML, /退出账号会断开盒子，万象仍在后台运行/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="desktop-quit"/);
   const nav = h.app.innerHTML.match(/<nav[^>]*>(.*?)<\/nav>/)[1];
-  assert.doesNotMatch(nav, /show-boxes/);
+  assert.match(nav, /show-boxes/);
   await h.click("show-boxes");
   assert.match(h.app.innerHTML, /返回设置/);
-  assert.match(h.app.innerHTML, /data-action="show-settings" aria-current="page"/);
+  assert.match(h.app.innerHTML, /data-action="show-boxes" aria-current="page"/);
   await h.click("show-settings");
   assert.match(h.app.innerHTML, /管理与切换盒子/);
 });
@@ -1823,6 +1836,27 @@ for (const role of ["member", "unknown", undefined]) test(`nearby ${role} cannot
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
 });
 
+test("retained owner Wi-Fi selection keeps wifi mode and ignores repeat clicks", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const deviceId = discoveryId(79);
+  const h = await harness({ ...state(), devices: [{ deviceId, name: "我的盒子", deviceRole: "owner" }] }, [application], t);
+  await startDiscovery(h);
+  discoveryIdentity(h, deviceId);
+  await settleDiscovery();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  t.mock.timers.tick(12000);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /扫描已结束/);
+  await h.click("select-candidate-wifi", { candidateId });
+  await h.click("select-candidate-wifi", { candidateId });
+  await settleDiscovery();
+  assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:reselect"));
+  const starts = h.calls.filter(([name]) => name === "wanx:setup:begin");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0][1].mode, "wifi");
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:confirmOwnership").length, 0);
+});
+
 test("owner Wi-Fi flow ignores the initial-claim window and never shows binding controls or success", async () => {
   const h = await harness();
   await h.click("provisioning");
@@ -1850,3 +1884,80 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
 });
+
+test("avatar menu owns profile and settings; credits is a primary tab", async () => {
+  const initial = state();
+  initial.account = { ...initial.account, maskedPhone: "138****8000", profile: { displayName: '<小万>', avatarDataUrl: null } };
+  const h = await harness(initial);
+  const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
+  assert.match(header, /data-action="show-credits"/);
+  assert.doesNotMatch(header, /data-action="show-settings"/);
+  await h.click("profile-menu");
+  assert.match(h.app.innerHTML, /&lt;小万&gt;/);
+  assert.match(h.app.innerHTML, /138\*\*\*\*8000/);
+  assert.match(h.app.innerHTML, /data-action="show-settings"/);
+  h.keydown("Escape");
+  assert.doesNotMatch(h.app.innerHTML, /id="profile-menu"/);
+  await h.click("profile-menu"); await h.click("show-profile");
+  assert.match(h.app.innerHTML, /data-form="profile"/);
+  assert.match(h.app.innerHTML, /仅保存在这台电脑/);
+  assert.match(h.app.innerHTML, /data-action="profile-avatar"/);
+  const form = h.form("profile"); form.values.displayName = "正在编辑";
+  h.update({ ...initial, phase: "connecting" });
+  assert.equal(h.form("profile"), form);
+  assert.equal(h.form("profile").values.displayName, "正在编辑");
+  await h.click("profile-menu");
+  h.update({ ...initial, account: { phase: "authenticated", accountId: "different" } });
+  assert.doesNotMatch(h.app.innerHTML, /&lt;小万&gt;|138\*\*\*\*8000|正在编辑|id="profile-menu"/);
+});
+
+test("profile save and avatar picker use trusted IPC without accepting a renderer path", async () => {
+  const updates = [];
+  const h = await harness(state(), undefined, { accountProfile: {
+    save: input => { updates.push(input); return { displayName: input.displayName }; },
+    chooseAvatar: input => { assert.equal(input, undefined); return { canceled: true }; },
+    removeAvatar: () => ({ avatarDataUrl: null }),
+  } });
+  await h.click("show-profile");
+  await h.submit("profile", { displayName: "  我的昵称  ", avatarDataUrl: "file:///secret", accountId: "other" });
+  assert.deepEqual(JSON.parse(JSON.stringify(updates)), [{ displayName: "我的昵称" }]);
+  assert.match(h.app.innerHTML, /资料已保存在这台电脑/);
+  await h.click("profile-avatar", { path: "/secret" });
+  assert.ok(h.calls.some(([name]) => name === "wanx-client:profile-avatar"));
+  const response = await h.window.wanxClient.action("profile.save", { displayName: "用户", avatarDataUrl: "evil" });
+  assert.equal(response.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(updates.at(-1))), { displayName: "用户" });
+});
+
+test("credits entry opens a read-only account ledger with real IPC data", async () => {
+  const h = await harness(state(), [application], { credits: {
+    balance: async () => ({ available: 1250, held: 40, paid_available: 1000, gift_available: 250 }),
+    transactions: async () => ({ items: [], after: 0, hasMore: false }),
+  } });
+  assert.match(h.app.innerHTML, /1,250 点/);
+  await h.click("show-credits");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /我的积分/);
+  assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
+  assert.match(h.app.innerHTML, /还没有积分记录/);
+});
+
+for (const phase of ['waitingCloud', 'attentionRequired']) {
+  for (const claimState of [undefined, 'waitingAppProof', 'waitingDeviceProof', 'ownershipCommitted', 'projectionPending', 'deviceAckPending']) {
+    test(`claim wizard ${phase}/${claimState} marks only confirmed stages complete`, async () => {
+      const h = await harness(state());
+      await h.click('provisioning');
+      h.setup({ state: phase, ...(claimState ? { claimState } : {}) });
+      const steps = [...h.app.innerHTML.matchAll(/<div class="wizard-step ([^"]*)"><span>([^<]+)<\/span><label>([^<]+)<\/label>/g)];
+      const claim = steps.find(step => step[3] === '认领设备');
+      const initialize = steps.find(step => step[3] === '初始化盒端');
+      assert.ok(claim && initialize);
+      assert.equal(claim[1].includes('done'), claimState === 'deviceAckPending');
+      assert.equal(initialize[1].includes('active'), claimState === 'deviceAckPending');
+      if (claimState === 'waitingDeviceProof') {
+        assert.match(h.app.innerHTML, /等待盒子提交认领证明/);
+        assert.doesNotMatch(h.app.innerHTML, /盒子授权尚未完成/);
+      }
+    });
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import secrets
 import time
@@ -298,6 +299,20 @@ class PlatformAuthService:
         if session.upstream_expires_at <= time.time():
             raise BridgeAuthError("BOX_PLATFORM_SESSION_EXPIRED")
         self.store.assert_live(session.key, session.sid)
+
+    def resource_context(self, session: Session) -> dict[str, Any]:
+        """Expose only the stable, verified scope needed by managed resources."""
+        with self.store.lock:
+            self.assert_live(session)
+            row = self.store.db.execute(
+                "SELECT context FROM leases WHERE key=?", (session.key,)
+            ).fetchone()
+            if row is None:
+                raise BridgeAuthError()
+            context = json.loads(row[0])
+            if context["sid"] != session.sid:
+                raise BridgeAuthError("BOX_PLATFORM_SESSION_EXPIRED")
+            return {name: context[name] for name in ("device_id", "ownership_epoch", "sub")}
 
     def close(self) -> None:
         self.sessions.clear()

@@ -87,7 +87,7 @@ test("Consumer login, signed market HTTP, token refresh, OSS download and verifi
       return success({ items: [{ applicationId, name: "Market fixture", listed: true }] });
     }
     if (route === `/app-api/market/apps/${applicationId}/candidate`) {
-      assert.deepEqual(body, { os: "macos", arch: "arm64", wanxVersion: "0.1.0", hostProtocol: 1,
+      assert.deepEqual(body, { os: "macos", arch: "arm64", wanxVersion: "0.1.0", hostProtocol: 1, supportedDescriptorSchemas: [1, 2, 3], supportsReleaseAccess: true,
         ...(body.currentVersion ? { currentVersion: descriptor.version, currentArtifactId: artifactId } : {}) });
       return success({ status: body.currentVersion ? "up_to_date" : "available",
         release: { releaseId: "11111111-1111-4111-8111-111111111111", version: descriptor.version, notes: "Fixture", revision: 1 },
@@ -110,11 +110,35 @@ test("Consumer login, signed market HTTP, token refresh, OSS download and verifi
   assert.equal(h.requests.filter((request) => request.route.endsWith("/candidate")).length, 3);
 });
 
+test("an old Admin rejecting only supportsReleaseAccess is retried once without changing the signed artifact", async t => {
+  const h = await setup(t, ({ route, body }) => {
+    assert.equal(route, `/app-api/market/apps/${descriptor.applicationId}/candidate`);
+    if (body.supportsReleaseAccess === true) return Response.json({ detail: [
+      { type: "extra_forbidden", loc: ["body", "supportsReleaseAccess"], msg: "Extra inputs are not permitted", input: true },
+    ] }, { status: 422 });
+    return success({ status: "available", release: { version: descriptor.version }, artifact: { ...descriptor, status: "ready", envelope: fixture.envelope } });
+  });
+  assert.equal((await h.market.candidate(descriptor.applicationId)).artifact.artifactId, descriptor.artifactId);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].body.supportsReleaseAccess, undefined);
+});
+
+for (const detail of [
+  [{ type: "extra_forbidden", loc: ["body", "wanxVersion"] }],
+  [{ type: "bool_type", loc: ["body", "supportsReleaseAccess"] }],
+  [{ type: "extra_forbidden", loc: ["body", "supportsReleaseAccess"] }, { type: "missing", loc: ["body", "arch"] }],
+]) test("unrelated candidate validation errors never fall back to a weaker request", async t => {
+  const h = await setup(t, () => Response.json({ detail }, { status: 422 }));
+  await assert.rejects(h.market.candidate(descriptor.applicationId), { status: 422, code: "ACCOUNT_REQUEST_FAILED" });
+  assert.equal(h.requests.length, 1);
+});
+
 for (const [name, response, code] of [
   ["HTML from an undeployed route", () => new Response("<html>Not Found</html>", { status: 404 }), "MARKET_SERVICE_NOT_DEPLOYED"],
   ["JSON from an undeployed route", () => Response.json({ detail: "Not Found" }, { status: 404 }), "MARKET_SERVICE_NOT_DEPLOYED"],
   ["revoked download", () => Response.json({ code: 404, success: false, errorCode: "MARKET_DOWNLOAD_UNAVAILABLE" }, { status: 404 }), "MARKET_DOWNLOAD_UNAVAILABLE"],
   ["retired app", () => Response.json({ code: 410, success: false, errorCode: "APPLICATION_RETIRED" }, { status: 410 }), "APPLICATION_RETIRED"],
+  ["gray access denied", () => Response.json({ code: 403, success: false, errorCode: "MARKET_GRAY_ACCESS_DENIED" }, { status: 403 }), "MARKET_GRAY_ACCESS_DENIED"],
   ["storage outage", () => Response.json({ code: 503, success: false, errorCode: "MARKET_STORAGE_UNAVAILABLE" }, { status: 503 }), "MARKET_STORAGE_UNAVAILABLE"],
 ]) test(`market preserves actionable errors for ${name}`, async (t) => {
   const h = await setup(t, response);

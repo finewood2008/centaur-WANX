@@ -5,10 +5,11 @@ import path from "node:path";
 import { verifyEnvelope, marketFailure, validApplicationId, matchesApplicationTarget } from "./descriptor.mjs";
 import { isComparableApplicationVersion } from "./manifest.mjs";
 import { compareVersions, validateVersion } from "./version.mjs";
+import { evaluateApplicationCompatibility } from "./compatibility.mjs";
 
 export function createApplicationMarket({ request, applications, wanxVersion, platform = process.platform,
   arch = process.arch, trustedKeys = {}, fetch: fetcher = globalThis.fetch,
-  captureSession = () => () => {}, temporaryRoot = os.tmpdir() } = {}) {
+  captureSession = () => () => {}, temporaryRoot = os.tmpdir(), getCompatibilityContext, authorizeRelease } = {}) {
   validateVersion(wanxVersion);
   const targetOS = ({ darwin: "macos", win32: "windows", macos: "macos", windows: "windows" })[platform];
   const offers = new Map(), operations = new Set(), pending = new Set();
@@ -37,14 +38,41 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
     assertSession();
     if (installed?.selectionRequired) return { status: "incompatible", reason: "version_selection_required" };
     const comparable = installed && isComparableApplicationVersion(installed.version);
-    const result = await request({ method: "POST", path: `/app-api/market/apps/${id}/candidate`, body: {
-      os: targetOS, arch, wanxVersion, hostProtocol: 1,
+    const checkCompatibility = async descriptor => {
+      const context = { clientVersion: wanxVersion, hostProtocol: 1,
+        ...(descriptor.schemaVersion >= 2 ? await getCompatibilityContext?.({ manifest: descriptor.manifest, descriptor, phase: "candidate" }) : {}) };
+      assertSession();
+      return { context, compatibility: evaluateApplicationCompatibility(descriptor.manifest, context, { phase: "candidate" }) };
+    };
+    const query = async backendReadiness => {
+      const body = {
+      os: targetOS, arch, wanxVersion, hostProtocol: 1, supportedDescriptorSchemas: [1, 2, 3], supportsReleaseAccess: true,
+      ...(backendReadiness ? { backendReadiness } : {}),
       ...(comparable ? { currentVersion: installed.version, ...(installed.artifactId ? { currentArtifactId: installed.artifactId } : {}) } : {}),
-    } });
+      };
+      const input = { method: "POST", path: `/app-api/market/apps/${id}/candidate`, body };
+      try { return await request(input); }
+      catch (error) {
+        if (error.status !== 422 || error.code !== "MARKET_RELEASE_CAPABILITY_UNSUPPORTED") throw error;
+        assertSession();
+        const { supportsReleaseAccess, ...legacy } = body;
+        return request({ ...input, body: legacy });
+      }
+    };
+    let result = await query();
+    // A selected box can require a still-supported historical artifact. Catalog
+    // evidence only selects bytes; each returned envelope is independently verified.
+    for (let attempt = 0; attempt < 2; attempt++) {
     assertSession();
     if (!result || !["available", "up_to_date", "local_newer", "incompatible", "unavailable"].includes(result.status))
       throw marketFailure("MARKET_INVALID_RESPONSE");
-    if (result.status !== "available") return result;
+    if (["incompatible", "unavailable"].includes(result.status)) return result;
+    // Old schema1 services can return status only. A v2 installed application
+    // must not become "up to date" without a signed target and current-box check.
+    if (result.status !== "available" && !result.artifact?.envelope) {
+      if (installed?.protocolVersion >= 2) throw marketFailure("MARKET_INVALID_RESPONSE");
+      return result;
+    }
     const descriptor = verifyEnvelope(result.artifact?.envelope, trustedKeys);
     if (descriptor.applicationId !== id || !matchesApplicationTarget(descriptor, targetOS, arch) ||
       descriptor.packageType !== "wanxapp" || descriptor.hostProtocol !== 1 || compareVersions(wanxVersion, descriptor.minWanxVersion) < 0 ||
@@ -53,16 +81,46 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
       result.artifact.status !== "ready" ||
       ["os", "arch", "packageType", "fileName"].some((key) => descriptor[key] !== result.artifact[key]))
       throw marketFailure("MARKET_INCOMPATIBLE");
+    const { context, compatibility } = await checkCompatibility(descriptor);
+    if (compatibility.status === "blocked") {
+      if (attempt === 0 && context.backendRequired && context.backend) { result = await query(context.backend); continue; }
+      return { status: "incompatible", reason: compatibility.checks[0].code, compatibility };
+    }
     if (comparable) {
       const compared = compareVersions(descriptor.version, installed.version);
+      if (compared < 0) {
+        let recoveryRequired = result.selection === "compatible_history";
+        if (!recoveryRequired && installed.protocolVersion >= 2) {
+          const local = await checkCompatibility(verifyEnvelope(installed.envelope, trustedKeys));
+          if (local.compatibility.status === "blocked") {
+            if (attempt === 0 && local.context.backendRequired && local.context.backend) {
+              result = await query(local.context.backend); continue;
+            }
+            recoveryRequired = true;
+          }
+        }
+        if (recoveryRequired) return {
+          ...result, status: "incompatible", reason: "compatible_history_requires_recovery", compatibility,
+        };
+      }
+      const sameArtifact = installed.artifactId ? installed.artifactId === descriptor.artifactId : result.status === "up_to_date";
       if (compared <= 0) return {
-        status: compared < 0 ? "local_newer" : installed.artifactId === descriptor.artifactId ? "up_to_date" : "incompatible",
-        ...(compared === 0 && installed.artifactId !== descriptor.artifactId ? { reason: "reinstall_required" } : {}),
+        ...result, compatibility,
+        status: compared < 0 ? "local_newer" : sameArtifact ? "up_to_date" : "incompatible",
+        ...(compared === 0 && !sameArtifact ? { reason: "reinstall_required" } : {}),
       };
     }
-    return result;
+    return { ...result, compatibility };
+    }
   }
   async function download(descriptor, assertSession, destination) {
+    if (descriptor.manifest.releaseAccess === "account") {
+      if (!authorizeRelease) throw marketFailure("MARKET_RELEASE_ACCESS_REQUIRED");
+      const permit = await authorizeRelease(descriptor, { signal: assertSession.signal });
+      assertSession();
+      if (!permit) throw marketFailure("MARKET_RELEASE_ACCESS_REQUIRED");
+      permit.assertLive();
+    }
     const link = await request({ method: "POST", path: `/app-api/market/artifacts/${descriptor.artifactId}/download`, body: {} });
     assertSession();
     let url;

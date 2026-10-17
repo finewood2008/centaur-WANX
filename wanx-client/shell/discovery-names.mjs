@@ -28,9 +28,34 @@ export function createAdvertisementNames({
   hash = (value) => createHash('sha256').update(value, 'utf8').digest(),
 } = {}) {
   const identityCache = new Map();
+  // Unsubscribing stops hints immediately, but the native process can still
+  // hold a GATT connection until it exits. Keep that lifetime separately.
+  const helpers = new Set();
+  let draining;
   return {
+    stopAndWait() {
+      if (draining) return draining;
+      const pendingHelpers = [...helpers];
+      if (!pendingHelpers.length) return Promise.resolve();
+      for (const helper of pendingHelpers) helper.stop();
+      let forceTimer, deadline;
+      draining = new Promise((resolve, reject) => {
+        forceTimer = setTimeout(() => {
+          for (const helper of pendingHelpers) if (helpers.has(helper)) helper.forceStop();
+        }, 1000);
+        deadline = setTimeout(() => reject(Object.assign(new Error('LOCAL_CONNECT_TIMEOUT'), {
+          code: 'LOCAL_CONNECT_TIMEOUT',
+        })), 2000);
+        Promise.all(pendingHelpers.map(helper => helper.closed)).then(resolve);
+      }).finally(() => {
+        clearTimeout(forceTimer);
+        clearTimeout(deadline);
+        draining = undefined;
+      });
+      return draining;
+    },
     subscribe(onName) {
-      if (!['darwin', 'win32'].includes(platform) || typeof helperPath !== 'string' || !helperPath ||
+      if (draining || !['darwin', 'win32'].includes(platform) || typeof helperPath !== 'string' || !helperPath ||
         typeof onName !== 'function') return () => {};
       const scope = cacheScope();
       const now = Date.now();
@@ -47,6 +72,13 @@ export function createAdvertisementNames({
       const lookedUp = new Set(), resolvedNames = new Map();
       const timer = setTimeout(() => stop(true), platform === 'win32' ? 61000 : 13000);
       timer.unref?.();
+      let resolveClosed;
+      const helper = {
+        closed: new Promise(resolve => { resolveClosed = resolve; }),
+        stop: () => stop(true),
+        forceStop: () => { try { child.kill('SIGKILL'); } catch { /* Await confirmed exit or fail. */ } },
+      };
+      helpers.add(helper);
 
       function stop(kill) {
         if (!active) return;
@@ -59,7 +91,6 @@ export function createAdvertisementNames({
         child.stdout?.removeListener('error', onError);
         child.stderr?.removeListener('data', onStderr);
         child.stderr?.removeListener('error', onError);
-        child.removeListener('close', onClose);
         child.removeListener('error', onError);
         // Termination may deliver a delayed error after this session is gone.
         for (const emitter of [child, child.stdout, child.stderr]) emitter?.once('error', () => {});
@@ -171,7 +202,11 @@ export function createAdvertisementNames({
         if (stderrBytes > 4096) stop(true);
       }
       function onError() { stop(true); }
-      function onClose() { stop(false); }
+      function onClose() {
+        stop(false);
+        helpers.delete(helper);
+        resolveClosed();
+      }
       child.stdout?.on('data', onData);
       child.stdout?.on('error', onError);
       child.stderr?.on('data', onStderr);

@@ -2,6 +2,7 @@
   const api = window.wanxPanel, root = document.getElementById("panel");
   let state = {}, notice = "", selected = "", intentId = "";
   let accountIdentity = "", sessionGeneration = 0;
+  let balance = null, balancePhase = "idle", balanceRequest = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const errorText = error => {
     const code = String(error?.message || error || "");
@@ -22,15 +23,15 @@
   };
   const phaseText = { opening: "正在打开…", installing: "正在安装…", uninstalling: "正在卸载…", "rolling-back": "正在回退…", selecting: "正在切换版本…" };
   const signedIn = () => state.account?.phase === "authenticated";
-  const ready = () => signedIn() && state.phase === "ready" && state.network?.enabled !== false && state.network?.phase === "ready" && state.platform?.phase === "ready" && state.connection?.deviceId;
+  const ready = () => signedIn() && state.phase === "ready" && state.connection?.deviceId && (state.connection.mode === "local" || (state.network?.enabled !== false && state.network?.phase === "ready" && state.platform?.phase === "ready"));
   const devices = () => state.devices || [];
   const available = () => devices().filter(device => device.canOpen);
   function boxStatus() {
     if (!signedIn()) return "登录后连接盒子";
+    if (ready()) return state.connection.mode === "local" ? "本机已连接" : "已连接";
     if (state.network?.enabled === false) return "网络已关闭";
     if (state.phase === "recovering") return "正在恢复连接…";
     if (state.phase === "connecting") return "正在连接…";
-    if (ready()) return "已连接";
     return "尚未连接";
   }
   function renderIntent() {
@@ -41,14 +42,38 @@
     const processing = ["connecting", "opening"].includes(pending.phase);
     return `<section class="intent"><strong>${processing ? (pending.phase === "connecting" ? "正在连接盒子…" : "正在打开应用…") : "连接盒子并打开应用"}</strong><p>${escape(name)}${processing ? "将在就绪后打开" : "需要连接一个盒子"}</p>${pending.error ? `<p class="error">${errorText(pending.error)}</p>` : ""}${!processing && available().length ? `<select id="target-box" aria-label="选择盒子">${available().map(d => `<option value="${escape(d.deviceId)}" ${d.deviceId === selected ? "selected" : ""}>${escape(d.displayName || d.name || "万象盒子")}</option>`).join("")}</select>` : ""}<div class="actions"><button data-action="cancel">取消</button>${!processing ? (available().length ? '<button class="primary" data-action="confirm">连接并打开</button>' : '<button class="primary" data-page="boxes">发现或配置盒子</button>') : ""}</div></section>`;
   }
+  function renderBalance() {
+    const points = balance == null ? "—" : balance.toLocaleString("zh-CN");
+    const label = !signedIn() ? "登录后查看" : balancePhase === "loading" ? "正在读取…" : balancePhase === "error" ? "暂不可用" : "查看消耗明细";
+    return `<button class="balance-card" data-page="${signedIn() ? "credits" : "applications"}" aria-label="${signedIn() ? "我的积分，" + (balance == null ? label : points + "点，查看消耗明细") : "登录查看积分"}" ${balancePhase === "loading" ? 'aria-busy="true"' : ""}><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">${points}<small>点</small></span><span class="card-caption">${label}<span aria-hidden="true">↗</span></span></button>`;
+  }
   function render() {
     const connection = state.connection || {};
     const apps = state.applications || [];
-    root.innerHTML = `<header><button class="brand" data-action="about" aria-label="关于万象"><img src="../renderer/assets/centaurai-mark.png" alt="半人马"><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button><button data-page="settings" aria-label="打开设置">设置</button></header>
-      <div class="box-status" aria-label="当前盒子"><span class="dot ${ready() ? "ready" : ""}"></span><span class="box-name">${escape(connection.name || "我的盒子")}</span><span class="muted">${boxStatus()}</span></div>
-      <h2>我的应用</h2><div class="apps">${!signedIn() ? '<div class="empty">登录后，连接盒子并使用你的应用。<br><button class="primary" data-page="applications">登录万象</button></div>' : apps.length ? apps.map(app => { const op = state.ui?.applicationOperations?.[app.applicationId]; return `<div class="app-row"><span class="app-icon">${escape((app.name || "应用").slice(0, 1))}</span><div class="app-body"><div class="app-name">${escape(app.name || app.applicationId)}</div>${op ? `<div class="app-message ${op.phase === "failed" ? "error" : ""}">${op.phase === "failed" ? errorText(op.error) : phaseText[op.phase] || "正在处理…"}</div>` : ""}</div><button class="open" data-app="${escape(app.applicationId)}" ${op && op.phase !== "failed" ? "disabled" : ""}>${op?.phase === "failed" ? "重试" : "打开"}</button></div>`; }).join("") : '<p class="empty">还没有应用，去商店挑选一个吧。</p>'}</div>
-      ${renderIntent()}${notice ? `<p class="notice error" role="status">${escape(notice)}</p>` : ""}<footer><button data-page="applications">浏览应用商店 ↗</button></footer>`;
+    root.innerHTML = `<header><div class="brand"><img src="../renderer/assets/centaurai-mark.png" alt="半人马"><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></div><button class="settings-button" data-page="settings" aria-label="打开设置"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1Z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></button></header>
+      <section class="summary" aria-label="万象概览"><div class="box-status" aria-label="当前盒子"><span class="card-label">当前盒子<span class="dot ${ready() ? "ready" : ""}" aria-hidden="true"></span></span><strong class="box-name" title="${escape(connection.name || "我的盒子")}">${escape(connection.name || "我的盒子")}</strong><span class="card-caption">${boxStatus()}</span></div>${renderBalance()}</section>
+      <div class="apps-heading"><h2>我的应用</h2>${signedIn() && apps.length ? `<span>${apps.length} 个应用</span>` : ""}</div><div class="apps">${!signedIn() ? '<div class="empty">登录后，连接盒子并使用你的应用。<br><button class="primary" data-page="applications">登录万象</button></div>' : apps.length ? apps.map(app => { const op = state.ui?.applicationOperations?.[app.applicationId]; return `<div class="app-row"><span class="app-icon" aria-hidden="true">${escape(Array.from(app.name || "应用")[0])}</span><div class="app-body"><div class="app-name">${escape(app.name || app.applicationId)}</div>${op ? `<div class="app-message ${op.phase === "failed" ? "error" : ""}">${op.phase === "failed" ? errorText(op.error) : phaseText[op.phase] || "正在处理…"}</div>` : ""}</div><button class="open" data-app="${escape(app.applicationId)}" aria-label="${op?.phase === "failed" ? "重试打开" : "打开"}${escape(app.name || "应用")}" ${op && op.phase !== "failed" ? "disabled" : ""}>${op?.phase === "failed" ? "重试" : "打开"}</button></div>`; }).join("") : '<p class="empty">还没有应用，去商店挑选一个吧。</p>'}</div>
+      ${renderIntent()}${notice ? `<p class="notice error" role="status">${escape(notice)}</p>` : ""}<footer><button data-page="applications"><span>浏览应用商店</span><span aria-hidden="true">↗</span></button></footer>`;
     resize();
+  }
+  function refreshBalance() {
+    if (!signedIn() || balanceRequest) return;
+    const generation = sessionGeneration;
+    balancePhase = "loading";
+    render();
+    const request = Promise.resolve().then(() => api.getBalance()).then(value => {
+      if (generation !== sessionGeneration) return;
+      if (!Number.isSafeInteger(value?.available) || value.available < 0) throw new Error("invalid_balance");
+      balance = value.available; balancePhase = "ready";
+    }).catch(() => {
+      if (generation !== sessionGeneration) return;
+      balance = null; balancePhase = "error";
+    }).finally(() => {
+      if (generation !== sessionGeneration || balanceRequest !== request) return;
+      balanceRequest = null; render();
+    });
+    balanceRequest = request;
+    return request;
   }
   async function act(name, input) {
     const generation = sessionGeneration;
@@ -62,7 +87,6 @@
     const button = event.target.closest("button");
     if (!button || button.disabled) return;
     const { page, app, action } = button.dataset;
-    if (action === "about") { void act("desktop-about"); return; }
     if (page) { void act("desktop-open", { page }); return; }
     if (app) {
       if ((state.applications || []).find(item => item.applicationId === app)?.selectionRequired) void act("desktop-open", { page: "applications" });
@@ -86,14 +110,18 @@
   function acceptState(value) {
     const account = value.account || {};
     const identity = JSON.stringify([account.phase || "signed_out", account.accountId || null, account.clientId || null]);
-    if (identity !== accountIdentity) {
+    const changed = identity !== accountIdentity;
+    if (changed) {
       accountIdentity = identity;
       sessionGeneration++;
       selected = ""; intentId = ""; notice = "";
+      balance = null; balancePhase = "idle"; balanceRequest = null;
     }
     state = value;
     render();
+    if (changed && signedIn()) void refreshBalance();
   }
+  window.addEventListener?.("focus", () => { void refreshBalance(); });
   api.onState(acceptState);
   const initialGeneration = sessionGeneration;
   api.getState().then(value => { if (initialGeneration === sessionGeneration) acceptState(value); })

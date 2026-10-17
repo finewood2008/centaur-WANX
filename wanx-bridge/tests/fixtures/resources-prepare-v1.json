@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "applicationId": "centaurai.resource-fixture",
+  "artifactId": "fixture-artifact-1",
+  "deviceId": "fixture-box",
+  "observedAt": "2026-10-15T17:01:22.314175Z",
+  "status": "ready",
+  "resources": [
+    {
+      "kind": "skill-package",
+      "resourceId": "fixture-skills",
+      "version": "1.0.0",
+      "status": "ready"
+    },
+    {
+      "kind": "expert",
+      "resourceId": "fixture-expert",
+      "version": "1.0.0",
+      "status": "ready"
+    }
+  ],
+  "bindings": [
+    {
+      "kind": "skill-package",
+      "resourceId": "fixture-skills",
+      "version": "1.0.0",
+      "packageId": "H5RBRS",
+      "verification": "api-write-ack-and-skill-text"
+    },
+    {
+      "kind": "expert",
+      "resourceId": "fixture-expert",
+      "version": "1.0.0",
+      "instanceId": "Q2TGRH"
+    }
+  ],
+  "authorization": {
+    "status": "ready"
+  },
+  "readOnly": false,
+  "backendProductId": "wanx"
+}

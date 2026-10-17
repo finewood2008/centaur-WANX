@@ -144,7 +144,19 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
     // Return before the handshake: consumers can attach handlers before frame one.
     return ws;
   }
-  return Object.freeze({context, request, openStream, drive: createDriveClient({context, request}),
+  async function resolveResourceBinding(kind, resourceId) {
+    if (!['expert', 'skill-package'].includes(kind) || typeof resourceId !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(resourceId)) throw fail('APPLICATION_RESOURCE_INVALID');
+    const current = await context();
+    const matches = Array.isArray(current.resourceBindings) ? current.resourceBindings.filter(item => item.kind === kind && item.resourceId === resourceId) : [];
+    if (matches.length !== 1 || !/^[A-Za-z0-9_-]{1,128}$/.test(matches[0][kind === 'expert' ? 'instanceId' : 'packageId'] || '')) throw fail('APPLICATION_RESOURCE_NOT_BOUND');
+    return Object.freeze({...matches[0]});
+  }
+  async function requestExpert(resourceId, relativePath, options) {
+    if (typeof relativePath !== 'string' || !relativePath.startsWith('/') || /[%\\?#]/.test(relativePath) || relativePath.includes('//') || relativePath.split('/').some(part => part === '.' || part === '..')) throw fail('APPLICATION_PATH_NOT_ALLOWED');
+    const binding = await resolveResourceBinding('expert', resourceId);
+    return request(`/api/agents/${binding.instanceId}${relativePath}`, options);
+  }
+  return Object.freeze({context, request, openStream, resolveResourceBinding, requestExpert, drive: createDriveClient({context, request}),
     onSessionInvalidated(listener) {
       listeners.add(listener);
       if (invalid) queueMicrotask(() => { if (listeners.has(listener)) listener({code:'HOST_SESSION_EXPIRED'}); });

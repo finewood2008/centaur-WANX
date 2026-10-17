@@ -1,0 +1,86 @@
+{
+  "testOnly": true,
+  "envelope": {
+    "keyId": "test-only-market-v3",
+    "descriptorBase64": "eyJzY2hlbWFWZXJzaW9uIjozLCJhcnRpZmFjdElkIjoiMmVkMTQxNTctNWM0Zi00MDczLThiYWItNzA1ZmFjNThhZmFjIiwiaG9zdFByb3RvY29sIjoxLCJtaW5XYW54VmVyc2lvbiI6IjAuMS4wIiwiYXBwbGljYXRpb25JZCI6InRlc3QucmVzb3VyY2UtYXBwIiwidmVyc2lvbiI6IjMuMC4wIiwib3MiOiJ1bml2ZXJzYWwiLCJhcmNoIjoidW5pdmVyc2FsIiwicGFja2FnZVR5cGUiOiJ3YW54YXBwIiwiZmlsZU5hbWUiOiJ0ZXN0LnJlc291cmNlLWFwcC0zLjAuMC11bml2ZXJzYWwtdW5pdmVyc2FsLndhbnhhcHAiLCJtYW5pZmVzdCI6eyJhcHBsaWNhdGlvbklkIjoidGVzdC5yZXNvdXJjZS1hcHAiLCJuYW1lIjoi6LWE5rqQ5Y2P6K6u5qC35pysIiwidmVyc2lvbiI6IjMuMC4wIiwicHJvdG9jb2xWZXJzaW9uIjozLCJjb21wYXRpYmlsaXR5Ijp7ImJhY2tlbmRQcm9kdWN0SWQiOiJ3YW54IiwiY2xpZW50UmFuZ2UiOiI+PTAuMS4wIDwxLjAuMCIsImhvc3RQcm90b2NvbFJhbmdlIjoiPj0xLjAuMCA8Mi4wLjAiLCJiYWNrZW5kQ29udHJhY3RzIjpbeyJpZCI6IndhbngtYnJpZGdlLnJlYWRpbmVzcyIsInJhbmdlIjoiPj0xLjAuMCA8Mi4wLjAiLCJmZWF0dXJlcyI6WyJyZWFkLW9ubHkiXX1dLCJyZXNvdXJjZURlcGVuZGVuY2llcyI6W3sia2luZCI6ImV4cGVydCIsInJlc291cmNlSWQiOiJ6aGlqdW4tcGVyc29uYWwtY29tcGFuaW9uIiwibWluVmVyc2lvbiI6IjEuMC4wIn0seyJraW5kIjoic2tpbGwtcGFja2FnZSIsInJlc291cmNlSWQiOiJyZXNlYXJjaCIsIm1pblZlcnNpb24iOiIxLjIuMCJ9XSwibG9jYWxEYXRhU2NoZW1hIjp7InJlYWRSYW5nZSI6Ij49MS4wLjAgPDIuMC4wIiwid3JpdGVWZXJzaW9uIjoiMS4wLjAifX0sInJ1bnRpbWUiOiJlbGVjdHJvbiIsImxhdW5jaE1vZGUiOiJzaGFyZWQiLCJlbnRyeXBvaW50IjoibWFpbi5tanMiLCJjYXBhYmlsaXRpZXMiOltdLCJkZXNjcmlwdGlvbiI6IiJ9LCJjb21wYXRpYmlsaXR5Ijp7ImJhY2tlbmRQcm9kdWN0SWQiOiJ3YW54IiwiY2xpZW50UmFuZ2UiOiI+PTAuMS4wIDwxLjAuMCIsImhvc3RQcm90b2NvbFJhbmdlIjoiPj0xLjAuMCA8Mi4wLjAiLCJiYWNrZW5kQ29udHJhY3RzIjpbeyJpZCI6IndhbngtYnJpZGdlLnJlYWRpbmVzcyIsInJhbmdlIjoiPj0xLjAuMCA8Mi4wLjAiLCJmZWF0dXJlcyI6WyJyZWFkLW9ubHkiXX1dLCJyZXNvdXJjZURlcGVuZGVuY2llcyI6W3sia2luZCI6ImV4cGVydCIsInJlc291cmNlSWQiOiJ6aGlqdW4tcGVyc29uYWwtY29tcGFuaW9uIiwibWluVmVyc2lvbiI6IjEuMC4wIn0seyJraW5kIjoic2tpbGwtcGFja2FnZSIsInJlc291cmNlSWQiOiJyZXNlYXJjaCIsIm1pblZlcnNpb24iOiIxLjIuMCJ9XSwibG9jYWxEYXRhU2NoZW1hIjp7InJlYWRSYW5nZSI6Ij49MS4wLjAgPDIuMC4wIiwid3JpdGVWZXJzaW9uIjoiMS4wLjAifX0sImNyaXRpY2FsIjpbXSwic2hhMjU2IjoiNmVkYjAwNjBjNTUzYTY3YmNkNzc2MzQzMTJkMTJkZjRjMDcyNzQxOGU1NTlhY2UzYmQ4YjI4ODRmNDExNWM5NiIsInNpemUiOjcwOH0=",
+    "signatureBase64": "HcbqFOBppUgyYeNre/cYXP6exzyvhDBvbH1Ar2UpFFSysJ4axJu/iR7rrteytUPFwiM3Jra7925qO7vepiY8DQ=="
+  },
+  "trustedKeys": {
+    "test-only-market-v3": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAAk9MZjw4LeEj4N88/h7lTh0qBfELwpwsZVswjQ+z9oI=\n-----END PUBLIC KEY-----\n"
+  },
+  "archiveBase64": "UEsDBBQACAgIAABAIVAAAAAAAAAAAAAAAAAIAAAAbWFpbi5tanPT11dwzs8rKUpMLlFIy6woKS1KVcjPy6nU4wIAUEsHCIaxNmwcAAAAGgAAAFBLAwQUAAAICABclE9duEsYUa4BAAChAwAADQAAAHdhbngtYXBwLmpzb259UrFuFDEQ7fMVK9fZ1SXpUKAhDUWkCCQalGLOO2Qn5x1b9izJEaWjRfABFHwASoeQ+B9O+Yx4bWfZSLmr1jvved7zm7nZqyoFzhnSIGT5TateVEowSOMx2MFrrCOs9kceQ48jfP/7y+bv939fv93f3W1+/tn8+JXxT+hD7DFSjppFs8hV561Ybc37CT1KdW17FzWXZEjWsXoTi7G8BL1Cbs+8bQct2c8V8HVqNl4zhCxvgS+Sl1cvF81Bs6iODybFSOpskLOiO6MmTnV8OKcWvdeWxYOWEJkfElIVR4lFk4966am9wBgPtMQYQmmUaH6nVqJ8RJAhZjvTyVdjv9qyWaupel5Ot+l7Xgw/zuUEXfSNrAm3mF4RJ9t47dDLE5+lR473c0eXA9eRFCyDqdNkeJzV7EpP/H+CKqf96G9/u3ZYkTG1iyFDTGarhfiH4HW3S/FwpvgkEWM1mBMQeKc77GHapZLq7gWIpCtPgs8/bhRKz1N+YKG8/2hQiy/xKAMD6+7UtgkLHXhsMxL31K+dJZYR6YG46S/zvigNDtLql+mlt6gWg/bkpBhRe7cPUEsBAj8DFAAICAgAAEAhUIaxNmwcAAAAGgAAAAgACQAAAAAAAAAAAKSBAAAAAG1haW4ubWpzVVQFAAMA4QteUEsBAj8DFAAACAgAXJRPXbhLGFGuAQAAoQMAAA0ACQAAAAAAAAAAALSBUgAAAHdhbngtYXBwLmpzb25VVAUAA1Cs0GpQSwUGAAAAAAIAAgCDAAAAKwIAAAAA",
+  "validCompatibility": {
+    "backendProductId": "wanx",
+    "clientRange": ">=0.1.0 <1.0.0",
+    "hostProtocolRange": ">=1.0.0 <2.0.0",
+    "backendContracts": [
+      {
+        "id": "wanx-bridge.readiness",
+        "range": ">=1.0.0 <2.0.0",
+        "features": [
+          "read-only"
+        ]
+      }
+    ],
+    "resourceDependencies": [
+      {
+        "kind": "expert",
+        "resourceId": "zhijun-personal-companion",
+        "minVersion": "1.0.0"
+      },
+      {
+        "kind": "skill-package",
+        "resourceId": "research",
+        "minVersion": "1.2.0"
+      }
+    ],
+    "localDataSchema": {
+      "readRange": ">=1.0.0 <2.0.0",
+      "writeVersion": "1.0.0"
+    }
+  },
+  "invalidResourceDependencies": [
+    [
+      {
+        "kind": "expert",
+        "resourceId": "same",
+        "minVersion": "1.0.0",
+        "required": false
+      }
+    ],
+    [
+      {
+        "kind": "expert",
+        "resourceId": "same",
+        "minVersion": "1.0.0",
+        "versionRange": ">=1.0.0 <2.0.0"
+      }
+    ],
+    [
+      {
+        "kind": "expert",
+        "resourceId": "same",
+        "minVersion": "1.0.0-rc.1"
+      }
+    ],
+    [
+      {
+        "kind": "expert",
+        "resourceId": "same",
+        "minVersion": "2147483648.0.0"
+      }
+    ],
+    [
+      {
+        "kind": "expert",
+        "resourceId": "same",
+        "minVersion": "1.0.0"
+      },
+      {
+        "kind": "expert",
+        "resourceId": "same",
+        "minVersion": "2.0.0"
+      }
+    ]
+  ]
+}

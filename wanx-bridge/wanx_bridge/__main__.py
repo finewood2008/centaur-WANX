@@ -25,9 +25,12 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from .admin_client import AdminClient
 from .auth import PlatformAuthService
 from .config import BridgeAuthError, PlatformConfig
 from .oidc import OidcError, OidcProvider, loopback_origin
+from .resources import ResourceCatalog, ResourceConfig
+from .resources_runtime import ResourceRuntime
 from .server import create_app
 from .upstream import BridgeUpstreamError, OctopAdapter
 
@@ -256,6 +259,19 @@ async def run(stop: asyncio.Event | None = None) -> None:
     provider = await asyncio.to_thread(load_provider, config, runtime)
     auth = PlatformAuthService(config)
     adapter = OctopAdapter(runtime.upstream_url, provider, runtime.credentials_file)
+    resources = None
+    try:
+        resource_config = ResourceConfig.from_env()
+        if resource_config is not None:
+            if resource_config.device_id != config.device_id:
+                raise BridgeAuthError("RESOURCE_DEVICE_IDENTITY_MISMATCH", 503)
+            resources = ResourceRuntime(
+                ResourceCatalog(resource_config),
+                AdminClient(runtime.upstream_url, runtime.credentials_file),
+            )
+    except (BridgeAuthError, OSError):
+        # Optional resource setup cannot take existing logins/apps offline.
+        print("RESOURCE_SERVICE_NOT_CONFIGURED", file=sys.stderr)
     servers: list[uvicorn.Server] = []
     tasks: list[asyncio.Task[None]] = []
     pending: asyncio.Task[Any] | None = None
@@ -292,7 +308,7 @@ async def run(stop: asyncio.Event | None = None) -> None:
         await pending
         pending = None
         public = _new_server(
-            create_app(auth, adapter, upstream_url=runtime.upstream_url),
+            create_app(auth, adapter, upstream_url=runtime.upstream_url, resources=resources),
             runtime.bind_host,
             runtime.bind_port,
         )
