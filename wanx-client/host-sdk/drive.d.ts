@@ -1,4 +1,5 @@
 export interface DriveEntry {
+  space_id?: string;
   id: string;
   parent: string;
   name: string;
@@ -40,6 +41,7 @@ export interface DriveOverview {
 interface Options {signal?: AbortSignal}
 interface FolderInput extends Options {name: string; parent?: string}
 export interface DriveClient {
+  ensureAppFolder(options?: Options & {displayName?: string}): Promise<DriveEntry>;
   overview(options?: Options): Promise<DriveOverview>;
   list(options?: Options & {parent?: string; trash?: boolean}): Promise<DriveListing>;
   stat(id: string, options?: Options): Promise<DriveEntry>;

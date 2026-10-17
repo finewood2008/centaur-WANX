@@ -23,6 +23,7 @@ class Input(BaseModel):
 
 
 class FolderInput(Input):
+    space_id: str = Field(default="personal", max_length=32)
     parent: str = Field(
         default="", max_length=32, description="Opaque parent folder id; empty is the user's root."
     )
@@ -41,6 +42,7 @@ class CompleteInput(Input):
 
 
 class Entry(BaseModel):
+    space_id: str = "personal"
     id: str
     parent: str
     name: str
@@ -60,6 +62,8 @@ class Breadcrumb(BaseModel):
 
 
 class Listing(BaseModel):
+    space_id: str = "personal"
+    root: str = ""
     items: list[Entry]
     breadcrumbs: list[Breadcrumb]
     parent: str
@@ -143,9 +147,10 @@ async def overview(service: PersonalSpace = Depends(space)) -> Any:
 async def files(
     parent: str = Query(default="", max_length=32),
     trash: bool = False,
+    space_id: str = Query(default="personal", max_length=32),
     service: PersonalSpace = Depends(space),
 ) -> Any:
-    return await call(service.listing, parent, trash)
+    return await call(service.listing, parent, trash, space_id)
 
 
 @router.post(
@@ -154,7 +159,7 @@ async def files(
     summary="Create a private folder; preserve both names on conflict",
 )
 async def mkdir(body: FolderInput, service: PersonalSpace = Depends(space)) -> Any:
-    return await call(service.mkdir, body.parent, body.name)
+    return await call(service.mkdir, body.parent, body.name, body.space_id)
 
 
 @router.patch(
@@ -193,7 +198,9 @@ async def purge(item_id: str, service: PersonalSpace = Depends(space)) -> Respon
     summary="Create or recover an upload; no visible file until commit",
 )
 async def upload(body: UploadInput, service: PersonalSpace = Depends(space)) -> Any:
-    return await call(service.upload_create, body.parent, body.name, body.size, body.id)
+    return await call(
+        service.upload_create, body.parent, body.name, body.size, body.id, body.space_id
+    )
 
 
 @router.get(

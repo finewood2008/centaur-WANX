@@ -93,6 +93,7 @@ class PersonalSpace:
         with self._db() as db:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(entries)")}
             for column, definition in {
+                "space_id": "TEXT NOT NULL DEFAULT 'personal'",
                 "version": "INTEGER NOT NULL DEFAULT 1",
                 "blob": "TEXT",
                 "previous_blob": "TEXT",
@@ -101,6 +102,37 @@ class PersonalSpace:
             }.items():
                 if column not in columns:
                     db.execute(f"ALTER TABLE entries ADD COLUMN {column} {definition}")
+
+        with self._db() as db:
+            if "space_id" not in {r["name"] for r in db.execute("PRAGMA table_info(uploads)")}:
+                db.execute(
+                    "ALTER TABLE uploads ADD COLUMN space_id TEXT NOT NULL DEFAULT 'personal'"
+                )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS spaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, root TEXT NOT NULL UNIQUE, created REAL NOT NULL, trashed REAL)"
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO spaces VALUES('personal','我的空间','',?,NULL)",
+                (time.time(),),
+            )
+
+    def _space(self, db: sqlite3.Connection, space_id: str) -> sqlite3.Row:
+        row = db.execute(
+            "SELECT * FROM spaces WHERE id=? AND trashed IS NULL", (space_id,)
+        ).fetchone()
+        if row is None:
+            raise SpaceError("SPACE_NOT_FOUND", 404)
+        return cast(sqlite3.Row, row)
+
+    def _parent(self, db: sqlite3.Connection, parent: str, space_id: str = "personal") -> str:
+        return parent or str(self._space(db, space_id)["root"])
+
+    def _space_for(self, db: sqlite3.Connection, parent: str) -> str:
+        return str(self._entry(db, parent)["space_id"]) if parent else "personal"
+
+    def _ordinary(self, db: sqlite3.Connection, item_id: str) -> None:
+        if db.execute("SELECT 1 FROM spaces WHERE root=? AND root!=''", (item_id,)).fetchone():
+            raise SpaceError("SPACE_MANAGED_ROOT", 403)
 
     @contextlib.contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
@@ -143,6 +175,7 @@ class PersonalSpace:
         if row is None:
             raise SpaceError("SPACE_NOT_FOUND", 404)
         if not trash:
+            self._space(db, row["space_id"])
             ancestor = row
             while ancestor:
                 if ancestor["trashed"] is not None:
@@ -174,37 +207,61 @@ class PersonalSpace:
             index += 1
         return candidate
 
-    def listing(self, parent: str = "", trash: bool = False) -> dict[str, Any]:
+    def listing(
+        self, parent: str = "", trash: bool = False, space_id: str = "personal"
+    ) -> dict[str, Any]:
         with self._db() as db:
+            parent = self._parent(db, parent, space_id)
+            space_id = self._space_for(db, parent)
             self._folder(db, parent)
+            root = self._space(db, space_id)["root"]
             rows = db.execute(
-                "SELECT * FROM entries WHERE trashed IS NOT NULL ORDER BY trashed DESC"
-                if trash
-                else "SELECT * FROM entries WHERE parent=? AND trashed IS NULL ORDER BY kind DESC,name COLLATE NOCASE",
-                () if trash else (parent,),
+                "SELECT * FROM entries WHERE space_id=? AND id!=? AND "
+                + (
+                    "trashed IS NOT NULL ORDER BY trashed DESC"
+                    if trash
+                    else "parent=? AND trashed IS NULL ORDER BY kind DESC,name COLLATE NOCASE"
+                ),
+                (space_id, root) if trash else (space_id, root, parent),
             ).fetchall()
             crumbs: list[dict[str, str]] = []
             cursor = parent
-            while cursor:
+            while cursor and cursor != root:
                 row = self._entry(db, cursor)
                 crumbs.insert(0, {"id": row["id"], "name": row["name"]})
                 cursor = row["parent"]
-            return {"items": [dict(row) for row in rows], "breadcrumbs": crumbs, "parent": parent}
+            return {
+                "items": [dict(row) for row in rows],
+                "breadcrumbs": crumbs,
+                "parent": parent,
+                "space_id": space_id,
+                "root": root,
+            }
 
-    def mkdir(self, parent: str, name: str) -> dict[str, Any]:
+    def mkdir(self, parent: str, name: str, space_id: str = "personal") -> dict[str, Any]:
         with self._db() as db:
+            parent = self._parent(db, parent, space_id)
             self._folder(db, parent)
             item_id = uuid.uuid4().hex
             db.execute(
-                "INSERT INTO entries(id,parent,name,kind,modified) VALUES(?,?,?,'folder',?)",
-                (item_id, parent, self._name(db, parent, name), time.time()),
+                "INSERT INTO entries(id,parent,name,kind,modified,space_id) VALUES(?,?,?,'folder',?,?)",
+                (
+                    item_id,
+                    parent,
+                    self._name(db, parent, name),
+                    time.time(),
+                    self._space_for(db, parent),
+                ),
             )
             return dict(self._entry(db, item_id))
 
     def move(self, item_id: str, parent: str, name: str) -> dict[str, Any]:
         with self._db() as db:
             row = self._entry(db, item_id)
+            self._ordinary(db, item_id)
             self._folder(db, parent)
+            if row["space_id"] != self._space_for(db, parent):
+                raise SpaceError("SPACE_CROSS_SPACE_CONFIRM_REQUIRED", 409)
             cursor = parent
             while cursor:
                 if cursor == item_id:
@@ -219,6 +276,7 @@ class PersonalSpace:
     def trash(self, item_id: str) -> None:
         with self._db() as db:
             self._entry(db, item_id)
+            self._ordinary(db, item_id)
             db.execute(
                 "UPDATE entries SET trashed=?,version=version+1 WHERE id=?", (time.time(), item_id)
             )
@@ -226,13 +284,15 @@ class PersonalSpace:
     def restore(self, item_id: str) -> dict[str, Any]:
         with self._db() as db:
             row = self._entry(db, item_id, trash=True)
+            self._ordinary(db, item_id)
+            self._space(db, row["space_id"])
             if row["trashed"] is None:
                 raise SpaceError("SPACE_NOT_IN_TRASH")
             parent = row["parent"]
             try:
                 self._folder(db, parent)
             except SpaceError:
-                parent = ""
+                parent = str(self._space(db, row["space_id"])["root"])
             db.execute(
                 "UPDATE entries SET parent=?,name=?,trashed=NULL,version=version+1 WHERE id=?",
                 (parent, self._name(db, parent, row["name"], item_id), item_id),
@@ -242,6 +302,8 @@ class PersonalSpace:
     def purge(self, item_id: str) -> None:
         with self._db() as db:
             row = self._entry(db, item_id, trash=True)
+            self._ordinary(db, item_id)
+            self._space(db, row["space_id"])
             if row["trashed"] is None:
                 raise SpaceError("SPACE_NOT_IN_TRASH")
             ids = [item_id]
@@ -256,12 +318,15 @@ class PersonalSpace:
                     self._object(blob).unlink(missing_ok=True)
                 db.execute("DELETE FROM entries WHERE id=?", (current,))
 
-    def upload_create(self, parent: str, name: str, size: int, upload_id: str) -> dict[str, Any]:
+    def upload_create(
+        self, parent: str, name: str, size: int, upload_id: str, space_id: str = "personal"
+    ) -> dict[str, Any]:
         self._object(upload_id)
         name = validate_name(name)
         if size < 0 or size > 2**53 - 1:
             raise SpaceError("SPACE_INVALID_SIZE")
         with self._db() as db:
+            parent = self._parent(db, parent, space_id)
             existing = db.execute("SELECT * FROM uploads WHERE id=?", (upload_id,)).fetchone()
             if existing:
                 if (existing["parent"], existing["name"], existing["size"]) != (parent, name, size):
@@ -271,8 +336,8 @@ class PersonalSpace:
             if size > shutil.disk_usage(self.objects).free:
                 raise SpaceError("SPACE_DISK_FULL", 507)
             db.execute(
-                "INSERT INTO uploads(id,parent,name,size,modified) VALUES(?,?,?,?,?)",
-                (upload_id, parent, name, size, time.time()),
+                "INSERT INTO uploads(id,parent,name,size,modified,space_id) VALUES(?,?,?,?,?,?)",
+                (upload_id, parent, name, size, time.time(), self._space_for(db, parent)),
             )
             return dict(db.execute("SELECT * FROM uploads WHERE id=?", (upload_id,)).fetchone())
 
@@ -293,6 +358,8 @@ class PersonalSpace:
             if row["state"] != "pending" or offset != row["offset"]:
                 raise SpaceError("SPACE_UPLOAD_OFFSET", 409)
             self._folder(db, row["parent"])
+            if self._space_for(db, row["parent"]) != row["space_id"]:
+                raise SpaceError("SPACE_CONTEXT_CHANGED", 409)
             if offset + len(data) > row["size"]:
                 raise SpaceError("SPACE_INVALID_SIZE")
             if len(data) > shutil.disk_usage(self.objects).free:
@@ -321,6 +388,8 @@ class PersonalSpace:
             if row["offset"] != row["size"]:
                 raise SpaceError("SPACE_UPLOAD_INCOMPLETE", 409)
             self._folder(db, row["parent"])
+            if self._space_for(db, row["parent"]) != row["space_id"]:
+                raise SpaceError("SPACE_CONTEXT_CHANGED", 409)
             final = self._object(upload_id)
             partial = self._object(upload_id, True)
             # A crash between rename and transaction commit leaves the final object.
@@ -348,7 +417,7 @@ class PersonalSpace:
                 if digest != expected_digest:
                     raise SpaceError("SPACE_CHUNK_INVALID", 409)
             db.execute(
-                "INSERT INTO entries(id,parent,name,kind,size,modified,digest) VALUES(?,?,?,'file',?,?,?)",
+                "INSERT INTO entries(id,parent,name,kind,size,modified,digest,space_id) VALUES(?,?,?,'file',?,?,?,?)",
                 (
                     upload_id,
                     row["parent"],
@@ -356,6 +425,7 @@ class PersonalSpace:
                     row["size"],
                     time.time(),
                     digest,
+                    row["space_id"],
                 ),
             )
             db.execute("UPDATE uploads SET state='complete' WHERE id=?", (upload_id,))

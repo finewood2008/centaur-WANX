@@ -108,6 +108,11 @@ function createDriveClient(host) {
   }
 
   return Object.freeze({
+    ensureAppFolder: async ({displayName, signal} = {}) => {
+      const context = await host.context();
+      if (!context.applicationId) throw fail('SPACE_APPLICATION_REQUIRED');
+      return json('/app-folders', {method: 'POST', body: {application: context.applicationId, name: displayName || context.applicationId}, signal});
+    },
     overview: ({signal} = {}) => json('/overview', {signal}),
     list: ({parent = '', trash = false, signal} = {}) => json(`/files?parent=${folder(parent)}&trash=${trash === true}`, {signal}),
     stat,
