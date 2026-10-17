@@ -14,12 +14,13 @@ from pydantic import Field
 from octop.api.routers.personal_space import Input, call, space
 from octop.infra.personal_space.links import SpaceLinks
 from octop.infra.personal_space.service import CHUNK_SIZE, PersonalSpace
+from octop.infra.personal_space.workspaces import Workspaces
 
 router = APIRouter()
 
 
-async def links(service: PersonalSpace = Depends(space)) -> SpaceLinks:
-    return await call(SpaceLinks, service.root.parent, int(service.root.name))
+async def links(service: PersonalSpace = Depends(space)) -> Workspaces:
+    return await call(Workspaces, service.root.parent, int(service.root.name))
 
 
 class CreateLink(Input):
@@ -134,6 +135,149 @@ async def execute(
     except (ValueError, binascii.Error) as exc:
         raise HTTPException(400, detail={"code": "SPACE_CHUNK_INVALID"}) from exc
     result = await call(partial(service.execute, token, body.action, data=data, **args))
+    if body.action == "read":
+        content, entry = result
+        return Response(
+            content,
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Content-SHA256": hashlib.sha256(content).hexdigest(),
+                "ETag": str(entry["version"]),
+                "X-File-SHA256": entry["digest"],
+            },
+        )
+    return result
+
+
+class SpaceManagement(Input):
+    action: Literal["rename", "trash", "restore"]
+    name: str = Field(default="", max_length=240)
+
+
+class Approval(Input):
+    credential: str = Field(default="", pattern=r"^([A-Za-z0-9_-]{43})?$")
+    profile: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=240)
+    space_id: str = Field(default="", max_length=32)
+
+
+class ConnectionAction(Input):
+    action: Literal["pause", "resume", "disconnect"]
+
+
+class GrantInput(Input):
+    root: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class TransferInput(Input):
+    parent: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
+    space_id: str = Field(default="personal", max_length=32)
+    copy_items: bool = Field(default=False, alias="copy")
+
+
+class AppFolderInput(Input):
+    application: str = Field(min_length=1, max_length=200)
+    name: str = Field(default="", max_length=240)
+
+
+class AgentOperation(Operation):
+    action: Literal[
+        "access",
+        "describe",
+        "stat",
+        "list",
+        "read",
+        "mkdir",
+        "move",
+        "trash",
+        "restore",
+        "restore-version",
+        "begin-write",
+        "write-chunk",
+        "commit-write",
+        "write-status",
+        "cancel-write",
+    ]  # type: ignore[assignment]
+    grant_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
+
+
+@router.get("/spaces", summary="List your personal and Agent spaces including recycled spaces")
+async def list_spaces(service: Workspaces = Depends(links)) -> Any:
+    return await call(service.spaces)
+
+
+@router.post("/spaces/{space_id}/manage", summary="Rename, recycle or restore an Agent space")
+async def manage_space(
+    space_id: str, body: SpaceManagement, service: Workspaces = Depends(links)
+) -> Any:
+    return await call(service.manage_space, space_id, body.action, body.name)
+
+
+@router.post("/connections", summary="Owner approval creates a credential-bound Agent space")
+async def approve_connection(body: Approval, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.approve, body.profile, body.name, body.space_id, body.credential)
+
+
+@router.post("/connections/{connection}/manage", summary="Pause, resume or disconnect an Agent")
+async def manage_connection(
+    connection: str, body: ConnectionAction, service: Workspaces = Depends(links)
+) -> Any:
+    return await call(service.connection_action, connection, body.action)
+
+
+@router.get("/connections/{connection}/grants", summary="List extra read-write grants")
+async def list_grants(connection: str, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.grants, connection)
+
+
+@router.post("/connections/{connection}/grants", summary="Owner grants one resource to an Agent")
+async def add_grant(connection: str, body: GrantInput, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.grant, connection, body.root)
+
+
+@router.delete(
+    "/connections/{connection}/grants/{grant}", status_code=204, summary="Revoke an extra grant"
+)
+async def revoke_grant(
+    connection: str, grant: str, service: Workspaces = Depends(links)
+) -> Response:
+    await call(service.revoke_grant, connection, grant)
+    return Response(status_code=204)
+
+
+@router.get("/connections/{connection}/audit", summary="Recent operations for one Agent identity")
+async def connection_audit(connection: str, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.connection_audit, connection)
+
+
+@router.post("/files/{item_id}/transfer", summary="Owner copy or confirmed move between spaces")
+async def transfer(item_id: str, body: TransferInput, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.transfer, item_id, body.parent, body.space_id, body.copy_items)
+
+
+@router.post("/app-folders", summary="Resolve or create an application default folder")
+async def app_folder(body: AppFolderInput, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.app_folder, body.application, body.name)
+
+
+@router.post(
+    "/connection-access", summary="Operate inside an approved Agent space or explicit extra grant"
+)
+async def connection_access(
+    body: AgentOperation,
+    token: Annotated[str, Header(alias="X-Space-Link", max_length=100)],
+    service: Workspaces = Depends(links),
+) -> Any:
+    args = body.model_dump(exclude={"action", "data", "grant_id"})
+    try:
+        data = base64.b64decode(body.data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(400, detail={"code": "SPACE_CHUNK_INVALID"}) from exc
+    result = await call(
+        partial(service.agent_execute, token, body.action, body.grant_id, data=data, **args)
+    )
     if body.action == "read":
         content, entry = result
         return Response(
