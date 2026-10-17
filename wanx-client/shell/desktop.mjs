@@ -29,7 +29,6 @@ export function createDesktopIntegration({
   const tray = new Tray(trayImage);
   tray.setToolTip(DESKTOP_NAME);
   let panelHeight = 520;
-  let trayBlurAt = 0;
   let hidingPanel = false;
 
   function showControl() {
@@ -89,7 +88,6 @@ export function createDesktopIntegration({
   function show() {
     if (!usesPanel) { showControl(); return; }
     if (panel.isDestroyed()) return;
-    trayBlurAt = 0;
     positionPanel();
     panel.show();
     panel.focus();
@@ -110,21 +108,8 @@ export function createDesktopIntegration({
   }
 
   function togglePanel() {
-    // Clicking the tray can blur the window before the tray's click arrives.
-    // Keep that same click from reopening the panel that blur just hid.
-    if (trayBlurAt && Date.now() - trayBlurAt < 300) { trayBlurAt = 0; return; }
     if (panel.isVisible()) hidePanel();
     else show();
-  }
-
-  function panelBlurred() {
-    if (hidingPanel || panel.isDestroyed() || !panel.isVisible()) return;
-    const point = screen?.getCursorScreenPoint();
-    const bounds = tray.getBounds();
-    if (point && point.x >= bounds.x && point.x < bounds.x + bounds.width &&
-        point.y >= bounds.y && point.y < bounds.y + bounds.height) trayBlurAt = Date.now();
-    else trayBlurAt = 0;
-    hidePanel();
   }
 
   function updatePanelPosition() {
@@ -213,7 +198,6 @@ export function createDesktopIntegration({
   app.on("activate", show);
   if (usesPanel) {
     panel.on("close", hidePanelOnClose);
-    panel.on("blur", panelBlurred);
     tray.on("click", togglePanel);
     if (platform === "win32") tray.on("double-click", show);
     tray.on("right-click", showTrayMenu);
@@ -236,7 +220,6 @@ export function createDesktopIntegration({
       app.removeListener("activate", show);
       if (usesPanel) {
         panel.removeListener("close", hidePanelOnClose);
-        panel.removeListener("blur", panelBlurred);
         for (const event of ["display-added", "display-removed", "display-metrics-changed"])
           screen?.removeListener(event, updatePanelPosition);
       }
