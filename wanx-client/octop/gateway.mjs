@@ -1,4 +1,6 @@
 import http from "node:http";
+import { dashboardRoutes } from "./dashboard-routes.mjs";
+import { serveMaintenanceAsset } from "./maintenance-assets.mjs";
 import https from "node:https";
 import { randomBytes } from "node:crypto";
 import { validAssetManifest } from "./static-cache.mjs";
@@ -66,6 +68,8 @@ export async function createDashboardGateway({
   ) {
     throw new Error("INVALID_TARGET_URL");
   }
+  const applicationExchangePath = session?.applicationExchangePath === "/api/auth/application/exchange"
+    ? "/api/auth/application/exchange" : "/api/auth/platform/application";
   const marker = session ? randomBytes(32).toString("hex") : null;
   const bootstrapPath = session
     ? `/__wanx_session/${randomBytes(32).toString("hex")}`
@@ -132,7 +136,7 @@ export async function createDashboardGateway({
     if (
       (pathname === "/api/auth" || pathname.startsWith("/api/auth/")) &&
       (websocket || (!PROFILE_ROUTES.has(`${request.method} ${pathname}`) &&
-        !(applicationExchange && request.method === "POST" && pathname === "/api/auth/platform/application")))
+        !(applicationExchange && request.method === "POST" && pathname === applicationExchangePath)))
     )
       return null;
     const headerToken = request.headers.authorization;
@@ -228,8 +232,13 @@ export async function createDashboardGateway({
       response.end(
         `<!doctype html><meta charset="utf-8"><script nonce="${nonce}">localStorage.removeItem("auth_token");sessionStorage.setItem("auth_token",${JSON.stringify(
           marker,
-        )});location.replace("/");</script>`,
+        )});const destination=location.hash.slice(1);location.replace(${JSON.stringify(Object.values(dashboardRoutes))}.includes(destination)?destination:"/");</script>`,
       );
+      return;
+    }
+    if (new URL(request.url, localURL).pathname.startsWith("/__wanx_tools/")) {
+      if (session && !bootstrapped) return reject(response, 401, "Platform session required");
+      await serveMaintenanceAsset(request, response, localURL.origin);
       return;
     }
     const authorized = authorize(request);
@@ -594,7 +603,7 @@ export async function createDashboardGateway({
     const parent = authorized.token;
     let cached = applicationTokens.get(applicationScope);
     if (!cached || cached.parent !== parent || cached.renewAt <= Date.now()) {
-      const pending = gateway.request({ path: "/api/auth/platform/application", method: "POST",
+      const pending = gateway.request({ path: applicationExchangePath, method: "POST",
         headers: { "content-type": "application/json" }, body: { application_id: applicationScope },
         applicationExchange: true }).then(response => {
         let value;

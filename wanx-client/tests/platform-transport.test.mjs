@@ -1,4 +1,5 @@
 import test from "node:test";
+import vm from "node:vm";
 import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
@@ -582,3 +583,25 @@ for (const stream of ["desktop", "mobile"]) {
     await ended;
   });
 }
+
+ test("gateway bootstrap keeps only fixed maintenance destinations and the opaque session", async (t) => {
+  const { options } = await fixture(t);
+  const session = await createPlatformSession(options);
+  const gateway = await createDashboardGateway({ targetURL: options.url, agent: options.agent, session });
+  t.after(() => gateway.close());
+  t.after(() => session.close());
+  const html = await (await fetch(gateway.url)).text();
+  const script = html.match(/<script nonce="[^"]+">([\s\S]+)<\/script>/)[1];
+  for (const [hash, expected] of [["#/__wanx_tools/terminal", "/__wanx_tools/terminal"], ["#/__wanx_tools/desktop", "/__wanx_tools/desktop"], ["", "/"], ["#https://untrusted.example/", "/"], ["#//untrusted.example/", "/"], ["#/api/auth/logout", "/"]]) {
+    const stored = new Map();
+    let redirected;
+    vm.runInNewContext(script, {
+      localStorage: { removeItem: key => stored.delete(key) },
+      sessionStorage: { setItem: (key, value) => stored.set(key, value) },
+      location: { hash, replace: path => { redirected = path; } },
+    });
+    assert.equal(redirected, expected);
+    assert.match(stored.get("auth_token"), /^[a-f0-9]{64}$/);
+    assert.doesNotMatch(stored.get("auth_token"), /private-box/);
+  }
+});

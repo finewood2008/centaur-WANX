@@ -1,3 +1,4 @@
+import { panelSpaceState } from "./panel-space.mjs";
 import { readAvatar } from "./avatar.mjs";
 import { createCreditsReader } from "../account/credits.mjs";
 import { createApplicationBackend } from "../applications/backend.mjs";
@@ -33,6 +34,7 @@ import { registerShutdown } from "./shutdown.mjs";
 import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
+import { createLocalBoxes } from "../octop/local-boxes.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
 import { createApplicationMarket } from "../applications/market.mjs";
@@ -45,6 +47,7 @@ import { createStaticAssetCache } from "../octop/static-cache.mjs";
 import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
 import { createStartupSettings } from "./startup.mjs";
+import { createPersonalSpace } from "./personal-space.mjs";
 import { createAdvertisementNames } from "./discovery-names.mjs";
 import { protectPrivateDirectory } from "./private-storage.mjs";
 import { readClientIdentity, installationIdentity } from "../updates/identity.mjs";
@@ -73,11 +76,24 @@ let client;
 let unsubscribe;
 let setupRuntime;
 let applications;
+let personalSpace;
 let marketSession;
 let dashboards;
 let desktop;
 let stopNetworkMonitor;
 let timings;
+let terminalConsoleRequested = process.argv.includes("--wanx-console");
+function openTerminalConsole() {
+  if (!terminalConsoleRequested || !client || !dashboards || client.snapshot().phase !== "ready") return;
+  terminalConsoleRequested = false;
+  void Promise.resolve().then(() => openConnectedDashboard(client, dashboards)).catch(reportError);
+}
+function terminalCommand(argv) {
+  if (!Array.isArray(argv) || !argv.includes("--wanx-console")) return false;
+  terminalConsoleRequested = true;
+  openTerminalConsole();
+  return true;
+}
 let updates;
 let shutdown;
 
@@ -111,7 +127,7 @@ if (process.argv.includes("--wanx-managed-app")) {
 } else if (claimSingleInstance(app, () => desktop ? {
   isDestroyed: () => false, isMinimized: () => false,
   show: () => desktop.show(), focus() {},
-} : control))
+} : control, terminalCommand))
   app
     .whenReady()
     .then(async () => {
@@ -192,6 +208,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       let preferenceWrites = Promise.resolve();
       client = createPlatformClient({
         account,
+        localBoxes: createLocalBoxes(),
         measure: timed,
         resumeStore: createSecureAccountStore({
           filePath: path.join(userData, "network-resume.enc"),
@@ -426,17 +443,34 @@ if (process.argv.includes("--wanx-managed-app")) {
           control.show();
           control.focus();
         },
-        openDashboard: () => openConnectedDashboard(client, dashboards),
-        onError: () => {
-          desktop.show();
-          void dialog.showMessageBox(control, {
-            type: "error", title: windowName,
-            message: "暂时无法打开 Dashboard",
-            detail: "请在设置中确认网络和盒子已连接，然后重试。",
-          });
+      });
+      personalSpace = await createPersonalSpace({
+        client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        store: createSecureAccountStore({ filePath: path.join(userData, "space-transfers.enc"), safeStorage }),
+        chooseUploads: async () => {
+          const result = await dialog.showOpenDialog(control, { title: "上传到盒子空间", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        chooseDownloadDirectory: async () => {
+          const result = await dialog.showOpenDialog(control, { title: "选择批量下载保存位置", properties: ["openDirectory", "createDirectory"] });
+          return result.canceled ? null : result.filePaths[0];
+        },
+        chooseDownload: async name => {
+          const result = await dialog.showSaveDialog(control, { title: "保存文件", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        onChanged: state => {
+          if (!control.isDestroyed()) control.webContents.send("wanx-client:space-state", state);
+          if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-space-state", panelSpaceState(state));
         },
       });
       registerControlActions({
+        personalSpace,
+        confirmSpacePurge: async () => (await dialog.showMessageBox(control, {
+          type: "warning", message: "彻底删除这个文件或文件夹？", detail: "删除后无法恢复。文件夹中的内容也会一并删除。",
+          buttons: ["取消", "彻底删除"], defaultId: 0, cancelId: 0,
+        })).response === 1,
+
         accountProfile: {
           save: input => account.saveProfile(input),
           removeAvatar: () => account.saveProfile({ avatarDataUrl: null }),
@@ -483,6 +517,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         timings.state("platform", client.snapshot().platform);
         dashboards.sync(client.snapshot());
         desktop.sync(client.snapshot());
+        openTerminalConsole();
         boxUpdates.sync();
         void broadcast.publish();
       });
@@ -493,7 +528,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           uiState.invalidateOpen();
           marketSession?.close();
           releaseAccess.close();
-          await Promise.all([market.close(), applications?.close()]);
+          await Promise.all([market.close(), personalSpace?.close(), applications?.close()]);
         },
         async closeHost() {
           unsubscribeUpdateAccount();
@@ -543,7 +578,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       if (!startup.wasOpenedAtLogin()) desktop.show();
       void broadcast.publish();
-      const initialization = timed("client.initialize", () => client.initialize());
+      const initialization = timed("client.initialize", () => client.initialize()).then(openTerminalConsole);
       if (testRuntime) {
         await initialization;
         await testRuntime.ready(clientUpdates);

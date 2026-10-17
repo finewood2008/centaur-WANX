@@ -90,15 +90,13 @@ test("macOS menus and tray expose the current box, restore the window and revoke
   assert.equal(h.control.minimized, false);
   assert.equal(h.control.focused, true);
   assert.deepEqual(h.sent, [["wanx-client:navigate", "settings"]]);
-  await h.trays[0].menu.getMenuItemById("dashboard").click();
-  assert.deepEqual(h.opened, [ready.connection]);
-  h.update({ ...ready, connection: null, phase: "disconnected" }, false);
-  await h.menus[0].getMenuItemById("dashboard").click();
-  assert.equal(h.opened.length, 1);
-  assert.deepEqual(h.errors, ["BOX_CONNECTION_REQUIRED"]);
+  assert.equal(h.trays[0].menu.getMenuItemById("dashboard"), undefined);
+  assert.equal(h.menus[0].getMenuItemById("dashboard"), undefined);
+  h.menus[0].getMenuItemById("space").click();
+  assert.deepEqual(h.sent.at(-1), ["wanx-client:navigate", "space"]);
   h.update({ ...ready, account: { phase: "signed_out" } });
   for (const menu of [h.menus[0], h.trays[0].menu]) {
-    assert.equal(menu.getMenuItemById("dashboard").enabled, false);
+    assert.equal(menu.getMenuItemById("space").enabled, false);
     assert.equal(menu.getMenuItemById("settings").enabled, false);
   }
   h.desktop.dispose();
@@ -144,7 +142,7 @@ test("Windows uses a color tray and standard editing/window roles", () => {
   assert.equal(h.trays[0].menu, undefined);
   assert.equal(h.app.dockHidden, undefined);
   h.panel.emit("blur");
-  assert.equal(h.panel.hidden, true);
+  assert.equal(h.panel.hidden, false, "keep the panel available for file drops");
   h.trays[0].emit("right-click");
   h.trays[0].poppedMenu.getMenuItemById("settings").click();
   assert.deepEqual(h.management, ["settings"]);
@@ -153,7 +151,7 @@ test("Windows uses a color tray and standard editing/window roles", () => {
   h.desktop.dispose();
 });
 
-test("macOS tray toggles a focused panel, hides it on blur and opens its menu only on right click", () => {
+test("macOS tray keeps the panel visible on blur and toggles it only on explicit dismissal", () => {
   const h = harness("darwin", true);
   const tray = h.trays[0];
   assert.equal(h.app.dockHidden, true);
@@ -167,18 +165,17 @@ test("macOS tray toggles a focused panel, hides it on blur and opens its menu on
   assert.equal(h.hidden.length, 1);
   tray.emit("click");
   h.panel.emit("blur");
-  assert.equal(h.panel.hidden, true);
-  tray.emit("click");
+  assert.equal(h.panel.hidden, false);
   h.screen.cursor = { x: 1345, y: 10 };
   h.panel.emit("blur");
   tray.emit("click");
-  assert.equal(h.panel.hidden, true, "the same tray click must not reopen a panel hidden by blur");
+  assert.equal(h.panel.hidden, true, "the tray click explicitly hides the panel even after focus loss");
   h.desktop.show();
   tray.emit("right-click");
   assert.equal(h.panel.hidden, true);
   assert.match(tray.poppedMenu.getMenuItemById("connection-status").label, /测试盒子 102/);
   h.update({ ...ready, account: { phase: "signed_out" } });
-  assert.equal(tray.poppedMenu.getMenuItemById("dashboard").enabled, false);
+  assert.equal(tray.poppedMenu.getMenuItemById("space").enabled, false);
   h.desktop.dispose();
 });
 
@@ -249,7 +246,7 @@ test("management handoff preserves the pending launch intent despite synchronous
   assert.equal(h.hidden.length, 1, "an explicit dismissal still cancels once, even if hide emits blur");
   h.desktop.show();
   h.panel.emit("blur");
-  assert.equal(h.hidden.length, 2, "ordinary focus loss still dismisses the intent");
+  assert.equal(h.hidden.length, 1, "ordinary focus loss keeps the panel and intent available for drops");
   h.desktop.dispose();
 });
 

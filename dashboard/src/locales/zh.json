@@ -6183,5 +6183,12 @@
     "sdkHash": "交付说明中的 SDK SHA-256",
     "hashMismatch": "SDK 文件与输入的校验值不符",
     "generate": "生成 SDK 工程 ZIP"
+  },
+  "maintenance": {
+    "terminal": "盒子终端",
+    "desktop": "盒子远程桌面",
+    "workspace": "工作目录所属专家",
+    "currentBox": "当前连接的盒子",
+    "connectionError": "盒子连接暂不可用，请检查万象中的连接后重试。"
   }
 }

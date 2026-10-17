@@ -1,3 +1,4 @@
+import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
 
 function text(value, max, code) {
@@ -13,17 +14,19 @@ function phone(input) {
 
 function requireConnectedBox(state) {
   if (state.account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+  if (state.phase === "ready" && state.connection?.mode === "local" && state.connection.deviceId) return;
   if (state.network?.enabled === false || state.platform?.phase !== "ready" || state.network?.phase !== "ready")
     throw new Error("NETWORK_NOT_READY");
   if (state.phase !== "ready" || state.connection?.mode !== "netbird" || !state.connection.deviceId)
     throw new Error("BOX_CONNECTION_REQUIRED");
 }
 
-export function openConnectedDashboard(client, dashboards) {
+export function openConnectedDashboard(client, dashboards, destination, deviceId) {
   const state = client.snapshot();
   requireConnectedBox(state);
   if (!state.connection.gatewayURL) throw new Error("BOX_CONNECTION_REQUIRED");
-  return dashboards.open(state);
+  if (destination && state.connection.deviceId !== deviceId) throw new Error("BOX_CONNECTION_CHANGED");
+  return dashboards.open(state, destination);
 }
 
 // Remote dashboards have no account bridge. Check the exact control main frame
@@ -39,6 +42,8 @@ export function registerControlActions({
   dashboards,
   selectApplicationArchive,
   market,
+  personalSpace,
+  confirmSpacePurge,
   updates,
   credits,
   accountProfile,
@@ -56,8 +61,9 @@ export function registerControlActions({
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance",
+    "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
   ]);
-  const reads = new Set(["panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -69,6 +75,55 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  const requirePanelSpace = scope => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    requireConnectedBox(client.snapshot());
+    if (!scope || scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
+  };
+  register("panel-space-snapshot", () => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    return panelSpaceState(personalSpace.snapshot());
+  });
+  register("panel-space-refresh", async () => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    requireConnectedBox(client.snapshot());
+    return panelSpaceState(await personalSpace.refresh());
+  });
+  register("panel-space-upload", async (input = {}) => {
+    requirePanelSpace(input.scope);
+    if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
+    await personalSpace.refresh();
+    requirePanelSpace(input.scope);
+    await personalSpace.uploads("", input.paths, input.scope);
+  });
+  register("panel-space-transfer", (input = {}) => {
+    requirePanelSpace(input.scope);
+    if (!["pause", "resume"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if (!personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload"))
+      throw new Error("SPACE_NOT_FOUND");
+    return personalSpace.transfer(input.action, input.id);
+  });
+  for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview"]) {
+    register(`space-${method}`, async (input = {}) => {
+      if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+      if (method === "snapshot" || method === "refresh") return personalSpace[method]();
+      if (method === "downloads") return personalSpace.downloads(input.ids);
+      if (method === "uploads") return personalSpace.uploads(input.parent || "");
+      if (method === "download" || method === "preview") return personalSpace[method](input.id);
+      if (method === "transfer") return personalSpace.transfer(input.action, input.id);
+      if (method === "purge") {
+        const scope = personalSpace.snapshot().scope;
+        if (!(await confirmSpacePurge?.())) return { canceled: true };
+        if (scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
+      }
+      return personalSpace.operation(method, input);
+    });
+  }
+  register("space-upload-dropped", (input = {}) => {
+    if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
+    if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
+    return personalSpace.uploads(input.parent || "", input.paths);
+  });
   register("panel-balance", async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
@@ -180,7 +235,11 @@ export function registerControlActions({
     });
   });
   register("disconnect", () => { uiState?.invalidateOpen(); return client.disconnect(); });
-  register("dashboard-open", () => openConnectedDashboard(client, dashboards));
+  register("dashboard-open", () => { throw new Error("DASHBOARD_TERMINAL_ONLY"); });
+  register("maintenance-open", (input) => {
+    if (!["terminal", "desktop"].includes(input?.tool)) throw new Error("INVALID_MAINTENANCE_TOOL");
+    return openConnectedDashboard(client, dashboards, input.tool, text(input.deviceId, 128, "invalid_device"));
+  });
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {
     if (!allowDevelopmentInstall) throw new Error("MARKET_SIGNED_PACKAGE_REQUIRED");
@@ -224,7 +283,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "space", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());

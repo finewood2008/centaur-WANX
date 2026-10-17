@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.maintenance.tsbuildinfo"
+  },
+  "include": [
+    "src/maintenance/main.tsx",
+    "src/vite-env.d.ts",
+    "src/types/**/*.d.ts"
+  ]
+}
