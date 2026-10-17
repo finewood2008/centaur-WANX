@@ -4,26 +4,27 @@ import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 const source=await readFile(new URL('../local-ui/renderer/space-workspaces.js',import.meta.url),'utf8');
 function setup(){
- const events={},saved=new Map(),calls=[],positions=[];
+ const events={},saved=new Map(),calls=[],positions=[],fileActions=[];let reloads=0;
  const spaces=[{id:'personal',root:'',name:'我的空间',connections:[]},{id:'agent',root:'agent-root',name:'同名 Agent',connections:[],bytes:2},{id:'other',root:'other-root',name:'同名 Agent',connections:[],bytes:3}];
  let resolveStat,delay=false,selection={path:'/Volumes/Space Drive'};
- const rows=new Map([['folder',{id:'folder',name:'原名',space_id:'agent',kind:'folder'}]]);
+ const rows=new Map([['folder',{id:'folder',name:'原名',space_id:'agent',kind:'folder',parent:'agent-root'}]]);
  const root={addEventListener(type,fn){events[type]=fn;}},doc={querySelector:s=>s==='#app'?root:null,addEventListener(){},querySelectorAll:()=>[]};
  const window={location:{origin:'file://'}};
  vm.runInNewContext(source,{window,document:doc,localStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v)},navigator:{clipboard:{writeText:async()=>{}}},console});
  const w=window.wanxWorkspaces;
- w.bind({render(){},navigate:async(...p)=>positions.push(p),reload:async()=>{},message:e=>e.message,error:e=>{throw Error(e);},call:async(method,input)=>{
+ w.bind({icon:kind=>`<svg data-icon="${kind}"></svg>`,fileAction:async(...a)=>fileActions.push(a),render(){},navigate:async(...p)=>positions.push(p),reload:async()=>reloads++,message:e=>e.message,error:e=>{throw Error(e);},call:async(method,input)=>{
  calls.push([method,input]);
  if(method==='links-spaces')return spaces;
  if(method==='links-storage-choose')return typeof selection==='function'?selection(input):selection;
  if(method==='links-requests')return [{id:'one',profile:'profile-one',name:'Same',status:'pending'},{id:'two',profile:'profile-two',name:'Same',status:'pending'}];
  if(method==='stat'){if(delay)return new Promise(r=>resolveStat=r);if(!rows.has(input.id))throw Error('SPACE_NOT_FOUND');return rows.get(input.id);}
- if(method==='list')return {items:[],breadcrumbs:[]};
+ if(method==='list')return {items:[...rows.values()].filter(r=>r.parent===input.parent),breadcrumbs:[]};
+ if(method==='links-space-manage'){const space=spaces.find(s=>s.id===input.id);if(input.action==='trash')space.trashed=1;if(input.action==='restore')space.trashed=null;return {ok:true};}
  return [];
  }});
  w.reset('account:box');w.storageScope('platform:account:box');
  const click=(action,data={})=>events.click({preventDefault(){},target:{closest:()=>({dataset:{workspaceAction:action,...data}})}});
- return {w,spaces,rows,saved,calls,positions,click,events,select(v){selection=v;},delay(){delay=true;},resolve(v){resolveStat(v);}};
+ return {w,spaces,rows,saved,calls,positions,fileActions,reloads:()=>reloads,click,events,select(v){selection=v;},delay(){delay=true;},resolve(v){resolveStat(v);}};
 }
 test('favorites follow resource IDs across rename and move and remain isolated by platform/account/box',async()=>{
  const h=setup();await h.w.refresh();await h.w.observe({space:'agent',parent:'agent-root',trash:false},{items:[],breadcrumbs:[]});await h.w.pin({id:'folder',name:'原名'});
@@ -31,7 +32,7 @@ test('favorites follow resource IDs across rename and move and remain isolated b
  assert.match(h.w.sidebar(),/data-space="other" data-name="改名"/);
  h.w.storageScope('different-platform:account:box');await h.w.refresh();assert.doesNotMatch(h.w.sidebar(),/改名/);
  h.w.storageScope('platform:account:box');await h.w.refresh();assert.match(h.w.sidebar(),/改名/);
- h.rows.delete('folder');await h.w.refresh();assert.match(h.w.sidebar(),/data-name="改名" disabled/);
+ h.rows.delete('folder');await h.w.refresh();assert.match(h.w.sidebar(),/data-name="改名"[^>]*disabled/);
 });
 test('same labels do not merge sources; lazy hierarchy and history retain space identity',async()=>{
  const h=setup();await h.w.refresh();await h.w.observe({space:'agent',parent:'folder',trash:false},{items:[],breadcrumbs:[{id:'folder',name:'项目'}]});
@@ -78,4 +79,46 @@ test('directory selection finishing after an account change cannot reopen or sub
  h.select(()=>new Promise(r=>resolve=r));const pending=h.click('storage-choose');await new Promise(r=>setImmediate(r));
  h.w.reset('changed-account');resolve({path:'/old-account'});await pending;
  assert.equal(h.w.dialogView(),'');assert.ok(!h.calls.some(([m])=>m==='links-storage-set'));
+});
+
+const sidebarTarget=(kind='space',space='agent',id='agent-root',name='同名 Agent')=>({sidebarKind:kind,space,id,name});
+test('favorites are first, roots start collapsed and only current ancestors automatically expand',async()=>{
+ const h=setup();await h.w.refresh();await h.w.observe({space:'personal',parent:'',trash:false},{items:[],breadcrumbs:[]});
+ let html=h.w.sidebar();assert.ok(html.indexOf('aria-label="常用位置"')<html.indexOf('aria-label="我的空间"'));assert.match(html,/aria-label="展开同名 Agent" aria-expanded="false"/);
+ await h.w.observe({space:'agent',parent:'folder',trash:false},{items:[],breadcrumbs:[{id:'folder',name:'项目'}]});assert.match(h.w.sidebar(),/aria-label="折叠同名 Agent"/);
+ await h.w.observe({space:'other',parent:'other-root',trash:false},{items:[],breadcrumbs:[]});assert.doesNotMatch(h.w.sidebar(),/data-sidebar-kind="folder"/);
+ await h.click('expand',{space:'agent',id:'agent-root'});assert.match(h.w.sidebar(),/data-sidebar-kind="folder"/);
+ await h.w.observe({space:'personal',parent:'',trash:false},{items:[],breadcrumbs:[]});assert.match(h.w.sidebar(),/data-sidebar-kind="folder"/);
+ assert.doesNotMatch(html,/接入 Agent 后显示独立空间|♲|▱|☆/);assert.match(h.w.footerNavigation(),/回收站/);
+});
+test('right click and more open identical menus, and removing a favorite never deletes its target',async()=>{
+ const h=setup();await h.w.refresh();const target=sidebarTarget('folder','agent','folder','原名');
+ h.events.contextmenu({preventDefault(){},clientX:20,clientY:30,target:{closest:()=>({dataset:target})}});const right=h.w.menuView();
+ assert.match(right,/重命名…/);assert.match(right,/移入回收站…/);assert.ok(!h.calls.some(([m])=>m==='trash'));
+ await h.click('menu',target);assert.equal(h.w.menuView().replace(/left:[^;]+;top:[^"]+/,''),right.replace(/left:[^;]+;top:[^"]+/,''));
+ await h.click('menu-command',{command:'pin'});assert.match(h.w.sidebar(),/space-favorite/);
+ await h.click('menu',sidebarTarget('favorite','agent','folder','原名'));assert.doesNotMatch(h.w.menuView(),/移入回收站|重命名/);
+ await h.click('menu-command',{command:'unpin'});assert.doesNotMatch(h.w.sidebar(),/class="space-favorite"/);assert.equal(h.rows.get('folder').name,'原名');
+ await h.click('menu',target);await h.click('menu-command',{command:'trash'});assert.equal(h.fileActions[0][0],'trash');assert.equal(h.fileActions[0][1].id,'folder');
+});
+test('source deletion confirms the named target, preserves other navigation, and protects personal root',async()=>{
+ const h=setup();await h.w.refresh();await h.w.observe({space:'other',parent:'other-root',trash:false},{items:[],breadcrumbs:[]});
+ await h.click('menu',sidebarTarget());await h.click('menu-command',{command:'trash'});
+ assert.match(h.w.dialogView(),/将“同名 Agent”移入回收站/);assert.ok(!h.calls.some(([m])=>m==='links-space-manage'));
+ await h.click('confirm');assert.equal(h.positions.length,0);assert.equal(h.reloads(),1);assert.equal(h.calls.find(([m])=>m==='links-space-manage')[1].id,'agent');
+ await h.click('menu',sidebarTarget('space','personal','','我的空间'));assert.doesNotMatch(h.w.menuView(),/移入回收站|重命名/);
+ await assert.rejects(h.click('menu-command',{command:'trash'}),/SPACE_MANAGED_ROOT/);
+ await h.click('menu',sidebarTarget('space','other','other-root','同名 Agent'));await h.click('menu-command',{command:'trash'});await h.click('confirm');assert.deepEqual(h.positions.at(-1),['',false,'personal']);
+});
+test('deleted descendants reconcile to the nearest surviving ancestor and history omits removed subtrees',async()=>{
+ const h=setup();h.rows.set('parent',{id:'parent',parent:'agent-root',space_id:'agent',name:'上级',kind:'folder'});
+ await h.w.refresh();await h.w.observe({space:'agent',parent:'agent-root',trash:false},{items:[],breadcrumbs:[]});await h.w.observe({space:'agent',parent:'folder',trash:false},{items:[],breadcrumbs:[{id:'parent'},{id:'folder'}]});
+ h.rows.delete('folder');const next=await h.w.reconcile({space:'agent',parent:'child',trash:false},[{id:'parent'},{id:'folder'},{id:'child'}]);assert.equal(next.parent,'parent');
+ h.w.invalidated([{space_id:'agent',id:'folder'}]);await h.w.observe({space:'agent',parent:'parent',trash:false},{items:[],breadcrumbs:[{id:'parent'}]});await h.click('back');assert.equal(h.positions.at(-1)[0],'agent-root');
+ h.spaces[1].trashed=1;const root=await h.w.reconcile({space:'agent',parent:'parent',trash:false},[]);assert.equal(root.space,'personal');assert.equal(root.parent,'');
+});
+test('stale sidebar folder resolution cannot act after an account switch or after a cross-space move',async()=>{
+ const h=setup();await h.w.refresh();h.rows.set('folder',{id:'folder',kind:'folder',space_id:'other'});
+ await h.click('menu',sidebarTarget('folder','agent','folder','原名'));await assert.rejects(h.click('menu-command',{command:'trash'}),/SPACE_CONTEXT_CHANGED/);assert.equal(h.fileActions.length,0);
+ h.delay();await h.click('menu',sidebarTarget('folder','agent','folder','原名'));const pending=h.click('menu-command',{command:'trash'});await new Promise(r=>setImmediate(r));h.w.reset('new-account');h.resolve({id:'folder',kind:'folder',space_id:'agent'});await pending;assert.equal(h.fileActions.length,0);assert.equal(h.w.menuView(),'');
 });

@@ -3,7 +3,7 @@
   const personal = () => ({id:'personal',name:'我的空间',root:'',connections:[]});
   const label = {active:'已连接',paused:'已暂停',disconnected:'已断开',pending:'待确认',rejected:'已拒绝'};
   const bytes = n => n > 1048576 ? `${(n/1048576).toFixed(1)} MB` : `${((n || 0)/1024).toFixed(1)} KB`;
-  let options, spaces=[personal()], requests=[], favorites=[], cache=new Map(), expanded=new Set(), key='', epoch=0, modal=null, composing=false;
+  let options, spaces=[personal()], requests=[], favorites=[], cache=new Map(), expanded=new Set(), automatic=new Set(), collapsed=new Set(), menu=null, key='', epoch=0, modal=null, composing=false;
   let position={space:'personal',parent:'',trash:false}, history=[], index=-1;
   const current = () => spaces.find(s=>s.id===position.space) || personal();
   const nodeKey = (space,id) => `${space}:${id}`;
@@ -16,7 +16,7 @@
     try { favorites=JSON.parse(localStorage.getItem(key) || "[]").filter(f=>typeof f.space==="string"&&typeof f.id==="string").slice(0,100); } catch { favorites=[]; }
   }
   function reset(scope) {
-    epoch++; key=`wanx-space-favorites:${(window.location?.origin || "local")}:${scope || ''}`; spaces=[personal()];requests=[];cache.clear();expanded.clear();modal=null;composing=false;
+    epoch++; key=`wanx-space-favorites:${(window.location?.origin || "local")}:${scope || ''}`; spaces=[personal()];requests=[];cache.clear();expanded.clear();automatic.clear();collapsed.clear();menu=null;modal=null;composing=false;
     position={space:'personal',parent:'',trash:false};history=[];index=-1;
     try { favorites=JSON.parse(localStorage.getItem(key) || '[]').filter(f=>typeof f.space==='string'&&typeof f.id==='string').slice(0,100); } catch {favorites=[];}
   }
@@ -25,7 +25,7 @@
     try { const result=await manage('spaces'); if(Array.isArray(result)) spaces=result; requests=await manage('requests'); }
     catch(error) { if(before!==epoch)throw error; if(!String(error.message).includes('UPGRADE')&&!String(error.message).includes('404'))throw error; }
     cache.clear();
-    await Promise.all([...expanded].map(async k=>{const [space,id]=k.split(':');if(!spaces.some(s=>s.id===space&&!s.trashed)){expanded.delete(k);return;}try{await children(space,id);}catch(error){if(before!==epoch)throw error;expanded.delete(k);}}));
+    await Promise.all([...new Set([...expanded,...automatic])].map(async k=>{const [space,id]=k.split(':');if(!spaces.some(s=>s.id===space&&!s.trashed)){expanded.delete(k);return;}try{await children(space,id);}catch(error){if(before!==epoch)throw error;expanded.delete(k);}}));
     const resolved=await Promise.all(favorites.map(async f=>{
       const space=spaces.find(s=>s.id===f.space);
       if(space && f.id===space.root)return {...f,name:space.name,unavailable:Boolean(space.trashed)};
@@ -34,6 +34,7 @@
     }));
     if(before!==epoch)return;
     favorites=resolved; save();
+    filterHistory(h=>spaces.some(s=>s.id===h.space&&!s.trashed));
   }
   async function children(space,id) {
     const k=nodeKey(space,id);
@@ -41,33 +42,95 @@
     return cache.get(k);
   }
   async function observe(next,listing,record=true) {
-    position={...next};
-    const space=current();
+    if(position.space!==next.space||position.parent!==next.parent||position.trash!==next.trash)collapsed.clear();
+    position={...next}; automatic.clear();
+    const space=current(),ancestors=listing.breadcrumbs.map(c=>c.id);
     if(!next.trash) {
       cache.set(nodeKey(next.space,next.parent),listing.items.filter(i=>i.kind==='folder'));
-      for(const id of [space.root,...listing.breadcrumbs.map(c=>c.id)]) expanded.add(nodeKey(next.space,id));
-      await Promise.all([space.root,...listing.breadcrumbs.map(c=>c.id)].map(id=>children(next.space,id)));
+      if(next.parent!==space.root)for(const id of [space.root,...ancestors.filter(id=>id!==next.parent)])automatic.add(nodeKey(next.space,id));
+      await Promise.all([...automatic].map(k=>{const [scope,id]=k.split(':');return children(scope,id);}));
     }
-    if(record && JSON.stringify(history[index])!==JSON.stringify(position)) { history=history.slice(0,index+1);history.push({...position});index=history.length-1; }
+    const entry={...position,ancestors};
+    const previous=history[index];
+    if(record&&(!previous||['space','parent','trash'].some(k=>previous[k]!==position[k]))) {history=history.slice(0,index+1);history.push(entry);index=history.length-1;}
+    else if(index>=0)history[index]=entry;
   }
+  const icon = name => options.icon?.(name) || '';
+  const pinned = (space,id) => favorites.some(f=>f.space===space&&f.id===id);
   function tree(space,id,name,depth=0) {
-    const k=nodeKey(space,id),open=expanded.has(k),selected=!position.trash&&position.space===space&&position.parent===id;
-    const data=`data-id="${esc(id)}" data-space="${esc(space)}" data-name="${esc(name)}"`;
-    return `<div class="space-tree-node" style="--depth:${depth}"><button class="space-tree-toggle" data-workspace-action="expand" ${data} aria-label="${open?'折叠':'展开'}${esc(name)}" aria-expanded="${open}">${open?'▾':'▸'}</button><button class="space-nav ${selected?'active':''}" data-action="space-folder" ${data} ${selected?'aria-current="page"':''}><span aria-hidden="true">${depth?'▱':'▣'}</span><span>${esc(name)}</span></button>${!depth?`<button class="space-tree-more" data-workspace-action="manage" data-space="${space}" aria-label="管理${esc(name)}">⋯</button>`:''}</div>${open&&depth<40?(cache.get(k)||[]).map(c=>tree(space,c.id,c.name,depth+1)).join(''):''}`;
+    const k=nodeKey(space,id),open=expanded.has(k)||(automatic.has(k)&&!collapsed.has(k)),selected=!position.trash&&position.space===space&&position.parent===id;
+    const data=`data-id="${esc(id)}" data-space="${esc(space)}" data-name="${esc(name)}"`,kind=depth?'folder':'space';
+    return `<div class="space-tree-node" style="--depth:${depth}" data-sidebar-kind="${kind}" ${data}><button class="space-tree-toggle ${open?'is-expanded':''}" data-workspace-action="expand" ${data} aria-label="${open?'折叠':'展开'}${esc(name)}" aria-expanded="${open}">${icon('chevron')}</button><button class="space-nav ${selected?'active':''}" data-action="space-folder" ${data} title="${esc(name)}" ${selected?'aria-current="page"':''}>${icon(depth?'folder':'drive')}<span>${esc(name)}</span></button><button class="space-tree-more" data-workspace-action="menu" data-sidebar-kind="${kind}" ${data} aria-label="${esc(name)}的侧栏操作" title="更多操作" aria-haspopup="menu">${icon('more')}</button></div>${open&&depth<40?(cache.get(k)||[]).map(c=>tree(space,c.id,c.name,depth+1)).join(''):''}`;
   }
   function sidebar() {
-    const own=spaces.find(s=>s.id==='personal') || personal();
-    return `<div class="space-tree">${tree(own.id,own.root,'我的空间')}<div class="space-sidebar-caption">常用位置</div>${favorites.map(f=>`<div class="space-favorite"><button class="space-nav" data-action="space-folder" data-id="${esc(f.id)}" data-space="${esc(f.space)}" data-name="${esc(f.name)}" ${f.unavailable?'disabled':''}>☆ <span>${esc(f.name || '正在读取…')}</span></button><button class="space-tree-more" data-workspace-action="unpin" data-id="${esc(f.id)}" data-space="${esc(f.space)}" aria-label="取消固定">×</button></div>`).join('') || '<p class="space-sidebar-note">右键文件夹可固定</p>'}<div class="space-sidebar-caption space-source-heading"><span>来源</span><button class="text-button" data-workspace-action="requests">接入${requests.filter(r=>r.status==='pending').length?` · ${requests.filter(r=>r.status==='pending').length}`:' ＋'}</button></div>${spaces.filter(s=>s.id!=='personal'&&!s.trashed).map(s=>tree(s.id,s.root,s.name)).join('') || '<p class="space-sidebar-note">接入 Agent 后显示独立空间</p>'}<button class="space-nav ${position.trash?'active':''}" data-action="space-recycle">♲ 回收站</button></div>`;
+    const own=spaces.find(s=>s.id==='personal') || personal(),pending=requests.filter(r=>r.status==='pending').length;
+    return `<nav class="space-tree" aria-label="空间位置"><section class="space-nav-section" aria-label="常用位置"><h3 class="space-sidebar-caption">常用位置</h3>${favorites.map(f=>{const data=`data-id="${esc(f.id)}" data-space="${esc(f.space)}" data-name="${esc(f.name)}"`;return `<div class="space-favorite" data-sidebar-kind="favorite" ${data}><button class="space-nav ${!position.trash&&position.space===f.space&&position.parent===f.id?'active':''}" data-action="space-folder" ${data} title="${esc(f.name)}${f.unavailable?' · 位置暂不可用':''}" ${f.unavailable?'disabled':''}>${icon('star')}<span>${esc(f.name || '位置暂不可用')}</span></button><button class="space-tree-more" data-workspace-action="menu" data-sidebar-kind="favorite" ${data} aria-label="${esc(f.name)}的快捷入口操作" title="更多操作" aria-haspopup="menu">${icon('more')}</button></div>`;}).join('') || '<p class="space-sidebar-note">尚未固定位置</p>'}</section><section class="space-nav-section" aria-label="我的空间">${tree(own.id,own.root,'我的空间')}</section><section class="space-nav-section" aria-label="来源"><div class="space-sidebar-caption space-source-heading"><h3>来源</h3><button class="space-source-add" data-workspace-action="requests" aria-label="Agent 接入${pending?`，${pending} 个待确认`:''}" title="接入 Agent 或处理申请">${icon('plus')}${pending?`<span class="space-request-count">${pending}</span>`:''}</button></div>${spaces.filter(s=>s.id!=='personal'&&!s.trashed).map(s=>tree(s.id,s.root,s.name)).join('')}</section></nav>`;
+  }
+  function footerNavigation() {return `<button class="space-nav space-recycle-entry ${position.trash?'active':''}" data-action="space-recycle" ${position.trash?'aria-current="page"':''}>${icon('trash')}<span>回收站</span></button>`;}
+  function dismissMenu() {menu=null;document.querySelector('.space-sidebar-menu')?.remove?.();}
+  function showMenu(data,x,y) {
+    if(modal)return;
+    options.dismissFileMenu?.();
+    menu={kind:data.sidebarKind,space:data.space,id:data.id,name:data.name,x:Math.max(8,Math.min(Number(x)||8,(window.innerWidth||1024)-218)),y:Math.max(8,Math.min(Number(y)||8,(window.innerHeight||768)-260))};
+    options.render();
+  }
+  function menuView() {
+    if(!menu||modal)return '';
+    const t=menu,choice=(text,command,danger=false)=>`<button role="menuitem" data-workspace-action="menu-command" data-command="${command}" ${danger?'class="danger-text"':''}>${esc(text)}</button>`;
+    let items=choice(t.kind==='folder'?'打开文件夹':'打开','open');
+    if(t.kind==='favorite')items+=choice('在空间中显示','locate')+'<hr role="separator">'+choice('取消固定','unpin');
+    else {
+      items+=choice(pinned(t.space,t.id)?'取消固定':'固定到常用位置',pinned(t.space,t.id)?'unpin':'pin');
+      if(t.kind==='folder')items+='<hr role="separator">'+choice('重命名…','rename')+choice('移动到…','move')+'<hr role="separator">'+choice('移入回收站…','trash',true);
+      else {if(t.space!=='personal')items+=choice('重命名…','rename');items+=choice('空间管理…','manage');if(t.space!=='personal')items+='<hr role="separator">'+choice('移入回收站…','trash',true);}
+    }
+    return `<div class="space-context-menu space-sidebar-menu" role="menu" aria-label="${esc(t.name)}的侧栏操作" style="left:${t.x}px;top:${t.y}px">${items}</div>`;
+  }
+  async function resolveTarget(target) {
+    if(target.kind==='space'||spaces.some(s=>s.id===target.space&&s.root===target.id)) {
+      const live=await manage('spaces'),space=live.find(s=>s.id===target.space&&!s.trashed);
+      if(!space)throw Error('SPACE_NOT_FOUND');
+      return {...target,space:space.id,id:space.root,name:space.name};
+    }
+    const item=await call('stat',{id:target.id});
+    if(item.kind!=='folder'||(target.kind!=='favorite'&&item.space_id!==target.space))throw Error('SPACE_CONTEXT_CHANGED');
+    return {...target,space:item.space_id || 'personal',name:item.name,item};
+  }
+  async function menuCommand(command) {
+    const target=menu;if(!target)return;dismissMenu();
+    if(command==='unpin'){await handle('unpin',{space:target.space,id:target.id});return;}
+    const resolved=await resolveTarget(target);
+    if(command==='open'||command==='locate'){await options.navigate(resolved.id,false,resolved.space);return;}
+    if(command==='pin'){await handle('pin',{space:resolved.space,id:resolved.id,name:resolved.name});return;}
+    if(target.kind==='folder'){await options.fileAction(command,resolved.item);return;}
+    if(command==='manage'){await showSpace(resolved.space);return;}
+    await handle(command==='trash'?'trash-confirm':command,{space:resolved.space});
+  }
+  function filterHistory(keep) {const current=history[index];history=history.filter(keep);const next=history.indexOf(current);index=next<0?Math.min(index,history.length-1):next;}
+  function invalidated(items) {
+    filterHistory(h=>!items.some(item=>h.space===(item.space_id || item.space)&&(item.root===true||h.parent===item.id||h.ancestors?.includes(item.id))));
+  }
+  async function reconcile(next,ancestors=[]) {
+    const live=spaces.find(s=>s.id===next.space&&!s.trashed);
+    if(!live)return {space:'personal',parent:'',trash:next.trash};
+    if(next.trash||next.parent===live.root)return next;
+    for(const id of [...new Set([next.parent,...ancestors.map(c=>c.id).reverse(),live.root])]) {
+      if(id===live.root)return {...next,parent:id};
+      try {const item=await call('stat',{id});if(item.kind==='folder'&&item.space_id===next.space)return {...next,parent:id};}
+      catch(error){if(!String(error.message).includes('SPACE_NOT_FOUND'))throw error;}
+      invalidated([{space:next.space,id}]);
+    }
+    return {...next,parent:live.root};
   }
   function navigation() {return `<button class="space-icon-button" data-workspace-action="back" aria-label="后退" ${index<=0?'disabled':''}>←</button><button class="space-icon-button" data-workspace-action="forward" aria-label="前进" ${index>=history.length-1?'disabled':''}>→</button>`;}
   function storageView() {
     if(position.trash)return '';
     const space=current(),location=space.storage;
-    return `<div class="space-storage-location"><div><small>存储位置 · 万象主机</small><button class="text-button" data-workspace-action="storage" data-space="${esc(space.id)}" aria-label="设置当前空间存储目录">设置</button></div><span title="${esc(location?.directory || '')}">${esc(location?.path || '默认位置')}</span>${location?.available===false?'<small class="danger-text">目录暂不可用</small>':''}</div>`;
+    return `<div class="space-storage-location"><div><small>存储位置</small><button class="text-button" data-workspace-action="storage" data-space="${esc(space.id)}" aria-label="设置当前空间存储目录">设置</button></div><span title="${esc(location?.directory || '')}">${esc(location?.path || '默认位置')}</span>${location?.available===false?'<small class="danger-text">目录暂不可用</small>':''}</div>`;
   }
   function recycled() { return spaces.filter(s=>s.trashed).map(s=>`<div class="space-recycled"><strong>${esc(s.name)}</strong><span>空间 · ${bytes(s.bytes+s.pending_bytes)}</span>${button('恢复空间','restore',`data-space="${s.id}"`)}</div>`).join(''); }
-  function setModal(value) { modal=value; composing=false;options.render();const input=document.querySelector('#workspace-name');input?.focus();input?.select(); }
-  function close() {modal=null;composing=false;options.render();}
+  function setModal(value) { dismissMenu();modal=value; composing=false;options.render();const input=document.querySelector('#workspace-name');input?.focus();input?.select(); }
+  function close() {modal=null;dismissMenu();composing=false;options.render();}
   async function showSpace(id) {
     await refresh();const space=spaces.find(s=>s.id===id);if(!space)return;
     const connections=await Promise.all(space.connections.map(async c=>({...c,grants:await manage('grants',{id:c.id})})));
@@ -103,7 +166,8 @@
   }
   async function handle(action,data) {
     if(action==='close'){close();return;}
-    if(action==='expand'){const k=nodeKey(data.space,data.id);if(expanded.has(k))expanded.delete(k);else{await children(data.space,data.id);expanded.add(k);}return;}
+    if(action==='expand'){const k=nodeKey(data.space,data.id);if(expanded.has(k)||(automatic.has(k)&&!collapsed.has(k))){expanded.delete(k);collapsed.add(k);}else{await children(data.space,data.id);expanded.add(k);collapsed.delete(k);}return;}
+    if(action==='menu-command'){await menuCommand(data.command);return;}
     if(action==='back'||action==='forward'){index+=action==='back'?-1:1;index=Math.max(0,Math.min(history.length-1,index));const p=history[index];if(p)await options.navigate(p.parent,p.trash,p.space,false);return;}
     if(action==='requests'){await refresh();setModal({kind:'requests',title:'Agent 接入'});return;}
     if(action==='config'){setModal({kind:'info',title:'通用 MCP 接入配置',text:JSON.stringify(await manage('agent-config'),null,2)});return;}
@@ -129,7 +193,10 @@
     if(action==='rename'){const s=spaces.find(s=>s.id===data.space);setModal({kind:'rename',title:'重命名空间',id:s.id,name:s.name});return;}
     if(action==='pin'){if(!favorites.some(f=>f.id===data.id&&f.space===data.space))favorites.push({id:data.id,space:data.space,name:data.name});save();return;}
     if(action==='unpin'){favorites=favorites.filter(f=>f.id!==data.id||f.space!==data.space);save();return;}
-    if(action==='trash-confirm'||action==='disconnect-confirm'){setModal({kind:'confirm',title:action==='trash-confirm'?'将空间移入回收站？':'断开接入？',text:action==='trash-confirm'?'空间文件可恢复；接入凭证和额外授权将撤销，恢复空间不会恢复接入。':'撤销此身份的凭证和额外授权，保留空间文件。重新接入需要再次确认。',run:async()=>{await manage(action==='trash-confirm'?'space-manage':'connection-manage',{id:data.space || data.id,action:action==='trash-confirm'?'trash':'disconnect'});close();await options.navigate('',false,'personal');}});return;}
+    if(action==='trash-confirm'||action==='disconnect-confirm'){
+      if(action==='trash-confirm'&&data.space==='personal')throw Error('SPACE_MANAGED_ROOT');
+      const target=action==='trash-confirm'?await resolveTarget({kind:'space',space:data.space}):null;
+      setModal({kind:'confirm',title:action==='trash-confirm'?`将“${target.name}”移入回收站？`:'断开接入？',text:action==='trash-confirm'?'空间文件可恢复；接入凭证和额外授权将撤销，恢复空间不会恢复接入。':'撤销此身份的凭证和额外授权，保留空间文件。重新接入需要再次确认。',run:async()=>{if(target)await resolveTarget(target);await manage(action==='trash-confirm'?'space-manage':'connection-manage',{id:data.space || data.id,action:action==='trash-confirm'?'trash':'disconnect'});close();if(target){invalidated([{space:target.space,id:target.id,root:true}]);if(position.space===target.space){await options.navigate('',false,'personal');return;}}await options.reload();}});return;}
     if(action==='confirm'){const m=modal;if(m.saving)return;m.saving=true;try{await m.run();}finally{m.saving=false;}return;}
     if(action==='restore'){await manage('space-manage',{id:data.space,action:'restore'});await options.reload();return;}
     if(action==='connection'){const id=modal.space.id;await manage('connection-manage',{id:data.id,action:data.command});await showSpace(id);return;}
@@ -139,8 +206,20 @@
   }
   function bind(settings) {
     options=settings;const root=document.querySelector('#app');
-    root.addEventListener('click',async event=>{const b=event.target.closest?.('[data-workspace-action]');if(!b||b.disabled||modal?.saving||modal?.choosing)return;event.preventDefault();try{await handle(b.dataset.workspaceAction,b.dataset);}catch(e){if(modal)modal.error=options.message(e);else options.error(options.message(e));}options.render();});
-    root.addEventListener('contextmenu',event=>{const b=event.target.closest?.('.space-tree-node');if(!b||modal)return;const node=b.querySelector('[data-action="space-folder"]');if(!node)return;event.preventDefault();if(node.dataset.id===spaces.find(s=>s.id===node.dataset.space)?.root)void showSpace(node.dataset.space).catch(e=>options.error(options.message(e)));else void handle('pin',node.dataset).then(options.render);});
+    root.addEventListener('click',async event=>{
+      const b=event.target.closest?.('[data-workspace-action]');if(!b||b.disabled||modal?.saving||modal?.choosing)return;
+      const before=epoch;event.preventDefault();try{
+        if(b.dataset.workspaceAction==='menu'){const r=b.getBoundingClientRect?.();showMenu(b.dataset,r?.right || event.clientX,r?.bottom || event.clientY);return;}
+        await handle(b.dataset.workspaceAction,b.dataset);
+      }catch(e){if(before!==epoch)return;if(modal)modal.error=options.message(e);else options.error(options.message(e));}options.render();
+    });
+    root.addEventListener('contextmenu',event=>{const node=event.target.closest?.('[data-sidebar-kind]');if(!node||modal)return;event.preventDefault();showMenu(node.dataset,event.clientX,event.clientY);});
+    document.addEventListener('pointerdown',event=>{if(menu&&!event.target.closest?.('.space-sidebar-menu')&&!event.target.closest?.('[data-workspace-action="menu"]'))dismissMenu();});
+    document.addEventListener('keydown',event=>{
+      if(!menu)return;
+      if(event.key==='Escape'){event.preventDefault();const target=menu;dismissMenu();options.render();document.querySelector(`[data-workspace-action="menu"][data-sidebar-kind="${target.kind}"][data-space="${target.space}"][data-id="${target.id}"]`)?.focus?.();return;}
+      if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();const buttons=Array.from(document.querySelectorAll('.space-sidebar-menu [role="menuitem"]'));const index=buttons.indexOf(document.activeElement);buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length]?.focus();}
+    });
     root.addEventListener('input',e=>{if(e.target.id==='workspace-name'&&modal)modal.name=e.target.value;});
     root.addEventListener('change',e=>{if(e.target.id==='workspace-reconnect'&&modal)modal.space_id=e.target.value;});
     root.addEventListener('compositionstart',e=>{if(e.target.id==='workspace-name')composing=true;});
@@ -148,6 +227,6 @@
     root.addEventListener('submit',e=>{if(e.target.hasAttribute('data-workspace-form')){e.preventDefault();void submit();}});
     document.addEventListener('keydown',e=>{if(modal&&e.key==='Escape'&&!composing&&!e.isComposing&&!modal.saving&&!modal.choosing){e.preventDefault();close();}});
   }
-  window.wanxWorkspaces={bind,reset,storageScope,refresh,observe,sidebar,navigation,storageView,recycled,dialogView,retainEditor,current,spaces:()=>spaces,blocked:()=>Boolean(modal),root:()=>current().root,
+  window.wanxWorkspaces={bind,reset,storageScope,refresh,observe,sidebar,navigation,footerNavigation,menuView,dismissMenu,invalidated,reconcile,storageView,recycled,dialogView,retainEditor,current,spaces:()=>spaces,modalOpen:()=>Boolean(modal),blocked:()=>Boolean(modal||menu),root:()=>current().root,
     async grant(item){await refresh();setModal({kind:'grant',title:'授予额外读写权限',item});},pin(item){return handle('pin',{space:position.space,id:item.id,name:item.name});},close};
 })();
