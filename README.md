@@ -4,6 +4,8 @@ WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用�
 
 当前万象底座与应用市场代码位于 `wanx-client/`，通过 Consumer 账号查询已上架应用、检查版本和下载安装 `.wanxapp`，连接盒子后启动应用。在仓库根目录运行 `npm run start:client`；macOS 和 Windows 打包分别使用 `npm run package:client:mac`、`npm run package:client:windows`。macOS 此命令输出应用目录。详细使用见 [客户端说明](wanx-client/README.md) 和 [应用市场说明](docs/wanx-application-market.md)。
 
+应用上架必须随发行包提交图标、Logo、真实产品截图、产品介绍海报与资料索引，详见 [应用上架素材规范](docs/wanx-marketplace-submission-assets.md)（当前为交付与人工审核要求）。
+
 旧 `wanx-desktop/` 和 `wanx-admin-desktop/` 已删除。根目录 `npm start`、`npm test`、`npm run package:mac`、`npm run package:windows` 均指向 `wanx-client/`。Dashboard 不再提供盒子管理或 `/boxes` 路由；盒子统一在 wanx-client 中管理。
 
 ## 客户端个人资料与积分入口
