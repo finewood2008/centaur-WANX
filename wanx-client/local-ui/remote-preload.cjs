@@ -4,6 +4,13 @@ function errorCode(error) {
   return String(error?.code || error?.message || "CLIENT_REQUEST_FAILED");
 }
 
+async function creditsRead(method, input) {
+  const value = await ipcRenderer.invoke(`wanx-client:credits-${method}`, input);
+  if (value?.ok === false && value.code === "CREDITS_NOT_CONFIGURED")
+    throw Object.assign(new Error(value.code), { code: value.code });
+  return value;
+}
+
 function projectState(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const account = source.account || { phase: "signed_out" };
@@ -61,10 +68,10 @@ const actions = {
   "profile.save": input => ipcRenderer.invoke("wanx-client:profile-save", { displayName: input?.displayName }),
   "profile.avatar": () => ipcRenderer.invoke("wanx-client:profile-avatar"),
   "profile.avatar-remove": () => ipcRenderer.invoke("wanx-client:profile-avatar-remove"),
-  "credits.tasks": () => ipcRenderer.invoke("wanx-client:credits-tasks"),
-  "credits.balance": () => ipcRenderer.invoke("wanx-client:credits-balance"),
-  "credits.transactions": input => ipcRenderer.invoke("wanx-client:credits-transactions", { after: input?.after }),
-  "credits.reservation": input => ipcRenderer.invoke("wanx-client:credits-reservation", { id: input?.id }),
+  "credits.tasks": () => creditsRead("tasks"),
+  "credits.balance": () => creditsRead("balance"),
+  "credits.transactions": input => creditsRead("transactions", { after: input?.after }),
+  "credits.reservation": input => creditsRead("reservation", { id: input?.id }),
   "auth.login": (input) =>
     ipcRenderer.invoke("wanx-client:login-password", {
       phone: input?.username,
