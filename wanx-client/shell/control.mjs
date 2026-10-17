@@ -77,6 +77,14 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  const creditsRead = async action => {
+    try { return await action(); }
+    catch (error) {
+      if (error?.code === "CREDITS_NOT_CONFIGURED" || error?.message === "CREDITS_NOT_CONFIGURED")
+        return { ok: false, code: "CREDITS_NOT_CONFIGURED" };
+      throw error;
+    }
+  };
   for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
@@ -132,17 +140,17 @@ export function registerControlActions({
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
     return personalSpace.uploads(input.parent || "", input.paths);
   });
-  register("panel-balance", async () => {
+  register("panel-balance", () => creditsRead(async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
     const balance = await credits.balance();
     return { available: balance.available };
-  });
+  }));
   for (const method of ["balance", "transactions", "reservation", "tasks"]) {
-    register(`credits-${method}`, (input) => {
+    register(`credits-${method}`, (input) => creditsRead(() => {
       if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
       return credits[method](input);
-    });
+    }));
   }
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {

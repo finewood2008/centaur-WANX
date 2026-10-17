@@ -71,6 +71,7 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
 }
 test('trusted setup IPC completes identity, Wi-Fi and ownership then refreshes only the directory', async () => {
   const h = await harness();
+  assert.ok(h.handlers.has('wanx:discovery:bluetooth-state'));
   assert.equal(h.pickerInput.documentUrl, h.event.senderFrame.url);
   assert.equal(h.pickerInput.advertisementNames, h.advertisementNames);
   assert.ok(h.sent.some(([name]) => name === 'wanx:setup:ready'));

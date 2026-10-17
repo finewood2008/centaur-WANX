@@ -575,10 +575,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       app.on("window-all-closed", () => app.quit());
-      await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
-      await clientUpdates.ready();
-      if (process.env.WANX_SMOKE_USER_DATA)
-        await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
+      let setupStartFailed = false;
       setupRuntime = await createSetupRuntime({
         control, controlURL, ipcMain, account, client, safeStorage, userData,
         advertisementNames: createAdvertisementNames({
@@ -592,11 +589,16 @@ if (process.argv.includes("--wanx-managed-app")) {
         onError: reportError,
       }).catch((error) => {
         reportError(error);
-        control.webContents.send("wanx:setup:state", {
-          state: "terminalError", errorCode: "SETUP_START_FAILED",
-        });
+        setupStartFailed = true;
         return null;
       });
+      await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
+      if (setupStartFailed) control.webContents.send("wanx:setup:state", {
+        state: "terminalError", errorCode: "SETUP_START_FAILED",
+      });
+      await clientUpdates.ready();
+      if (process.env.WANX_SMOKE_USER_DATA)
+        await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
       stopNetworkMonitor = monitorNetworkChanges({
         powerMonitor,
         onChange: () => client.networkChanged(),
