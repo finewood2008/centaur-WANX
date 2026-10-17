@@ -3,6 +3,30 @@ import assert from "node:assert/strict";
 import { registerControlActions } from "../shell/control.mjs";
 import { createMarketSessionGuard } from "../shell/market-session.mjs";
 
+for (const method of ["current", "decide", "revoke"]) {
+  test(`support ${method} is control-only and login-only without a P2P connection`, async () => {
+    const handlers = new Map(), calls = [];
+    const frame = { url: "file:///control.html" }, webContents = { mainFrame: frame };
+    const panelFrame = { url: "file:///panel.html" }, panelContents = { mainFrame: panelFrame };
+    let phase = "authenticated";
+    registerControlActions({
+      ipcMain: { handle: (name, action) => handlers.set(name, action) },
+      control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
+      panel: { webContents: panelContents, isDestroyed: () => false }, panelURL: panelFrame.url,
+      client: { snapshot: () => ({ account: { phase }, phase: "disconnected", network: { enabled: false } }) },
+      support: { [method]: input => { calls.push(input); return "verified"; } },
+    });
+    const invoke = handlers.get(`wanx-client:support-${method}`), event = { sender: webContents, senderFrame: frame };
+    const input = { deviceId: "centauros-37859979e324b9e257c586da" };
+    assert.throws(() => invoke({ ...event, senderFrame: { url: frame.url } }, input), /无权/);
+    assert.throws(() => invoke({ sender: panelContents, senderFrame: panelFrame }, input), /无权/);
+    assert.equal(await invoke(event, input), "verified");
+    phase = "signed_out";
+    assert.throws(() => invoke(event, input), /ACCOUNT_LOGIN_REQUIRED/);
+    assert.equal(calls.length, 1);
+  });
+}
+
 for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
   test(`market ${method} is control-only and login-only, without requiring a box`, async () => {
     const handlers = new Map();

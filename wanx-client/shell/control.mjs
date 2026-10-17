@@ -42,6 +42,7 @@ export function registerControlActions({
   updates,
   credits,
   accountProfile,
+  support,
   uiState,
   desktop,
   getState,
@@ -57,7 +58,7 @@ export function registerControlActions({
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance",
   ]);
-  const reads = new Set(["panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["support-current", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -149,6 +150,11 @@ export function registerControlActions({
     return client.lookupDeviceDiscovery([...ids]);
   });
   register("ownership-list", () => client.listOwnershipTransfers());
+  for (const method of ["current", "decide", "revoke"]) register(`support-${method}`, input => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!support) throw new Error("SUPPORT_UNAVAILABLE");
+    return support[method](input);
+  });
   register("ownership-send-code", () => client.sendTransferCode());
   register("ownership-create", (input) => {
     if (input?.retainData !== true) throw new Error("ACCOUNT_INVALID_INPUT");

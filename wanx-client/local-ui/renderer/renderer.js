@@ -8,6 +8,12 @@ const creditsView = window.createCreditsView({ request: async (action, input) =>
   if (!response.ok) throw new Error(response.code);
   return response.value;
 }, changed: () => { if (currentState) render(currentState); } });
+const supportView = window.createSupportView({ request: async (action, input) => {
+  const response = await window.wanxClient.action(action, input);
+  if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) throw new Error("SUPPORT_SESSION_CHANGED");
+  if (!response.ok) throw new Error(response.code);
+  return response.value;
+}, changed: () => { if (currentState) render(currentState); } });
 
 let marketItems = [];
 let marketCandidates = new Map();
@@ -199,7 +205,7 @@ const selection = createDiscoverySelection({
     void run("provisioning.start", { candidate, mode: selected?.mode || "claim" });
   },
 });
-window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); }, { once: true });
+window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); supportView.close(); }, { once: true });
 window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); clearTimeout(passwordResendTimer); }, { once: true });
 const stageLabels = {
   discover: "发现盒子",
@@ -263,7 +269,7 @@ function deviceCard(device) {
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
     <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
@@ -558,6 +564,7 @@ function boxesView() {
     <section class="connection-banner ${currentState.canLaunchApplications ? "ready" : ""}"><div><span class="connection-caption">当前盒子</span><strong class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : ["connecting", "recovering"].includes(currentState.connectionPhase) ? currentState.connectionPhase === "recovering" ? "正在恢复连接…" : "正在连接…" : "尚未连接盒子"}</strong><p>${currentState.canLaunchApplications ? "切换或断开连接后，需要重新打开应用。" : networkStatus().detail}</p></div>${dashboardButton()}</section>
     <section class="content-section" aria-label="设备管理"><div class="section-heading"><h3>设备管理 <span class="count">${devices.length}</span></h3></div>${devices.length ? `<div class="device-list">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
     ${ownershipView()}
+    ${supportView.render()}
   </div></div>${confirmationView()}`;
 }
 
@@ -1024,6 +1031,8 @@ function render(state) {
   const previousAuth = app.querySelector?.('[data-form="auth"]');
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
+  supportView.sync(auth || state.account?.phase !== "authenticated" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]), state.devices || []);
+  supportView.visible(!auth && page === "boxes");
   scheduleBoxUpdatePolling();
   if (activeInteraction) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
@@ -1299,6 +1308,12 @@ app.addEventListener("click", async (event) => {
   }
 
   if (marketConfirmation && !["market-cancel", "market-confirm"].includes(action)) return;
+  if (action.startsWith("support-")) {
+    if (busy || page !== "boxes") return;
+    await supportView.action(action, target.dataset);
+    if (action === "support-open") app.querySelector?.(".support-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    return;
+  }
   if (action === "market-cancel") { marketConfirmation = null; render(currentState); return; }
   if (action === "market-confirm") {
     const confirmation = marketConfirmation;

@@ -1,5 +1,6 @@
 import { readAvatar } from "./avatar.mjs";
 import { createCreditsReader } from "../account/credits.mjs";
+import { createRemoteSupport } from "../account/support.mjs";
 import { createApplicationBackend } from "../applications/backend.mjs";
 import { createApplicationReleaseAccess } from "../applications/release-access.mjs";
 import {
@@ -285,6 +286,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         ],
       });
       marketSession = createMarketSessionGuard(account);
+      const support = createRemoteSupport({ account });
       const market = createApplicationMarket({
         request: (input) => account.request(input),
         applications,
@@ -468,6 +470,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         dashboards,
         market,
         updates,
+        support,
         allowDevelopmentInstall: !app.isPackaged && process.env.WANX_ALLOW_DEVELOPMENT_INSTALL === "1",
         selectApplicationArchive: async () => {
           const result = await dialog.showOpenDialog(control, {
@@ -496,6 +499,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           await Promise.all([market.close(), applications?.close()]);
         },
         async closeHost() {
+          support.close();
           unsubscribeUpdateAccount();
           for (const remove of updateListeners) remove();
           clientUpdates.close(); boxUpdates.close();
