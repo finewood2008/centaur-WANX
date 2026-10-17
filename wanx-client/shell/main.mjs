@@ -47,6 +47,7 @@ import { createStaticAssetCache } from "../octop/static-cache.mjs";
 import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
 import { createStartupSettings } from "./startup.mjs";
+import { createSpaceLinkBridge } from "./space-links.mjs";
 import { createPersonalSpace } from "./personal-space.mjs";
 import { createAdvertisementNames } from "./discovery-names.mjs";
 import { protectPrivateDirectory } from "./private-storage.mjs";
@@ -77,6 +78,7 @@ let unsubscribe;
 let setupRuntime;
 let applications;
 let personalSpace;
+let spaceLinks;
 let marketSession;
 let dashboards;
 let desktop;
@@ -465,7 +467,20 @@ if (process.argv.includes("--wanx-managed-app")) {
           if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-space-state", panelSpaceState(state));
         },
       });
+      try {
+        spaceLinks = await createSpaceLinkBridge({
+          client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+          store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
+          onChanged: () => {
+            if (control && !control.isDestroyed()) control.webContents.send("wanx-client:space-content-changed");
+          },
+        });
+      } catch (error) {
+        const code = error.code || "SPACE_LINK_START_FAILED";
+        spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
+      }
       registerControlActions({
+        spaceLinks,
         personalSpace,
         confirmSpacePurge: async () => (await dialog.showMessageBox(control, {
           type: "warning", message: "彻底删除这个文件或文件夹？", detail: "删除后无法恢复。文件夹中的内容也会一并删除。",
@@ -529,7 +544,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           uiState.invalidateOpen();
           marketSession?.close();
           releaseAccess.close();
-          await Promise.all([market.close(), personalSpace?.close(), applications?.close()]);
+          await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
         },
         async closeHost() {
           unsubscribeUpdateAccount();

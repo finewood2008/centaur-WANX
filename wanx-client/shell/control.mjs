@@ -43,6 +43,7 @@ export function registerControlActions({
   selectApplicationArchive,
   market,
   personalSpace,
+  spaceLinks,
   confirmSpacePurge,
   updates,
   credits,
@@ -75,6 +76,12 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  for (const action of ["create", "list", "revoke", "audit", "config"]) {
+    register(`space-links-${action}`, input => {
+      if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
+      return spaceLinks.manage(action, input);
+    });
+  }
   const requirePanelSpace = scope => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
     requireConnectedBox(client.snapshot());
@@ -103,7 +110,7 @@ export function registerControlActions({
       throw new Error("SPACE_NOT_FOUND");
     return personalSpace.transfer(input.action, input.id);
   });
-  for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview"]) {
+  for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"]) {
     register(`space-${method}`, async (input = {}) => {
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
       if (method === "snapshot" || method === "refresh") return personalSpace[method]();
