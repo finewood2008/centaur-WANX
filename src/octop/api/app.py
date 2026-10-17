@@ -135,6 +135,10 @@ def build_app(server: OctopServer) -> FastAPI:
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
 
+    from octop.api.routers.semantica import router as semantica_router
+
+    app.include_router(semantica_router, prefix="/api")
+
     from octop.infra.setup.tls.challenge import challenge_store
 
     @app.get("/.well-known/acme-challenge/{token}", include_in_schema=False)
@@ -172,6 +176,7 @@ def build_app(server: OctopServer) -> FastAPI:
         internal_mcp,
         invites,
         knowledge_bases,
+        loops,
         mbti,
         media_generation,
         memory,
@@ -241,6 +246,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(internal_mcp.router, "/api", ["internal-mcp"]),
             _RouterMount(channels.router, "/api", ["channels"]),
             _RouterMount(cron.router, "/api", ["cron"]),
+            _RouterMount(loops.router, "/api", ["loops"]),
             _RouterMount(settings.router, "/api", ["settings"]),
             _RouterMount(envs.router, "/api", ["envs"]),
             _RouterMount(search.router, "/api", ["search"]),

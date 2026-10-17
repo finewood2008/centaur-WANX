@@ -114,7 +114,21 @@ class ChannelRepo:
         params.append(now_ts())
         params.append(channel_id)
         with self._db.transaction() as conn:
+            # Account/credential changes invalidate Loop identity verification atomically.
+            # Lock the channel first, matching the binding-confirmation lock order.
+            conn.execute("UPDATE channels SET enabled=enabled WHERE channel_id=?", (channel_id,))
+            old = conn.execute(
+                "SELECT kind,config_json FROM channels WHERE channel_id=?", (channel_id,)
+            ).fetchone()
             conn.execute(f"UPDATE channels SET {', '.join(fields)} WHERE channel_id = ?", params)
+            if old and (
+                (kind is not None and kind != old["kind"])
+                or (config_json is not None and config_json != old["config_json"])
+            ):
+                conn.execute(
+                    "UPDATE loop_channel_bindings SET status='invalid' WHERE channel_id=? AND status IN ('active','awaiting_message','awaiting_confirmation')",
+                    (channel_id,),
+                )
 
     def delete(self, channel_id: str) -> None:
         with self._db.transaction() as conn:

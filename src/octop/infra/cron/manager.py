@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +65,7 @@ class CronManager:
         self._timezone = timezone
         self._scheduler: AsyncIOScheduler = AsyncIOScheduler(timezone=timezone)
         self._lock = asyncio.Lock()
+        self._running_jobs: set[str] = set()
         # Process-level jobs (e.g. TLS auto-renew) that must survive reload_from_db.
         self._system_job_ids: set[str] = set()
 
@@ -180,6 +182,7 @@ class CronManager:
             build_trigger(trigger)
         enabled_bool: bool | None = bool(enabled) if enabled is not None else None
         async with self._lock:
+            self._assert_unmanaged(cron_id)
             existing = self._repos.cron_repo.get(cron_id)
             if existing is None:
                 raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
@@ -212,6 +215,7 @@ class CronManager:
 
     async def delete(self, cron_id: str) -> None:
         async with self._lock:
+            self._assert_unmanaged(cron_id)
             self._unschedule(cron_id)
             self._repos.cron_repo.delete(cron_id)
             self._repos.audit_repo.write(actor=ACTOR_SYSTEM, action="cron.delete", target=cron_id)
@@ -222,12 +226,37 @@ class CronManager:
         row = self._repos.cron_repo.get(cron_id)
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
-        job = self._make_job(row)
+        self._assert_unmanaged(cron_id)
         logger.info("CronJob %s triggered manually", cron_id)
         if wait:
-            await job.run(raise_on_error=True)
+            await self._execute_job(row, raise_on_error=True)
         else:
-            asyncio.ensure_future(job.run())
+            asyncio.ensure_future(self._execute_job(row))
+
+    def _assert_unmanaged(self, cron_id: str) -> None:
+        if self._repos.loop_repo.managing(cron_id):
+            raise OctopError.localized(ErrorCode.LOOP_CONFLICT)
+
+    async def take_over_for_loop(
+        self, cron_id: str, persist: Callable[[], Awaitable[None]]
+    ) -> None:
+        async with self._lock:
+            self._assert_unmanaged(cron_id)
+            if cron_id in self._running_jobs:
+                raise OctopError.localized(ErrorCode.LOOP_CONFLICT)
+            await persist()
+            self._unschedule(cron_id)
+
+    async def _execute_job(self, row: Any, *, raise_on_error: bool = False) -> None:
+        async with self._lock:
+            self._assert_unmanaged(row.cron_id)
+            if row.cron_id in self._running_jobs:
+                raise OctopError.localized(ErrorCode.LOOP_CONFLICT)
+            self._running_jobs.add(row.cron_id)
+        try:
+            await self._make_job(row).run(raise_on_error=raise_on_error)
+        finally:
+            self._running_jobs.discard(row.cron_id)
 
     def _make_job(self, row: Any) -> CronJob:
         return CronJob.from_row(
@@ -238,7 +267,7 @@ class CronManager:
         )
 
     def _schedule(self, row: Any) -> None:
-        if not row.enabled:
+        if not row.enabled or self._repos.loop_repo.managing(row.cron_id):
             return
         try:
             trigger = build_trigger(row.trigger, timezone=self._timezone)
@@ -249,11 +278,14 @@ class CronManager:
                 row.trigger,
             )
             return
-        job = self._make_job(row)
+
+        async def execute() -> None:
+            await self._execute_job(row)
+
         if self._scheduler.get_job(row.cron_id):
             self._scheduler.remove_job(row.cron_id)
         self._scheduler.add_job(
-            job.run,
+            execute,
             trigger=trigger,
             id=row.cron_id,
             replace_existing=True,

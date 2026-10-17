@@ -1399,10 +1399,16 @@ class AgentManager:
         agent_id: str,
         thread_id: str,
         decisions: list[dict[str, Any]],
+        *,
+        user_id: int | None = None,
     ) -> AsyncIterator[Any]:
         """Resume a paused HITL interrupt for *thread_id*."""
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
+        if user_id is not None:
+            thread = await asyncio.to_thread(self._repos.thread_repo.get, thread_id)
+            if thread is None or thread.user_id != user_id or thread.agent_id != agent_id:
+                raise OctopError.localized(ErrorCode.FORBIDDEN)
         async with (
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
@@ -3626,6 +3632,10 @@ class AgentManager:
                     allow_peer_calls="teams" in caps,
                 ),
             ]
+        from octop.infra.loops.boundary import LoopBoundary
+
+        agent_middleware.append(LoopBoundary())
+
         # agent_list / ask_agent: PeerAgentMiddleware (team_enabled=True), not config.tools.
 
         acp_section = cfg.get("acp")
