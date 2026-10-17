@@ -1,0 +1,14 @@
+{
+  "generator": "built-in image_gen",
+  "date": "2026-10-16",
+  "assets": [
+    {
+      "file": "wanx-client/local-ui/renderer/assets/store-zhijun-v1.png",
+      "prompt": "Use case: ads-marketing. Asset type: wide editorial cover image for WANX desktop AI app marketplace, featured app 知君. Generate one polished landscape 3:2 image, not a screenshot or UI mockup. A warm serene, high-end editorial still-life expressing conversation, personal thought and memory: a translucent frosted-glass speech bubble resting above gently layered ivory paper sheets and one small terracotta ceramic sphere, on a soft apricot / sand / cream studio backdrop. A single sculptural abstract ribbon gently connects the objects. Tactile paper, subtle fine grain, realistic soft shadows, sophisticated restrained material rendering, warm afternoon studio light. Composition: subject cluster entirely in the RIGHT HALF, cropped artful close view, LEFT HALF mostly calm pale warm cream negative space for dark page typography to be overlaid later; bottom 20 percent subdued for a small footer. Modern Mac App Store editorial art direction, spacious, quietly human, beautiful color relationships, no neon. NO text, NO letters, NO logos, NO watermark, NO app window, NO devices, NO interface. Entire canvas filled with the background, opaque image. This is a production artwork asset, not a mockup."
+    },
+    {
+      "file": "wanx-client/local-ui/renderer/assets/store-council-v1.png",
+      "prompt": "Use case: ads-marketing. Asset type: wide editorial cover image for WANX desktop AI app marketplace, featured app 个人议事厅, companion to a cream/apricot conversation-themed artwork. Generate one polished landscape 3:2 image, not a screenshot or UI mockup. A refined sculptural still-life about multiple perspectives converging into a clear next step: three elegantly interlocking translucent sage-green glass arches at slightly different angles, surrounding a softly glowing small warm ivory sphere on a matte sage pedestal; a single narrow warm cream pathway gently curves forward between them. Calm high-end studio set, tactile soft mint/sage paper background, subtle realistic refraction, beautiful soft shadows and fine grain, premium editorial art direction, no corporate stock art. Composition: sculpture cluster in the RIGHT HALF, LEFT HALF mostly calm pale sage negative space for dark page typography to be overlaid later; bottom 20 percent subdued for a footer. Restrained quiet optimistic atmosphere, sophisticated Mac App Store editorial artwork, visually cohesive with cream/terracotta palette of its companion. NO text, NO letters, NO logos, NO watermark, NO devices, NO interface. Opaque image covering full canvas. Production artwork asset."
+    }
+  ]
+}

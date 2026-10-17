@@ -169,7 +169,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "applications" || page === "boxes" || page === "settings" || page === "credits" || page === "profile") listener(page);
+        if (page === "space" || page === "applications" || page === "boxes" || page === "settings" || page === "profile" || page === "credits") listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);
