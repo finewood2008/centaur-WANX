@@ -2,6 +2,10 @@
   const esc = v => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const size = value => { if (value == null) return "暂不可用"; let n = value, i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][i]}`; };
   const errors = {
+    SPACE_LINK_PORT_IN_USE: "Agent 链接端口被其他程序占用，请释放端口后重启万象。旧链接没有更换。",
+    SPACE_LINK_UPGRADE_REQUIRED: "当前盒子尚不支持 Agent 访问链接，请升级盒端服务。",
+    SPACE_LINK_START_FAILED: "Agent 链接服务未启动，请检查系统钥匙串并重启万象。",
+    SPACE_VERSION_CONFLICT: "文件已经更新，请刷新后再操作，避免覆盖其他修改。",
     SPACE_UPGRADE_REQUIRED: "当前盒子尚不支持文件空间，请升级盒端服务。",
     SPACE_INVALID_DROP: "请从本地拖入文件后重试。",
     SPACE_DROP_FILES_ONLY: "暂不支持拖入整个文件夹，请选择其中的文件上传。",
@@ -128,13 +132,13 @@
     const item = listing.items.find(item => item.id === contextMenu.id);
     if (contextMenu.id && !item) return "";
     const count = selectedItems().length;
-    const choices = item && count > 1 ? (trash ? action(`恢复所选 ${count} 项`, "batch-restore") : action(`下载所选 ${count} 项…`, "batch-download") + action(`移动所选 ${count} 项…`, "batch-move") + '<hr role="separator">' + action(`移入回收站（${count} 项）…`, "batch-trash", null, true)) : item ? trash ? action("恢复", "restore", item) + action("彻底删除…", "purge", item, true) : action(item.kind === "folder" ? "打开文件夹" : "预览", "open", item) + action("下载到电脑…", "download", item) + '<hr role="separator">' + action("重命名…", "rename", item) + action("移动到…", "move", item) + '<hr role="separator">' + action("移入回收站…", "trash", item, true) : (trash ? "" : action("上传文件…", "upload") + action("新建文件夹…", "mkdir") + '<hr role="separator">') + action("刷新", "refresh");
+    const choices = item && count > 1 ? (trash ? action(`恢复所选 ${count} 项`, "batch-restore") : action(`下载所选 ${count} 项…`, "batch-download") + action(`移动所选 ${count} 项…`, "batch-move") + '<hr role="separator">' + action(`移入回收站（${count} 项）…`, "batch-trash", null, true)) : item ? trash ? action("恢复", "restore", item) + action("彻底删除…", "purge", item, true) : action(item.kind === "folder" ? "打开文件夹" : "预览", "open", item) + action("下载到电脑…", "download", item) + action("创建 Agent 访问链接…", "link-create", item) + (item.kind === "file" && item.previous_digest ? action("恢复上一版本…", "previous", item) : "") + '<hr role="separator">' + action("重命名…", "rename", item) + action("移动到…", "move", item) + '<hr role="separator">' + action("移入回收站…", "trash", item, true) : (trash ? "" : action("上传文件…", "upload") + action("新建文件夹…", "mkdir") + '<hr role="separator">') + action("刷新", "refresh");
     return `<div class="space-context-menu" role="menu" aria-label="${item ? "文件操作" : "文件夹操作"}" style="left:${contextMenu.x}px;top:${contextMenu.y}px">${choices}</div>`;
   }
   function showMenu(item, x, y) {
     if (item) { if (!selectedIds.has(item.id)) selectItem(item); selectedId = item.id; }
     else clearSelection();
-    contextMenu = { id: item?.id || "", x: Math.max(8, Math.min(Number(x) || 8, (window.innerWidth || 1024) - 218)), y: Math.max(8, Math.min(Number(y) || 8, (window.innerHeight || 768) - (item && !trash ? 258 : 150))) };
+    contextMenu = { id: item?.id || "", x: Math.max(8, Math.min(Number(x) || 8, (window.innerWidth || 1024) - 218)), y: Math.max(8, Math.min(Number(y) || 8, (window.innerHeight || 768) - (item && !trash ? 330 : 150))) };
     render();
   }
   async function navigate(target, recycle = false) {
@@ -155,13 +159,28 @@
   function dialogView() {
     if (!dialog) return "";
     let body = "";
-    if (dialog.kind === "preview") {
+    if (dialog.kind === "link-create") {
+      body = `<p>为“${esc(dialog.item.name)}”创建读写链接。</p><p class="muted">持有此链接的本机程序可读写${dialog.item.kind === "folder" ? "此文件夹及其所有子文件" : "此文件"}。万象需保持运行并连接原盒子。</p><label for="space-link-expiry">有效期</label><select id="space-link-expiry"><option value="0" ${!dialog.days ? "selected" : ""}>长期有效，直到撤销</option><option value="1" ${dialog.days === 1 ? "selected" : ""}>1 天</option><option value="7" ${dialog.days === 7 ? "selected" : ""}>7 天</option><option value="30" ${dialog.days === 30 ? "selected" : ""}>30 天</option></select><button class="button primary" data-action="space-link-save">创建链接</button>`;
+    } else if (dialog.kind === "links") {
+      const date = n => {
+        if (!n) return "—";
+        const delta = n * 1000 - Date.now(), minutes = Math.abs(delta) / 60000;
+        if (minutes < 1) return delta > 0 ? "即将到期" : "刚刚";
+        const value = minutes < 60 ? Math.ceil(minutes) + " 分钟" : minutes < 1440 ? Math.ceil(minutes / 60) + " 小时" : Math.ceil(minutes / 1440) + " 天";
+        return value + (delta > 0 ? "后" : "前");
+      };
+      body = `<p class="muted">当前盒子的文件访问链接 · 读写权限<br>持有链接的本机程序可读写指定资源。可随时撤销。</p><button class="button small" data-action="space-link-config">MCP 接入配置</button><div class="space-links-list">${dialog.links.map(link => `<article class="space-link-card"><strong>${esc(link.name || "目标已删除")}</strong><small>${link.kind === "folder" ? "文件夹及后代" : "单个文件"} · ${link.revoked ? "已撤销" : link.expires && link.expires * 1000 < Date.now() ? "已到期" : "读写"}</small><small>到期：${link.expires ? date(link.expires) : "长期"} · 最近使用：${date(link.last_used)}</small>${link.url && !link.revoked ? `<input aria-label="访问链接" readonly value="${esc(link.url)}" /><button class="text-button" data-action="space-link-copy" data-id="${link.id}">复制链接</button>` : ""}<button class="text-button" data-action="space-link-audit" data-id="${link.id}">操作记录</button>${!link.revoked ? `<button class="text-button danger-text" data-action="space-link-revoke" data-id="${link.id}">撤销链接</button>` : ""}</article>`).join("") || '<p class="muted">还没有链接。右键文件或文件夹即可创建。</p>'}</div>`;
+    } else if (dialog.kind === "link-info") {
+      body = `<pre class="space-text-preview">${esc(dialog.text)}</pre><button class="button" data-action="space-link-copy-info">复制</button>`;
+    } else if (dialog.kind === "previous") {
+      body = "<p>恢复覆盖前的内容，当前版本将成为可恢复的上一版本。文件 ID 和访问链接保持不变。</p>";
+    } else if (dialog.kind === "preview") {
       body = dialog.type === "text/plain" ? `<pre class="space-text-preview">${esc(dialog.text)}</pre>` : dialog.type === "application/pdf" ? `<embed class="space-preview" type="application/pdf" src="${previewURL}" title="PDF 预览">` : `<img class="space-preview" src="${previewURL}" alt="${esc(dialog.title)}">`;
     } else if (dialog.kind === "move") {
       body = `<p class="muted">将所选 ${dialog.items.length} 项移动到：</p><div class="space-breadcrumbs"><button class="text-button" data-action="space-move-folder" data-id="">我的文件</button>${dialog.crumbs.map(c => `<button class="text-button" data-action="space-move-folder" data-id="${c.id}">／ ${esc(c.name)}</button>`).join("")}</div><div class="space-folder-picker">${dialog.folders.map(f => `<button class="space-folder-choice" data-action="space-move-folder" data-id="${f.id}">▱ ${esc(f.name)}</button>`).join("") || '<p class="muted">此处没有子文件夹</p>'}</div>`;
     } else if (["mkdir", "rename"].includes(dialog.kind)) body = `<form id="space-form" data-form="space"><label for="space-name">名称</label><input id="space-name" name="name" value="${esc(dialog.name)}" required maxlength="240" autocomplete="off"/><button type="submit" class="button primary">保存</button></form>`;
     else body = `<p>所选 ${dialog.items.length} 个项目将移入回收站，之后可以恢复。</p><ul class="space-selection-summary">${dialog.items.slice(0, 6).map(item => `<li>${esc(item.name)}</li>`).join("")}${dialog.items.length > 6 ? `<li>以及其他 ${dialog.items.length - 6} 项</li>` : ""}</ul>`;
-    return `<section class="market-confirmation" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title"><div class="market-confirm-card space-dialog"><h2 id="space-dialog-title">${esc(dialog.title)}</h2>${body}${dialog.error ? `<p class="inline-error" role="alert">${esc(dialog.error)}</p>` : ""}<div class="market-actions"><button class="button" data-action="space-dialog-close" ${dialog.saving ? "disabled" : ""}>${dialog.kind === "preview" ? "关闭" : "取消"}</button>${["move", "trash"].includes(dialog.kind) ? `<button class="button primary" data-action="space-dialog-confirm" ${dialog.saving ? "disabled" : ""}>${dialog.saving ? "正在处理…" : dialog.kind === "move" ? "移到这里" : "移入回收站"}</button>` : ""}</div></div></section>`;
+    return `<section class="market-confirmation" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title"><div class="market-confirm-card space-dialog"><h2 id="space-dialog-title">${esc(dialog.title)}</h2>${body}${dialog.error ? `<p class="inline-error" role="alert">${esc(dialog.error)}</p>` : ""}<div class="market-actions"><button class="button" data-action="space-dialog-close" ${dialog.saving ? "disabled" : ""}>${dialog.kind === "preview" ? "关闭" : "取消"}</button>${["move", "trash", "previous"].includes(dialog.kind) ? `<button class="button primary" data-action="space-dialog-confirm" ${dialog.saving ? "disabled" : ""}>${dialog.saving ? "正在处理…" : dialog.kind === "move" ? "移到这里" : dialog.kind === "previous" ? "恢复上一版" : "移入回收站"}</button>` : ""}</div></div></section>`;
   }
   function view() {
     if (!host?.canLaunchApplications) return `<section class="empty-state space-connect"><h3>连接盒子，访问自己的文件</h3><p>${host?.connectionPhase === "recovering" ? "正在恢复与盒子的连接。" : "连接盒子后，即可像使用硬盘一样管理文件。"}</p>${lastSeen ? `<p class="muted">${esc(lastSeen.name)} · 上次更新 ${new Date(lastSeen.at * 1000).toLocaleString()}，当前状态待重新确认。</p>` : ""}<button class="button" data-action="show-boxes">前往盒子管理</button></section>`;
@@ -169,7 +188,7 @@
     const upper = listing.breadcrumbs.length > 1 ? listing.breadcrumbs.at(-2).id : "";
     const sortOptions = Object.entries({ name: "名称", size: "大小", type: "种类", modified: "修改时间" }).map(([key, label]) => `<option value="${key}" ${sortBy === key ? "selected" : ""}>${label}</option>`).join("");
     return `<div class="space-workspace" ${dialog ? "inert" : ""}><div class="space-browser"><aside class="space-sidebar" aria-label="文件空间导航"><div class="space-disk-identity">${icon("drive")}<span><strong title="${esc(boxName())}">${esc(boxName())}</strong><small><i class="status-dot ready"></i>盒子硬盘</small></span></div><div class="space-sidebar-caption">位置</div><button class="space-nav ${!trash ? "active" : ""}" data-action="space-folder" data-id="" ${!trash && !parent ? 'aria-current="page"' : ""}>${icon("folder")}全部文件</button><button class="space-nav ${trash ? "active" : ""}" data-action="space-recycle" ${trash ? 'aria-current="page"' : ""}>${icon("trash")}回收站</button><div class="space-sidebar-bottom">${storage()}</div></aside><main class="space-main">
-      <div class="space-toolbar" aria-busy="${batchBusy}" ${batchBusy ? "inert" : ""}><div class="space-row-actions"><button class="space-icon-button" data-action="space-folder" data-id="${upper}" aria-label="返回上级文件夹" title="返回上级文件夹" ${!parent || trash ? "disabled" : ""}>${icon("up")}</button><button class="space-icon-button" data-action="space-refresh" aria-label="刷新文件" title="刷新" ${loading ? "disabled" : ""}>${icon("refresh")}</button><span class="space-toolbar-title">${trash ? "回收站" : parent ? esc(listing.breadcrumbs.at(-1)?.name || "文件夹") : "全部文件"}</span></div><div class="space-row-actions">${selected.length ? `<span class="space-selected-count">已选 ${selected.length} 项</span>${trash ? '<button class="button small" data-action="space-batch-restore">恢复</button>' : '<button class="button small" data-action="space-batch-download">下载</button><button class="button small" data-action="space-batch-move">移动</button><button class="button small danger-text" data-action="space-batch-trash">删除</button>'}<button class="text-button space-clear-selection" data-action="space-selection-clear">取消选择</button>` : !trash && status.phase !== "unsupported" ? '<button class="button small" data-action="space-mkdir">新建文件夹</button><button class="button small primary space-upload-button" data-action="space-upload">' + icon("upload") + '上传文件</button>' : ""}</div></div>
+      <div class="space-toolbar" aria-busy="${batchBusy}" ${batchBusy ? "inert" : ""}><div class="space-row-actions"><button class="space-icon-button" data-action="space-folder" data-id="${upper}" aria-label="返回上级文件夹" title="返回上级文件夹" ${!parent || trash ? "disabled" : ""}>${icon("up")}</button><button class="space-icon-button" data-action="space-refresh" aria-label="刷新文件" title="刷新" ${loading ? "disabled" : ""}>${icon("refresh")}</button><span class="space-toolbar-title">${trash ? "回收站" : parent ? esc(listing.breadcrumbs.at(-1)?.name || "文件夹") : "全部文件"}</span></div><div class="space-row-actions"><button class="button small" data-action="space-links">Agent 访问链接</button>${selected.length ? `<span class="space-selected-count">已选 ${selected.length} 项</span>${trash ? '<button class="button small" data-action="space-batch-restore">恢复</button>' : '<button class="button small" data-action="space-batch-download">下载</button><button class="button small" data-action="space-batch-move">移动</button><button class="button small danger-text" data-action="space-batch-trash">删除</button>'}<button class="text-button space-clear-selection" data-action="space-selection-clear">取消选择</button>` : !trash && status.phase !== "unsupported" ? '<button class="button small" data-action="space-mkdir">新建文件夹</button><button class="button small primary space-upload-button" data-action="space-upload">' + icon("upload") + '上传文件</button>' : ""}</div></div>
       <div class="space-pathbar"><div class="space-breadcrumbs" aria-label="当前位置"><button class="text-button" data-action="space-folder" data-id="">${icon("drive")}全部文件</button>${!trash ? listing.breadcrumbs.map(c => `<span aria-hidden="true">›</span><button class="text-button" data-action="space-folder" data-id="${c.id}">${esc(c.name)}</button>`).join("") : '<span>›</span><strong>回收站</strong>'}</div><div class="space-view-tools"><label class="space-sort"><span>排列</span><select id="space-sort" aria-label="排列方式">${sortOptions}</select></label><button class="space-icon-button space-sort-direction ${sortDirection === -1 ? "is-descending" : ""}" data-action="space-sort" data-sort="${sortBy}" aria-label="${sortDirection === 1 ? "改为降序排列" : "改为升序排列"}" title="${sortDirection === 1 ? "升序排列" : "降序排列"}">${icon("up")}</button><label class="space-search">${icon("search")}<input type="search" id="space-search" value="${esc(query)}" placeholder="搜索当前文件夹" aria-label="搜索当前文件夹"></label></div></div>
       ${error ? `<div class="notice error" role="status">${esc(error)} <button class="text-button" data-action="space-refresh">重试</button></div>` : ""}
       ${status.phase === "unsupported" ? '<section class="empty-state space-connect"><h3>文件空间需要新版盒端服务</h3><p>升级后这里会显示你的个人文件。</p></section>' : `<section class="space-files" aria-label="${trash ? "回收站" : "文件图标"}">${trash ? '<p class="space-trash-hint">文件可恢复；彻底删除后无法找回。</p>' : ""}
@@ -213,6 +232,7 @@
     if (!current || current.saving) return;
     current.saving = true;
     try {
+      if (current.kind === "previous") await call("restore-version", { id: current.item.id, expected: current.item.version });
       if (current.kind === "mkdir") await call("mkdir", { parent, name: current.name });
       if (current.kind === "rename") await call("move", { id: current.item.id, parent: current.item.parent, name: current.name });
       if (["move", "trash"].includes(current.kind)) {
@@ -240,8 +260,26 @@
       return;
     }
     const kind = button.dataset.action.slice(6), item = listing.items.find(i => i.id === button.dataset.id);
-    if (dialog && !["dialog-close", "dialog-confirm", "move-folder"].includes(kind)) return;
+    if (dialog && !["dialog-close", "dialog-confirm", "move-folder", "link-save", "link-copy", "link-revoke", "link-config", "link-copy-info", "link-audit"].includes(kind)) return;
     try {
+      if (kind === "link-create" && item) { dialog = { kind, title: "创建 Agent 访问链接", item, days: 0 }; render(); return; }
+      if (kind === "previous" && item) { dialog = { kind, title: "恢复上一版本", item }; render(); return; }
+      if (kind === "links") { dialog = { kind: "links", title: "Agent 访问链接", links: await call("links-list") }; render(); return; }
+      if (kind === "link-save") {
+        const current = dialog;
+        if (current.saving) return;
+        current.saving = true;
+        try {
+          await call("links-create", { root: current.item.id, expires: current.days ? Date.now() / 1000 + current.days * 86400 : null });
+          if (dialog === current) dialog = { kind: "links", title: "Agent 访问链接", links: await call("links-list") };
+        } finally { current.saving = false; render(); }
+        return;
+      }
+      if (kind === "link-revoke") { await call("links-revoke", { id: button.dataset.id }); dialog.links = await call("links-list"); render(); return; }
+      if (kind === "link-copy") { await navigator.clipboard.writeText(dialog.links.find(l => l.id === button.dataset.id).url); button.textContent = "已复制"; return; }
+      if (kind === "link-config") { dialog = { kind: "link-info", title: "MCP 接入配置", text: JSON.stringify(await call("links-config"), null, 2) }; render(); return; }
+      if (kind === "link-audit") { dialog = { kind: "link-info", title: "最近操作记录（Agent 名称为自行声明）", text: JSON.stringify(await call("links-audit", { id: button.dataset.id }), null, 2) }; render(); return; }
+      if (kind === "link-copy-info") { await navigator.clipboard.writeText(dialog.text); button.textContent = "已复制"; return; }
       if (kind === "more") { const bounds = button.getBoundingClientRect?.(); showMenu(item, bounds?.right - 200, bounds?.bottom); return; }
       contextMenu = null;
       if (kind === "select") {
@@ -287,6 +325,7 @@
   });
   const root = document.querySelector("#app");
   root.addEventListener("change", event => {
+    if (event.target.id === "space-link-expiry" && dialog) { dialog.days = Number(event.target.value); return; }
     if (event.target.id !== "space-sort") return;
     sortBy = event.target.value; sortDirection = 1; contextMenu = null; render();
     document.querySelector("#space-sort")?.focus?.();
@@ -535,6 +574,7 @@
       if (event.key === "F2") document.querySelector("#space-name")?.focus?.();
     } catch (cause) { error = message(cause); render(); }
   });
+  window.wanxClient.onSpaceContentChanged?.(() => { if (active && !loading && !dialog && !moving && !marquee) void load(); });
   window.wanxClient.onSpaceState?.(next => {
     if (!host?.canLaunchApplications) return;
     if (next.accountId !== host.account?.accountId || next.boxId !== host.activeDeviceId) {
@@ -549,6 +589,6 @@
       if (next.tasks?.some(t => t.phase === "complete" && previous.find(p => p.id === t.id)?.phase !== "complete")) void load();
     }
   });
-  setInterval(() => { if (active && !document.hidden && host?.canLaunchApplications && !loading && !dialog) void call("refresh").then(next => { status = next; render(); }).catch(() => {}); }, 15000);
+  setInterval(() => { if (active && !document.hidden && host?.canLaunchApplications && !loading && !dialog && !moving && !movePointer && !marquee) void load(); }, 15000);
   window.wanxSpace = { view, hostState, overview: () => status.overview, bind(options) { render = options.render; }, isSelecting: () => Boolean(marquee), isDragging: () => Boolean(movePointer || moving), activate(value, visible = value) { if (fileView !== visible) { stopMarquee(); clearDrag(); contextMenu = null; } fileView = visible; if (active === value) return; active = value; if (active) void load(); else { closeDialog(); clearDrag(); } } };
 })();

@@ -694,3 +694,12 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .carousel-buttons button:focus-visible, .carousel-dot:focus-visible { outline: 2px solid #a36a4c; outline-offset: 2px; }
 .app-editorial-notice { margin-top: 13px; font-size: 11px; }
 @media (max-width: 580px) { .carousel-track { grid-auto-columns: calc((100% - 12px) / 2); gap: 12px; } .carousel-detail-label { display: none; } .carousel-copy > span { font-size: 9px; } }
+
+/* Agent links share the existing compact Space dialog. */
+.space-links-list { max-height: 48vh; overflow-y: auto; margin-top: 12px; }
+.space-link-card { padding: 12px 0; border-bottom: 1px solid var(--border, #e8ded3); }
+.space-link-card strong, .space-link-card small { display: block; margin-bottom: 6px; }
+.space-link-card small { color: var(--muted, #8b8076); }
+.space-link-card input { width: 100%; font: 12px monospace; margin: 6px 0; }
+.space-link-card button { margin-right: 12px; }
+#space-link-expiry { margin: 12px; }
