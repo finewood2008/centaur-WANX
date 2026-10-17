@@ -223,7 +223,13 @@
     "CREDITS_CONFLICT": "Credit operation conflicts with existing state or request",
     "CREDITS_INSUFFICIENT": "Insufficient available credits",
     "CREDITS_NOT_FOUND": "Credit reservation not found",
-    "CREDITS_FORBIDDEN": "This caller is not authorized for the credit operation"
+    "CREDITS_FORBIDDEN": "This caller is not authorized for the credit operation",
+    "LOOP_INVALID": "Invalid loop configuration or confirmation. Check the existing capability bindings.",
+    "LOOP_CONFLICT": "Loop or automation state changed. Refresh; pause before editing.",
+    "LOOP_TRIAL_REQUIRED": "Successfully trial this configuration version before enabling.",
+    "LOOP_LIMIT": "Round limit reached. Pause and revise the configuration.",
+    "LOOP_CHANNEL_REQUIRED": "Connect and verify your private account in Contact me before trying or enabling message delivery.",
+    "LOOP_CHANNEL_INVALID": "This loop's private contact is no longer valid. Repair its recipient in Contact me, save and trial the configuration before enabling."
   },
   "nav": {
     "chat": "Conversation",

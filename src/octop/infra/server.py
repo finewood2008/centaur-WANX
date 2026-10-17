@@ -214,6 +214,7 @@ class AppRuntime:
     cron_manager: CronManager
     user_manager: UserManager
     proactive_scheduler: ProactiveCareScheduler
+    loop_service: Any | None = None
     trajectory_service: TrajectoryService | None = None
     history_archive: Any | None = None
 
@@ -228,6 +229,8 @@ class AppRuntime:
         self.agent_registry.replace_persistence(services.repos, config)
         self.gateway.replace_repos(services.repos)
         self.cron_manager.replace_repos(services.repos)
+        if self.loop_service is not None:
+            self.loop_service.replace_repos(services.repos)
         self.proactive_scheduler.replace_persistence(
             config_repo=services.repos.proactive_care_config_repo,
             session_repo=services.repos.session_repo,
@@ -491,6 +494,17 @@ class OctopServer:
             trajectory_service=trajectory_service,
             history_archive=history_archive,
         )
+        from octop.infra.loops.service import LoopService
+
+        self.app_runtime.loop_service = LoopService(
+            repos=self.services.repos,
+            cron_manager=cron_mgr,
+            agent_manager=registry,
+            gateway=gateway,
+            timezone=config.default_timezone,
+        )
+        await self.app_runtime.loop_service.boot()
+
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
         resume_pending_index_jobs(self.services)
@@ -531,6 +545,8 @@ class OctopServer:
         try:
             if self.app_runtime is not None:
                 rt = self.app_runtime
+                if rt.loop_service is not None:
+                    await rt.loop_service.shutdown()
                 await rt.proactive_scheduler.shutdown()
                 await rt.cron_manager.shutdown()
                 await rt.gateway.shutdown()

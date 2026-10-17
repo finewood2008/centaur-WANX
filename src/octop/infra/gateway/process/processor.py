@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -126,6 +126,8 @@ class _MessageEventSink(SlashSink):
 
 class GlobalProcessor:
     """Routes InboundMessages by ``tenant_id`` to the correct HarnessAgent."""
+
+    loop_message_interceptor: Callable[[InboundMessage], Awaitable[str | None]] | None = None
 
     def __init__(
         self,
@@ -602,6 +604,13 @@ class GlobalProcessor:
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("messages_total")
+
+        if self.loop_message_interceptor is not None:
+            intercepted = await self.loop_message_interceptor(msg)
+            if intercepted is not None:
+                yield MessageEvent.text(intercepted)
+                yield MessageEvent.completed()
+                return
 
         agent_id = msg.tenant_id or ""
         if not agent_id:

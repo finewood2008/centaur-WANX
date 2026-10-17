@@ -371,9 +371,9 @@ class AgentManager:
         )
         self._harness_manager: HarnessAgentManager | None = None
         self.memory_slim = MemorySlimCoordinator(self)
-        from octop.infra.agents.ontology_runtime import OntologyCoordinator
+        from octop.infra.agents.role_ontology_flow import RoleOntologyCoordinator
 
-        self.ontology = OntologyCoordinator(self)
+        self.ontology = RoleOntologyCoordinator(self)
         self._lock = asyncio.Lock()
         # Serialize start/reload per agent so parallel provider reloads cannot
         # double-register the same harness id ("already exists in the registry").
@@ -1399,10 +1399,16 @@ class AgentManager:
         agent_id: str,
         thread_id: str,
         decisions: list[dict[str, Any]],
+        *,
+        user_id: int | None = None,
     ) -> AsyncIterator[Any]:
         """Resume a paused HITL interrupt for *thread_id*."""
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
+        if user_id is not None:
+            thread = await asyncio.to_thread(self._repos.thread_repo.get, thread_id)
+            if thread is None or thread.user_id != user_id or thread.agent_id != agent_id:
+                raise OctopError.localized(ErrorCode.FORBIDDEN)
         async with (
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
@@ -3598,6 +3604,15 @@ class AgentManager:
                     lambda: self.get_agent(row.agent_id)._memory_runtime.service,
                 ),
             ]
+        if (
+            not zhijun
+            and application_id(row) == "wanx"
+            and row.user_id is not None
+            and not row.is_shared
+        ):
+            from octop.infra.agents.role_ontology import RoleOntologyMiddleware
+
+            agent_middleware.append(RoleOntologyMiddleware(self, row.agent_id, row.user_id))
         if application_id(row) not in {"wanx", "zhijun"}:
             from octop.infra.agents.middleware.zhijun import ZhijunMemoryBoundary
 
@@ -3626,6 +3641,10 @@ class AgentManager:
                     allow_peer_calls="teams" in caps,
                 ),
             ]
+        from octop.infra.loops.boundary import LoopBoundary
+
+        agent_middleware.append(LoopBoundary())
+
         # agent_list / ask_agent: PeerAgentMiddleware (team_enabled=True), not config.tools.
 
         acp_section = cfg.get("acp")

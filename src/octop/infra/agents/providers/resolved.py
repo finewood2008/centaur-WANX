@@ -6,6 +6,7 @@ from typing import Any
 
 from octop.infra.agents.providers.model_flags import is_chat_eligible_model
 from octop.infra.agents.providers.reasoning import reasoning_capability
+from octop.infra.dialogue.provider import is_dialogue_gateway
 
 
 def list_resolved_models(providers: list[Any]) -> list[dict[str, Any]]:
@@ -16,7 +17,7 @@ def list_resolved_models(providers: list[Any]) -> list[dict[str, Any]]:
     """
     resolved: list[dict[str, Any]] = []
     for provider in providers:
-        if not provider.enabled or not provider.api_key:
+        if not provider.enabled or not provider.api_key or is_dialogue_gateway(provider):
             continue
         provider_name = str(getattr(provider, "name", "") or "")
         provider_api_key = str(getattr(provider, "api_key", "") or "") or None

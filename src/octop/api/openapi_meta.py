@@ -119,6 +119,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
         "description": "Instant-messaging bridges (WeCom, Feishu, Telegram, …) per agent.",
     },
     {
+        "name": "loops",
+        "description": "Durable goal-driven expert automation, trials, round evidence and native approvals.",
+    },
+    {
         "name": "cron",
         "description": "Scheduled prompts that run against an agent on a cron trigger.",
     },

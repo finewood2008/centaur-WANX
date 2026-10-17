@@ -24,7 +24,7 @@ from octop.api.deps import current_user, get_server, require_permission
 from octop.infra.agents.application import application_id
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.bot_creators.feishu_runner import extract_feishu_credentials
-from octop.infra.gateway.channels import dingtalk_registration, qr_bind
+from octop.infra.gateway.channels import dingtalk_registration, owner_proof, qr_bind
 from octop.infra.gateway.channels.zhijun_weixin import assert_weixin_channel
 from octop.infra.gateway.gateway import ChannelKind
 from octop.infra.users.identity import User
@@ -55,6 +55,7 @@ class WeixinQrPollResponse(BaseModel):
     account_id: str | None = None
     token: str | None = None
     base_url: str | None = None
+    owner_proof: str | None = None
     message: str | None = None
 
 
@@ -709,7 +710,12 @@ async def qq_qrcode_poll(
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
     qrcode_token = _sanitize_token(qrcode_token, "qrcode_token")
     try:
-        return await qr_bind.qq_qr_poll(f"api:{agent_id}", qrcode_token)
+        result = await qr_bind.qq_qr_poll(f"api:{agent_id}", qrcode_token)
+        if result.get("status") == "success" and result.get("user_openid"):
+            result["owner_proof"] = owner_proof.issue(
+                user.id, agent_id, "qq", result["user_openid"], result
+            )
+        return result
     except Exception as exc:
         logger.exception("Failed to poll QQ Bot QR result")
         raise HTTPException(
@@ -816,6 +822,15 @@ async def weixin_qrcode_poll(
         "account_id": result.account_id,
         "token": result.bot_token,
         "base_url": result.base_url,
+        "owner_proof": owner_proof.issue(
+            user.id,
+            agent_id,
+            "weixin",
+            result.user_id,
+            {"bot_uin": result.account_id, "token": result.bot_token},
+        )
+        if getattr(result, "user_id", None)
+        else None,
     }
 
 

@@ -459,3 +459,37 @@ def test_channel_endpoints_reject_shell_metacharacters(mock_server_and_user, end
     client = TestClient(app)
     resp = client.post(endpoint, json=payload)
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("subject", ["owner@im.wechat", None])
+def test_weixin_qr_owner_proof_survives_response_schema(mock_server_and_user, subject):
+    from types import SimpleNamespace
+
+    from octop.infra.gateway.channels import owner_proof
+
+    server, user = mock_server_and_user
+    user.application_id = "wanx"
+    result = SimpleNamespace(
+        connected=True,
+        account_id="bot",
+        bot_token="secret",
+        base_url="https://example.com",
+        user_id=subject,
+    )
+    login = MagicMock()
+    login.wait_for_login = AsyncMock(return_value=result)
+    with patch("octop.api.routers.channels._get_weixin_qr_login", return_value=lambda: login):
+        response = TestClient(_make_app(server, user)).post(
+            "/agents/agent1/channels/weixin/qrcode/poll", json={"qrcode_token": "task"}
+        )
+    assert response.status_code == 200
+    data = response.json()
+    if subject:
+        assert (
+            owner_proof.consume(
+                data["owner_proof"], 1, "agent1", "weixin", {"bot_uin": "bot", "token": "secret"}
+            )
+            == subject
+        )
+    else:
+        assert "owner_proof" not in data

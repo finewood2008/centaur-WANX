@@ -193,7 +193,13 @@ async def list_providers(
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     """Return all providers. Read-only for regular users."""
-    return [_row_to_dict(r) for r in server.services.provider_repo.list_all()]
+    from octop.infra.dialogue.provider import is_dialogue_gateway
+
+    return [
+        _row_to_dict(r)
+        for r in server.services.provider_repo.list_all()
+        if not is_dialogue_gateway(r)
+    ]
 
 
 # ── Admin endpoints ─────────────────────────────────────────────────────────

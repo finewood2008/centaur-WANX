@@ -136,8 +136,11 @@ async def test_disabling_automatic_extraction_still_captures_sources(
         env_with_provider, "idle", False
     )
     try:
-        await asyncio.sleep(0.5)
-        assert runtime.memory.list_raw(session_id="extraction-test")
+        # Capture is asynchronous even when extraction is disabled. Wait for
+        # its observable result instead of assuming a fixed scheduler delay.
+        async with asyncio.timeout(5):
+            while not runtime.memory.list_raw(session_id="extraction-test"):
+                await asyncio.sleep(0.02)
         assert runtime.memory.get_last_extract_run() is None
         assert runtime.middleware._extract_idle_seconds == 0
         assert runtime.middleware._extract_interval_seconds == 0

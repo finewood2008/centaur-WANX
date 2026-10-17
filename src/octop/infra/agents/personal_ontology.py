@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -47,6 +48,9 @@ from octop.infra.utils.browser_media import parse_octop_user_id
 from octop.infra.utils.llm_text import ainvoke_text
 from octop.infra.utils.ulid import new_ulid
 
+# Per-request scope, never a process-global selected role.
+ontology_agent_scope: ContextVar[str | None] = ContextVar("ontology_agent_scope", default=None)
+
 _PATH = "zhijun/personal-ontology.json"
 
 
@@ -57,6 +61,17 @@ def _digest(value: Any) -> str:
 
 
 def _owned(registry: Any, uid: int) -> Any:
+    scoped = ontology_agent_scope.get()
+    if scoped:
+        row = registry.get_row(scoped)
+        if (
+            row is None
+            or row.user_id != uid
+            or getattr(row, "is_shared", False)
+            or application_id(row) != "wanx"
+        ):
+            raise OctopError.localized(ErrorCode.NOT_FOUND)
+        return row
     row = get_profile(registry, uid)
     if row is None or row.user_id != uid or application_id(row) != "zhijun":
         raise OctopError.localized(ErrorCode.NOT_FOUND)
@@ -159,6 +174,8 @@ def _valid(memory: Any, uid: int, claim: OntologyClaim) -> bool:
         experiences.add(
             f"{getattr(event, 'session_id', '') or event.thread_id}:{event.timestamp.date()}"
         )
+    if claim.basis == "owner_statement":
+        return bool(experiences) and any(claim.statement in e.quote for e in claim.evidence)
     return len(experiences) >= 2
 
 
@@ -182,7 +199,7 @@ async def _save(workspace: Any, document: PersonalOntology) -> None:
     document.schema_version = 4
     group_candidates(document)
     document.revision = new_ulid()
-    content = document.model_dump_json()
+    content = document.model_dump_json(exclude={"flow"})
     await workspace.aupload_bytes(_PATH, content.encode())
     if await workspace.aread_text(_PATH) != content:
         raise OctopError.localized(ErrorCode.INTERNAL_ERROR)
@@ -274,7 +291,7 @@ async def _generate_personal_ontology(
     pending = [s for k, s in sources.items() if current.progress.processed.get(k) != _digest(s)]
     if incremental and not pending and current.source_fingerprint == fingerprint:
         return OntologyResult(status="ready", ontology=current)
-    if coverage.independent_events < 2:
+    if coverage.independent_events < (1 if ontology_agent_scope.get() else 2):
         return OntologyResult(
             status="insufficient", ontology=await read_personal_ontology(registry, uid)
         )
@@ -289,6 +306,11 @@ async def _generate_personal_ontology(
             [
                 SystemMessage(
                     content=_PROMPT
+                    + (
+                        "\n当前为角色候选整理：输入记忆尚未由本人核对，只能产生待确认候选。允许 basis=owner_statement：仅用于本人直接表达的定位、目标、价值、边界或回应偏好，statement 必须逐字摘自一条 quote，至少一条 evidence_ids，不适用上面的两条证据要求。其余 basis=inference 仍须至少两组独立经历，不确定则不提出。人物、项目、临时事件保留为背景。绝不自动确认候选或来源。"
+                        if ontology_agent_scope.get()
+                        else ""
+                    )
                     + "\n同一 experience_id 不是独立支持。不同会话复述同一事件也不是。主动寻找反例。只提出长期原则、价值、边界、判断方式、identity 长期自我定位、aspiration 愿望、response 回应偏好；短期处境和情绪留在 context_nodes，不提出 situation。理想与现实分别记。"
                 ),
                 HumanMessage(
@@ -332,7 +354,7 @@ async def _generate_personal_ontology(
                     )
                 ),
             ],
-            timeout=55,
+            timeout=120 if ontology_agent_scope.get() else 55,
         )
         payload = json.loads(raw)
         if (
@@ -348,7 +370,16 @@ async def _generate_personal_ontology(
         for p in proposals:
             if (
                 any(i not in supplied for i in p.evidence_ids)
-                or len({supplied[i]["experience_id"] for i in p.evidence_ids}) < 2
+                or (
+                    p.basis == "owner_statement"
+                    and (
+                        not ontology_agent_scope.get()
+                        or not any(p.statement in supplied[i]["quote"] for i in p.evidence_ids)
+                        or not re.search(r"我|本人", p.statement)
+                    )
+                )
+                or len({supplied[i]["experience_id"] for i in p.evidence_ids})
+                < (1 if p.basis == "owner_statement" and ontology_agent_scope.get() else 2)
                 or any(
                     i
                     not in {n.id for n in current.nodes if n.state == "active" and n.evidence_valid}
@@ -356,9 +387,15 @@ async def _generate_personal_ontology(
                 )
             ):
                 raise ValueError("Unverified independent evidence")
-    except Exception:
+    except Exception as exc:
         return OntologyResult(
-            status="unavailable", ontology=await read_personal_ontology(registry, uid)
+            status="unavailable",
+            reason="model_timeout"
+            if isinstance(exc, TimeoutError)
+            else "invalid_response"
+            if isinstance(exc, (ValueError, KeyError, TypeError))
+            else "model_unavailable",
+            ontology=await read_personal_ontology(registry, uid),
         )
     _, _, fresh = await _owned_sources(harness.workspace, memory, uid)
     async with _lock(registry, row.agent_id):
@@ -722,6 +759,18 @@ async def _owned_sources(
         }
 
     selected = await asyncio.to_thread(eligible)
+    if ontology_agent_scope.get():
+        # A withdrawn fact must not silently return as a new candidate. Unreviewed
+        # owner quotes may prepare candidates; admission separately confirms sources.
+        selected = {
+            k: s
+            for k, s in selected.items()
+            if k not in graph.fact_confirmations or graph.fact_confirmations[k].get("atom_hash")
+        }
+        for key, item in selected.items():
+            item["owner_confirmed_fact"] = (
+                graph.fact_confirmations.get(key, {}).get("atom_hash") == item["atom_hash"]
+            )
     coverage.eligible_sources = len(selected)
     coverage.independent_events = len({s["experience_id"] for s in selected.values()})
     return (
