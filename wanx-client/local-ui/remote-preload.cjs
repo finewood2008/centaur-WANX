@@ -117,8 +117,11 @@ const actions = {
   ].map(([product, method]) => [`updates.${product}.${method}`, input => ipcRenderer.invoke(`wanx-client:updates-${product}-${method}`, input)])),
 };
 
-for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview"])
+for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
+
+for (const method of ["create", "list", "revoke", "audit", "config"])
+  actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
 
 async function action(name, input = {}) {
   const handler = actions[name];
@@ -161,6 +164,11 @@ contextBridge.exposeInMainWorld(
       const receive = (_event, state) => listener(projectState(state));
       ipcRenderer.on("wanx-client:state", receive);
       return () => ipcRenderer.removeListener("wanx-client:state", receive);
+    },
+    onSpaceContentChanged(listener) {
+      const receive = () => listener();
+      ipcRenderer.on("wanx-client:space-content-changed", receive);
+      return () => ipcRenderer.removeListener("wanx-client:space-content-changed", receive);
     },
     onSpaceState(listener) {
       const receive = (_event, state) => listener(state);
