@@ -1007,6 +1007,20 @@ class TeamManager:
             additional_kwargs=extra,
         )
         try:
+            # An unwatched inbox wrap-up is projected by the streaming path and
+            # then delivered again by the reply path. Keep one native bubble.
+            head = self._thread_message_repo.head(thread_id)
+            for row in self._thread_message_repo.range_rows(thread_id, head - 1, head):
+                if row.role != "ai":
+                    continue
+                previous = json.loads(row.message_json).get("data", {})
+                stamp = previous.get("additional_kwargs") or {}
+                if (
+                    previous.get("content") == body
+                    and stamp.get("speaker_agent_id") == speaker_id
+                    and bool(stamp.get("team_wrapup")) == wrapup
+                ):
+                    return
             self._thread_message_repo.append_if_ready(
                 thread_id,
                 message_inputs([msg], dedupe_missing_ids=True),

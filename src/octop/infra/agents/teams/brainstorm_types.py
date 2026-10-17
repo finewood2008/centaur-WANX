@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from octop.infra.agents.teams.council_types import CouncilBoard, ProposalRef, RosterRecommendation
+
 
 class SourceReference(BaseModel):
     id: str
@@ -22,6 +24,7 @@ class ContextResult(BaseModel):
 
 
 class MeetingOption(BaseModel):
+    proposal: ProposalRef | None = None
     label: str = Field(min_length=1, max_length=80)
     detail: str = Field(default="", max_length=300)
     effect: Literal["respond", "adopt", "revisit"] = Field(
@@ -36,6 +39,7 @@ class DecisionProposal(BaseModel):
 
 
 class MeetingDecision(BaseModel):
+    board_version: int | None = None
     id: str
     kind: Literal["intake", "agenda", "judgment", "verdict"]
     question: str
@@ -86,6 +90,13 @@ class BrainstormExpert(BaseModel):
 
 
 class BrainstormSession(BaseModel):
+    council: CouncilBoard | None = None
+    matter_id: str = ""
+    continued_from: str | None = None
+    referenced_meetings: list[str] = Field(default_factory=list)
+    inherited_background: list[str] = Field(default_factory=list)
+    recommended_roster: list[RosterRecommendation] = Field(default_factory=list)
+    confirmed_roster: list[str] = Field(default_factory=list)
     thread_id: str
     team_id: str
     user_id: int
@@ -120,6 +131,9 @@ class BrainstormSession(BaseModel):
 
 
 class SessionCreate(BaseModel):
+    continued_from: str | None = None
+    referenced_meetings: list[str] = Field(default_factory=list, max_length=5)
+    council_enabled: bool = False
     model_config = ConfigDict(extra="forbid")
     topic: str = Field(min_length=1, max_length=12000)
     context_enabled: bool = True
@@ -128,7 +142,11 @@ class SessionCreate(BaseModel):
 
 class SessionControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    participant_ids: list[str] | None = Field(default=None, min_length=2, max_length=12)
+    target_agent_id: str | None = None
+    proposal: ProposalRef | None = None
     action: Literal[
+        "defer",
         "pause",
         "resume",
         "end",
@@ -170,6 +188,7 @@ class ProfileConfigure(BaseModel):
 
 
 class BrainstormProfile(BaseModel):
+    capabilities: list[str] = Field(default_factory=lambda: ["personal_council_v1"])
     team_id: str | None = None
     members: list[BrainstormMember] = Field(default_factory=list)
     host_model: str | None = None

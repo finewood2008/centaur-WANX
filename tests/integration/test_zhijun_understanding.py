@@ -200,7 +200,8 @@ async def test_http_reading_invitation_review_is_optional_versioned_and_not_a_us
     tid = responses[0].json()["thread"]["thread_id"]
     assert tid == reserved_tid
     assert responses[1].json()["thread"]["thread_id"] == tid
-    current = responses[1].json()["state"]
+    # Concurrent requests need not acquire the state lock in submission order.
+    current = (await client.get("/api/zhijun/understanding", headers=own_auth)).json()
     assert current["invitations"][0]["discussion_thread_id"] == tid
     threads = (await client.get(f"/api/agents/{aid}/threads", headers=own_auth)).json()
     assert len(threads) == 1

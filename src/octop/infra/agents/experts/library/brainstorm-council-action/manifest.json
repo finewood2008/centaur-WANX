@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-council-action",
+  "label": {
+    "zh": "行动参谋",
+    "en": "Action advisor"
+  },
+  "description": {
+    "zh": "把方向变成能试的小步骤，说明怎么验证和何时调整。",
+    "en": "Turn directions into small feasible experiments and clear review conditions."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "把一个方向拆成一周能试的小步骤",
+      "什么结果出现时应该继续或停止",
+      "帮我设计一次不影响现有生活的尝试"
+    ],
+    "en": [
+      "Turn a direction into a small one-week experiment",
+      "Define signals for continuing or stopping",
+      "Plan a trial that preserves current commitments"
+    ]
+  }
+}

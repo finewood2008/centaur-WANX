@@ -91,6 +91,40 @@ def compile_report(
         [f"{j.question}\n\n{j.answer}\n" for j in state.judgments]
         or [tr("brainstorm.report.not_recorded", locale)],
     )
+    if state.council:
+        names = {m.agent_id: m.name for m in state.participants}
+        board = state.council
+        lines.extend(["", "## " + tr("brainstorm.council.proposals", locale)])
+        for proposal in board.proposals:
+            lines.append(
+                "### " + proposal.versions[-1].title + " · " + names.get(proposal.author_id, "")
+            )
+            for version in proposal.versions:
+                lines.append(
+                    "#### " + tr("brainstorm.council.version", locale, version=version.version)
+                )
+                for key, value in [
+                    ("advice", version.advice),
+                    ("basis", version.basis),
+                    ("cost", version.cost),
+                    ("reason", version.change_reason),
+                ]:
+                    if value:
+                        lines.append(tr("brainstorm.council." + key, locale) + ": " + value)
+                for review in board.reviews:
+                    if review.proposal_id == proposal.id and review.version == version.version:
+                        lines.append(names.get(review.author_id, "") + ": " + review.point)
+        if board.changes:
+            lines.extend(["", "## " + tr("brainstorm.council.changes", locale)])
+            lines.extend(
+                "- " + change.text
+                for change in board.changes
+                if change.kind in {"user", "context", "revision", "ruling", "defer"}
+            )
+        if state.inherited_background:
+            lines.extend(
+                ["", "## " + tr("brainstorm.council.prior", locale), *state.inherited_background]
+            )
     section(
         "participants",
         [
@@ -102,7 +136,7 @@ def compile_report(
     section(
         "sources",
         [
-            f"- {s.title} ({s.id}) {s.version} {s.provenance}"
+            f"- {s.title} · {tr('brainstorm.source_labels.' + s.kind, locale)}\n\n{s.text}"
             for s in state.context.sources
             if s.id not in state.excluded_source_ids and state.context_enabled
         ]
@@ -151,7 +185,7 @@ def report_document(report: MeetingReport) -> bytes:
     if border is not None:
         title_properties.remove(border)
     document.core_properties.title = report.title
-    document.core_properties.subject = "Super Advisory meeting report"
+    document.core_properties.subject = "Personal Council meeting report"
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()

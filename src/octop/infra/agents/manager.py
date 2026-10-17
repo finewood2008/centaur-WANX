@@ -71,6 +71,7 @@ from octop.infra.connectors.builder import (
     inject_missing_gateway_tools,
 )
 from octop.infra.connectors.service import ConnectorService
+from octop.infra.credits.runtime import metered_call, metered_stream
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.skills.presentation import apply_skill_presentation, localize_skill_summary
@@ -370,9 +371,9 @@ class AgentManager:
         )
         self._harness_manager: HarnessAgentManager | None = None
         self.memory_slim = MemorySlimCoordinator(self)
-        from octop.infra.agents.ontology_runtime import OntologyCoordinator
+        from octop.infra.agents.role_ontology_flow import RoleOntologyCoordinator
 
-        self.ontology = OntologyCoordinator(self)
+        self.ontology = RoleOntologyCoordinator(self)
         self._lock = asyncio.Lock()
         # Serialize start/reload per agent so parallel provider reloads cannot
         # double-register the same harness id ("already exists in the registry").
@@ -1350,6 +1351,7 @@ class AgentManager:
         finally:
             self._end_invocation(agent_id)
 
+    @metered_stream
     async def stream(self, agent_id: str, request: dict[str, Any]) -> AsyncIterator[Any]:
         """Stream harness chunks (Langfuse tracing handled inside octop-harness)."""
         if self._harness_manager is None:
@@ -1377,6 +1379,7 @@ class AgentManager:
                 )
             self._apply_pending_bootstrap_graph_refresh(agent_id)
 
+    @metered_call
     async def call(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Non-streaming harness invocation (one-shot agent call)."""
         if self._harness_manager is None:
@@ -1396,10 +1399,16 @@ class AgentManager:
         agent_id: str,
         thread_id: str,
         decisions: list[dict[str, Any]],
+        *,
+        user_id: int | None = None,
     ) -> AsyncIterator[Any]:
         """Resume a paused HITL interrupt for *thread_id*."""
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
+        if user_id is not None:
+            thread = await asyncio.to_thread(self._repos.thread_repo.get, thread_id)
+            if thread is None or thread.user_id != user_id or thread.agent_id != agent_id:
+                raise OctopError.localized(ErrorCode.FORBIDDEN)
         async with (
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
@@ -1414,6 +1423,9 @@ class AgentManager:
 
     def cancel_stream(self, agent_id: str, thread_id: str) -> None:
         """Signal octop-harness to stop the active stream for *(agent_id, thread_id)*."""
+        from octop.infra.credits.runtime import cancel
+
+        cancel(agent_id, thread_id)
         if self._harness_manager is not None:
             self._harness_manager.cancel(agent_id, thread_id)
 
@@ -2817,7 +2829,11 @@ class AgentManager:
         user_display: str = "User",
     ) -> None:
         from octop.infra.agents.teams import is_team_agent  # noqa: PLC0415
+        from octop.infra.credits.runtime import instrument_factory
 
+        factory = getattr(agent, "model_factory", None)
+        if factory is not None:
+            instrument_factory(factory, self._repos.db, application_id(row), row.user_id or 0)
         team_host = is_team_agent(row)
         private_product = application_id(row) != "wanx"
         if private_product:
@@ -3588,6 +3604,15 @@ class AgentManager:
                     lambda: self.get_agent(row.agent_id)._memory_runtime.service,
                 ),
             ]
+        if (
+            not zhijun
+            and application_id(row) == "wanx"
+            and row.user_id is not None
+            and not row.is_shared
+        ):
+            from octop.infra.agents.role_ontology import RoleOntologyMiddleware
+
+            agent_middleware.append(RoleOntologyMiddleware(self, row.agent_id, row.user_id))
         if application_id(row) not in {"wanx", "zhijun"}:
             from octop.infra.agents.middleware.zhijun import ZhijunMemoryBoundary
 
@@ -3616,6 +3641,10 @@ class AgentManager:
                     allow_peer_calls="teams" in caps,
                 ),
             ]
+        from octop.infra.loops.boundary import LoopBoundary
+
+        agent_middleware.append(LoopBoundary())
+
         # agent_list / ask_agent: PeerAgentMiddleware (team_enabled=True), not config.tools.
 
         acp_section = cfg.get("acp")
@@ -3761,6 +3790,15 @@ class AgentManager:
             **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
             **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
         )
+        if application_id(row) == "super-advisory":
+            # Native chat history remains intact. Cross-matter semantic recall must
+            # only enter via the meeting's owner-selected, attributable sources.
+            harness_cfg = replace(
+                harness_cfg,
+                memory_enabled=False,
+                memory_recall_inject_enabled=False,
+                memory=("AGENTS.md", "SOUL.md"),
+            )
         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
             from octop.infra.agents.settings.tool_catalog import effective_tools_disabled
             from octop.infra.agents.teams import host_tools_disabled

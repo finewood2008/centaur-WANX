@@ -216,7 +216,20 @@
     "DIGITAL_SELF_DISCLOSURE_REQUIRED": "交流前请确认本人可查看完整交谈及模型处理说明。",
     "DIGITAL_SELF_QUOTA": "今天的免费交流额度已用完。",
     "DIGITAL_SELF_CHANGED": "发布内容或访问权限发生变化，本轮回答已停止交付。",
-    "DIGITAL_SELF_CONFLICT": "内容已发生变化，请重新读取后再操作。"
+    "DIGITAL_SELF_CONFLICT": "内容已发生变化，请重新读取后再操作。",
+    "CREDITS_DISABLED": "统一积分账本未配置或未启用",
+    "CREDITS_IDENTITY": "需要已验证的万象账号身份",
+    "CREDITS_INVALID": "积分请求参数无效",
+    "CREDITS_CONFLICT": "积分请求与已有交易或任务状态冲突",
+    "CREDITS_INSUFFICIENT": "可用积分不足",
+    "CREDITS_NOT_FOUND": "未找到可访问的积分预留记录",
+    "CREDITS_FORBIDDEN": "没有执行此积分操作的权限",
+    "LOOP_INVALID": "环的配置或确认信息无效，请检查已有能力绑定。",
+    "LOOP_CONFLICT": "环或自动化状态已变化，请刷新后处理；修改配置前须暂停。",
+    "LOOP_TRIAL_REQUIRED": "请先成功试跑当前配置版本，再启用。",
+    "LOOP_LIMIT": "已达到运行轮数上限，请暂停并调整配置。",
+    "LOOP_CHANNEL_REQUIRED": "请先在「联系我」连接并核验本人的私聊账号，再试运行或启用消息发送任务。",
+    "LOOP_CHANNEL_INVALID": "这个环的私聊连接已失效。请到「联系我」修复此环的接收账号，保存并试运行后再开启。"
   },
   "nav": {
     "chat": "对话",

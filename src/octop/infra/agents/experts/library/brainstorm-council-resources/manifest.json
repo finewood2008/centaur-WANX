@@ -1,0 +1,28 @@
+{
+  "id": "brainstorm-council-resources",
+  "label": {
+    "zh": "资源参谋",
+    "en": "Resources advisor"
+  },
+  "description": {
+    "zh": "替你算时间、精力、金钱与机会成本，检查是否负担得起。",
+    "en": "Assess time, energy, money and opportunity costs."
+  },
+  "icon_name": "messages-square",
+  "color": "#a6452e",
+  "prompt_files": [
+    "SOUL.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "每周只有两小时，怎样安排更合适",
+      "比较两个方案的时间和费用",
+      "找出一个计划里容易被忽略的精力成本"
+    ],
+    "en": [
+      "Plan around two available hours per week",
+      "Compare time and money required by two options",
+      "Identify hidden energy costs in a plan"
+    ]
+  }
+}

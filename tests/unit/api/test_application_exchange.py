@@ -104,6 +104,7 @@ async def test_real_token_narrows_same_identity_and_never_extends_parent(environ
 @pytest.mark.parametrize(
     "bearer",
     [None, "not-a-jwt", token(secret=b"wrong-signing-key-at-least-32-bytes"), token(ttl=-1)],
+    ids=["missing", "malformed", "wrong-signature", "expired"],
 )
 async def test_rejects_missing_invalid_and_expired_credentials(environment, bearer):
     assert (await exchange(environment[0], bearer)).status_code == 401
@@ -202,3 +203,40 @@ def test_exchange_has_typed_openapi_request_and_response(environment):
     assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ApplicationExchangeResponse"
     )
+
+
+@pytest.mark.asyncio
+async def test_drive_shared_by_signed_apps_but_never_across_users(environment, tmp_path):
+    from octop.api.routers.personal_space import router as drive_router
+
+    _, server, products, _ = environment
+    server.paths = SimpleNamespace(root=tmp_path)
+    products.grants = {17, 18}
+    app = FastAPI()
+    app.state.octop_server = server
+    install_jwt(app, server)
+    app.include_router(drive_router, prefix="/api/personal-space")
+    first = {"Authorization": "Bearer " + token(scope="drive-first")}
+    second = {"Authorization": "Bearer " + token(scope="drive-second")}
+    other = {"Authorization": "Bearer " + token(uid=18, scope="drive-second")}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://box"
+    ) as client:
+        created = await client.post(
+            "/api/personal-space/folders", headers=first, json={"name": "shared"}
+        )
+        assert created.status_code == 200
+        item_id = created.json()["id"]
+        assert (await client.get("/api/personal-space/files", headers=second)).json()["items"][0][
+            "id"
+        ] == item_id
+        assert (await client.get("/api/personal-space/files", headers=other)).json()["items"] == []
+        assert (
+            await client.get(f"/api/personal-space/files/{item_id}", headers=other)
+        ).status_code == 404
+        assert (
+            await client.delete(f"/api/personal-space/files/{item_id}", headers=other)
+        ).status_code == 404
+        assert (await client.get("/api/personal-space/files")).status_code == 401
+        products.enabled = False
+        assert (await client.get("/api/personal-space/files", headers=second)).status_code == 403

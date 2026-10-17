@@ -67,6 +67,17 @@ async def dashboard_chat_ws(
         await websocket.close(code=code, reason=str(exc.code.value))
         return
 
+    from octop.infra.credits.metering import Meter
+    from octop.infra.db.repos.metering import MeterRepo
+
+    meter = Meter(MeterRepo(server.services.db))
+    try:
+        meter_account = meter.identity(websocket.headers.get("x-wanx-metering-session", ""))
+    except Exception:
+        logger.warning("Usage identity unavailable", exc_info=True)
+        meter_account = None
+    if meter_account and user.application_id not in ("wanx", meter_account["application_id"]):
+        meter_account = None
     connection_id = uuid.uuid4().hex
     await websocket.accept()
 
@@ -167,6 +178,8 @@ async def dashboard_chat_ws(
                 ws_connection_id=connection_id,
                 user_is_admin=bool(getattr(user, "is_admin", False)),
             )
+            if meter_account:
+                inbound.metadata["_meter_identity"] = meter_account
             hub.subscribe(prepared.thread_id, connection_id)
             channel_manager.enqueue(WS_CHANNEL_ID, inbound)
 

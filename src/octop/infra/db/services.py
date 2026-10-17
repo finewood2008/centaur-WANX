@@ -13,9 +13,12 @@ from octop.infra.db.repos.backends import BackendRepo
 from octop.infra.db.repos.care_push import CarePushRepo
 from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
+from octop.infra.db.repos.credits import CreditRepo
 from octop.infra.db.repos.cron import CronJobRepo
+from octop.infra.db.repos.dialogue import DialogueRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.loops import LoopRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
 from octop.infra.db.repos.published_experts import PublishedExpertRepo
@@ -47,12 +50,14 @@ class RepoBundle:
     provider_repo: ProviderRepo
     channel_repo: ChannelRepo
     cron_repo: CronJobRepo
+    loop_repo: LoopRepo
     session_repo: SessionRepo
     thread_repo: ThreadRepo
     thread_message_repo: ThreadMessageRepo
     trajectory_event_repo: TrajectoryEventRepo
     secret_repo: SecretRepo
     audit_repo: AuditRepo
+    credit_repo: CreditRepo
     usage_repo: UsageRepo
     settings_repo: SettingsRepo
     storage_backend_repo: BackendRepo
@@ -65,6 +70,7 @@ class RepoBundle:
     proactive_care_config_repo: ProactiveCareConfigRepo
     sso_repo: SsoRepo
     self_model_repo: SelfModelRepo
+    dialogue_repo: DialogueRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -78,12 +84,14 @@ class RepoBundle:
             provider_repo=ProviderRepo(db),
             channel_repo=ChannelRepo(db),
             cron_repo=CronJobRepo(db),
+            loop_repo=LoopRepo(db),
             session_repo=SessionRepo(db),
             thread_repo=ThreadRepo(db),
             thread_message_repo=ThreadMessageRepo(db),
             trajectory_event_repo=TrajectoryEventRepo(db),
             secret_repo=SecretRepo(db),
             audit_repo=AuditRepo(db),
+            credit_repo=CreditRepo(db),
             usage_repo=UsageRepo(db),
             settings_repo=SettingsRepo(db),
             storage_backend_repo=BackendRepo(db),
@@ -96,6 +104,7 @@ class RepoBundle:
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
             sso_repo=SsoRepo(db),
             self_model_repo=SelfModelRepo(db),
+            dialogue_repo=DialogueRepo(db),
         )
 
 
@@ -104,6 +113,10 @@ class SharedServices:
     paths: PathLayout
     config: OctopConfig
     repos: RepoBundle
+
+    @property
+    def credit_repo(self) -> CreditRepo:
+        return self.repos.credit_repo
 
     @property
     def db(self) -> DatabasePool:

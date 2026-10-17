@@ -206,6 +206,8 @@ async def _rehydrate_runtime_after_restore(server: Any) -> None:
     if cron_manager is not None:
         try:
             await cron_manager.reload_from_db()
+            if getattr(server.app_runtime, "loop_service", None) is not None:
+                await server.app_runtime.loop_service.reload()
         except Exception:
             logger.exception("post-restore cron rehydrate failed")
 

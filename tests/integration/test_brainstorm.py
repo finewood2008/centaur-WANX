@@ -967,7 +967,7 @@ async def test_flexible_experts_and_meeting_roster_isolation(
     assert response.status_code == 200, response.text
     profile = response.json()
     assert {m["expert_id"] for m in profile["members"]} == set(ids)
-    assert sum(e["recommended"] for e in profile["experts"]) == 8
+    assert sum(e["recommended"] for e in profile["experts"]) == 12
     # Host deployment bindings and positional legacy model writes stay out of scope.
     for body in ({"host_model": "openai/gpt-4o"}, {"member_models": ["openai/gpt-4o"] * 4}):
         assert (
