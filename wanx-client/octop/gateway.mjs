@@ -727,7 +727,7 @@ export async function createDashboardGateway({
       const endpoint = new URL(target);
       endpoint.protocol = target.protocol === "https:" ? "wss:" : "ws:";
       const upstreamPath = new URL(authorized.path, target);
-      if (authorized.token && !upstreamPath.searchParams.has("token") && !upstreamPath.searchParams.has("access_token"))
+      if (upstreamPath.pathname !== "/api/browser-stream/ws" && authorized.token && !upstreamPath.searchParams.has("token") && !upstreamPath.searchParams.has("access_token"))
         upstreamPath.searchParams.set("token", authorized.token);
       const socket = new WebSocket(endpoint.origin + upstreamPath.pathname + upstreamPath.search, protocols, {
         headers: authorized.headers,

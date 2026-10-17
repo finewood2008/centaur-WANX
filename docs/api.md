@@ -437,10 +437,18 @@ endpoint (public, mounted directly in `api/app.py`).
 | `WS`/`POST`/`GET`/… | `/agents/{aid}/terminal` | owner | AI-assisted remote PTY |
 | `GET` | `/agents/{aid}/terminal/context` | owner | recent terminal context for the AI helper |
 | `WS`/`POST`/`GET`/… | `/browser/...` | user | octop-browser sessions, live stream, record/replay |
+| `GET` | `/browser/control-capabilities` | browser permission | protocol version 1; server enforces exclusive input, header auth, keyboard and skill learning |
+| `POST` | `/browser/sessions/{session_id}/handoff` | browser permission | owned `agent_id` + `thread_id` when giving AI control; user handoff cancels and drains in-flight tools |
+| `WS` | `/browser-stream/ws` | browser permission | Bearer header preferred; legacy token query remains compatible; reconnect does not replay input |
+| `POST` | `/browser/model-access` | admin + browser permission | select existing enabled DeepSeek for an owned thread using native composer model; no task budget |
+| `GET` | `/browser/learning/status` | browser permission | current user's active demonstration metadata |
+| `POST` | `/browser/learning/start`, `/lease`, `/stop`, `/draft` | browser permission | current-page recorder with per-user ownership, expiring client lease and retained review draft |
 | `POST` | `/browser/shutdown` | user | stop the current user's Octop-managed Chrome |
 | `POST` | `/agents/{aid}/upload` | user | multipart upload → `{workspace}/inbound/` |
 | `POST` | `/agents/{aid}/files/access-urls` | user | refresh inbound media URLs (signed) |
 | `GET`  | `/agents/{aid}/files/{path}` | owner | read an inbound file |
+
+See [WANX AI browser integration](wanx-ai-browser.md) for deployment and live acceptance.
 
 ## Updates, ollama, i18n, plugins, slash, preferences
 

@@ -12,8 +12,12 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from octop.api.deps import current_user
+from octop.api.common.agent import assert_agent_access
+from octop.api.deps import current_user, get_server
+from octop.infra.browser.control import block_agent, control_for, drain, owner_for
+from octop.infra.browser.recovery import attachment_lock, create_with_page_recovery
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils.browser_media import user_browser_profile
 
 logger = logging.getLogger(__name__)
@@ -29,7 +33,7 @@ _CONTROL_OWNERS: dict[str, str] = {}
 
 def control_owner_for(session_id: str) -> str:
     """Return the current control owner for a session, defaulting to 'agent'."""
-    return _CONTROL_OWNERS.get(session_id, "agent")
+    return owner_for(session_id)
 
 
 class HandoffBody(BaseModel):
@@ -37,6 +41,8 @@ class HandoffBody(BaseModel):
 
     target: str  # "agent" | "user"
     reason: str = ""
+    agent_id: str = ""
+    thread_id: str = ""
 
 
 async def _is_session_alive(sess: Any, *, timeout: float = 2.0) -> bool:
@@ -63,6 +69,19 @@ async def _is_session_alive(sess: Any, *, timeout: float = 2.0) -> bool:
 
 
 async def resolve_harness_session(
+    profile_hint: str | None,
+    *,
+    server: Any | None = None,
+    agent_id: str | None = None,
+    create: bool = True,
+) -> Any | None:
+    async with attachment_lock((profile_hint or "").strip()):
+        return await _resolve_harness_session(
+            profile_hint, server=server, agent_id=agent_id, create=create
+        )
+
+
+async def _resolve_harness_session(
     profile_hint: str | None,
     *,
     server: Any | None = None,
@@ -151,11 +170,16 @@ async def resolve_harness_session(
     profile_manager = ProfileManager(base_dir=Path(hb_settings.profiles_dir))
 
     try:
-        sess = await BrowserSession.create(
-            profile=profile,
-            mode=launch_mode,  # type: ignore[arg-type]
-            settings=harness_settings,
-            profile_manager=profile_manager,
+        sess = await create_with_page_recovery(
+            lambda: BrowserSession.create(
+                profile=profile,
+                mode=launch_mode,  # type: ignore[arg-type]
+                settings=harness_settings,
+                profile_manager=profile_manager,
+            ),
+            profile_manager.get_or_create(profile),
+            host=hb_settings.cdp_host,
+            direct_cdp=bool(hb_settings.cdp_ws_url),
         )
     except Exception as exc:
         # Chrome exit 21 / ProcessSingleton usually means a stale lock or a
@@ -295,18 +319,32 @@ async def list_harness_sessions(user: Any = Depends(current_user)) -> dict[str, 
     return await harness_sessions_payload(user_browser_profile(user.id))
 
 
+@router.get("/browser/control-capabilities", summary="Browser control protocol capabilities")
+async def control_capabilities(user: Any = Depends(current_user)) -> dict[str, Any]:
+    if not user_has_permission(user, "browser"):
+        raise OctopError(ErrorCode.FORBIDDEN, "browser permission required")
+    return {
+        "version": 1,
+        "exclusive_control": True,
+        "keyboard": True,
+        "header_auth": True,
+        "skill_learning": 1,
+    }
+
+
 @router.post("/browser/sessions/{session_id}/handoff")
 async def handoff(
     session_id: str,
     body: HandoffBody,
     user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Switch control of a browser session between the agent and the user.
 
-    The control owner is a coordination hint (the agent yields interactive
-    input to the user while they are in control). It is stored in-memory per
-    session and reflected in ``harness-sessions`` and the WS screencast so a
-    takeover survives dashboard reloads and reconnects.
+    Managed sessions enforce control in the input and tool paths. Taking
+    manual control first blocks queued tools, cancels the active turn, then
+    drains in-flight browser work before reporting readiness. Ownership is
+    retained in memory across dashboard reloads and stream reconnections.
     """
     profile = user_browser_profile(user.id)
     if session_id not in {"", "auto"} and session_id != profile:
@@ -314,6 +352,32 @@ async def handoff(
     target = body.target
     if target not in ("agent", "user"):
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, "target must be 'agent' or 'user'")
+    if not user_has_permission(user, "browser"):
+        raise OctopError(ErrorCode.FORBIDDEN, "browser permission required")
+    control = control_for(profile)
+    if target == "agent" and body.thread_id:
+        assert_agent_access(server, body.agent_id, user)
+        row = server.app_runtime.gateway.thread_registry.get_thread(body.thread_id)
+        if row is None or row.user_id != user.id or row.agent_id != body.agent_id:
+            raise OctopError(ErrorCode.FORBIDDEN, "thread access denied")
+    if target == "user":
+        block_agent(profile)
+        if control.thread_id:
+            server.app_runtime.agent_registry.cancel_stream(control.agent_id, control.thread_id)
+        ready = await drain(control)
+        if ready and control.thread_id:
+            ready = not server.app_runtime.gateway.ws_hub.is_turn_active(control.thread_id)
+        if not ready:
+            return {"ok": True, "pending": True, "control_owner": "user"}
+        control.thread_id = ""
+        control.agent_id = ""
+    else:
+        if control.managed and not body.thread_id:
+            raise OctopError(ErrorCode.FORBIDDEN, "managed browser requires a thread")
+        async with control.lock:
+            control.owner = "agent"
+            control.thread_id = body.thread_id
+            control.agent_id = body.agent_id
     _CONTROL_OWNERS[profile] = target
 
     payload = await harness_sessions_payload(profile)
@@ -365,3 +429,31 @@ async def shutdown_browser(user: Any = Depends(current_user)) -> dict[str, Any]:
             status=503,
         )
     return {"ok": True, "profile": hint}
+
+
+class ModelAccessBody(BaseModel):
+    agent_id: str
+    thread_id: str
+
+
+@router.post(
+    "/browser/model-access", summary="Use the configured DeepSeek in an owned browser thread"
+)
+async def browser_model_access(
+    body: ModelAccessBody,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Opt an owned browser conversation into the administrator's configured DeepSeek."""
+    from octop.infra.browser.model_access import configured_model
+
+    if not user.is_admin or not user_has_permission(user, "browser"):
+        raise OctopError(ErrorCode.FORBIDDEN, "administrator browser access required")
+    assert_agent_access(server, body.agent_id, user)
+    threads = server.app_runtime.gateway.thread_registry
+    row = threads.get_thread(body.thread_id)
+    if row is None or row.user_id != user.id or row.agent_id != body.agent_id:
+        raise OctopError(ErrorCode.FORBIDDEN, "thread access denied")
+    ref = configured_model(server.app_runtime.agent_registry)
+    threads.update_composer(body.thread_id, model_ref=ref)
+    return {"mode": "configured-provider", "model_ref": ref, "task_budget_required": False}
