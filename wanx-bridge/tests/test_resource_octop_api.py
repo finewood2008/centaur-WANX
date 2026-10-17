@@ -342,7 +342,11 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
         return httpx.Response(200, json={"code": 200, "success": True, "data": data})
 
     class LocalAdmin:
-        async def _admin(self, method: str, path: str, **kwargs: Any) -> Any:
+        async def _admin(
+            self, method: str, path: str, *, retry_auth: bool = True, **kwargs: Any
+        ) -> Any:
+            if method == "POST" and path.startswith("/api/skill-packages"):
+                assert retry_auth is False
             return await client.request(method, path, headers=admin, **kwargs)
 
         async def request(self, method: str, path: str, **kwargs: Any) -> Any:
@@ -374,9 +378,7 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
     context = {
         "device_id": "fixture-box",
         "ownership_epoch": 1,
-        "sub": "a898cd6c-bca4-42dc-9a35-4165c20b5d21"
-        if controlled_resources
-        else "fixture-consumer",
+        "sub": "a898cd6c-bca4-42dc-9a35-4165c20b5d21",
     }
     session = SimpleNamespace(user=me)
     result = await runtime.prepare(body, session, context, user_request, live)
@@ -408,6 +410,38 @@ async def test_resource_runtime_pins_existing_history_through_real_octop(
     assert len(global_packages.json()) == 1
     inspected = await runtime.inspect(body, session, context, user_request, live)
     assert inspected["status"] == "ready"
+    # A schema-2 artifact prepares its own durable selection without rewriting
+    # the live schema-1 application ledger or the customer's private workspace.
+    active_ledgers = {
+        path: path.read_bytes() for path in (catalog.directory / "bindings").glob("*.json")
+    }
+    candidate_body = {
+        **body,
+        "schemaVersion": 2,
+        "artifactId": "a81c64e2-5ce7-4f73-a312-0bbef6c54071",
+        "operationId": "fixture-install-2",
+    }
+    candidate = await runtime.prepare_candidate(
+        candidate_body, session, context, user_request, live
+    )
+    assert candidate["status"] == "ready", candidate
+    assert candidate["bindings"] == result["bindings"]
+    assert all(path.read_bytes() == raw for path, raw in active_ledgers.items())
+    candidate_inspect = {
+        key: candidate[key]
+        for key in ("schemaVersion", "applicationId", "artifactId", "bindingSetId")
+    }
+    assert (
+        await runtime.inspect_candidate(candidate_inspect, session, context, user_request, live)
+    )["bindings"] == candidate["bindings"]
+    if (
+        not controlled_resources
+        and not share_experts
+        and os.environ.get("WANX_WRITE_RESOURCE_CANDIDATE_FIXTURE") == "1"
+    ):
+        destination = Path(__file__).parent / "fixtures/resources-prepare-v2.json"
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_text(json.dumps(candidate, ensure_ascii=False, indent=2) + "\n")
     if (
         not controlled_resources
         and not share_experts

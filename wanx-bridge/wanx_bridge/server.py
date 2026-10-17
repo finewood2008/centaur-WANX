@@ -293,8 +293,7 @@ def create_app(
         await _call(auth.assert_live, session)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/platform/applications/prepare")
-    async def application_prepare(request: Request) -> JSONResponse:
+    async def resource_operation(request: Request, operation: str) -> JSONResponse:
         marker = _credentials(request.headers, request.query_params, required=True)
         session = await _call(auth.authorize, marker)
         body = await _body(request)
@@ -307,6 +306,8 @@ def create_app(
 
         async def upstream_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
             await live()
+            if operation == "inspect_candidate" and (method != "GET" or kwargs):
+                raise _error("RESOURCE_READ_ONLY_VIOLATION", 500)
             if not path.startswith("/api/") or path.startswith("//"):
                 raise _error("RESOURCE_UPSTREAM_PATH_INVALID", 400)
             req = client.build_request(
@@ -321,9 +322,24 @@ def create_app(
             await live()
             return response
 
-        result = await resources.prepare(body, session, context, upstream_request, live)
+        handler = getattr(resources, operation, None)
+        if handler is None:
+            raise _error("APPLICATION_CONTRACT_UNSUPPORTED", 422)
+        result = await handler(body, session, context, upstream_request, live)
         await live()
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/platform/applications/prepare")
+    async def application_prepare(request: Request) -> JSONResponse:
+        return await resource_operation(request, "prepare")
+
+    @app.post("/api/platform/applications/candidates/prepare")
+    async def application_candidate_prepare(request: Request) -> JSONResponse:
+        return await resource_operation(request, "prepare_candidate")
+
+    @app.post("/api/platform/applications/candidates/inspect")
+    async def application_candidate_inspect(request: Request) -> JSONResponse:
+        return await resource_operation(request, "inspect_candidate")
 
     @app.post("/api/platform/applications/readiness")
     async def application_readiness(request: Request) -> JSONResponse:
@@ -357,7 +373,13 @@ def create_app(
                 return await get(path)
 
             context = await _call(auth.resource_context, session)
-            return await resources.inspect(resource_body, session, context, request_resource, live)
+            operation = (
+                "inspect_candidate" if resource_body.get("schemaVersion") == 2 else "inspect"
+            )
+            handler = getattr(resources, operation, None)
+            if handler is None:
+                raise _error("APPLICATION_CONTRACT_UNSUPPORTED", 422)
+            return await handler(resource_body, session, context, request_resource, live)
 
         result = await diagnose_application(
             body,

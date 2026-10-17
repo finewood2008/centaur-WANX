@@ -132,7 +132,7 @@ export async function createApplicationManager({
   let closed = false, closing, maintenance = false;
   const launcher = createApplicationLauncher({
     resolveRecord: async id => {
-      const record = await installer.resolveCurrent(id);
+      let record = await installer.resolveCurrent(id);
       if (record.protocolVersion < 2) return record;
       // Derive identity from the envelope again, not the mutable descriptor
       // copy in the local install record.
@@ -152,6 +152,18 @@ export async function createApplicationManager({
           getCompatibilityContext: input => compatibilityContext(input, previousWriter), descriptor, phase: "import",
           trustedDataContinuity: sameWriter(previousWriter, writer),
         });
+        // A binding is scoped to an account, device and ownership epoch. Keep
+        // the legacy launch path for pre-candidate installs; new selections
+        // revalidate/rebind the same signed artifact before opening on a box.
+        if (record.bindingSetId) {
+          const prepared = await installer.prepareCurrent(id, { signal: controller.signal });
+          if (prepared.artifactId !== record.artifactId) throw Object.assign(new Error("UPDATE_SESSION_CHANGED"), { code: "UPDATE_SESSION_CHANGED" });
+          if (prepared.resourcePreparation?.status !== "ready") {
+            const code = prepared.resourcePreparation?.code || "APPLICATION_RESOURCES_NOT_READY";
+            throw Object.assign(new Error(code), { code });
+          }
+          record = prepared;
+        }
       }
       let preparedConnection;
       await assertApplicationCompatibility(record, {

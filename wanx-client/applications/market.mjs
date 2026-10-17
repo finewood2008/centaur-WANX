@@ -34,7 +34,10 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
     assertId(id);
     assertSession();
     if (!targetOS || !["x64", "arm64"].includes(arch)) return { status: "incompatible", reason: "unsupported_platform" };
-    const installed = (await applications.listInstalled()).find((item) => item.applicationId === id);
+    const local = (await applications.listInstalled()).find((item) => item.applicationId === id);
+    // A downloaded frontend whose box dependencies are still pending has no
+    // current version. Keep offering the same signed artifact for preparation.
+    const installed = local?.installationState === "pending" ? null : local;
     assertSession();
     if (installed?.selectionRequired) return { status: "incompatible", reason: "version_selection_required" };
     const comparable = installed && isComparableApplicationVersion(installed.version);

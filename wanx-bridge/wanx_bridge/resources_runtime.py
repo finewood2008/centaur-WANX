@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from .admin_client import AdminClient, BridgeUpstreamError
 from .config import BridgeAuthError
 from .managed_resource_guard import CONTROLLED_MARKER, SHARED_MARKER
 from .resource_cache import cache_io
+from .resource_coordination import ResourceWriteCoordinator, write_digest
 from .resource_instances import ResourceInstances, instance_identity
 from .resources import ResourceCatalog, atomic, private_bytes
 from .resources_contract import (
@@ -83,6 +85,65 @@ class ResourceRuntime:
     ) -> dict[str, Any]:
         return await self.prepare(body, session, context, request, assert_live, read_only=True)
 
+    async def prepare_candidate(
+        self,
+        body: dict[str, Any],
+        session: Any,
+        context: dict[str, Any],
+        request: Any,
+        assert_live: Any,
+    ) -> dict[str, Any]:
+        fields(body, {"schemaVersion", "applicationId", "artifactId", "operationId"})
+        if (
+            type(body["schemaVersion"]) is not int
+            or body["schemaVersion"] != 2
+            or not isinstance(body["operationId"], str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", body["operationId"])
+        ):
+            raise fail()
+        return await self.prepare(
+            {
+                "schemaVersion": 1,
+                "applicationId": body["applicationId"],
+                "artifactId": body["artifactId"],
+            },
+            session,
+            context,
+            request,
+            assert_live,
+            _candidate={"operationId": body["operationId"]},
+        )
+
+    async def inspect_candidate(
+        self,
+        body: dict[str, Any],
+        session: Any,
+        context: dict[str, Any],
+        request: Any,
+        assert_live: Any,
+    ) -> dict[str, Any]:
+        fields(body, {"schemaVersion", "applicationId", "artifactId", "bindingSetId"})
+        if (
+            type(body["schemaVersion"]) is not int
+            or body["schemaVersion"] != 2
+            or not isinstance(body["bindingSetId"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", body["bindingSetId"])
+        ):
+            raise fail()
+        return await self.prepare(
+            {
+                "schemaVersion": 1,
+                "applicationId": body["applicationId"],
+                "artifactId": body["artifactId"],
+            },
+            session,
+            context,
+            request,
+            assert_live,
+            read_only=True,
+            _candidate={"bindingSetId": body["bindingSetId"]},
+        )
+
     async def prepare(
         self,
         body: dict[str, Any],
@@ -92,6 +153,7 @@ class ResourceRuntime:
         assert_live: Any,
         *,
         read_only: bool = False,
+        _candidate: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         fields(body, {"schemaVersion", "applicationId", "artifactId"})
         if body["schemaVersion"] != 1 or type(body["schemaVersion"]) is not int:
@@ -108,7 +170,7 @@ class ResourceRuntime:
             raise fail()
         user = session["user"] if isinstance(session, dict) else session.user
         result = {
-            "schemaVersion": 1,
+            "schemaVersion": 2 if _candidate is not None else 1,
             "applicationId": application_id,
             "artifactId": artifact_id,
             "deviceId": self.catalog.config.device_id,
@@ -177,6 +239,11 @@ class ResourceRuntime:
             if account_id is None:
                 raise fail("RESOURCE_ACCOUNT_IDENTITY_INVALID", 403)
             result["releaseAccess"] = "account"
+        if (
+            resolution.get("applicationId") != application_id
+            or resolution.get("artifactId") != artifact_id
+        ):
+            raise fail("RESOURCE_APPLICATION_IDENTITY_MISMATCH", 502)
         await assert_live()
         product = resolution["backendProductId"]
         result["backendProductId"] = product
@@ -195,14 +262,88 @@ class ResourceRuntime:
         }
         scope_id = _digest(scope)
         path = self.catalog.directory / "bindings" / (scope_id + ".json")
+        legacy_path = path
+        if _candidate is not None:
+            # New candidates have a fixed authority/artifact scope, independent
+            # of the schema-1 active ledger used by older clients.
+            scope = {
+                key: scope[key]
+                for key in (
+                    "device_id",
+                    "ownership_epoch",
+                    "sub",
+                    "user_id",
+                    "application_id",
+                    "product",
+                )
+            }
+            operation_id = _candidate.get("operationId")
+            if operation_id is None:
+                candidate_path = (
+                    self.catalog.directory / "binding-sets" / (_candidate["bindingSetId"] + ".json")
+                )
+                if not candidate_path.exists():
+                    result.update(schemaVersion=2, code="RESOURCE_BINDING_SET_NOT_FOUND")
+                    return result
+                stored_candidate = json.loads(private_bytes(candidate_path, 16 * 1024 * 1024))
+                stored_scope = stored_candidate.get("scope", {})
+                operation_id = stored_scope.get("operation_id")
+                if (
+                    not isinstance(operation_id, str)
+                    or any(stored_scope.get(key) != value for key, value in scope.items())
+                    or stored_scope.get("artifact_id") != artifact_id
+                ):
+                    raise fail("RESOURCE_BINDING_SET_SCOPE_MISMATCH", 403)
+            binding_set_id = _digest(
+                {"scope": scope, "artifactId": artifact_id, "operationId": operation_id}
+            )
+            if "bindingSetId" in _candidate and _candidate["bindingSetId"] != binding_set_id:
+                raise fail("RESOURCE_BINDING_SET_SCOPE_MISMATCH", 403)
+            scope = {
+                **scope,
+                "artifact_id": artifact_id,
+                "operation_id": operation_id,
+                "binding_set_id": binding_set_id,
+            }
+            scope_id = _digest(scope)
+            path = self.catalog.directory / "binding-sets" / (binding_set_id + ".json")
+            result.update(
+                schemaVersion=2,
+                bindingSetId=binding_set_id,
+                operationId=operation_id,
+                bindingScope={
+                    "accountId": context["sub"],
+                    "deviceId": scope["device_id"],
+                    "ownershipEpoch": scope["ownership_epoch"],
+                    "artifactId": artifact_id,
+                },
+            )
         async with self.lock:
             lock_path = self.catalog.directory / "prepare.lock"
             fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            coordinator = None
+            durable_ready = False
             try:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError as exc:
                     raise fail("RESOURCE_PREPARATION_BUSY", 409) from exc
+                if not read_only:
+                    coordinator = ResourceWriteCoordinator.from_env(
+                        device_id=context["device_id"],
+                        ownership_epoch=context["ownership_epoch"],
+                        operation_id="resource-prepare-" + _digest([scope, artifact_id]),
+                        scope_digest=scope_id,
+                    )
+
+                original_request = request
+
+                async def coordinated_request(method: str, url: str, **kwargs: Any) -> Any:
+                    return await self._coordinated_request(
+                        coordinator, original_request, method, url, check_live=assert_live, **kwargs
+                    )
+
+                request = coordinated_request
                 ledger = (
                     json.loads(private_bytes(path, 16 * 1024 * 1024))
                     if path.exists()
@@ -210,10 +351,39 @@ class ResourceRuntime:
                 )
                 if ledger.get("scope") != scope or not isinstance(ledger.get("resources"), dict):
                     raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                if _candidate is not None:
+                    if path.exists():
+                        if ledger.get("bindingSetStatus") not in {"preparing", "ready"} or (
+                            ledger["bindingSetStatus"] == "ready" and ledger.get("pendingResources")
+                        ):
+                            raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                    else:
+                        ledger["bindingSetStatus"] = "preparing"
+                    if read_only and ledger["bindingSetStatus"] != "ready":
+                        result["code"] = "RESOURCE_NOT_PREPARED"
+                        return result
+                if (
+                    _candidate is not None
+                    and not path.exists()
+                    and not read_only
+                    and legacy_path.exists()
+                ):
+                    legacy = json.loads(private_bytes(legacy_path, 16 * 1024 * 1024))
+                    if legacy.get("scope") != {
+                        **context,
+                        "user_id": me["id"],
+                        "application_id": application_id,
+                        "product": product,
+                    } or not isinstance(legacy.get("resources"), dict):
+                        raise fail("RESOURCE_LOCAL_STATE_INVALID", 503)
+                    # Sharing an already verified reference is safe; pending
+                    # writes stay with their original operation and are not adopted.
+                    ledger["resources"] = copy.deepcopy(legacy["resources"])
 
                 active_resources = copy.deepcopy(ledger["resources"])
                 publish_bindings = False
                 authorized_resources: set[str] = set()
+                instances = ResourceInstances(self.catalog.directory)
 
                 async def authorize_resource(envelope: dict[str, Any]) -> None:
                     payload = self.catalog.verify(envelope)
@@ -230,6 +400,7 @@ class ResourceRuntime:
                 async def save() -> None:
                     await assert_live()
                     if not read_only:
+                        await cache_io(coordinator.begin)
                         durable = dict(ledger)
                         # Persist intents/candidates immediately, but publish the
                         # complete application binding set with one atomic replace.
@@ -237,6 +408,10 @@ class ResourceRuntime:
                         # a new global version alongside an old private copy.
                         if not publish_bindings:
                             durable["resources"] = active_resources
+                        if _candidate is not None:
+                            durable["bindingSetStatus"] = (
+                                "ready" if publish_bindings else "preparing"
+                            )
                         await cache_io(atomic, path, canonical(durable))
 
                 async def remember_resolution() -> None:
@@ -287,15 +462,71 @@ class ResourceRuntime:
                     ]
                     # Instance IDs carry conversation/history identity. A newly
                     # published resource is offered, never implicitly substituted.
+                    if (
+                        _candidate is not None
+                        and path.exists()
+                        and ledger["bindingSetStatus"] != "ready"
+                    ):
+                        result.update(status="blocked", code="RESOURCE_NOT_PREPARED")
+                        return result
+                    if _candidate is not None and not read_only and not path.exists():
+                        # Index verified legacy references without adopting a
+                        # pending operation or changing the old active ledger.
+                        for resource in current["resources"]:
+                            record = ledger["resources"][
+                                resource["kind"] + ":" + resource["resourceId"]
+                            ]
+                            identity = instance_identity(
+                                self.catalog.verify(record["envelope"]), scope
+                            )
+                            if identity is None:
+                                continue
+                            existing = await instances.read(identity)
+                            if existing is None:
+                                await cache_io(coordinator.begin)
+                                shared = copy.deepcopy(record)
+                                shared["sharedIdentity"] = identity
+                                if resource["kind"] == "expert":
+                                    shared["dependencyResources"] = {
+                                        "skill-package:" + resource_id: copy.deepcopy(
+                                            ledger["resources"]["skill-package:" + resource_id]
+                                        )
+                                        for resource_id in record.get("dependencyDigests", {})
+                                    }
+                                await instances.write(identity, shared)
+                            elif (
+                                existing.get("status") != "ready"
+                                or existing.get("version") != record.get("version")
+                                or existing.get("digest") != record.get("digest")
+                                or existing.get("instanceId", existing.get("packageId"))
+                                != record.get("instanceId", record.get("packageId"))
+                            ):
+                                raise fail("RESOURCE_INSTANCE_CONFLICT")
+                        publish_bindings = True
+                        await save()
+                    durable_ready = True
                     await remember_resolution()
                     return result
+                if _candidate is not None and read_only:
+                    result["code"] = "RESOURCE_NOT_PREPARED"
+                    return result
+                if _candidate is not None and ledger["bindingSetStatus"] == "ready":
+                    # An already selectable binding set is immutable. Changed
+                    # requirements or missing local files need a new operation,
+                    # never a replacement hidden behind the same bindingSetId.
+                    result["code"] = "RESOURCE_NOT_PREPARED"
+                    return result
+                if not read_only:
+                    # Close the race with host OTA before downloading/preparing
+                    # a new resource set. Cache hits and read-only inspections
+                    # do not need write admission.
+                    await cache_io(coordinator.begin)
                 latest_envelopes = {
                     item["payload"]["kind"] + ":" + item["payload"]["resourceId"]: item
                     for item in resolution["resources"]
                 }
                 minimums: dict[str, str] = {}
                 selected_envelopes: dict[str, Any] = {}
-                instances = ResourceInstances(self.catalog.directory)
 
                 async def adopt_shared(dependency: dict[str, Any]) -> None:
                     key = dependency["kind"] + ":" + dependency["resourceId"]
@@ -473,6 +704,7 @@ class ResourceRuntime:
                                             for _, dependency in needed
                                         }
                                     await assert_live()
+                                    await cache_io(coordinator.begin)
                                     # Persist the common intent before either the
                                     # application ledger or an external API write.
                                     await instances.write(identity, shared)
@@ -491,6 +723,7 @@ class ResourceRuntime:
                                     assert_live,
                                     envelope,
                                     shared_pool=identity is not None,
+                                    coordinator=coordinator,
                                 )
                             else:
                                 seen_skills: set[str] = set()
@@ -558,7 +791,11 @@ class ResourceRuntime:
                             if ledger["resources"].get(key) is ledger["pendingResources"][key]:
                                 ledger["pendingResources"].pop(key)
                         await save()
+                    durable_ready = True
                 except (BridgeAuthError, BridgeUpstreamError, httpx.HTTPError, OSError) as exc:
+                    if coordinator is not None:
+                        await cache_io(coordinator.mark_uncertain)
+                    result.update(status="blocked", resources=[], bindings=[])
                     ledger["resources"] = active_resources
                     error_code = getattr(exc, "code", "RESOURCE_UPSTREAM_OPERATION_FAILED")
                     # New content must never turn a working compatible installation
@@ -582,11 +819,44 @@ class ResourceRuntime:
                 await remember_resolution()
                 return result
             except BridgeAuthError as exc:
-                result["code"] = exc.code
+                result.update(status="blocked", code=exc.code)
                 return result
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
+                try:
+                    if coordinator is not None:
+                        await cache_io(coordinator.finish, durable_ready)
+                except BridgeAuthError as exc:
+                    result.update(status="blocked", code=exc.code)
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+
+    @staticmethod
+    async def _coordinated_request(
+        coordinator: ResourceWriteCoordinator | None,
+        request: Any,
+        method: str,
+        path: str,
+        check_live: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+            return await request(method, path, **kwargs)
+        if coordinator is not None:
+            await cache_io(coordinator.before_write, write_digest(method, path, kwargs))
+        try:
+            if check_live is not None:
+                await check_live()
+            response = await request(method, path, **kwargs)
+            if check_live is not None:
+                await check_live()
+            return response
+        except BaseException:
+            # A timeout, cancellation, or connection reset cannot prove whether
+            # Octop committed this write. Never release the OTA barrier on it.
+            if coordinator is not None:
+                await cache_io(coordinator.mark_uncertain)
+            raise
 
     async def _current(
         self,
@@ -737,6 +1007,7 @@ class ResourceRuntime:
         envelope: dict[str, Any],
         *,
         shared_pool: bool = False,
+        coordinator: ResourceWriteCoordinator | None = None,
     ) -> dict[str, Any]:
         record = ledger["resources"].get(key)
         digest = payload["package"]["sha256"]
@@ -801,9 +1072,13 @@ class ResourceRuntime:
                 record["createRequested"] = True
                 await save()
                 await assert_live()
-                row = await self.admin.request(
+                row = await self._coordinated_request(
+                    coordinator,
+                    self.admin.request,
                     "POST",
                     "/api/skill-packages",
+                    check_live=assert_live,
+                    retry_auth=False,
                     json={
                         "name": record["name"],
                         "description": record["marker"],
@@ -834,9 +1109,13 @@ class ResourceRuntime:
             record["pendingSkill"] = slug
             await save()
             await assert_live()
-            await self.admin.request(
+            await self._coordinated_request(
+                coordinator,
+                self.admin.request,
                 "POST",
                 "/api/skill-packages/" + quote(record["packageId"], safe="") + "/skills",
+                check_live=assert_live,
+                retry_auth=False,
                 json={"name": slug, "files": files, "overwrite": False},
             )
             record["skills"][slug] = hashlib.sha256(raw).hexdigest()
