@@ -12,6 +12,12 @@ const creditsView = window.createCreditsView({ request: async (action, input) =>
   if (!response.ok) throw new Error(response.code);
   return response.value;
 }, changed: () => { if (currentState) render(currentState); } });
+const supportView = window.createSupportView({ request: async (action, input) => {
+  const response = await window.wanxClient.action(action, input);
+  if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) throw new Error("SUPPORT_SESSION_CHANGED");
+  if (!response.ok) throw new Error(response.code);
+  return response.value;
+}, changed: () => { if (currentState) render(currentState); } });
 let marketItems = [];
 let marketCandidates = new Map();
 let marketLoading = false;
@@ -202,7 +208,7 @@ const selection = createDiscoverySelection({
     void run("provisioning.start", { candidate, mode: selected?.mode || "claim" });
   },
 });
-window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); }, { once: true });
+window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); supportView.close(); }, { once: true });
 window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); clearTimeout(passwordResendTimer); }, { once: true });
 const stageLabels = {
   discover: "发现盒子",
@@ -266,7 +272,7 @@ function deviceCard(device) {
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
     <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
@@ -570,6 +576,7 @@ function boxesView() {
     <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted">连接或切换盒子后，文件空间和应用将使用所选盒子。</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
     <section class="box-network" aria-label="连接设置"><div><h3>万象网络</h3><p class="muted">${network.label} · ${network.detail}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
     ${ownershipView()}
+    ${supportView.render()}
   </div></div>${confirmationView()}`;
 }
 
@@ -1118,6 +1125,8 @@ function render(state) {
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
   window.wanxSpace?.activate(!auth && ["space", "boxes"].includes(page), page === "space");
+  supportView.sync(auth || state.account?.phase !== "authenticated" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]), state.devices || []);
+  supportView.visible(!auth && page === "boxes");
   scheduleBoxUpdatePolling();
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
@@ -1461,6 +1470,12 @@ app.addEventListener("click", async (event) => {
     app.querySelector?.('[data-action="poster-close"]')?.focus?.(); return;
   }
   if (action === "poster-close") { posterPreview = null; render(currentState); app.querySelector?.('[data-action="poster-open"]')?.focus?.(); return; }
+  if (action.startsWith("support-")) {
+    if (busy || page !== "boxes") return;
+    await supportView.action(action, target.dataset);
+    if (action === "support-open") app.querySelector?.(".support-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    return;
+  }
   if (action === "market-cancel") { marketConfirmation = null; render(currentState); return; }
   if (action === "market-confirm") {
     const confirmation = marketConfirmation;

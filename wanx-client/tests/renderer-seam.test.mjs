@@ -24,6 +24,21 @@ const devices = ["102", "103"].map((id) => ({
   deviceId: `box-${id}`, displayName: `CentuarAI-AMD-${id}`, accessState: "ready", canOpen: true,
 }));
 
+const supportDeviceId = "centauros-37859979e324b9e257c586da";
+function supportState() {
+  // The real network directory intentionally does not include ownershipEpoch.
+  return { ...state("unavailable", "disabled"), network: { enabled: false, phase: "disabled" },
+    devices: [{ deviceId: supportDeviceId, displayName: "离线测试盒", deviceRole: "owner", canOpen: false, accessState: "authorization_pending" }] };
+}
+function supportReceipt(overrides = {}) {
+  return { deviceId: supportDeviceId, ownershipEpoch: 7, request: {
+    registryDeviceId: supportDeviceId, ownershipEpoch: 7, requestId: "request-1", requestDigest: "a".repeat(64),
+    operatorName: "维护人员 <甲>", operatorId: "admin:7", reason: "检查桌面 <img src=x>", scope: "support.vnc", durationMinutes: 15,
+    requestExpiresAt: new Date(Date.now() + 300000).toISOString(), decision: "pending", authorization: "none", supportRevision: 0,
+    supportSessionId: null, observation: null, ...overrides,
+  } };
+}
+
 function state(platformPhase = "ready", networkPhase = "ready", boxId = null) {
   return {
     account: { phase: "authenticated", accountId: "account-1" },
@@ -152,6 +167,7 @@ async function harness(initial = state(), installed = [application], options = {
     },
     credits: options.credits,
     accountProfile: options.accountProfile,
+    support: options.support,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -1574,6 +1590,112 @@ function pendingResponse() {
 }
 const flushActions = () => new Promise(resolve => setImmediate(resolve));
 const actionButton = (h, action) => h.app.innerHTML.match(new RegExp(`<button[^>]*data-action="${action}"[^>]*>[\\s\\S]*?</button>`))?.[0];
+
+test("Owner support uses cloud IPC while offline, confirms approval and keeps revocation pending device cleanup", async () => {
+  let receipt = supportReceipt();
+  const decisions = [], revocations = [];
+  const h = await harness(supportState(), [], { support: {
+    current: async input => { assert.equal(input.deviceId, supportDeviceId); return receipt; },
+    decide: async input => { decisions.push(input); receipt = supportReceipt({ decision: input.decision, authorization: "active", supportRevision: 1, supportSessionId: "session-1", expiresAt: new Date(Date.now() + 900000).toISOString() }); return receipt; },
+    revoke: async input => { revocations.push(input); receipt = supportReceipt({ ...receipt.request, authorization: "revoked", supportRevision: 2 }); return receipt; },
+  } });
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /data-action="support-open"/);
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, /等待你确认/);
+  for (const detail of [/维护人员 &lt;甲&gt;/, /admin:7/, /检查桌面 &lt;img src=x&gt;/, /查看并控制盒子桌面/, /15 分钟/]) assert.match(h.app.innerHTML, detail);
+  assert.doesNotMatch(h.app.innerHTML, /<img src=x>/);
+  await h.click("support-approve");
+  assert.equal(decisions.length, 0);
+  assert.match(h.app.innerHTML, /确认允许.*15 分钟/);
+  await h.click("support-confirm");
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(decisions[0])), { deviceId: supportDeviceId, ownershipEpoch: 7, requestId: "request-1", requestDigest: "a".repeat(64), decision: "approved", confirmed: true });
+  assert.match(h.app.innerHTML, /已同意本次远程桌面协助/);
+  await h.click("support-revoke");
+  assert.equal(revocations.length, 0);
+  await h.click("support-confirm");
+  assert.equal(revocations[0].supportSessionId, "session-1");
+  assert.match(h.app.innerHTML, /等待设备确认会话结束/);
+  assert.doesNotMatch(h.app.innerHTML, /设备已确认桌面关闭/);
+  receipt = supportReceipt({ ...receipt.request, observation: { supportRevision: 2, requestId: "request-1", supportSessionId: "session-1", observedAt: new Date().toISOString(), desktop: "closed", connection: "disconnected" } });
+  await h.click("support-refresh");
+  assert.match(h.app.innerHTML, /设备已确认桌面关闭、连接断开/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
+  await h.click("support-close");
+});
+
+test("support entry is Owner-only and cancelling a confirmation never submits a decision", async () => {
+  let calls = 0;
+  const h = await harness({ ...supportState(), devices: [{ ...supportState().devices[0], deviceRole: "member" }] }, [], { support: { current: async () => { calls++; return supportReceipt(); } } });
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /data-action="support-open"/);
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.equal(calls, 0);
+  h.update(supportState());
+  await h.click("support-open", { deviceId: supportDeviceId });
+  await h.click("support-reject");
+  assert.match(h.app.innerHTML, /确认拒绝这次/);
+  await h.click("support-cancel");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:support-decide").length, 0);
+  await h.click("support-close");
+});
+
+test("failed support decision never shows approval success and requires reading the original request", async () => {
+  const h = await harness(supportState(), [], { support: { current: async () => supportReceipt(), decide: async () => { throw new Error("ACCOUNT_NETWORK_ERROR"); } } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  await h.click("support-approve");
+  await h.click("support-confirm");
+  assert.match(h.app.innerHTML, /操作结果待确认，请刷新原请求/);
+  assert.doesNotMatch(h.app.innerHTML, /已同意本次远程桌面协助|data-action="support-approve"/);
+  await h.click("support-refresh");
+  assert.match(h.app.innerHTML, /等待你确认/);
+  await h.click("support-close");
+});
+
+test("support preload projects only the frozen action fields and no endpoints or Owner override", async () => {
+  const received = [];
+  const h = await harness(supportState(), [], { support: {
+    current: async input => { received.push(input); return supportReceipt(); },
+    decide: async input => { received.push(input); return supportReceipt(); },
+    revoke: async input => { received.push(input); return supportReceipt(); },
+  } });
+  const common = { deviceId: supportDeviceId, ownershipEpoch: 7, requestId: "request-1", requestDigest: "a".repeat(64), confirmed: true };
+  const injected = { owner: true, role: "owner", url: "https://untrusted.invalid", token: "secret", scope: "support.exec" };
+  await h.window.wanxClient.action("support.current", { ...common, ...injected });
+  await h.window.wanxClient.action("support.decide", { ...common, ...injected, decision: "approved" });
+  await h.window.wanxClient.action("support.revoke", { ...common, ...injected, supportSessionId: "session-1" });
+  assert.deepEqual(JSON.parse(JSON.stringify(received)), [{ deviceId: supportDeviceId }, { ...common, decision: "approved" }, { ...common, supportSessionId: "session-1" }]);
+});
+
+test("late approval result after account change cannot show a successful grant to the new account", async () => {
+  const pending = pendingResponse();
+  const h = await harness(supportState(), [], { support: { current: async () => supportReceipt(), decide: () => pending.promise } });
+  await h.click("show-boxes"); await h.click("support-open", { deviceId: supportDeviceId });
+  await h.click("support-approve"); const approving = h.click("support-confirm");
+  await flushActions();
+  h.update({ ...supportState(), account: { phase: "authenticated", accountId: "other-owner" } });
+  pending.resolve(supportReceipt({ decision: "approved", authorization: "active", supportSessionId: "session-1" }));
+  await approving;
+  assert.doesNotMatch(h.app.innerHTML, /support-panel|已同意本次远程桌面协助|data-action="support-revoke"/);
+});
+
+for (const transition of ["account", "same-account-login", "page", "ownership"]) {
+  test(`late support reads cannot reopen or expose a request after ${transition} changes`, async () => {
+    const pending = pendingResponse();
+    const h = await harness(supportState(), [], { support: { current: () => pending.promise } });
+    await h.click("show-boxes");
+    const opening = h.click("support-open", { deviceId: supportDeviceId });
+    await flushActions();
+    if (transition === "account") h.update({ ...supportState(), account: { phase: "authenticated", accountId: "other-owner" } });
+    if (transition === "same-account-login") { h.update({ account: { phase: "signed_out" } }); h.update(supportState()); }
+    if (transition === "page") await h.click("show-applications");
+    if (transition === "ownership") h.update({ ...supportState(), devices: [{ ...supportState().devices[0], deviceRole: "member" }] });
+    pending.resolve(supportReceipt()); await opening;
+    assert.doesNotMatch(h.app.innerHTML, /support-panel|维护人员 &lt;甲&gt;|data-action="support-approve"/);
+  });
+}
 
 for (const fails of [false, true]) test(`identity loading prevents another scan and recovers after ${fails ? "failure" : "success"}`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });

@@ -85,6 +85,15 @@ const actions = {
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
+  "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
+  "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {
+    deviceId: input?.deviceId, ownershipEpoch: input?.ownershipEpoch, requestId: input?.requestId,
+    requestDigest: input?.requestDigest, decision: input?.decision, confirmed: input?.confirmed,
+  }),
+  "support.revoke": input => ipcRenderer.invoke("wanx-client:support-revoke", {
+    deviceId: input?.deviceId, ownershipEpoch: input?.ownershipEpoch, requestId: input?.requestId,
+    requestDigest: input?.requestDigest, supportSessionId: input?.supportSessionId, confirmed: input?.confirmed,
+  }),
   "ownership.send-code": () => ipcRenderer.invoke("wanx-client:ownership-send-code"),
   "ownership.create": (input) => ipcRenderer.invoke("wanx-client:ownership-create", input),
   "ownership.accept": (input) => ipcRenderer.invoke("wanx-client:ownership-accept", input),
