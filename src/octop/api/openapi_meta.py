@@ -119,6 +119,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
         "description": "Instant-messaging bridges (WeCom, Feishu, Telegram, …) per agent.",
     },
     {
+        "name": "loops",
+        "description": "Durable goal-driven expert automation, trials, round evidence and native approvals.",
+    },
+    {
         "name": "cron",
         "description": "Scheduled prompts that run against an agent on a cron trigger.",
     },
@@ -162,6 +166,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
     {"name": "workspace", "description": "Agent workspace file tree: list, read, write, upload."},
     {"name": "agent_files", "description": "Agent-owned configuration files (SOUL.md, skills, …)."},
+    {
+        "name": "credits",
+        "description": "Central WANX account balances and application-authorized settlement; no application pricing rules.",
+    },
     {"name": "usage", "description": "Token usage summaries for billing and dashboards."},
     {
         "name": "skill-packages",

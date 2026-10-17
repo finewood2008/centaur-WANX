@@ -1,0 +1,28 @@
+{
+  "id": "centaurloop",
+  "label": {
+    "zh": "半人马环",
+    "en": "CentaurLoop"
+  },
+  "description": {
+    "zh": "专注资料摘要、变化检查和例行汇总。自动执行，人在环中。",
+    "en": "Repeatable research, monitoring and reports with human judgment."
+  },
+  "icon_name": "repeat",
+  "color": "#a6452e",
+  "prompt_files": [
+    "AGENTS.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "帮我配置每日资料摘要，先确认资料来源和摘要偏好",
+      "帮我配置定时变化检查，有重要变化时请我判断",
+      "帮我配置每周例行汇总，先确认范围和运行时间"
+    ],
+    "en": [
+      "Help configure a daily digest, confirming sources and preferences first",
+      "Help configure recurring change checks that ask me about important changes",
+      "Help configure a weekly summary, confirming scope and cadence first"
+    ]
+  }
+}

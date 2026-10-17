@@ -124,10 +124,22 @@ class KnowledgeRepo:
         max_documents: int | None = None,
         application_id: str = "wanx",
         personal_archive: bool = False,
+        loop_archive: bool = False,
     ) -> KnowledgeBaseRow:
         kb_id = self._allocate_base_id()
         ts = now_ts()
         with self._db.transaction() as conn:
+            if loop_archive and application_id == "wanx":
+                if self._db.dialect == "postgresql":
+                    conn.execute("SELECT pg_advisory_xact_lock(?, ?)", (72132, owner_user_id))
+                existing = conn.execute(
+                    "SELECT * FROM knowledge_bases WHERE owner_user_id = ? "
+                    "AND application_id = 'wanx' AND name = '半人马环' ORDER BY id ASC LIMIT 1",
+                    (owner_user_id,),
+                ).fetchone()
+                if existing is not None:
+                    return KnowledgeBaseRow.from_row(existing)
+                name, default_open, shared = "半人马环", False, False
             if personal_archive and application_id == "zhijun":
                 # Serialize account binding; preserve legacy rows rather than deleting data.
                 if self._db.dialect == "postgresql":

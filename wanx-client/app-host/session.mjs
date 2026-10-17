@@ -86,7 +86,7 @@ export async function createApplicationSession({
     if (websocket && decoded !== "/api/browser-stream/ws" && !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(decoded)) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
     return raw;
   }
-  const headersFor = req => Object.fromEntries(Object.entries(req.headers).filter(([name]) => REQUEST_HEADERS.has(name)));
+  const headersFor = req => Object.fromEntries(Object.entries(req.headers).filter(([name]) => REQUEST_HEADERS.has(name) || (name === "x-xingtu-key" && /^\/api\/semantica\/open\/v1\//.test(req.url.split("?")[0]))));
   function errorResponse(res, error) {
     if (res.destroyed) return;
     if (res.headersSent) return res.destroy();
