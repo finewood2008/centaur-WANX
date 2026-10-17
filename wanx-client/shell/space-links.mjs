@@ -1,3 +1,4 @@
+import { createAgentSpaces } from "./agent-spaces.mjs";
 import http from "node:http";
 import { randomBytes } from "node:crypto";
 
@@ -11,7 +12,7 @@ const uuid = value => { if (!/^[a-f0-9]{32}$/.test(value || "")) throw fail("SPA
 
 // This loopback service never accepts a backend URL/account/box from a caller.
 // Credentials and scope are retrieved exclusively from the encrypted store.
-export async function createSpaceLinkBridge({ client, store, serviceURL, onChanged = () => {}, mcpConfig = {} }) {
+export async function createSpaceLinkBridge({ client, store, serviceURL, onChanged = () => {}, mcpConfig = {}, profileDirectory }) {
   const saved = await store.load();
   if (saved && (saved.version !== 1 || !Array.isArray(saved.links) || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535))
     throw fail("SPACE_LINK_STORE_INVALID");
@@ -63,6 +64,7 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
     if (!READS.has(input.action)) onChanged();
     return response;
   }
+  const agents = createAgentSpaces({state,scope,assertScope,remote,persist,onChanged,mcpConfig,profileDirectory});
   async function handle(req, res) {
     try {
       if (req.headers.host !== `127.0.0.1:${state.port}` || (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${state.port}`))
@@ -70,14 +72,16 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
       const parsed = new URL(req.url, "http://127.0.0.1");
       const match = /^\/space-links\/([A-Za-z0-9_-]{43})$/.exec(parsed.pathname);
       const record = match && state.links.find(r => r.key === match[1]);
-      if (!record) throw fail("SPACE_LINK_NOT_FOUND", 404);
+      const agentMatch = /^\/space-agents\/([A-Za-z0-9_-]{43})$/.exec(parsed.pathname);
+      const enroll = parsed.pathname === "/space-agents/enroll";
+      if (!record && !agentMatch && !enroll) throw fail("SPACE_LINK_NOT_FOUND", 404);
       let input;
       if (req.method === "GET") {
         const allowed = new Set(["action", "target", "offset", "length", "expected", "upload_id"]);
         if ([...parsed.searchParams.keys()].some(k => !allowed.has(k))) throw fail("SPACE_ACTION_INVALID", 400);
         input = Object.fromEntries(parsed.searchParams);
         input.action ||= "describe";
-        if (!READS.has(input.action)) throw fail("SPACE_METHOD_NOT_ALLOWED", 405);
+        if (!READS.has(input.action) && !(agentMatch && ["access", "connection-status"].includes(input.action))) throw fail("SPACE_METHOD_NOT_ALLOWED", 405);
         for (const key of ["offset", "length", "expected"]) if (input[key] !== undefined) input[key] = Number(input[key]);
       } else if (req.method === "POST") {
         if (!String(req.headers["content-type"] || "").startsWith("application/json")) throw fail("SPACE_JSON_REQUIRED", 415);
@@ -86,7 +90,11 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
         try { input = JSON.parse(Buffer.concat(chunks)); } catch { throw fail("SPACE_INVALID_JSON", 400); }
         if (!input || typeof input !== "object" || Array.isArray(input)) throw fail("SPACE_INVALID_JSON", 400);
       } else throw fail("SPACE_METHOD_NOT_ALLOWED", 405);
-      const response = await access(record, input);
+      if (enroll) {
+        if (req.method !== "POST") throw fail("SPACE_METHOD_NOT_ALLOWED",405);
+        return json(res,200,await agents.enroll(input));
+      }
+      const response = agentMatch ? await agents.access(agentMatch[1],input) : await access(record, input);
       if (input.action === "read") {
         res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store", "x-content-type-options": "nosniff",
           "x-content-sha256": response.headers["x-content-sha256"] || "", "x-file-sha256": response.headers["x-file-sha256"] || "", etag: response.headers.etag || "" });
@@ -126,6 +134,7 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
   return {
     async manage(action, input = {}) {
       const bound = scope(); assertScope(bound);
+      if (["agent-config","spaces","requests","approve","reject","space-manage","connection-manage","grants","connection-audit","grant","grant-revoke","file-transfer"].includes(action)) return agents.manage(action,input);
       if (action === "config") return mcpConfig;
       if (action === "create") {
         const root = uuid(input.root);

@@ -76,7 +76,7 @@ export function registerControlActions({
       return Promise.resolve(result).finally(() => publishState());
     });
   };
-  for (const action of ["create", "list", "revoke", "audit", "config"]) {
+  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
       return spaceLinks.manage(action, input);
