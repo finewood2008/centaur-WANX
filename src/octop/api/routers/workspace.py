@@ -31,6 +31,7 @@ from octop.infra.gateway.media.backend_files import (
     resolve_preview_payload,
 )
 from octop.infra.utils.doc_edit import DocConverter, get_doc_converter
+from octop.infra.utils.private_paths import is_personal_storage_path
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +96,12 @@ def _workspace_io_path(path: str, *, from_workspace: bool = False) -> str:
     filesystem absolute (``/Users/…``, ``/root/…``). Paths without a leading
     ``/`` stay workspace-relative (``outbound/a.pptx``).
     """
+    if is_personal_storage_path(path):
+        raise OctopError(ErrorCode.FORBIDDEN, "personal files require their own authorization")
     raw = path.strip()
     if raw.startswith("file://"):
         resolved = backend_workspace_path(raw)
-        if resolved is None:
+        if resolved is None or is_personal_storage_path(resolved):
             raise OctopError(ErrorCode.NOT_FOUND, f"cannot resolve {path!r}")
         return resolved
     if from_workspace:

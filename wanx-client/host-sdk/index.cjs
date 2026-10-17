@@ -1,6 +1,7 @@
 const http = require('node:http');
 const {Readable} = require('node:stream');
 const {WebSocket} = require('ws');
+const {createDriveClient} = require('./drive.cjs');
 const fail = code => Object.assign(new Error(code), {code});
 
 // Main process only: renderer code never receives this credential.
@@ -24,7 +25,7 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
     if (value.origin !== base.origin || (!control && !value.pathname.startsWith('/api/'))) throw fail('APPLICATION_PATH_NOT_ALLOWED');
     return value;
   }
-  function send(path, {method = 'GET', headers, body, signal} = {}, control = false) {
+  function send(path, {method = 'GET', headers, body, signal, timeoutMs: requestTimeoutMs = timeoutMs} = {}, control = false) {
     assertLive();
     const target = endpoint(path, control);
     const outgoing = new Headers(headers);
@@ -50,7 +51,7 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
       active.add(req);
       let timer;
       const timeout = () => req.destroy(fail('HOST_REQUEST_TIMEOUT'));
-      const waitForResponse = () => { timer = setTimeout(timeout, timeoutMs); timer.unref(); };
+      const waitForResponse = () => { timer = setTimeout(timeout, requestTimeoutMs); timer.unref(); };
       const stopUpload = () => {
         if (upload) { upload.unpipe(req); upload.destroy(); }
         if (!req.destroyed && !req.writableEnded) req.end();
@@ -58,7 +59,7 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
       // Upload duration is unbounded while data is flowing. Once uploaded,
       // retain the existing response-header deadline; SSE remains unbounded.
       if (source) {
-        req.setTimeout(timeoutMs, timeout);
+        req.setTimeout(requestTimeoutMs, timeout);
         req.once('finish', waitForResponse);
       } else waitForResponse();
       if (upload) upload.once('error', error => req.destroy(error));
@@ -155,7 +156,7 @@ function createHostClient({baseURL, token, timeoutMs = 15000} = {}) {
     const binding = await resolveResourceBinding('expert', resourceId);
     return request(`/api/agents/${binding.instanceId}${relativePath}`, options);
   }
-  return Object.freeze({context, request, openStream, resolveResourceBinding, requestExpert,
+  return Object.freeze({context, request, openStream, resolveResourceBinding, requestExpert, drive: createDriveClient({context, request}),
     onSessionInvalidated(listener) {
       listeners.add(listener);
       if (invalid) queueMicrotask(() => { if (listeners.has(listener)) listener({code:'HOST_SESSION_EXPIRED'}); });

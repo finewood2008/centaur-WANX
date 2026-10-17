@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
+from octop.infra.utils.private_paths import is_personal_storage_path
+
 ProbeCode = Literal[
     "not_directory",
     "permission_denied",
@@ -102,6 +104,8 @@ def _browse_tree_base() -> str:
 
 
 def _is_denied_host_path(resolved: Path) -> bool:
+    if is_personal_storage_path(resolved):
+        return True
     if os.name != "posix":
         return False
     # Process home may coincide with a denylist prefix (uid 0 → ``/root``).

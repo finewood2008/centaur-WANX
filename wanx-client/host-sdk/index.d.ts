@@ -1,3 +1,5 @@
+import type {DriveClient} from './drive';
+export type {DriveClient, DriveEntry, DriveListing, DriveOverview, DriveUpload} from './drive';
 export interface HostStreamEvents {
   open: [];
   message: [data: Uint8Array, binary: boolean];
@@ -28,6 +30,7 @@ export interface HostContext {
   resourceBindings?: ResourceBinding[];
 }
 export interface HostClient {
+  readonly drive: DriveClient;
   context(): Promise<HostContext>;
   resolveResourceBinding(kind: ResourceBinding['kind'], resourceId: string): Promise<ResourceBinding>;
   requestExpert(resourceId: string, relativePath: string, options?: Parameters<HostClient['request']>[1]): Promise<Response>;
@@ -36,7 +39,7 @@ export interface HostClient {
     /** JSON, string, Uint8Array/Buffer, Node Readable, or Web ReadableStream<Uint8Array>.
      * Streams are consumed once and destroyed/cancelled when the request stops. */
     body?: unknown;
-    signal?: AbortSignal;
+    signal?: AbortSignal; timeoutMs?: number;
   }): Promise<Response>;
   openStream(path: string, options?: { headers?: HeadersInit; protocols?: string[] }): Promise<HostStream>;
   onSessionInvalidated(listener: (event: {code: 'HOST_SESSION_EXPIRED'}) => void): () => void;

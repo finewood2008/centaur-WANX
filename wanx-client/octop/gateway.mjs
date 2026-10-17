@@ -636,7 +636,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"].includes(key))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-content-sha256", "range", "if-none-match", "if-modified-since"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };

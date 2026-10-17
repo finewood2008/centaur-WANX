@@ -6,7 +6,7 @@ import { WebSocket, WebSocketServer } from "ws";
 const fail = (code, status = 401) => Object.assign(new Error(code), { code, status });
 const MAX_WS_PAYLOAD = 32 * 1024 * 1024;
 const TERMINAL = new Set(["NETWORK_CHANGED", "SESSION_CLOSED", "GATEWAY_CLOSED", "PLATFORM_SESSION_EXPIRED", "HOST_SESSION_EXPIRED"]);
-const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "range", "if-none-match", "if-modified-since"]);
+const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "x-content-sha256", "range", "if-none-match", "if-modified-since"]);
 
 // Own the launch's credentials and local resources, but borrow its fixed box connection.
 export async function createApplicationSession({

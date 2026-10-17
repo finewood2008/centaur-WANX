@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from octop.infra.gateway.media.attachment_hints import is_preview_media_type
 from octop.infra.gateway.media.constants import OUTBOUND_DIR
 from octop.infra.utils.browser_media import legacy_harness_screenshots_dir
+from octop.infra.utils.private_paths import is_personal_storage_path
 
 if TYPE_CHECKING:
     from octop_harness.backends.workspace import BackendWorkspace
@@ -64,6 +65,8 @@ _DENIED_BROWSER_HOME_SEGMENTS = (".harness-browser", ".octop-browser")
 
 
 def _contains_denied_browser_home(text: str) -> bool:
+    if is_personal_storage_path(text):
+        return True
     lowered = text.replace("\\", "/").lower()
     return any(segment in lowered for segment in _DENIED_BROWSER_HOME_SEGMENTS)
 

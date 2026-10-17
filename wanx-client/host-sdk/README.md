@@ -1,6 +1,6 @@
 # @centaurai/wanx-host-sdk
 
-供 Electron **主进程**使用的轻量传输 SDK，不含业务 API、NetBird 或应用商店逻辑。
+供 Electron **主进程**使用的轻量传输 SDK，提供 Host 会话、HTTP 传输和盒子空间接口，不含 NetBird 或应用商店逻辑。
 
 ```js
 const {fromEnvironment} = require('@centaurai/wanx-host-sdk');
@@ -34,6 +34,25 @@ Host 注入 `WANX_HOST_TRANSPORT=http-v1`、`WANX_HOST_BASE_URL=http://127.0.0.1
 请求方法、业务路径和返回数据保持盒端原协议。网关换用盒端凭证；应用无法取得盒端 access token。SDK 只对网关自有 `X-Wanx-Error` 转为带 `code` 的 Error：`NETWORK_NOT_READY` 可在网络恢复后由业务决定重试；`HOST_SESSION_EXPIRED` 必须停止操作、清理应用内会话，回万象重新打开应用。切换盒子、断开、退出账号、盒端会话失效以及 Host 退出都会终止当前 launch；不会切到另一台盒子，不会自动重放写请求。
 
 结束进程时调用 `host.close()`。默认监听只在 `context()` 后启动；不使用 SDK 的客户端仍受网关的实时撤销保护。
+
+## 盒子空间（0.3.0）
+
+`host.drive` 使用当前万象用户和当前盒子的盒子空间。第一版中，同一用户的万象应用可直接读写，无需文件或文件夹授权；不同用户的数据分别存储。应用仍须通过万象有效的启动会话访问。
+
+```js
+await host.context();
+const folder = await host.drive.mkdir({name: '应用输出'});
+const saved = await host.drive.upload({
+  parent: folder.id,
+  name: '结果.txt',
+  data: '由万象应用直接写入',
+});
+const chunks = [];
+for await (const bytes of host.drive.read(saved.id)) chunks.push(bytes);
+const text = Buffer.concat(chunks).toString('utf8');
+```
+
+`list/stat/mkdir/move/trash/restore/purge` 管理文件和回收站；`upload` 接受字符串、字节数组或声明总大小的异步字节流，按 4 MiB 分块传输并校验 SHA-256。同名上传会保留两个文件。`read` 返回异步字节迭代器，完整消费后校验文件摘要；大文件可逐块写入文件流，避免将全部内容缓存在内存中。底层断点接口和完整类型见 `drive.d.ts`。切换盒子或退出会话时，沿用 Host 的会话失效机制。
 
 ## 自带 Electron 的独立应用
 
