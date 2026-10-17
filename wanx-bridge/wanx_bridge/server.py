@@ -27,7 +27,10 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from .assets import DashboardAssets, installed_dashboard
 from .config import BridgeAuthError
+from .managed_resource_guard import ManagedResourceGuard
+from .readiness import diagnose_application
 from .upstream import BridgeUpstreamError
+from .version import bridge_build_metadata, version_snapshot
 
 _HOP = frozenset(
     {
@@ -187,6 +190,8 @@ def create_app(
     http_transport: Any = None,
     lease_check_interval: float = 0.25,
     dashboard_dir: Path | None = None,
+    build_metadata: dict[str, Any] | None = None,
+    resources: Any = None,
 ) -> FastAPI:
     parsed = urlsplit(upstream_url)
     if (
@@ -201,17 +206,28 @@ def create_app(
         raise ValueError("upstream_url must be a loopback HTTP origin")
     assets = DashboardAssets(dashboard_dir or installed_dashboard())
     origin = upstream_url.rstrip("/")
+    metadata = bridge_build_metadata() if build_metadata is None else dict(build_metadata)
     client = httpx.AsyncClient(
         transport=http_transport,
         follow_redirects=False,
         trust_env=False,
         timeout=httpx.Timeout(connect=10, read=None, write=60, pool=10),
     )
+    # This boundary stays active even when background resource synchronization
+    # is disabled: previously installed controlled packages must remain private.
+    managed_resources = ManagedResourceGuard(adapter)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        yield
-        await client.aclose()
+        resource_task = asyncio.create_task(resources.catalog.poll()) if resources else None
+        try:
+            yield
+        finally:
+            if resource_task:
+                resource_task.cancel()
+                await asyncio.gather(resource_task, return_exceptions=True)
+                await resources.close()
+            await client.aclose()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
@@ -269,6 +285,90 @@ def create_app(
         await _call(auth.assert_live, session)
         return JSONResponse(manifest, headers={"Cache-Control": "no-store"})
 
+    @app.get("/api/platform/version")
+    async def platform_version(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        result = version_snapshot(getattr(auth, "config", None), metadata)
+        await _call(auth.assert_live, session)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/platform/applications/prepare")
+    async def application_prepare(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        body = await _body(request)
+        if resources is None:
+            raise _error("RESOURCE_SERVICE_NOT_CONFIGURED", 503)
+        context = await _call(auth.resource_context, session)
+
+        async def live() -> None:
+            await _call(auth.assert_live, session)
+
+        async def upstream_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+            await live()
+            if not path.startswith("/api/") or path.startswith("//"):
+                raise _error("RESOURCE_UPSTREAM_PATH_INVALID", 400)
+            req = client.build_request(
+                method,
+                origin + path,
+                headers={"Authorization": "Bearer " + _field(session, "upstream_token")},
+                timeout=30,
+                **kwargs,
+            )
+            req.headers.pop("cookie", None)
+            response = await client.send(req)
+            await live()
+            return response
+
+        result = await resources.prepare(body, session, context, upstream_request, live)
+        await live()
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/platform/applications/readiness")
+    async def application_readiness(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        body = await _body(request)
+
+        async def get(path: str) -> httpx.Response:
+            await _call(auth.assert_live, session)
+            req = client.build_request(
+                "GET",
+                origin + path,
+                headers={"Authorization": "Bearer " + _field(session, "upstream_token")},
+                timeout=10,
+            )
+            req.headers.pop("cookie", None)
+            response = await client.send(req)
+            await _call(auth.assert_live, session)
+            return response
+
+        async def inspect_resources(resource_body: dict[str, Any]) -> dict[str, Any]:
+            if resources is None:
+                raise _error("RESOURCE_SERVICE_NOT_CONFIGURED", 503)
+
+            async def live() -> None:
+                await _call(auth.assert_live, session)
+
+            async def request_resource(method: str, path: str, **kwargs: Any) -> httpx.Response:
+                if method != "GET" or kwargs:
+                    raise _error("RESOURCE_READ_ONLY_VIOLATION", 500)
+                return await get(path)
+
+            context = await _call(auth.resource_context, session)
+            return await resources.inspect(resource_body, session, context, request_resource, live)
+
+        result = await diagnose_application(
+            body,
+            session,
+            version_snapshot(getattr(auth, "config", None), metadata),
+            get,
+            inspect_resources=inspect_resources,
+        )
+        await _call(auth.assert_live, session)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @app.api_route(
         "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
     )
@@ -290,11 +390,27 @@ def create_app(
         upstream = None
         pending = None
         try:
+            content = request.stream()
+            request_body = None
+            if managed_resources.needs_body(request.method, path):
+                data = bytearray()
+                async with asyncio.timeout(30):
+                    async for chunk in content:
+                        data.extend(chunk)
+                        if len(data) > 2 * 1024 * 1024:
+                            raise _error("BOX_PLATFORM_BODY_TOO_LARGE", 413)
+                        if session:
+                            await _call(auth.assert_live, session)
+                request_body = bytes(data)
+                content = request_body
+            await managed_resources.inspect_request(request.method, path, request_body)
+            if session:
+                await _call(auth.assert_live, session)
             req = client.build_request(
                 request.method,
                 _target(origin, path, request.query_params, token),
                 headers=_headers(request.headers, token),
-                content=request.stream(),
+                content=content,
             )
             # AsyncClient keeps a shared response cookie jar. Never let a prior
             # upstream response attach another user's cookies to this request.
@@ -306,6 +422,33 @@ def create_app(
                     await guard
             upstream = await pending
             headers = _response_headers(upstream, origin)
+            if upstream.status_code == 200 and managed_resources.needs_response(
+                request.method, path
+            ):
+                data = bytearray()
+                async with asyncio.timeout(30):
+                    async for chunk in upstream.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > 4 * 1024 * 1024:
+                            raise _error("RESOURCE_RESPONSE_TOO_LARGE", 502)
+                        if session:
+                            await _call(auth.assert_live, session)
+                try:
+                    value = json.loads(data)
+                except (ValueError, UnicodeError) as exc:
+                    raise _error("RESOURCE_UPSTREAM_RESPONSE_INVALID", 502) from exc
+                filtered = await managed_resources.filter_response(request.method, path, value)
+                if session:
+                    await _call(auth.assert_live, session)
+                await upstream.aclose()
+                if guard:
+                    guard.cancel()
+                    with contextlib.suppress(BaseException):
+                        await guard
+                for name in ("content-length", "content-encoding", "etag", "last-modified"):
+                    headers.pop(name, None)
+                headers["cache-control"] = "no-store"
+                return JSONResponse(filtered, headers=headers)
         except BaseException:
             if pending and not pending.done():
                 pending.cancel()

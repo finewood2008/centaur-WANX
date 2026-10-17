@@ -16,6 +16,8 @@ npm run package:mac
 
 上述入口分别转发到 wanx-client 的测试、启动和打包脚本。原有 `start:client`、`test:client`、`package:client:mac` 与 `package:client:windows` 入口仍可使用。
 
+可分发的 macOS 客户端 DMG 使用 `./wanx-client/package-client.sh --version <版本> --arch arm64|x64 --notary-profile <钥匙串配置>`；它与市场应用的 `wanx-client/package-app.sh` 是两个入口。`npm run package:mac` 仅生成应用目录，详见 [wanx-client 使用说明](../wanx-client/README.md)。
+
 账号、网络、盒端免登录、应用市场和平台配置以 [wanx-client 使用说明](../wanx-client/README.md) 为准。生产部署要求见 [自动入网与免登录部署说明](wanx-auto-p2p-deployment.md)，应用发布见 [应用市场说明](wanx-application-market.md)。
 
 ## Dashboard 与 SDK 依赖

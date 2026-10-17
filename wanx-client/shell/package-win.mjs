@@ -138,7 +138,9 @@ async function main() {
     config: {
       extends: path.join(root, "shell", "electron-builder-win-x64.json"),
       appId: "ai.centuarai.wanx.client",
-      productName: "半人马AI-万象",
+      productName: "万象",
+      extraMetadata: { wanxBuild: { schemaVersion: 1, buildId: `${stamp}-${input.sourceCommit.slice(0, 12)}`,
+        sourceCommit: input.sourceCommit, channel: "internal", securityEpoch: 0, distributionClass: "unsigned-internal-only" } },
       electronVersion: input.electron,
       asar: true,
       npmRebuild: false,
@@ -147,7 +149,7 @@ async function main() {
       files: [
         "client.mjs", "platform.mjs", "account/**", "shell/**",
         "local-ui/**", "network/**", "octop/**", "app-host/**",
-        "applications/**", "resources/**", "package.json", "README.md",
+        "applications/**", "updates/**", "resources/**", "package.json", "README.md",
         "node_modules/ws/**", "node_modules/semver/**", "node_modules/yauzl/**",
         "node_modules/pend/**",
         "node_modules/@nexusaos/**",

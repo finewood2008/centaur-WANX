@@ -1,7 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-export const DESKTOP_NAME = "半人马AI-万象";
-export const DESKTOP_ENGLISH_NAME = "CentaurAI-WanX";
+export const DESKTOP_NAME = "万象";
 const resource = (name) => fileURLToPath(new URL(`../resources/${name}`, import.meta.url));
 export const APP_ICON = resource("icon.png");
 
@@ -9,15 +8,19 @@ export function createDesktopIntegration({
   app, Menu, Tray, nativeImage, control, client,
   panel, screen, openManagement, onPanelHidden = () => {},
   requestQuit = () => app.quit(),
+  versionInfo,
+  checkUpdates,
   platform = process.platform,
 }) {
   const mac = platform === "darwin";
   const usesPanel = (mac || platform === "win32") && Boolean(panel);
+  const edition = versionInfo?.distributionClass === "development" ? "开发构建"
+    : versionInfo?.distributionClass === "formal" ? "正式发行"
+      : versionInfo?.distributionClass === "local-verification-only" ? "本地测试包"
+        : versionInfo ? "构建状态未验证" : null;
   app.setAboutPanelOptions({
-    applicationName: DESKTOP_NAME,
-    applicationVersion: app.getVersion(),
-    iconPath: APP_ICON,
-    credits: `${DESKTOP_ENGLISH_NAME}\n你的 AI 应用底座`,
+    applicationName: DESKTOP_NAME, applicationVersion: app.getVersion(), iconPath: APP_ICON,
+    credits: `你的 AI 应用底座${edition ? `\n${edition}` : ""}`,
   });
   if (mac) app.dock.setIcon(APP_ICON);
   if (mac && usesPanel) app.dock.hide();
@@ -133,12 +136,16 @@ export function createDesktopIntegration({
   const settingsItem = () => ({ id: "settings", label: "设置…", accelerator: "CmdOrCtrl+,", click: () => showManagement("settings") });
   const separator = { type: "separator" };
   const about = { role: "about", label: "关于万象" };
+  const updatesItem = () => ({ id: "updates", label: "检查更新…", click: () => {
+    showManagement("settings");
+    if (checkUpdates) void Promise.resolve().then(checkUpdates).catch(() => {});
+  } });
   const quit = mac
     ? { id: "quit", label: "退出万象", accelerator: "Command+Q", click: requestQuit }
     : { role: "quit", label: "退出万象" };
   const menu = Menu.buildFromTemplate([
     ...(mac ? [{ label: DESKTOP_NAME, submenu: [
-      about, separator, settingsItem(), separator,
+      about, updatesItem(), separator, settingsItem(), separator,
       { role: "services", label: "服务" }, separator,
       { role: "hide", label: `隐藏${DESKTOP_NAME}` },
       { role: "hideOthers", label: "隐藏其他应用" },
@@ -147,7 +154,7 @@ export function createDesktopIntegration({
     { label: "应用", submenu: [
       { label: usesPanel ? "打开万象" : "显示主窗口", accelerator: "CmdOrCtrl+Shift+M", click: show },
       homeItem(), spaceItem(), ...(!mac ? [settingsItem()] : []),
-      ...(!mac ? [separator, about, quit] : []),
+      ...(!mac ? [separator, about, updatesItem(), quit] : []),
     ] },
     { label: "编辑", submenu: [
       { role: "undo", label: "撤销" }, { role: "redo", label: "重做" }, separator,

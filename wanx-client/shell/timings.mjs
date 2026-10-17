@@ -1,8 +1,10 @@
 import { mkdir, stat, rename, appendFile } from "node:fs/promises";
 import path from "node:path";
+import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 // Codes are an allowlist, not a pattern: even a plausible code may contain a secret.
 const errorCodes = new Set([
+  ...BOX_SESSION_ERROR_CODES,
   "ACCOUNT_ACCESS_DENIED", "ACCOUNT_CANCELLED", "ACCOUNT_INVALID_RESPONSE",
   "ACCOUNT_INVALID_STORED_SESSION", "ACCOUNT_LOGIN_REQUIRED", "ACCOUNT_NETWORK_ERROR",
   "ACCOUNT_REDIRECT_REJECTED", "ACCOUNT_REQUEST_FAILED", "ACCOUNT_SESSION_EXPIRED",

@@ -54,6 +54,30 @@ test('upload rejects size mismatches before publishing, and rejects a changed co
   await assert.rejects(drive.upload({uploadId: itemId, name: 'file.txt', data: 'new'}), {code: 'SPACE_LOCAL_FILE_CHANGED'});
 });
 
+test('one Host client preserves prepared expert bindings alongside the shared drive', async t => {
+  const requests = [];
+  const host = await createApplicationSession({
+    hostApplicationId: 'wanx', applicationId: 'drive-and-expert', installPath: '/unused',
+    createConnection: async () => ({
+      context: () => ({connection: 'ready', resourceBindings: [
+        {kind: 'expert', resourceId: 'prepared-expert', instanceId: 'actual-expert-42'},
+      ]}),
+      request: async input => {
+        requests.push(input.path);
+        return {status: 200, headers: {'content-type': 'application/json'},
+          body: Buffer.from(JSON.stringify({route: input.path}))};
+      },
+    }),
+  });
+  const client = createHostClient({baseURL: host.environment.WANX_HOST_BASE_URL, token: host.environment.WANX_HOST_TOKEN});
+  t.after(async () => { client.close(); await host.close(); });
+  assert.equal((await client.resolveResourceBinding('expert', 'prepared-expert')).instanceId, 'actual-expert-42');
+  assert.equal((await client.drive.overview()).route, '/api/personal-space/overview');
+  assert.equal((await (await client.requestExpert('prepared-expert', '/threads')).json()).route, '/api/agents/actual-expert-42/threads');
+  assert.deepEqual(requests, ['/api/personal-space/overview', '/api/agents/actual-expert-42/threads']);
+  await assert.rejects(client.resolveResourceBinding('expert', 'unbound'), {code: 'APPLICATION_RESOURCE_NOT_BOUND'});
+});
+
 test('two hosted apps share a real drive, stream large files, resume, and lose access on a box switch', {
   skip: !process.env.WANX_SPACE_PYTHON, timeout: 30_000,
 }, async t => {

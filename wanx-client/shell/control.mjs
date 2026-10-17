@@ -43,6 +43,9 @@ export function registerControlActions({
   market,
   personalSpace,
   confirmSpacePurge,
+  updates,
+  credits,
+  accountProfile,
   uiState,
   desktop,
   getState,
@@ -56,9 +59,9 @@ export function registerControlActions({
   const panelActions = new Set([
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
-    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about",
+    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance",
   ]);
-  const reads = new Set(["get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -91,6 +94,26 @@ export function registerControlActions({
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
     return personalSpace.uploads(input.parent || "", input.paths);
   });
+  register("panel-balance", async () => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
+    const balance = await credits.balance();
+    return { available: balance.available };
+  });
+  for (const method of ["balance", "transactions", "reservation", "tasks"]) {
+    register(`credits-${method}`, (input) => {
+      if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
+      return credits[method](input);
+    });
+  }
+  for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
+    register(action, input => {
+      if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      if (!accountProfile) throw new Error("PROFILE_UNAVAILABLE");
+      if (action === "profile-save" && (!input || Object.keys(input).some(key => key !== "displayName"))) throw new Error("PROFILE_INVALID_INPUT");
+      return accountProfile[method](input);
+    });
+  }
   register("get-state", async () => {
     if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
@@ -109,13 +132,13 @@ export function registerControlActions({
       Buffer.byteLength(input.password, "utf8") > 72
     )
       throw new Error("invalid_credentials");
-    return client.loginPassword({ phone: number, password: input.password });
+    return client.loginPassword({ phone: number, password: input.password }, { waitForDevices: false });
   });
   register("login-sms", (input) => {
     const number = phone(input);
     const code = text(input?.code, 12, "invalid_sms_code");
     if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
-    return client.loginSMS({ phone: number, code });
+    return client.loginSMS({ phone: number, code }, { waitForDevices: false });
   });
   register("send-sms", (input) => client.sendSMS({ phone: phone(input) }));
   register("send-registration-code", (input) => client.sendSMS({ phone: phone(input), scene: "consumer_register" }));
@@ -126,7 +149,7 @@ export function registerControlActions({
       throw new Error("invalid_credentials");
     const code = text(input.code, 12, "invalid_sms_code");
     if (!/^\d{6}$/.test(code)) throw new Error("invalid_sms_code");
-    return client.register({ phone: number, password: input.password, code });
+    return client.register({ phone: number, password: input.password, code }, { waitForDevices: false });
   });
   register("send-reset-code", (input) => client.sendResetCode({ phone: phone(input) }));
   register("send-change-code", () => client.sendChangeCode());
@@ -230,7 +253,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "space", "boxes", "settings"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "space", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());
@@ -245,6 +268,14 @@ export function registerControlActions({
   });
   register("desktop-about", () => showAbout?.());
   register("desktop-quit", () => quit?.());
+  for (const [product, methods] of [["client", ["check", "download", "install"]], ["box", ["check", "plan", "execute", "status", "cancel", "resume"]]]) {
+    for (const method of methods) register(`updates-${product}-${method}`, input => {
+      if (!updates?.[product]) throw new Error("UPDATE_NOT_CONFIGURED");
+      if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      if (["install", "execute", "resume"].includes(method) && input?.confirmed !== true) throw new Error("UPDATE_CONFIRMATION_REQUIRED");
+      return updates[product][method](input || {});
+    });
+  }
   for (const method of ["list", "candidate", "install", "uninstall", "rollback"]) {
     register(`market-${method}`, (input) => {
       if (!market) throw new Error("MARKET_UNAVAILABLE");

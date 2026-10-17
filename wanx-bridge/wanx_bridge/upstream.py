@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,8 @@ from .admin_client import BridgeUpstreamError as BridgeUpstreamError
 from .application_bootstrap import ensure_application_access
 from .oidc import OidcError, OidcProvider
 from .zhijun_bootstrap import ensure_private_expert
+
+logger = logging.getLogger(__name__)
 
 
 class OctopAdapter(AdminClient):
@@ -169,7 +172,13 @@ class OctopAdapter(AdminClient):
                 me = self._json(await self._request("GET", "/api/auth/me", headers=headers))
             if me.get("role") != role:
                 raise BridgeUpstreamError("BOX_UPSTREAM_ROLE_SYNC_FAILED")
-            await ensure_private_expert(self, token, uid)
+            # Companion preparation is not an authentication requirement.
+            # Identity and role checks above remain mandatory; an unavailable
+            # application must not prevent using the box or other applications.
+            try:
+                await ensure_private_expert(self, token, uid)
+            except BridgeUpstreamError as exc:
+                logger.warning("Zhijun preparation deferred after verified login: %s", exc.code)
             return {"access_token": token, "user": me, "expires_at": minted_at + ttl}
 
     async def application_session(self, token: str, application_id: str) -> dict[str, Any]:

@@ -7,11 +7,12 @@ import path from "node:path";
 import semver from "semver";
 import { assertApplicationPlatform, isComparableApplicationVersion, readApplicationManifest, resolveApplicationEntry, validateApplicationManifest } from "./manifest.mjs";
 import { extractApplicationArchive } from "./archive.mjs";
+import { assertApplicationCompatibility } from "./compatibility.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 const safePart = value => value.replace(/[^A-Za-z0-9._-]/g, "_");
 
-export function createApplicationInstaller({ rootDir, now = () => Date.now(), copy = cp, trustedKeys = {} } = {}) {
+export function createApplicationInstaller({ rootDir, now = () => Date.now(), copy = cp, trustedKeys = {}, getCompatibilityContext, prepareApplication, authorizeRelease } = {}) {
   if (typeof rootDir !== "string" || !rootDir) throw new TypeError("rootDir is required");
   rootDir = path.resolve(rootDir);
   const installedPath = manifest => path.join(rootDir, safePart(manifest.applicationId), safePart(manifest.version));
@@ -117,7 +118,9 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     if (!source.isDirectory()) throw fail("APPLICATION_SOURCE_NOT_DIRECTORY");
     const manifest = suppliedManifest ? validateApplicationManifest(suppliedManifest)
       : await readApplicationManifest(manifestPath || path.join(sourceDir, "application.manifest.json"));
+    if (manifest.releaseAccess === "account") throw fail("MARKET_RELEASE_ACCESS_SIGNED_PACKAGE_REQUIRED");
     assertApplicationPlatform(manifest);
+    await assertApplicationCompatibility(manifest, { getCompatibilityContext, phase: "import" });
     await resolveApplicationEntry(sourceDir, manifest);
     return serialize(manifest.applicationId, async () => {
       signal?.throwIfAborted();
@@ -162,7 +165,8 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     for (const app of apps) {
       if (!app.isDirectory() || !/^[a-z][a-z0-9._-]{1,63}$/.test(app.name)) continue;
       const current = await serialize(app.name, () => currentFor(app.name));
-      if (current) result.push(current);
+      if (current) result.push(current.protocolVersion === 3 && current.compatibility.resourceDependencies.length
+        ? { ...current, resourcePreparation: { status: "pending", code: "APPLICATION_RESOURCES_PENDING" } } : current);
     }
     return result;
   }
@@ -181,6 +185,8 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       const current = await currentFor(id);
       if (!current?.selectionRequired || !current.versions.some(record => record.version === version))
         throw fail("APPLICATION_VERSION_SELECTION_INVALID");
+      const selected = (await recordsFor(id)).find(record => record.version === version);
+      await assertApplicationCompatibility(selected, { getCompatibilityContext, descriptor: selected.descriptor, phase: "select" });
       await publish(id, { version }, signal);
       return currentFor(id);
     });
@@ -198,8 +204,22 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
   async function installVerifiedPackage({ archivePath, envelope, assertSession = () => {} } = {}, { signal } = {}) {
     const descriptor = verifyEnvelope(envelope, trustedKeys);
     if (descriptor.packageType !== "wanxapp") throw marketFailure("MARKET_INCOMPATIBLE");
-    const check = () => { signal?.throwIfAborted(); assertSession(); };
+    let access;
+    const controlled = descriptor.manifest.releaseAccess === "account";
+    const check = () => { signal?.throwIfAborted(); assertSession(); access?.assertSession(); };
+    async function confirmAccess() {
+      check();
+      if (!controlled) return;
+      if (!authorizeRelease) throw fail("MARKET_RELEASE_ACCESS_REQUIRED");
+      const permit = await authorizeRelease(descriptor, { signal });
+      check();
+      if (!permit) throw fail("MARKET_RELEASE_ACCESS_REQUIRED");
+      permit.assertLive(); access = permit;
+    }
     return serialize(descriptor.applicationId, async () => {
+      check();
+      await confirmAccess();
+      await assertApplicationCompatibility(descriptor.manifest, { getCompatibilityContext, descriptor, phase: "install" });
       check();
       const current = await currentFor(descriptor.applicationId);
       if (current?.selectionRequired) throw fail("APPLICATION_VERSION_SELECTION_REQUIRED");
@@ -226,9 +246,16 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
         const selection = current && !isComparableApplicationVersion(current.version)
           ? { choices: [current.version, record.version] }
           : { version: record.version, key: descriptor.artifactId, previousKey: current ? path.basename(current.installPath) : null };
-        await publish(descriptor.applicationId, selection, signal, assertSession);
+        // Package bytes and the manifest have been verified before any box-side
+        // mutation. Offline installs retain the frontend; launch must prepare.
+        const preparation = manifest.protocolVersion === 3
+          ? await prepareApplication?.({ manifest, descriptor, phase: "install" }) || { status: "pending", code: "APPLICATION_RESOURCES_PENDING" }
+          : null;
+        check();
+        await confirmAccess();
+        await publish(descriptor.applicationId, selection, signal, () => { check(); access?.assertLive(); });
         committed = true;
-        return selection.choices ? choice([current, record]) : await currentFor(descriptor.applicationId);
+        return selection.choices ? choice([current, record]) : { ...await currentFor(descriptor.applicationId), ...(preparation ? { resourcePreparation: preparation } : {}) };
       } finally {
         await rm(temporary, { recursive: true, force: true });
         if (moved && !committed) await rm(target, { recursive: true, force: true });
@@ -272,12 +299,23 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       const current = await currentFor(id), records = await recordsFor(id);
       const previous = current?.previous && records.find(record => record.artifactId === current.previous.artifactId);
       if (!previous?.envelope) throw marketFailure("MARKET_ROLLBACK_UNAVAILABLE");
+      await checkRollback(current, previous);
       await resolveApplicationEntry(previous.installPath, previous);
       await publish(id, { version: previous.version, key: previous.artifactId, previousKey: path.basename(current.installPath) }, undefined, assertSession);
       return currentFor(id);
     });
   }
-  return Object.freeze({ install, installVerifiedPackage, list, installedPath, resolveCurrent, selectCurrent, prune, recover, uninstall, rollback });
+  async function checkRollback(current, previous) {
+    if (current?.protocolVersion >= 2 && previous.protocolVersion < 2) throw fail("APPLICATION_DATA_COMPATIBILITY_UNKNOWN");
+    return assertApplicationCompatibility(previous, { getCompatibilityContext, descriptor: previous.descriptor, phase: "rollback" });
+  }
+  async function assertRollbackCompatible(id) {
+    const current = await currentFor(id), records = await recordsFor(id);
+    const previous = current?.previous && records.find(record => record.artifactId === current.previous.artifactId);
+    if (!previous?.envelope) throw marketFailure("MARKET_ROLLBACK_UNAVAILABLE");
+    return checkRollback(current, previous);
+  }
+  return Object.freeze({ install, installVerifiedPackage, list, installedPath, resolveCurrent, selectCurrent, prune, recover, uninstall, rollback, assertRollbackCompatible });
 }
 
 // Reinstalling the retained previous artifact must not overwrite a usable copy.

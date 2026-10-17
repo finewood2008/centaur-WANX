@@ -1,6 +1,6 @@
 // Loaded before renderer.js; the renderer owns presentation and the setup handoff.
 function createDiscoverySelection({ discovery, transport, onChange, onNotice, onSelected }) {
-  let candidates = [], sessionId = null, selectionPromise, retained, expiry;
+  let candidates = [], sessionId = null, selectionPromise, retained, expiry, cancelSettlementWait;
   let generation = 0, disposed = false;
 
   function changed() {
@@ -18,12 +18,29 @@ function createDiscoverySelection({ discovery, transport, onChange, onNotice, on
   }
   function clearSelection() {
     ++generation;
+    cancelSettlementWait?.();
     selectionPromise = undefined;
     transport?.cancelSelection();
     if (sessionId) discovery?.forget(sessionId);
     forgetRetained();
     candidates = [];
     sessionId = null;
+  }
+  function waitForCancellation(promise) {
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = ready => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (cancelSettlementWait === cancel) cancelSettlementWait = undefined;
+        resolve(ready);
+      };
+      const cancel = () => finish(false);
+      const timer = setTimeout(cancel, 2000);
+      cancelSettlementWait = cancel;
+      Promise.resolve(promise).then(() => finish(true), cancel);
+    });
   }
   function retain() {
     if (retained || !sessionId || !candidates.length) return;
@@ -63,10 +80,24 @@ function createDiscoverySelection({ discovery, transport, onChange, onNotice, on
       sessionId = null;
       changed();
       if (!disposed && expected === generation) onSelected(candidate);
-    }, error => {
+    }, async error => {
       if (disposed || expected !== generation || selectionPromise !== attempt) return;
       retain();
       if (sessionId) discovery?.cancel(sessionId);
+      const cancellation = transport.cancelSelection();
+      if (cancellation && typeof cancellation.then === "function") {
+        // Keep retained cards disabled until the old Chromium chooser has
+        // actually closed, not merely until our local timeout has fired.
+        changed();
+        const ready = await waitForCancellation(cancellation);
+        if (disposed || expected !== generation || selectionPromise !== attempt) return;
+        if (!ready) {
+          clearSelection();
+          onNotice({ kind: "selection_cancel_failed" });
+          changed();
+          return;
+        }
+      }
       selectionPromise = undefined;
       candidates = [];
       sessionId = null;

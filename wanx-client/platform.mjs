@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPlatformSession } from "./octop/platform.mjs";
+import { validateApplicationConnectionOptions } from "./applications/backend-scope.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 const safeReason = (error) =>
@@ -729,15 +730,22 @@ export function createPlatformClient({
     accountPhase = state.phase;
     emit();
   });
-  async function afterLogin(action) {
+  async function afterLogin(action, { waitForDevices = true } = {}) {
     if (closed) throw fail("ACCOUNT_CANCELLED");
     if (account.snapshot().phase === "authenticated")
       throw fail("ACCOUNT_ALREADY_SIGNED_IN");
     cancel();
     const generation = epoch;
-    await action();
+    await measure("account.login", action);
     if (!current(generation)) return snapshot();
-    return refreshDevices();
+    const refreshing = refreshDevices();
+    if (waitForDevices) return refreshing;
+    void refreshing.catch((error) => {
+      if (!current(generation)) return;
+      platform = { phase: "unavailable", reason: safeReason(error) };
+      emit();
+    });
+    return snapshot();
   }
   async function refreshDevices() {
     authenticated();
@@ -810,11 +818,12 @@ export function createPlatformClient({
       if (!activeLink?.client) throw fail("NETWORK_NOT_READY");
       return activeLink.client.openWebSocket(input);
     },
-    async applicationConnection(applicationId) {
+    async applicationConnection(applicationId, options) {
+      const connectionOptions = validateApplicationConnectionOptions(options);
       const link = activeLink, generation = connectionEpoch;
       const state = snapshot();
       if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
-      const connection = link.client.applicationConnection(applicationId);
+      const connection = link.client.applicationConnection(applicationId, connectionOptions);
       const assertLive = () => {
         const next = snapshot();
         if (closed || activeLink !== link || generation !== connectionEpoch ||
@@ -862,9 +871,9 @@ export function createPlatformClient({
       if (account.snapshot().phase === "authenticated") return refreshDevices();
       return emit();
     },
-    loginPassword: (input) => afterLogin(() => account.loginPassword(input)),
-    loginSMS: (input) => afterLogin(() => account.loginSMS(input)),
-    register: (input) => afterLogin(() => account.register(input)),
+    loginPassword: (input, options) => afterLogin(() => account.loginPassword(input), options),
+    loginSMS: (input, options) => afterLogin(() => account.loginSMS(input), options),
+    register: (input, options) => afterLogin(() => account.register(input), options),
     sendSMS: ({ phone, scene }) => account.sendSMS(phone, scene),
     sendResetCode: (input) => account.sendResetCode(input),
     resetPassword: (input) => account.resetPassword(input),

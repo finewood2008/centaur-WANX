@@ -520,3 +520,12 @@ dashboard mirrors every code under `apiErrors.*` in
 | `STORAGE_BACKEND_UNREACHABLE` | 502 | Remote backend connect / list failed |
 | `CONNECTOR_OAUTH_FAILED` | 400 | OAuth flow could not complete |
 | `INTERNAL_ERROR` | 500 | Unhandled exception (logged with traceback) |
+
+## Private agent interaction preferences
+
+`GET`, `PUT`, `DELETE /api/agents/{agent_id}/interaction-preferences` operate only on the authenticated owner's private agent (shared agents and other owners are rejected, including for administrators).
+`GET` returns `{ "preferences": null }` until configured. `PUT` accepts a complete `InteractionPreferences` v1 object with `version`, `preset`, `verbosity`, `tone`, `questions`, `advice`, and `disagreement`; OpenAPI documents the closed enums. Unknown fields and versions are rejected. `DELETE` removes the preference layer, restoring the original expression style.
+
+These preferences apply at the shared model boundary for both dashboard/client and IM conversations. They preserve model parameters, system prompt, role files and stored conversation history. They are explicit settings, not inferred user memory. New private roles default to no preferences.
+
+Mutations reserve an idle agent: active replies return 409, new turns wait during reload, and success is returned only after reload completes. Reload failures restore the prior preference field and attempt to restore the runtime. Other agent configuration is not replaced by this API.

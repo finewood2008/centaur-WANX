@@ -1,8 +1,12 @@
 import path from "node:path";
+import { constants } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { verifyEnvelope } from "./descriptor.mjs";
 import { createApplicationSession } from "../app-host/session.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
+import { assertApplicationCompatibility } from "./compatibility.mjs";
 
 export async function createApplicationManager({
   applicationRoot,
@@ -16,12 +20,94 @@ export async function createApplicationManager({
   runtimeArgs,
   launcherArgs,
   trustedKeys = {},
+  getCompatibilityContext,
+  prepareApplication,
+  authorizeRelease,
 } = {}) {
-  const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys });
+  applicationRoot = path.resolve(applicationRoot);
+  const dataAccessRoot = path.join(applicationRoot, ".data-access");
+  const dataUnknown = () => Object.assign(new Error("APPLICATION_DATA_COMPATIBILITY_UNKNOWN"), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
+  async function dataAccessDirectory(create = false) {
+    try {
+      if (create) await mkdir(dataAccessRoot, { mode: 0o700 });
+    } catch (error) { if (error.code !== "EEXIST") throw dataUnknown(); }
+    try {
+      const info = await lstat(dataAccessRoot);
+      if (!info.isDirectory() || info.isSymbolicLink() ||
+          await realpath(dataAccessRoot) !== path.join(await realpath(applicationRoot), ".data-access")) throw dataUnknown();
+      return dataAccessRoot;
+    } catch (error) { if (error.code === "ENOENT" && !create) return null; throw dataUnknown(); }
+  }
+  async function readDataAccess(id) {
+    if (!await dataAccessDirectory()) return null;
+    const filename = path.join(dataAccessRoot, `${id}.json`);
+    let info;
+    try { info = await lstat(filename); }
+    catch (error) { if (error.code === "ENOENT") return null; throw dataUnknown(); }
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 4096) throw dataUnknown();
+    let handle;
+    try {
+      handle = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size > 4096) throw dataUnknown();
+      const value = JSON.parse(await handle.readFile("utf8"));
+      if (value?.schemaVersion !== 1 || value.applicationId !== id ||
+          Object.keys(value).sort().join() !== "applicationId,schemaVersion,writer" ||
+          !value.writer || Object.keys(value.writer).sort().join() !== "artifactId,descriptorDigest" ||
+          typeof value.writer.artifactId !== "string" || !/^[a-f0-9-]{36}$/.test(value.writer.artifactId) ||
+          typeof value.writer.descriptorDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.writer.descriptorDigest)) throw dataUnknown();
+      if (!await dataAccessDirectory()) throw dataUnknown();
+      return value.writer;
+    } catch { throw dataUnknown(); }
+    finally { await handle?.close(); }
+  }
+  const writerFor = descriptor => descriptor?.schemaVersion >= 2 ? {
+    artifactId: descriptor.artifactId,
+    descriptorDigest: createHash("sha256").update(JSON.stringify(descriptor)).digest("hex"),
+  } : null;
+  const sameWriter = (left, right) => Boolean(left && right && left.artifactId === right.artifactId && left.descriptorDigest === right.descriptorDigest);
+  async function writeDataAccess(id, writer) {
+    await dataAccessDirectory(true);
+    // Reject corrupted or redirected state even if schema evidence would allow
+    // a new writer. An invalid Host record is never treated as a fresh profile.
+    await readDataAccess(id);
+    const temporary = path.join(dataAccessRoot, `.${id}-${randomUUID()}.tmp`);
+    try {
+      const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        await handle.writeFile(JSON.stringify({ schemaVersion: 1, applicationId: id, writer }));
+        await handle.sync();
+      } finally { await handle.close(); }
+      await dataAccessDirectory();
+      await rename(temporary, path.join(dataAccessRoot, `${id}.json`));
+      if (process.platform !== "win32") {
+        const directory = await open(dataAccessRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { await directory.sync(); } finally { await directory.close(); }
+      }
+    } catch { throw dataUnknown(); }
+    finally { await rm(temporary, { force: true }); }
+  }
+  const compatibilityContext = async (input, access) => {
+    const id = input.manifest.applicationId;
+    const writer = access === undefined ? await readDataAccess(id) : access;
+    let localDataPresent = Boolean(writer);
+    for (const directory of [path.join(applicationRoot, ".runtime", id), path.join(applicationRoot, "..", "application-data", id)]) {
+      try { localDataPresent ||= (await readdir(directory)).length > 0; }
+      catch (error) {
+        if (error.code !== "ENOENT") throw dataUnknown();
+      }
+    }
+    // The provider owns actual schema evidence. Never infer it from a package's
+    // writeVersion, and check its authenticated context after the disk reads.
+    const supplied = await getCompatibilityContext?.(input) || {};
+    return { ...supplied, localDataPresent: localDataPresent || supplied.localDataPresent === true };
+  };
+  const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys, getCompatibilityContext: compatibilityContext, prepareApplication, authorizeRelease });
   await installer.recover();
   const mutations = new Map();
   function assertOpen() {
     if (closed) throw Object.assign(new Error("APPLICATIONS_CLOSED"), { code: "APPLICATIONS_CLOSED" });
+    if (maintenance) throw Object.assign(new Error("UPDATE_IN_PROGRESS"), { code: "UPDATE_IN_PROGRESS" });
   }
   async function track(operation) {
     installing.add(operation);
@@ -33,6 +119,8 @@ export async function createApplicationManager({
     const check = () => { controller.signal.throwIfAborted(); assertSession(); };
     const pending = Promise.resolve().then(async () => {
       check();
+      if (operation === installer.rollback) await installer.assertRollbackCompatible(id);
+      check();
       await launcher.stop(id);
       check();
       return operation(id, check);
@@ -41,9 +129,46 @@ export async function createApplicationManager({
     return track(pending);
   }
   const installing = new Set(), controller = new AbortController();
-  let closed = false, closing;
+  let closed = false, closing, maintenance = false;
   const launcher = createApplicationLauncher({
-    resolveRecord: installer.resolveCurrent,
+    resolveRecord: async id => {
+      const record = await installer.resolveCurrent(id);
+      if (record.protocolVersion < 2) return record;
+      // Derive identity from the envelope again, not the mutable descriptor
+      // copy in the local install record.
+      const descriptor = record.envelope ? verifyEnvelope(record.envelope, trustedKeys) : undefined;
+      const controlled = record.releaseAccess === "account";
+      if (controlled) {
+        if (!descriptor || !authorizeRelease) throw Object.assign(new Error("MARKET_RELEASE_ACCESS_REQUIRED"), { code: "MARKET_RELEASE_ACCESS_REQUIRED" });
+        const permit = await authorizeRelease(descriptor);
+        if (!permit) throw Object.assign(new Error("MARKET_RELEASE_ACCESS_REQUIRED"), { code: "MARKET_RELEASE_ACCESS_REQUIRED" });
+        permit.assertLive();
+      }
+      const writer = writerFor(descriptor), previousWriter = await readDataAccess(id);
+      if (record.protocolVersion === 3) {
+        // Reject incompatible local data/client requirements before preparing
+        // remote resources. Launch repeats these checks after preparation.
+        await assertApplicationCompatibility(record, {
+          getCompatibilityContext: input => compatibilityContext(input, previousWriter), descriptor, phase: "import",
+          trustedDataContinuity: sameWriter(previousWriter, writer),
+        });
+      }
+      let preparedConnection;
+      await assertApplicationCompatibility(record, {
+        getCompatibilityContext: async input => {
+          const supplied = await compatibilityContext(input, previousWriter);
+          if (record.protocolVersion === 3) preparedConnection = supplied.applicationConnection;
+          return supplied;
+        }, descriptor, phase: "launch",
+        trustedDataContinuity: sameWriter(previousWriter, writer),
+      });
+      // Commit before any child can access the profile. If startup is canceled,
+      // retain this possible-writer evidence rather than assuming nothing wrote.
+      if (writer && !sameWriter(previousWriter, writer)) await writeDataAccess(id, writer);
+      if (record.protocolVersion === 3 && !preparedConnection) throw Object.assign(new Error("APPLICATION_RESOURCES_NOT_READY"), { code: "APPLICATION_RESOURCES_NOT_READY" });
+      return { ...record, ...(preparedConnection ? { preparedConnection } : {}),
+        ...(controlled ? { authorizeRelease: options => authorizeRelease(descriptor, options) } : {}) };
+    },
     onStarted: record => installer.prune(record.applicationId, record.version),
     host: {
       createSession(record, { signal }) {
@@ -51,7 +176,8 @@ export async function createApplicationManager({
           hostApplicationId: applicationId,
           applicationId: record.applicationId,
           installPath: record.installPath,
-          createConnection: async () => await createConnection?.(record.applicationId) || { context, request, openStream: stream },
+          createConnection: async () => record.preparedConnection || await createConnection?.(record.applicationId) || { context, request, openStream: stream },
+          authorizeRelease: record.authorizeRelease,
           signal,
         });
       },
@@ -77,13 +203,22 @@ export async function createApplicationManager({
     uninstall: (id, check) => mutate(id, installer.uninstall, check),
     rollback: (id, check) => mutate(id, installer.rollback, check),
     async selectCurrent(id, version) {
-      if (closed) throw Object.assign(new Error("APPLICATIONS_CLOSED"), { code: "APPLICATIONS_CLOSED" });
+      assertOpen();
       return track(installer.selectCurrent(id, version, { signal: controller.signal }));
     },
     listInstalled: installer.list,
-    launch(id) {
+    async launch(id) {
+      assertOpen();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
-      return launcher.launch(id);
+      return track(launcher.launch(id));
+    },
+    isBusy: () => maintenance || installing.size > 0 || mutations.size > 0,
+    beginMaintenance() {
+      assertOpen();
+      if (installing.size || mutations.size) throw Object.assign(new Error("UPDATE_IN_PROGRESS"), { code: "UPDATE_IN_PROGRESS" });
+      maintenance = true;
+      let released = false;
+      return () => { if (!released) { released = true; maintenance = false; } };
     },
     activate: launcher.activate,
     stop: launcher.stop,

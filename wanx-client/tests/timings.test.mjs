@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { createTimingRecorder } from "../shell/timings.mjs";
+import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 test("timings persist phase and elapsed time, never results or error details, and rotate", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-timings-"));
@@ -71,4 +72,22 @@ test("connection diagnostics record only sanitized state changes, including reco
   assert.deepEqual(rows.map(row => row.reason), ["engine_timeout", null, "NETWORK_LEASE_EXPIRED", "UNKNOWN_ERROR"]);
   assert.equal(rows[0].enabled, true);
   assert.equal(Object.hasOwn(rows[3], "enabled"), false);
+});
+
+test("box exchange failures retain fixed diagnostic codes and HTTP status", async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-box-errors-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "connection.jsonl");
+  const recorder = createTimingRecorder({ filePath });
+  for (const code of BOX_SESSION_ERROR_CODES) {
+    await assert.rejects(recorder.run("box.exchange", async () => {
+      throw Object.assign(new Error("SECRET backend detail"), { code, status: 503 });
+    }));
+  }
+  await recorder.flush();
+  const contents = await readFile(filePath, "utf8");
+  const rows = contents.trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(rows.map(row => row.errorCode), BOX_SESSION_ERROR_CODES);
+  assert.ok(rows.every(row => row.step === "box.exchange" && row.httpStatus === 503));
+  assert.doesNotMatch(contents, /SECRET|backend detail/);
 });

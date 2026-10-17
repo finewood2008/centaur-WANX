@@ -53,7 +53,7 @@ async function harness(options = {}) {
     ...(['pairing.start', 'pairing.challenge', 'pairing.token'].includes(request.message_type) ? { pairing_session_id: sessionId } : {}), payload })}\n`);
   const transport = {
     kind: 'ble-gatt', readDeviceInfo: async () => info, close: async () => { closed++; },
-    async request(bytes) {
+    async request(bytes, _match, signal) {
       assert.ok(bytes.length <= 2048); const request = JSON.parse(new TextDecoder().decode(bytes));
       messages.push(request.message_type); requests.push(request);
       if (request.message_type === 'hello') {
@@ -91,6 +91,10 @@ async function harness(options = {}) {
       if (request.message_type === 'wifi.scan') payload = { scan_state: 'ready', networks: [{ ssid: 'office', signal: 85, security: 'wpa_personal' }], next_offset: null };
       if (request.message_type === 'wifi.apply') {
         assert.deepEqual(inner.payload, { ssid: 'office', security: 'wpa_personal', password: 'wifi-pass', hidden: false });
+        if (options.blockWifiApply) {
+          options.blockWifiApply();
+          await new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+        }
         payload = { operation_status: 'accepted', device_state: 'credentials_received', job_id: 'job_wifi1', state_version: 1 };
       }
       if (request.message_type === 'job.status') payload = { operation_status: 'completed', device_state: options.incompleteJob ? 'connecting' : 'connected', job_id: 'job_wifi1', state_version: 2 };
@@ -137,6 +141,9 @@ test('owner changes Wi-Fi over real RSA/HKDF/AEAD with closed claim window and n
     assert.ok(!JSON.stringify(h.authorized()).includes('wifi-pass'));
     assert.equal(h.closed(), 1);
     assert.ok(h.secretRefs.at(-1).every((byte) => byte === 0), 'pairing token erased');
+    await h.coordinator.dispose();
+    assert.equal(h.coordinator.getSnapshot().state, 'completed');
+    assert.ok(!h.messages.includes('pairing.cancel'));
   } finally { await h.coordinator.dispose(); }
 });
 
@@ -177,6 +184,22 @@ test('cancel sends an authenticated cancellation before closing the BLE transpor
     assert.equal(h.coordinator.getSnapshot().state, 'cancelled');
     assert.equal(h.closed(), 1);
     assert.deepEqual(h.apiCalls, ['attestation', 'authorize']);
+  } finally { await h.coordinator.dispose(); }
+});
+
+for (const method of ['cancel', 'suspend', 'dispose']) test(`${method} aborts the active Wi-Fi exchange before sending encrypted cancellation`, async () => {
+  let entered;
+  const reached = new Promise(resolve => { entered = resolve; });
+  const h = await harness({ blockWifiApply: entered });
+  try {
+    await h.pair();
+    const passwordUtf8 = utf8('wifi-pass');
+    const applying = h.coordinator.provideWifi({ ssid: 'office', security: 'wpa_personal', hidden: false, passwordUtf8 });
+    const rejected = assert.rejects(applying, { name: 'AbortError' });
+    await reached; await h.coordinator[method](); await rejected;
+    assert.deepEqual(h.messages.slice(-2), ['wifi.apply', 'pairing.cancel']);
+    assert.ok(passwordUtf8.every(byte => byte === 0));
+    assert.equal(h.coordinator.getSnapshot().state, method === 'cancel' ? 'cancelled' : 'provisioningWifi');
   } finally { await h.coordinator.dispose(); }
 });
 
