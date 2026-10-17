@@ -49,6 +49,9 @@ class Entry(BaseModel):
     modified: float
     trashed: float | None = None
     digest: str | None = None
+    version: int = 1
+    previous_size: int = 0
+    previous_digest: str | None = None
 
 
 class Breadcrumb(BaseModel):
@@ -267,3 +270,18 @@ async def content(
 )
 async def metadata(item_id: str, service: PersonalSpace = Depends(space)) -> Any:
     return await call(service.metadata, item_id)
+
+
+class PreviousVersionInput(Input):
+    expected: int = Field(ge=1)
+
+
+@router.post(
+    "/files/{item_id}/previous",
+    response_model=Entry,
+    summary="Restore the retained previous file version",
+)
+async def previous_version(
+    item_id: str, body: PreviousVersionInput, service: PersonalSpace = Depends(space)
+) -> Any:
+    return await call(service.restore_version, item_id, body.expected)
