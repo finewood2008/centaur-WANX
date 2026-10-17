@@ -39,3 +39,18 @@ test("repeat launch restores and focuses the existing window; early events are s
   app.emit("second-instance");
   assert.equal(calls.length, 3);
 });
+
+
+test("explicit terminal arguments are handled without showing a management entry", () => {
+  const app = new EventEmitter();
+  app.requestSingleInstanceLock = () => true;
+  let shown = 0, commands = 0;
+  claimSingleInstance(app, () => ({ isDestroyed: () => false, isMinimized: () => false, show() { shown++; }, focus() {} }), argv => {
+    if (!argv?.includes('--wanx-console')) return false;
+    commands++; return true;
+  });
+  app.emit('second-instance', {}, ['wanx', '--wanx-console']);
+  assert.equal(commands, 1); assert.equal(shown, 0);
+  app.emit('second-instance', {}, ['wanx']);
+  assert.equal(shown, 1);
+});

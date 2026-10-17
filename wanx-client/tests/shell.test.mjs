@@ -318,3 +318,33 @@ for (const [label, override] of [
     await h.controller.close();
   });
 }
+
+test("maintenance tools bootstrap their fixed routes in separate reusable windows", async () => {
+  const h = harness();
+  const state = h.ready(41000);
+  state.connection.gatewayURL += "/__wanx_session/test";
+  await h.controller.open(state, "terminal");
+  await h.controller.open(state, "desktop");
+  assert.equal(h.windows[0].url, state.connection.gatewayURL + "#/__wanx_tools/terminal");
+  assert.equal(h.windows[1].url, state.connection.gatewayURL + "#/__wanx_tools/desktop");
+  let blocked = false;
+  h.windows[0].webContents.emit("will-navigate", { preventDefault() { blocked = true; } }, "http://127.0.0.1:41000/workbench/terminal");
+  assert.equal(blocked, true, "a tool window cannot navigate into the Dashboard");
+  assert.equal(h.windows[0].openHandler({ url: "http://127.0.0.1:41000/chat" }).action, "deny");
+
+  await h.controller.open(state, "terminal");
+  assert.equal(h.windows.length, 2);
+  assert.equal(h.windows[0].focused, 1);
+  assert.equal(h.windows[0].url, state.connection.gatewayURL + "#/__wanx_tools/terminal", "reopening must not reload a live terminal");
+  for (const destination of ["constructor", "__proto__", "https://untrusted.example/"]) {
+    assert.throws(() => h.controller.open(state, destination), /INVALID_MAINTENANCE_TOOL/);
+  }
+  h.controller.sync(h.ready(42000));
+  assert.ok(h.windows.every(window => window.destroyed));
+  assert.ok(h.sessions.every(session => session.storageCleared));
+  await h.controller.open(h.ready(42000), "desktop");
+  assert.equal(h.windows[2].url, "http://127.0.0.1:42000/__wanx_tools/desktop");
+  h.controller.sync({ phase: "disconnected", connection: null });
+  assert.ok(h.windows.every(window => window.destroyed));
+  await h.controller.close();
+});

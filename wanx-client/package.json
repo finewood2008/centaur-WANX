@@ -13,7 +13,7 @@
     "build:network": "node tools/build-network.mjs",
     "build:network:all": "node tools/build-network.mjs --all",
     "build:discovery": "node tools/build-discovery.mjs",
-    "prestart": "node tools/ensure-network.mjs && node tools/build-discovery.mjs",
+    "prestart": "node tools/ensure-network.mjs && node tools/build-discovery.mjs && node tools/build-maintenance.mjs",
     "start": "node tools/start-desktop.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:native": "cd native && go test ./...",
@@ -22,7 +22,10 @@
     "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js",
     "package:application": "node tools/package-application.mjs",
     "patch:provisioning-sdk": "node tools/patch-provisioning-display-name.mjs && node tools/patch-provisioning-gatt.mjs",
-    "package:windows:x64:internal": "node shell/package-win.mjs"
+    "package:windows:x64:internal": "node shell/package-win.mjs",
+    "build:maintenance": "node tools/build-maintenance.mjs",
+    "prepackage:mac": "npm run build:maintenance",
+    "prepackage:windows": "npm run build:maintenance"
   },
   "dependencies": {
     "@nexusaos/consumer-contracts": "file:vendor/nexusaos-consumer-contracts-1.0.0.tgz",

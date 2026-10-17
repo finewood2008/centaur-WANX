@@ -329,3 +329,11 @@ test("malformed preference data falls back to an empty history", async t => {
   const next = await harness(t, { preferenceFile: h.preferenceFile });
   assert.equal(next.ui.snapshot().lastDeviceId, null);
 });
+
+
+test("registered local connection opens applications without cloud readiness", async t => {
+  const h = await harness(t, { state: { phase: "ready", connection: { mode: "local", deviceId: "box-a" },
+    network: { enabled: false, phase: "disabled" }, platform: { phase: "unavailable" } } });
+  assert.equal((await h.ui.requestOpen("example.app")).state, "running");
+  assert.deepEqual(h.calls, [["launch", "example.app"]]);
+});

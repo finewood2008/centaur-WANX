@@ -79,11 +79,11 @@ for (const surface of ["control", "panel"]) {
 test("panel cannot invoke account, market mutation, version selection, or management-only operations", () => {
   const h = harness();
   for (const name of [
-    "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open",
+    "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open", "maintenance-open",
     "applications-install", "applications-launch", "applications-select-current", "applications-stop",
     "market-list", "market-candidate", "market-install", "market-uninstall", "market-rollback",
     "desktop-startup-get", "desktop-startup-set", "desktop-quit",
-    "connect-box", "disconnect", "refresh-devices",
+    "connect-box", "disconnect", "refresh-devices", "credits-balance", "credits-transactions", "credits-reservation",
   ]) {
     assert.throws(() => h.invoke(name, {
       phone: "13800138000", password: "secret", code: "123456", applicationId: "example.app",
@@ -161,6 +161,42 @@ test("both trusted windows still pass identifier syntax and current-directory ch
     await h.invoke("applications-cancel-open", { intentId: intent.id }, window);
   }
   assert.deepEqual(first.calls, [], "invalid requests cannot reach the actual connection or launcher");
+});
+
+
+test("panel space upload fixes the root, rejects stale contexts, and exposes only upload progress", async () => {
+  let scope = "scope-a";
+  const calls = [];
+  const personalSpace = {
+    snapshot: () => ({ phase: "ready", scope, accountId: "alice", boxId: "box-a", overview: { private: true }, tasks: [
+      { id: "a".repeat(32), direction: "upload", name: "file.txt", size: 10, offset: 4, phase: "running", localPath: "/private/source", digest: "secret" },
+      { id: "b".repeat(32), direction: "download", name: "private-download.txt", localPath: "/private/destination" },
+    ] }),
+    refresh: async () => personalSpace.snapshot(),
+    uploads: async (...args) => { calls.push(["uploads", ...args]); },
+    transfer: async (...args) => { calls.push(["transfer", ...args]); },
+  };
+  const h = harness({ personalSpace });
+  const value = h.invoke("panel-space-snapshot", {}, h.panel);
+  assert.equal(value.tasks.length, 1);
+  assert.doesNotMatch(JSON.stringify(value), /localPath|private|digest|overview/);
+  await h.invoke("panel-space-upload", { scope, paths: ["/private/one.txt", "/private/two.txt"], parent: "injected-folder" }, h.panel);
+  assert.deepEqual(calls.pop(), ["uploads", "", ["/private/one.txt", "/private/two.txt"], "scope-a"]);
+  await h.invoke("panel-space-transfer", { scope, id: "a".repeat(32), action: "pause" }, h.panel);
+  assert.deepEqual(calls.pop(), ["transfer", "pause", "a".repeat(32)]);
+  for (const action of ["cancel", "purge", "download"]) assert.throws(() => h.invoke("panel-space-transfer", { scope, id: "a".repeat(32), action }, h.panel), /PANEL_ACTION_NOT_ALLOWED/);
+  assert.throws(() => h.invoke("panel-space-transfer", { scope, id: "b".repeat(32), action: "pause" }, h.panel), /SPACE_NOT_FOUND/);
+  await assert.rejects(h.invoke("panel-space-upload", { scope: "old", paths: ["/private/one.txt"] }, h.panel), /SPACE_CONTEXT_CHANGED/);
+  personalSpace.refresh = async () => { scope = "scope-b"; return personalSpace.snapshot(); };
+  await assert.rejects(h.invoke("panel-space-upload", { scope: "scope-a", paths: ["/private/one.txt"] }, h.panel), /SPACE_CONTEXT_CHANGED/);
+  for (const name of ["space-upload-dropped", "space-snapshot", "space-uploads", "space-transfer", "space-download", "space-downloads", "space-purge"])
+    assert.throws(() => h.invoke(name, {}, h.panel), denied);
+  for (const name of ["panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer"]) {
+    const bad = { webContents: { mainFrame: { url: "https://untrusted.example" } } };
+    assert.throws(() => h.invoke(name, {}, bad), denied);
+    const frame = { sender: h.panel.webContents, senderFrame: { url: "file:///wanx/panel.html" } };
+    assert.throws(() => h.handlers.get(`wanx-client:${name}`)(frame, {}), denied);
+  }
 });
 
 test("profile writes and file selection are management-only and reject forged fields", async () => {

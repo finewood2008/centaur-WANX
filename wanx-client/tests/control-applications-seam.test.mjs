@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerControlActions } from "../shell/control.mjs";
+import { registerControlActions, openConnectedDashboard } from "../shell/control.mjs";
 
 const connected = {
   account: { phase: "authenticated" },
@@ -47,23 +47,20 @@ for (const [label, override, code] of [
     const h = control({ ...connected, ...override });
     assert.throws(() => h.invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" }), { message: code });
     assert.deepEqual(h.launched, []);
-    assert.throws(() => h.invoke("dashboard-open"), { message: code });
+    assert.throws(() => h.invoke("dashboard-open"), { message: "DASHBOARD_TERMINAL_ONLY" });
+    assert.throws(() => h.invoke("maintenance-open", { tool: "terminal", deviceId: "box-102" }), { message: code });
     assert.deepEqual(h.dashboards, []);
   });
 }
 
-test("Dashboard IPC opens only the trusted current gateway and rejects untrusted senders", () => {
+test("console is unavailable to management IPC while its terminal owner uses only the current gateway", () => {
   const h = control(connected);
-  h.invoke("dashboard-open", { url: "https://untrusted.example/", deviceId: "box-103" });
-  assert.deepEqual(h.dashboards, [connected.connection]);
+  assert.throws(() => h.invoke("dashboard-open", { url: "https://untrusted.example/" }), /DASHBOARD_TERMINAL_ONLY/);
   assert.throws(() => h.invoke("dashboard-open", {}, { sender: {}, senderFrame: {} }), /此页面无权操作万象连接/);
-  assert.equal(h.dashboards.length, 1);
-});
-
-test("Dashboard IPC rejects a ready box without its local gateway", () => {
-  const h = control({ ...connected, connection: { mode: "netbird", deviceId: "box-102" } });
-  assert.throws(() => h.invoke("dashboard-open"), /BOX_CONNECTION_REQUIRED/);
-  assert.deepEqual(h.dashboards, []);
+  const opened = [];
+  openConnectedDashboard({ snapshot: () => connected }, { open: state => opened.push(state.connection) });
+  assert.deepEqual(opened, [connected.connection]);
+  assert.throws(() => openConnectedDashboard({ snapshot: () => ({ ...connected, connection: { mode: "netbird", deviceId: "box-102" } }) }, { open() {} }), /BOX_CONNECTION_REQUIRED/);
 });
 
 test("launch IPC uses the current application and ignores stale renderer versions", () => {
@@ -107,4 +104,25 @@ test("state reads sample the connection after the asynchronous application list 
   state = { ...connected, phase: "disconnected", connection: null };
   finishListing([]);
   assert.equal((await pending).connection, null);
+});
+
+
+test("authenticated local box opens Dashboard and apps without cloud network", () => {
+  const state = { ...connected, platform: { phase: "unavailable" }, network: { enabled: false, phase: "disabled" },
+    connection: { ...connected.connection, mode: "local", deviceId: "local-0123456789abcdef01234567" } };
+  const h = control(state);
+  assert.throws(() => h.invoke("dashboard-open"), /DASHBOARD_TERMINAL_ONLY/);
+  openConnectedDashboard({ snapshot: () => state }, { open: snapshot => h.dashboards.push(snapshot.connection) });
+  h.invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" });
+  assert.equal(h.dashboards.length, 1); assert.equal(h.launched.length, 1);
+  assert.throws(() => control({ ...state, phase: "disconnected" }).invoke("dashboard-open"));
+});
+
+test("maintenance IPC rejects stale targets, arbitrary URLs and unsupported tools", () => {
+  const h = control(connected);
+  assert.throws(() => h.invoke("maintenance-open", { tool: "terminal", deviceId: "box-103" }), /BOX_CONNECTION_CHANGED/);
+  for (const tool of ["dashboard", "/workbench/terminal", "https://untrusted.example/", "constructor", "__proto__"]) {
+    assert.throws(() => h.invoke("maintenance-open", { tool, deviceId: "box-102" }), /INVALID_MAINTENANCE_TOOL/);
+  }
+  assert.deepEqual(h.dashboards, []);
 });

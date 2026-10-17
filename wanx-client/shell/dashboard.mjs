@@ -1,15 +1,29 @@
 import { randomUUID } from "node:crypto";
+import { dashboardRoutes } from "../octop/dashboard-routes.mjs";
 import { externalHTTPURL, isDashboardURL, sameOrigin } from "./security.mjs";
 
 // The box Dashboard has no preload or privileged IPC, and never shares storage
 // with either the connection window or a previously connected box.
-export function createDashboardWindows({
+export function createDashboardWindows(options) {
+  const surfaces = new Map();
+  return {
+    open(state, destination = "dashboard") {
+      if (!Object.hasOwn(dashboardRoutes, destination)) throw new Error("INVALID_MAINTENANCE_TOOL");
+      if (!surfaces.has(destination)) surfaces.set(destination, createDashboardSurface(options, dashboardRoutes[destination]));
+      return surfaces.get(destination).open(state);
+    },
+    sync(state) { for (const surface of surfaces.values()) surface.sync(state); },
+    async close() { await Promise.all([...surfaces.values()].map(surface => surface.close())); },
+  };
+}
+
+function createDashboardSurface({
   BrowserWindow,
   session,
   onError,
   requestMedia,
   openExternal,
-}) {
+}, route) {
   let current = null;
   const cleanup = new Set();
 
@@ -60,7 +74,7 @@ export function createDashboardWindows({
       height: 900,
       minWidth: 800,
       minHeight: 600,
-      title: connection.name || "万象",
+      title: route.endsWith("/terminal") ? `${connection.name || "万象盒子"} · 终端` : route.endsWith("/desktop") ? `${connection.name || "万象盒子"} · 远程桌面` : connection.name || "万象",
       webPreferences: {
         session: isolatedSession,
         nodeIntegration: false,
@@ -99,14 +113,21 @@ export function createDashboardWindows({
         } else callback(false);
       },
     );
+    function allowedToolURL(candidate) {
+      if (!isDashboardURL(candidate, entry.gatewayURL)) return false;
+      if (route === "/") return true;
+      const url = new URL(candidate);
+      return url.protocol === "blob:" || url.pathname === route || url.pathname.startsWith("/__wanx_session/") || url.pathname.startsWith("/__wanx_tools/assets/");
+    }
     function openLink(url) {
+      if (route !== "/" && sameOrigin(url, entry.gatewayURL)) return;
       const safeURL = externalHTTPURL(url);
       if (safeURL && openExternal)
         Promise.resolve(openExternal(safeURL)).catch(onError);
     }
     function protect(target) {
       target.webContents.setWindowOpenHandler(({ url }) => {
-        if (!isDashboardURL(url, entry.gatewayURL)) {
+        if (!allowedToolURL(url)) {
           openLink(url);
           return { action: "deny" };
         }
@@ -134,24 +155,31 @@ export function createDashboardWindows({
         protect(child);
       });
       target.webContents.on("will-navigate", (event, url) => {
-        if (isDashboardURL(url, entry.gatewayURL)) return;
+        if (allowedToolURL(url)) return;
         event.preventDefault();
         openLink(url);
       });
       target.webContents.on("will-redirect", (event, url) => {
-        if (!isDashboardURL(url, entry.gatewayURL)) event.preventDefault();
+        if (!allowedToolURL(url)) event.preventDefault();
       });
       target.webContents.on("will-attach-webview", (event) =>
         event.preventDefault(),
       );
     }
+    if (route !== "/") window.webContents.on("page-title-updated", event => event.preventDefault());
     protect(window);
     window.on("closed", () => {
       if (current !== entry) return;
       current = null;
       dispose(entry);
     });
-    entry.loading = window.loadURL(connection.gatewayURL).catch(() => {
+    const launchURL = new URL(connection.gatewayURL);
+    if (route !== "/") {
+      // Bootstrap must set the existing session marker before entering a tool.
+      if (launchURL.pathname.startsWith("/__wanx_session/")) launchURL.hash = route;
+      else launchURL.pathname = route;
+    }
+    entry.loading = window.loadURL(route === "/" ? connection.gatewayURL : launchURL.href).catch(() => {
       if (current !== entry) return;
       current = null;
       dispose(entry);

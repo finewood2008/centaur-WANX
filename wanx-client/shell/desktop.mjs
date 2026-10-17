@@ -5,7 +5,7 @@ const resource = (name) => fileURLToPath(new URL(`../resources/${name}`, import.
 export const APP_ICON = resource("icon.png");
 
 export function createDesktopIntegration({
-  app, Menu, Tray, nativeImage, control, client, openDashboard, onError,
+  app, Menu, Tray, nativeImage, control, client,
   panel, screen, openManagement, onPanelHidden = () => {},
   requestQuit = () => app.quit(),
   versionInfo,
@@ -29,7 +29,6 @@ export function createDesktopIntegration({
   const tray = new Tray(trayImage);
   tray.setToolTip(DESKTOP_NAME);
   let panelHeight = 520;
-  let trayBlurAt = 0;
   let hidingPanel = false;
 
   function showControl() {
@@ -89,7 +88,6 @@ export function createDesktopIntegration({
   function show() {
     if (!usesPanel) { showControl(); return; }
     if (panel.isDestroyed()) return;
-    trayBlurAt = 0;
     positionPanel();
     panel.show();
     panel.focus();
@@ -110,31 +108,17 @@ export function createDesktopIntegration({
   }
 
   function togglePanel() {
-    // Clicking the tray can blur the window before the tray's click arrives.
-    // Keep that same click from reopening the panel that blur just hid.
-    if (trayBlurAt && Date.now() - trayBlurAt < 300) { trayBlurAt = 0; return; }
     if (panel.isVisible()) hidePanel();
     else show();
-  }
-
-  function panelBlurred() {
-    if (hidingPanel || panel.isDestroyed() || !panel.isVisible()) return;
-    const point = screen?.getCursorScreenPoint();
-    const bounds = tray.getBounds();
-    if (point && point.x >= bounds.x && point.x < bounds.x + bounds.width &&
-        point.y >= bounds.y && point.y < bounds.y + bounds.height) trayBlurAt = Date.now();
-    else trayBlurAt = 0;
-    hidePanel();
   }
 
   function updatePanelPosition() {
     if (usesPanel && !panel.isDestroyed() && panel.isVisible()) positionPanel();
   }
 
-  const dashboard = () => Promise.resolve().then(openDashboard).catch(onError);
   const homeItem = () => ({ id: "applications", label: "我的应用", accelerator: "CmdOrCtrl+1", click: () => usesPanel ? show() : showManagement("applications") });
+  const spaceItem = () => ({ id: "space", label: "盒子空间", accelerator: "CmdOrCtrl+2", click: () => showManagement("space") });
   const settingsItem = () => ({ id: "settings", label: "设置…", accelerator: "CmdOrCtrl+,", click: () => showManagement("settings") });
-  const dashboardItem = () => ({ id: "dashboard", label: "打开 Dashboard", accelerator: "CmdOrCtrl+Shift+D", click: dashboard });
   const separator = { type: "separator" };
   const about = { role: "about", label: "关于万象" };
   const updatesItem = () => ({ id: "updates", label: "检查更新…", click: () => {
@@ -154,7 +138,7 @@ export function createDesktopIntegration({
     ] }] : []),
     { label: "应用", submenu: [
       { label: usesPanel ? "打开万象" : "显示主窗口", accelerator: "CmdOrCtrl+Shift+M", click: show },
-      homeItem(), ...(!mac ? [settingsItem()] : []), dashboardItem(),
+      homeItem(), spaceItem(), ...(!mac ? [settingsItem()] : []),
       ...(!mac ? [separator, about, updatesItem(), quit] : []),
     ] },
     { label: "编辑", submenu: [
@@ -180,7 +164,7 @@ export function createDesktopIntegration({
   }
   const trayMenu = Menu.buildFromTemplate([
     { id: "connection-status", label: "未连接盒子", enabled: false }, separator,
-    { label: usesPanel ? "打开万象" : "显示主窗口", click: show }, homeItem(), settingsItem(), dashboardItem(),
+    { label: usesPanel ? "打开万象" : "显示主窗口", click: show }, homeItem(), spaceItem(), settingsItem(),
     separator, about, quit,
   ]);
 
@@ -189,12 +173,12 @@ export function createDesktopIntegration({
     const signedIn = state.account?.phase === "authenticated";
     const networkReady = signedIn && state.network?.enabled !== false &&
       state.platform?.phase === "ready" && state.network?.phase === "ready";
-    const connected = networkReady && state.phase === "ready" &&
-      state.connection?.mode === "netbird" && Boolean(state.connection.deviceId && state.connection.gatewayURL);
+    const connected = signedIn && state.phase === "ready" &&
+      Boolean(state.connection?.deviceId && state.connection.gatewayURL) &&
+      (state.connection.mode === "local" || (networkReady && state.connection.mode === "netbird"));
     const unavailable = state.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(state.network?.phase);
-    const label = !signedIn ? "尚未登录万象" : state.network?.enabled === false ? "网络已关闭" :
+    const label = !signedIn ? "尚未登录万象" : connected ? `已连接 · ${state.connection.name || state.connection.deviceId}` : state.network?.enabled === false ? "网络已关闭" :
       unavailable ? "网络暂不可用" : !networkReady ? "网络连接中" :
-      connected ? `已连接 · ${state.connection.name || state.connection.deviceId}` :
       state.phase === "recovering" ? "盒子连接恢复中" : state.phase === "connecting" ? "盒子连接中" : "未连接盒子";
     const key = JSON.stringify([signedIn, connected, label]);
     if (key === previous) return;
@@ -202,7 +186,7 @@ export function createDesktopIntegration({
     for (const target of [menu, trayMenu]) {
       target.getMenuItemById("applications").enabled = signedIn;
       target.getMenuItemById("settings").enabled = signedIn;
-      target.getMenuItemById("dashboard").enabled = connected;
+      target.getMenuItemById("space").enabled = signedIn;
     }
     trayMenu.getMenuItemById("connection-status").label = label;
     if (!usesPanel) tray.setContextMenu(trayMenu);
@@ -214,7 +198,6 @@ export function createDesktopIntegration({
   app.on("activate", show);
   if (usesPanel) {
     panel.on("close", hidePanelOnClose);
-    panel.on("blur", panelBlurred);
     tray.on("click", togglePanel);
     if (platform === "win32") tray.on("double-click", show);
     tray.on("right-click", showTrayMenu);
@@ -237,7 +220,6 @@ export function createDesktopIntegration({
       app.removeListener("activate", show);
       if (usesPanel) {
         panel.removeListener("close", hidePanelOnClose);
-        panel.removeListener("blur", panelBlurred);
         for (const event of ["display-added", "display-removed", "display-metrics-changed"])
           screen?.removeListener(event, updatePanelPosition);
       }

@@ -124,3 +124,6 @@ standard-sdk/
 **/remote-manager.json
 zhijun-lan-test/
 *.sqlite3
+
+# Built from dashboard/src/maintenance via npm run build:maintenance.
+wanx-client/local-ui/maintenance/
