@@ -1179,6 +1179,7 @@ function render(state) {
     scroller.scrollLeft = scroll.left;
   }
   if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
+  if (page === "space") window.wanxSpace?.mounted?.();
 }
 
 function syncFormState() {

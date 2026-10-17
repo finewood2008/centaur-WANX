@@ -98,8 +98,9 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const connection = await connect();
     switch (action) {
       case "restore-version": return request(connection, `/files/${id(input.id)}/previous`, { method: "POST", body: { expected: input.expected } });
-      case "list": return request(connection, `/files?parent=${folder(input.parent || "")}&trash=${input.trash === true}`);
-      case "mkdir": return request(connection, "/folders", { method: "POST", body: { parent: folder(input.parent || ""), name: name(input.name) } });
+      case "stat": return metadata(connection, input.id);
+      case "list": return request(connection, `/files?parent=${folder(input.parent || "")}&trash=${input.trash === true}&space_id=${input.space_id && input.space_id !== "personal" ? id(input.space_id) : "personal"}`);
+      case "mkdir": return request(connection, "/folders", { method: "POST", body: { parent: folder(input.parent || ""), name: name(input.name), space_id: input.space_id || "personal" } });
       case "move": return request(connection, `/files/${id(input.id)}`, { method: "PATCH", body: { parent: folder(input.parent || ""), name: name(input.name) } });
       case "trash": return request(connection, `/files/${id(input.id)}`, { method: "DELETE" });
       case "restore": return request(connection, `/trash/${id(input.id)}/restore`, { method: "POST" });

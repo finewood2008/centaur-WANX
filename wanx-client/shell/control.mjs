@@ -110,7 +110,7 @@ export function registerControlActions({
       throw new Error("SPACE_NOT_FOUND");
     return personalSpace.transfer(input.action, input.id);
   });
-  for (const method of ["snapshot", "refresh", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"]) {
+  for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"]) {
     register(`space-${method}`, async (input = {}) => {
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
       if (method === "snapshot" || method === "refresh") return personalSpace[method]();

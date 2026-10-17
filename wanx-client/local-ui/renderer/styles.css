@@ -703,3 +703,25 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .space-link-card input { width: 100%; font: 12px monospace; margin: 6px 0; }
 .space-link-card button { margin-right: 12px; }
 #space-link-expiry { margin: 12px; }
+
+/* Workspace hierarchy stays compact so the icon canvas retains its area. */
+.space-tree { min-width: 0; }
+.space-tree-node, .space-favorite { display: flex; align-items: center; min-width: 0; padding-left: calc(var(--depth, 0) * 12px); }
+.space-tree-node .space-nav, .space-favorite .space-nav { flex: 1; min-width: 0; padding: 8px 5px; gap: 6px; }
+.space-tree-node .space-nav span:last-child, .space-favorite .space-nav span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.space-tree-toggle, .space-tree-more { flex: 0 0 22px; padding: 4px 1px; border: 0; background: transparent; color: var(--fn-text-secondary); cursor: pointer; }
+.space-tree-more:hover, .space-tree-toggle:hover { color: var(--fn-accent); background: #e9ded1; border-radius: 5px; }
+.space-tree .space-sidebar-caption { margin-top: 18px; padding: 0 7px 6px; }
+.space-sidebar-note { margin: 2px 8px 8px; font-size: 10px; line-height: 1.6; color: var(--fn-text-tertiary); }
+.space-source-heading { display: flex; align-items: center; justify-content: space-between; }
+.space-source-heading button { font-size: 11px; }
+.space-favorite .space-nav:disabled { opacity: .5; }
+.space-destination-spaces { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.space-recycled, .space-grant { display: flex; gap: 10px; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--fn-border-primary); padding: 10px; }
+.space-recycled span { color: var(--fn-text-secondary); font-size: 11px; }
+.space-dialog input, .space-dialog select { width: 100%; margin: 10px 0; }
+.space-tree .is-move-target, .space-favorite .is-move-target, .space-nav.is-upload-target { background: #e9d0bd; outline: 2px solid #a35e42; border-radius: 8px; }
+.space-breadcrumbs details { position: relative; flex: 0 0 auto; }
+.space-breadcrumbs details summary { cursor: pointer; }
+.space-breadcrumbs details[open] > div { position: absolute; z-index: 20; top: 26px; left: 0; min-width: 180px; max-height: 300px; overflow: auto; padding: 8px; background: #fffdfa; border: 1px solid var(--fn-border-primary); border-radius: 10px; box-shadow: 0 8px 24px #382d201a; }
+.space-breadcrumbs details[open] > div button { display: block; max-width: 260px; }
