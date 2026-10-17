@@ -544,3 +544,25 @@ dashboard mirrors every code under `apiErrors.*` in
 These preferences apply at the shared model boundary for both dashboard/client and IM conversations. They preserve model parameters, system prompt, role files and stored conversation history. They are explicit settings, not inferred user memory. New private roles default to no preferences.
 
 Mutations reserve an idle agent: active replies return 409, new turns wait during reload, and success is returned only after reload completes. Reload failures restore the prior preference field and attempt to restore the runtime. Other agent configuration is not replaced by this API.
+
+### Private WANX role ontology
+
+WANX-hosted Zhijun uses `/api/agents/{agent_id}/ontology`, under its existing WANX
+account and private role. These routes require the actual owner and matching
+signed application scope; shared agents and administrator access to another
+owner's role are rejected. They do not create a second account or copy memory.
+
+- `GET /ontology`: current role ontology and preparation state.
+- `POST /ontology/prepare` (`retry` optional): enable candidate preparation for this role.
+- `POST /ontology/generate` (`revision` required): request versioned synthesis.
+- `POST /ontology/nodes/{node_id}`: versioned, idempotent owner decisions.
+- `GET /ontology/facts`: paginated source evidence.
+- `GET /ontology/context/{thread_id}`: conversation context and preparation state.
+- `PUT /ontology/context/{thread_id}` (`excluded` IDs): exclude entries from context.
+
+All paths above append to `/api/agents/{agent_id}`. Conversation routes also
+verify the thread belongs to this account and role. An empty role reports
+`no_sources`; a lack of personal evidence is not a connection failure. Automatic
+preparation creates candidates only. Confirmed entries retain source dependency,
+withdrawal handling and version history. Existing Zhijun product-profile APIs
+remain available through the inherited coordinator.
