@@ -55,7 +55,7 @@ async function harness(t) {
     if (channel === 'wanx:setup:transport') { operations.push(input.operation); listener(input); }
   };
   const host = await createProvisioningHost({ webContents, ipcMain, documentUrl: webContents.mainFrame.url,
-    consumer: { current: async () => identity, pairingApi: async () => ({}) },
+    consumer: { current: async () => identity, pairingApi: async () => ({ getClaimState: async deviceId => ({ data: { deviceId, ownershipState: 'unclaimed', canClaim: true, nextAction: 'claim', reasonCode: null } }) }) },
     cryptoFactory: () => ({ randomBytes: (size) => new Uint8Array(randomBytes(size)) }),
     resumeStore: {}, trustedRootCertificatesPem: [], trustedRootSpkiPins: [] });
   t.after(async () => { await host.dispose(); await window.wanxDeviceSetupTransport.dispose(); });
