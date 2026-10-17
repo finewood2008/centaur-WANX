@@ -46,6 +46,9 @@ from octop.api.routers.browser.harness import (
     harness_page_url,
     resolve_harness_session,
 )
+from octop.infra.browser.control import block_agent, control_for, finish_even_if_cancelled
+from octop.infra.browser.learning import restrict_action, stop_if_client
+from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils.browser_media import user_browser_profile
 
 logger = logging.getLogger(__name__)
@@ -298,11 +301,44 @@ async def _handle_client_event(sess: Any, msg: dict[str, Any]) -> None:
     elif t == "type":
         text = str(msg.get("text") or "")
         if text:
-            await sess.type(text)
-    elif t == "keydown":
+            await sess._internal.client.send("Input.insertText", {"text": text})  # noqa: SLF001
+    elif t in ("keydown", "keyup"):
         key = str(msg.get("key") or "")
-        if key in ("Enter",):
-            await sess.type("\n")
+        code = str(msg.get("code") or "")
+        modifiers = int(msg.get("modifiers") or 0) & 15
+        keycodes = {
+            "Backspace": 8,
+            "Tab": 9,
+            "Enter": 13,
+            "Escape": 27,
+            "Delete": 46,
+            "ArrowLeft": 37,
+            "ArrowUp": 38,
+            "ArrowRight": 39,
+            "ArrowDown": 40,
+            "Home": 36,
+            "End": 35,
+            "PageUp": 33,
+            "PageDown": 34,
+        }
+        vk = keycodes.get(key, ord(key.upper()) if len(key) == 1 else 0)
+        params: dict[str, Any] = {
+            "type": "keyUp" if t == "keyup" else "rawKeyDown",
+            "key": key,
+            "code": code,
+            "modifiers": modifiers,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+        }
+        if t == "keydown" and modifiers & 6:
+            command = {"a": "selectAll", "z": "undo", "y": "redo", "c": "copy", "x": "cut"}.get(
+                key.lower()
+            )
+            if command:
+                params["commands"] = ["redo" if key.lower() == "z" and modifiers & 8 else command]
+        if key == "Enter" and t == "keydown":
+            params.update(type="keyDown", text="\r", unmodifiedText="\r")
+        await sess._internal.client.send("Input.dispatchKeyEvent", params)  # noqa: SLF001
     elif t == "tab_switch":
         tab_id = msg.get("tab_id")
         if tab_id is not None:
@@ -312,7 +348,7 @@ async def _handle_client_event(sess: Any, msg: dict[str, Any]) -> None:
         if tab_id is not None:
             await sess.close_tab(str(tab_id))
     elif t == "tab_new":
-        await sess.new_tab()
+        await sess.new_tab(force_new=True)
     elif t == "resize":
         w = int(msg.get("width") or 0)
         h = int(msg.get("height") or 0)
@@ -338,6 +374,9 @@ async def browser_stream_ws(
     height: int = Query(default=800),
 ) -> None:
     server = websocket.app.state.octop_server
+    authorization = websocket.headers.get("authorization", "")
+    if authorization:
+        token = authorization[7:] if authorization.startswith("Bearer ") else None
     if not token:
         await websocket.close(code=4001, reason="missing token")
         return
@@ -347,16 +386,23 @@ async def browser_stream_ws(
         await websocket.close(code=4001, reason=f"auth failed: {exc}")
         return
 
+    if not user_has_permission(user, "browser"):
+        await websocket.close(code=4003, reason="browser permission required")
+        return
     await websocket.accept()
     sess: Any | None = None
     profile = user_browser_profile(user.id)
     stream_task: asyncio.Task[None] | None = None
     listen = bool(listen_only)
+    learning_client = ""
 
     try:
         # Wait for the client's ``start`` message (sent on ws.onopen).
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
         start_msg = json.loads(raw)
+        client_hint = start_msg.get("learning_client_id")
+        if isinstance(client_hint, str) and 0 < len(client_hint) <= 128:
+            learning_client = client_hint
         if start_msg.get("type") != "start":
             await _send_json(websocket, {"type": "error", "message": "expected start message"})
             return
@@ -369,7 +415,7 @@ async def browser_stream_ws(
             assert sess is not None  # create=True always returns or raises
 
             start_url = _normalize_nav_url(str(start_msg.get("url") or ""))
-            if start_url and start_url not in {"about:blank"}:
+            if start_url and start_url not in {"about:blank"} and not control_for(profile).managed:
                 try:
                     await sess.navigate(start_url)
                 except Exception as exc:
@@ -415,8 +461,31 @@ async def browser_stream_ws(
             if msg.get("type") == "stop":
                 break
             if sess is not None:
-                with contextlib.suppress(Exception):
-                    await _handle_client_event(sess, msg)
+                control = control_for(profile)
+                async with control.lock:
+                    if control.managed and control.owner != "user" and msg.get("type") != "resize":
+                        await _send_json(websocket, {"type": "error", "code": "BROWSER_AI_CONTROL"})
+                        continue
+                    if restrict_action(
+                        profile,
+                        {
+                            "tab_new": "new_tab",
+                            "tab_switch": "switch_tab",
+                            "tab_close": "close_tab",
+                        }.get(str(msg.get("type")), ""),
+                    ):
+                        await _send_json(
+                            websocket, {"type": "error", "code": "LEARNING_CURRENT_TAB"}
+                        )
+                        continue
+                    try:
+                        await finish_even_if_cancelled(
+                            asyncio.create_task(_handle_client_event(sess, msg))
+                        )
+                    except Exception:
+                        await _send_json(
+                            websocket, {"type": "error", "code": "BROWSER_INPUT_FAILED"}
+                        )
     except TimeoutError:
         await _send_json(websocket, {"type": "error", "message": "timed out waiting for start"})
     except WebSocketDisconnect:
@@ -427,6 +496,11 @@ async def browser_stream_ws(
             await _send_json(websocket, {"type": "error", "message": str(exc)})
             await _send_json(websocket, {"type": "status", "status": "error"})
     finally:
+        if not listen and control_for(profile).managed:
+            block_agent(profile)
+        if not listen and learning_client:
+            with contextlib.suppress(Exception):
+                await stop_if_client(profile, learning_client)
         if stream_task is not None:
             stream_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

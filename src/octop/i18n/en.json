@@ -949,5 +949,9 @@
       "confirmed_understanding": "Owner-confirmed understanding",
       "source_quote": "Source quote"
     }
+  },
+  "browser_control": {
+    "manual": "Browser control belongs to the user or another conversation. Stop browser operations and wait for control.",
+    "learning_current_tab": "Learning is limited to the current tab. Finish learning before changing tabs."
   }
 }

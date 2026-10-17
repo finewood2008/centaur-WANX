@@ -37,6 +37,9 @@ async def dashboard_chat_ws(
 ) -> None:
     """Bidirectional Dashboard chat. Wire protocol mirrors harness stream chunks."""
     server = websocket.app.state.octop_server
+    authorization = websocket.headers.get("authorization", "")
+    if authorization:
+        token = authorization[7:] if authorization.startswith("Bearer ") else None
     if not token:
         await websocket.close(code=4001, reason="missing token")
         return

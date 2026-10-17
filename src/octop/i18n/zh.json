@@ -949,5 +949,9 @@
       "confirmed_understanding": "用户确认的理解",
       "source_quote": "原文引用"
     }
+  },
+  "browser_control": {
+    "manual": "浏览器由用户或其他会话控制。停止浏览器操作，等待控制权。",
+    "learning_current_tab": "学习期间仅操作当前标签页，请先完成学习再切换标签页。"
   }
 }
