@@ -209,6 +209,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       client = createPlatformClient({
         account,
         localBoxes: createLocalBoxes(),
+        creditsServiceURL,
         measure: timed,
         resumeStore: createSecureAccountStore({
           filePath: path.join(userData, "network-resume.enc"),

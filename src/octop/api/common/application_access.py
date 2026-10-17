@@ -94,6 +94,21 @@ def assert_application_request(
     """
     path = path.rstrip("/")
     app_id = application_id(user)
+    # Credit routes enforce account ownership and independent application credentials.
+    # Only reads and settlement actions cross this boundary; never grant or authorize.
+    credit_read = method == "GET" and (
+        path in {"/api/credits/balance", "/api/credits/transactions"}
+        or re.fullmatch(r"/api/credits/reservations/[a-f0-9]{32}", path) is not None
+    )
+    credit_settle = (
+        method == "POST"
+        and re.fullmatch(
+            r"/api/credits/reservations/[a-f0-9]{32}/(?:start|settle|release|refund)", path
+        )
+        is not None
+    )
+    if app_id != "wanx" and (credit_read or credit_settle):
+        return
     drive_request = (
         (method, path)
         in {

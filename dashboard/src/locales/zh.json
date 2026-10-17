@@ -216,7 +216,14 @@
     "DIGITAL_SELF_DISCLOSURE_REQUIRED": "交流前请确认本人可查看完整交谈及模型处理说明。",
     "DIGITAL_SELF_QUOTA": "今天的免费交流额度已用完。",
     "DIGITAL_SELF_CHANGED": "发布内容或访问权限发生变化，本轮回答已停止交付。",
-    "DIGITAL_SELF_CONFLICT": "内容已发生变化，请重新读取后再操作。"
+    "DIGITAL_SELF_CONFLICT": "内容已发生变化，请重新读取后再操作。",
+    "CREDITS_DISABLED": "统一积分账本未配置或未启用",
+    "CREDITS_IDENTITY": "需要已验证的万象账号身份",
+    "CREDITS_INVALID": "积分请求参数无效",
+    "CREDITS_CONFLICT": "积分请求与已有交易或任务状态冲突",
+    "CREDITS_INSUFFICIENT": "可用积分不足",
+    "CREDITS_NOT_FOUND": "未找到可访问的积分预留记录",
+    "CREDITS_FORBIDDEN": "没有执行此积分操作的权限"
   },
   "nav": {
     "chat": "对话",

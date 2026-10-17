@@ -216,7 +216,14 @@
     "DIGITAL_SELF_DISCLOSURE_REQUIRED": "Acknowledge owner-visible conversations and model processing before chatting.",
     "DIGITAL_SELF_QUOTA": "The daily conversation allowance has been reached.",
     "DIGITAL_SELF_CHANGED": "The publication or access permission changed. This reply was withheld.",
-    "DIGITAL_SELF_CONFLICT": "The state changed. Read the latest version before updating."
+    "DIGITAL_SELF_CONFLICT": "The state changed. Read the latest version before updating.",
+    "CREDITS_DISABLED": "Credit authority is not configured",
+    "CREDITS_IDENTITY": "A verified WANX account identity is required",
+    "CREDITS_INVALID": "Invalid credit request",
+    "CREDITS_CONFLICT": "Credit operation conflicts with existing state or request",
+    "CREDITS_INSUFFICIENT": "Insufficient available credits",
+    "CREDITS_NOT_FOUND": "Credit reservation not found",
+    "CREDITS_FORBIDDEN": "This caller is not authorized for the credit operation"
   },
   "nav": {
     "chat": "Conversation",

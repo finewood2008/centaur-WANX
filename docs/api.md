@@ -8,7 +8,14 @@ described in [Chat (WebSocket)](#chat-websocket).
 > `enable_api_docs=true` (or `OCTOP_ENABLE_API_DOCS=1`). The schema
 > is at `/api/openapi.json`.
 
+For non-blocking task usage records, see [WANX token metering](wanx-token-pricing.md).
+Task budgets, extensions and automatic cloud budget grants have been removed. Real payment remains disabled.
+
 ## Authentication
+
+The optional central WANX account ledger is documented in
+[WANX account credits](wanx-account-credits.md), including application settlement,
+trusted account identity, deployment requirements and payment integration limits.
 
 | Header | Value |
 |--------|-------|

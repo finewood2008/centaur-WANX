@@ -22,6 +22,7 @@ export function createPlatformClient({
   createTransport,
   createSession = createPlatformSession,
   localBoxes,
+  creditsServiceURL = "",
   managementURL = "https://p2p.qeeshu.com",
   readPreference = async () => true,
   writePreference = async () => {},
@@ -836,11 +837,31 @@ export function createPlatformClient({
       if (response.status !== 200) throw fail("BOX_IDENTITY_UNAVAILABLE");
       let user;
       try { user = JSON.parse(response.body.toString("utf8")); } catch { throw fail("BOX_IDENTITY_INVALID"); }
+      let metering = null;
+      async function meteredInput(input) {
+        // Development authority tokens must never be forwarded to another box.
+        const local = localDevices.find(d => d.deviceId === state.connection.deviceId);
+        if (!creditsServiceURL || !local || new URL(local.serviceUrl).origin !== new URL(creditsServiceURL).origin)
+          return input;
+        if (!metering || metering.expires_at * 1000 < Date.now() + 30000) {
+          try {
+            const result = await account.creditsRequest({ serviceURL: creditsServiceURL,
+              path: `/api/credits/meter-session?application_id=${applicationId}` });
+            assertLive();
+            const value = JSON.parse(result.body.toString("utf8"));
+            if (result.status !== 200 || value.mode !== "shadow" || typeof value.token !== "string" ||
+                !/^[A-Za-z0-9_-]{32,128}$/.test(value.token) || !Number.isSafeInteger(value.expires_at)) return input;
+            metering = value;
+          } catch { return input; } // Shadow collection must not block an existing free app.
+        }
+        assertReady();
+        return { ...input, headers: { ...input.headers, "x-wanx-metering-session": metering.token } };
+      }
       const context = { protocolVersion: 1, accountId: state.account.accountId, clientId: state.account.clientId, boxId: state.connection.deviceId, user, connection: "ready" };
       return {
         context: () => ({ ...context, connection: assertLive() }),
-        request: (input) => { assertReady(); return connection.request(input); },
-        openStream: (input) => { assertReady(); return connection.openStream(input); },
+        request: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.request(value); }); },
+        openStream: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.openStream(value); }); },
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       };
     },
