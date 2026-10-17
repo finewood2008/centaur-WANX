@@ -156,6 +156,14 @@ class SpaceManagement(Input):
     name: str = Field(default="", max_length=240)
 
 
+class StorageLocation(Input):
+    path: str = Field(
+        default="",
+        max_length=4096,
+        description="Existing absolute directory on the WANX host. Empty restores managed default storage. Existing files are verified and migrated before switching.",
+    )
+
+
 class Approval(Input):
     credential: str = Field(default="", pattern=r"^([A-Za-z0-9_-]{43})?$")
     profile: str = Field(min_length=1, max_length=100)
@@ -213,6 +221,15 @@ async def manage_space(
     space_id: str, body: SpaceManagement, service: Workspaces = Depends(links)
 ) -> Any:
     return await call(service.manage_space, space_id, body.action, body.name)
+
+
+@router.post(
+    "/spaces/{space_id}/storage", summary="Migrate one owned space to a host storage directory"
+)
+async def change_storage(
+    space_id: str, body: StorageLocation, service: Workspaces = Depends(links)
+) -> Any:
+    return await call(service.storage_location, space_id, body.path)
 
 
 @router.post("/connections", summary="Owner approval creates a credential-bound Agent space")

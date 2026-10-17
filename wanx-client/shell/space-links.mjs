@@ -1,5 +1,6 @@
 import { createAgentSpaces } from "./agent-spaces.mjs";
 import http from "node:http";
+import path from "node:path";
 import { randomBytes } from "node:crypto";
 
 const PREFIX = "/api/personal-space";
@@ -12,7 +13,7 @@ const uuid = value => { if (!/^[a-f0-9]{32}$/.test(value || "")) throw fail("SPA
 
 // This loopback service never accepts a backend URL/account/box from a caller.
 // Credentials and scope are retrieved exclusively from the encrypted store.
-export async function createSpaceLinkBridge({ client, store, serviceURL, onChanged = () => {}, mcpConfig = {}, profileDirectory }) {
+export async function createSpaceLinkBridge({ client, store, serviceURL, onChanged = () => {}, mcpConfig = {}, profileDirectory, chooseStorageDirectory }) {
   const saved = await store.load();
   if (saved && (saved.version !== 1 || !Array.isArray(saved.links) || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535))
     throw fail("SPACE_LINK_STORE_INVALID");
@@ -36,14 +37,14 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
     if (closed || !scope()) throw fail("BOX_CONNECTION_REQUIRED", 503);
     if (bound !== scope()) throw fail("SPACE_CONTEXT_CHANGED", 409);
   }
-  async function remote(bound, route, { method = "GET", body, token } = {}) {
+  async function remote(bound, route, { method = "GET", body, token, prefix = PREFIX } = {}) {
     assertScope(bound);
     const epoch = generation, connection = await client.applicationConnection();
     assertScope(bound);
     const controller = new AbortController(); controllers.add(controller);
     try {
       const response = await connection.request({
-        path: PREFIX + route, method, headers: { "content-type": "application/json", ...(token ? { "x-space-link": token } : {}) },
+        path: prefix + route, method, headers: { "content-type": "application/json", ...(token ? { "x-space-link": token } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]),
       });
@@ -134,7 +135,27 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
   return {
     async manage(action, input = {}) {
       const bound = scope(); assertScope(bound);
-      if (["agent-config","spaces","requests","approve","reject","space-manage","connection-manage","grants","connection-audit","grant","grant-revoke","file-transfer"].includes(action)) return agents.manage(action,input);
+      if (action === "storage-choose") {
+        if (client.snapshot().connection.mode === "local") {
+          if (!chooseStorageDirectory) throw fail("SPACE_DIRECTORY_PICKER_UNAVAILABLE");
+          const epoch = generation;
+          const selected = await chooseStorageDirectory();
+          assertScope(bound);
+          if (epoch !== generation) throw fail("SPACE_CONTEXT_CHANGED");
+          return selected ? {path: selected} : {canceled: true};
+        }
+        const defaults = (await remote(bound, "/filesystem/defaults", {prefix: "/api"})).value;
+        const selected = typeof input.path === "string" && input.path ? input.path : defaults.default_root_dir;
+        if (typeof selected !== "string" || selected.length > 4096) throw fail("SPACE_STORAGE_PATH_INVALID", 400);
+        const listing = (await remote(bound, "/filesystem/dirs?path=" + encodeURIComponent(selected), {prefix: "/api"})).value;
+        const paths = /^[A-Za-z]:[\\/]/.test(listing.path) ? path.win32 : path.posix;
+        const root = defaults.tree_root;
+        let parent = paths.dirname(listing.path);
+        const relative = paths.relative(root, parent);
+        if (relative === ".." || relative.startsWith(".." + paths.sep) || paths.isAbsolute(relative)) parent = root;
+        return {browse: true, ...listing, root, parent};
+      }
+      if (["agent-config","spaces","requests","approve","reject","space-manage","connection-manage","grants","connection-audit","grant","grant-revoke","file-transfer","storage-set"].includes(action)) return agents.manage(action,input);
       if (action === "config") return mcpConfig;
       if (action === "create") {
         const root = uuid(input.root);

@@ -474,6 +474,13 @@ if (process.argv.includes("--wanx-managed-app")) {
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
           profileDirectory: path.join(userData, "space-agent-profiles"),
+          chooseStorageDirectory: async () => {
+            const result = await dialog.showOpenDialog(control, {
+              title: "选择空间存储文件夹", buttonLabel: "选择此文件夹",
+              properties: ["openDirectory", "createDirectory"],
+            });
+            return result.canceled ? null : result.filePaths[0];
+          },
           mcpConfig: { mcpServers: { "wanx-space": {
             command: process.execPath,
             args: [fileURLToPath(new URL("./space-links-mcp.mjs", import.meta.url))],
