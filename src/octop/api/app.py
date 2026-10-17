@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,15 @@ def _install_exception_handlers(app: FastAPI) -> None:
 
 
 def build_app(server: OctopServer) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            svc = getattr(application.state, "dialogue_service", None)
+            if svc is not None:
+                await svc.close()
+
     cfg = server.services.config if server.services else getattr(server, "config", None)
     enable_dashboard = cfg.enable_dashboard if cfg else True
     enable_api_docs = cfg.enable_api_docs if cfg else False
@@ -112,6 +122,7 @@ def build_app(server: OctopServer) -> FastAPI:
         description=API_DESCRIPTION,
         openapi_url="/api/openapi.json" if enable_api_docs else None,
         openapi_tags=OPENAPI_TAGS,
+        lifespan=lifespan,
     )
     from octop.api.middleware.token_metering import MeteringIdentity
 
@@ -119,6 +130,12 @@ def build_app(server: OctopServer) -> FastAPI:
     configure_openapi(app)
     app.state.octop_server = server
     _install_exception_handlers(app)
+
+    from octop.infra.dialogue.contracts import DialogueError
+
+    @app.exception_handler(DialogueError)
+    async def dialogue_error(request: Request, exc: DialogueError) -> JSONResponse:
+        return JSONResponse({"code": exc.code}, status_code=exc.status)
 
     if cfg and cfg.cors_origins:
         from octop.api.deps import ACCESS_TOKEN_RESPONSE_HEADER
@@ -168,6 +185,7 @@ def build_app(server: OctopServer) -> FastAPI:
         credits,
         cron,
         desktop,
+        dialogue,
         digital_self,
         envs,
         experts,
@@ -235,6 +253,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(applications.router, "/api", ["applications"]),
             _RouterMount(brainstorm.router, "/api/brainstorm", ["teams"]),
             _RouterMount(agents.router, "/api/agents", ["agents"]),
+            _RouterMount(dialogue.router, "/api/dialogue", ["dialogue"]),
             _RouterMount(zhijun.router, "/api/zhijun", ["zhijun"]),
             _RouterMount(digital_self.router, "/api/zhijun/digital-self", ["zhijun"]),
             _RouterMount(agent_tools.router, "/api", ["agents"]),
