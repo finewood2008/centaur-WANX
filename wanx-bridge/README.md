@@ -60,6 +60,16 @@ Octop 本身使用 `OCTOP_BIND_HOST=127.0.0.1`、`OCTOP_PORT=18088`。仅公开 
 - 关闭盒端 `platform_sso` 恢复原始单进程，但持久化 OIDC 配置仍保留。需要隐藏该登录入口时，由管理员通过原生管理界面/API 停用 provider。不会自动删除原生账号或 bridge 状态。
 - 客户端关闭 P2P 是独立操作，不会改动盒端 OIDC 配置，本机/Web 开发不需要启动 bridge。
 
+## 专家与技能包资源同步
+
+启用现有 `WANX_RESOURCES_ENABLED=1` 后，Bridge 按配置周期同步签名目录，在应用准备时按需下载完整依赖；不会把整个市场下载到盒子。官方来源的自动检查由 Admin 独立 worker 负责，只创建草稿。
+
+Bridge 主动声明 `resourceProtocol:2`，支持带 `releaseAccess:account` 的签名资源。账号来自已验证的会话，缓存命中仍检查资源准入。`/download` 负责新获取，`/access` 负责已安装实例使用；灰度转正式沿用签名，正式撤回不删除已有实例。受控资源需要当前在线准入，原非受控正式资源保留既有本地回退行为。
+
+已有兼容专家保持原实例并报告可用更新，不自动覆盖记忆或对话。资源灰度应使用新测试绑定验收。受控全局技能包作为 Bridge 内部暂存，不通过原生技能包入口对其他账号开放；资源准备仍通过未修改的 Octop 公共 API 将完整文件复制到客户私有专家。
+
+部署文档位于 Admin 仓库 `docs/operations/resource-upstream-sync.md`。本功能没有修改 Octop 内核；升级需要更新 Bridge，旧 Bridge 继续使用原正式资源。
+
 ## 静态资源加速
 
 bridge 从已安装的 `octop` distribution 定位 `dashboard/assets`，不导入或修改上游实现。部署镜像使用非 editable 安装，无需新增环境变量。仅 JS、CSS、字体进入资源清单；HTML、业务 API、用户上传文件不参与缓存。

@@ -16,6 +16,8 @@ export interface HostStream {
   once<K extends keyof HostStreamEvents>(event: K, listener: (...args: HostStreamEvents[K]) => void): this;
   removeListener<K extends keyof HostStreamEvents>(event: K, listener: (...args: HostStreamEvents[K]) => void): this;
 }
+export type ResourceBinding = { kind: 'expert'; resourceId: string; instanceId: string; version: string }
+  | { kind: 'skill-package'; resourceId: string; packageId: string; version: string };
 export interface HostContext {
   protocolVersion?: number;
   accountId?: string;
@@ -23,10 +25,15 @@ export interface HostContext {
   boxId: string;
   user: { id: number; [key: string]: unknown };
   connection: 'ready' | 'recovering';
+  applicationId?: string;
+  artifactId?: string;
+  resourceBindings?: ResourceBinding[];
 }
 export interface HostClient {
   readonly drive: DriveClient;
   context(): Promise<HostContext>;
+  resolveResourceBinding(kind: ResourceBinding['kind'], resourceId: string): Promise<ResourceBinding>;
+  requestExpert(resourceId: string, relativePath: string, options?: Parameters<HostClient['request']>[1]): Promise<Response>;
   request(path: string, options?: {
     method?: string; headers?: HeadersInit;
     /** JSON, string, Uint8Array/Buffer, Node Readable, or Web ReadableStream<Uint8Array>.

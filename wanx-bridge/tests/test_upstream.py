@@ -261,6 +261,88 @@ async def test_unmodified_octop_real_oidc_isolation_and_roles(real_octop, oidc_s
         await restarted.close()
 
 
+async def test_owned_shared_source_does_not_block_real_oidc_login(
+    real_octop, oidc_server, monkeypatch
+):
+    from wanx_bridge import upstream
+
+    client, _server, credentials = real_octop
+    adapter = OctopAdapter(
+        "http://127.0.0.1:18088",
+        oidc_server,
+        credentials,
+        transport=httpx.ASGITransport(app=client._octop_app),
+    )
+    original = upstream.ensure_private_expert
+
+    async def before_bootstrap(*args):
+        pass
+
+    try:
+        await adapter.initialize()
+        monkeypatch.setattr(upstream, "ensure_private_expert", before_bootstrap)
+        first = await adapter.login({"sub": "existing-shared-owner", "role": "user"})
+        monkeypatch.setattr(upstream, "ensure_private_expert", original)
+        headers = {"Authorization": "Bearer " + first["access_token"]}
+        source = await client.post(
+            "/api/agents/from-expert/zhijun-personal-companion",
+            headers=headers,
+            json={"agent_id": "existing-shared-source", "name": "知君 · 私人伙伴"},
+        )
+        assert source.status_code == 201
+        shared = await client.patch(
+            "/api/agents/existing-shared-source", headers=headers, json={"is_shared": True}
+        )
+        assert shared.status_code == 200
+        # Reproduce the production sequence against the real Octop API.
+        reserved_id = f"centuarai-zhijun-{first['user']['id']}"
+        conflict = await client.post(
+            "/api/agents/from-expert/zhijun-personal-companion",
+            headers=headers,
+            json={"agent_id": reserved_id, "name": "知君 · 私人伙伴"},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "AGENT_NAME_TAKEN"
+        assert (await client.get(f"/api/agents/{reserved_id}", headers=headers)).status_code == 404
+        again = await adapter.login({"sub": "existing-shared-owner", "role": "user"})
+        assert again["user"]["id"] == first["user"]["id"]
+        rows = (await client.get("/api/agents?scope=mine", headers=headers)).json()
+        assert len(rows) == 1
+        assert rows[0]["agent_id"] == "existing-shared-source"
+        assert rows[0]["is_shared"] is True
+    finally:
+        await adapter.close()
+
+
+async def test_companion_failure_does_not_reject_verified_box_login(
+    real_octop, oidc_server, monkeypatch, caplog
+):
+    async def unavailable(*args):
+        raise BridgeUpstreamError("BOX_ZHIJUN_INITIALIZATION_FAILED")
+
+    monkeypatch.setattr("wanx_bridge.upstream.ensure_private_expert", unavailable)
+    client, _server, credentials = real_octop
+    adapter = OctopAdapter(
+        "http://127.0.0.1:18088",
+        oidc_server,
+        credentials,
+        transport=httpx.ASGITransport(app=client._octop_app),
+    )
+    try:
+        await adapter.initialize()
+        result = await adapter.login({"sub": "account-with-unavailable-companion", "role": "user"})
+        assert result["user"]["role"] == "user"
+        response = await client.get(
+            "/api/auth/me", headers={"Authorization": "Bearer " + result["access_token"]}
+        )
+        assert response.status_code == 200
+        assert response.json()["id"] == result["user"]["id"]
+        assert "BOX_ZHIJUN_INITIALIZATION_FAILED" in caplog.text
+        assert result["access_token"] not in caplog.text
+    finally:
+        await adapter.close()
+
+
 async def test_box_application_policy_grants_only_verified_opener(real_octop, oidc_server):
     from tests.support.auth import bearer, login
 

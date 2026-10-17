@@ -238,17 +238,38 @@
         if (!device.gatt)
           throw new LocalProvisioningFailure("GATT_SERVICE_NOT_FOUND");
         let server, service, deviceInfo, command, status;
+        let stage = "connect", retired = false, closeOnRetire;
+        const retireConnection = () => {
+          if (retired) return;
+          retired = true;
+          signal.removeEventListener("abort", retireConnection);
+          closeOnRetire?.();
+          device.gatt.disconnect();
+        };
+        signal.addEventListener("abort", retireConnection, { once: true });
+        const assertActive = () => {
+          if (signal.aborted || retired)
+            throw new DOMException("Aborted", "AbortError");
+        };
         try {
           server = await device.gatt.connect();
+          assertActive();
+          stage = "service";
           service = await server.getPrimaryService(PROVISIONING_SERVICE_UUID);
-          [deviceInfo, command, status] = await Promise.all([
-            service.getCharacteristic(DEVICE_INFO_UUID),
-            service.getCharacteristic(COMMAND_UUID),
-            service.getCharacteristic(STATUS_UUID)
-          ]);
-        } catch {
-          device.gatt.disconnect();
-          throw new LocalProvisioningFailure("GATT_CHARACTERISTIC_MISMATCH");
+          assertActive();
+          stage = "characteristic";
+          deviceInfo = await service.getCharacteristic(DEVICE_INFO_UUID);
+          assertActive();
+          command = await service.getCharacteristic(COMMAND_UUID);
+          assertActive();
+          status = await service.getCharacteristic(STATUS_UUID);
+          assertActive();
+        } catch (error) {
+          retireConnection();
+          if (signal.aborted || error?.name === "AbortError")
+            throw new DOMException("Aborted", "AbortError");
+          const code = error?.name === "NotFoundError" && stage !== "connect" ? stage === "service" ? "GATT_SERVICE_NOT_FOUND" : "GATT_CHARACTERISTIC_MISMATCH" : "LOCAL_TRANSPORT_DISCONNECTED";
+          throw new LocalProvisioningFailure(code);
         }
         const allocator = createMessageIdAllocator(), reassemblers = /* @__PURE__ */ new Map(), completed = /* @__PURE__ */ new Map();
         let closed = false, pending, statusListener;
@@ -264,7 +285,7 @@
           status.removeEventListener("characteristicvaluechanged", onStatus);
           device.removeEventListener("gattserverdisconnected", onDisconnect);
           void status.stopNotifications().catch(() => void 0);
-          server.disconnect();
+          retireConnection();
           allocator.clear();
           reassemblers.clear();
         };
@@ -309,10 +330,12 @@ ${outer.messageType}`, now = input.clock.monotonicMs();
             closeWith(error);
           }
         };
+        closeOnRetire = () => closeWith(new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED"));
         device.addEventListener("gattserverdisconnected", onDisconnect);
         status.addEventListener("characteristicvaluechanged", onStatus);
         try {
           await status.startNotifications();
+          assertActive();
         } catch {
           closeWith();
           throw new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
@@ -501,12 +524,16 @@ ${match.responseMessageType}`;
     const makeEndpoint = (currentSelection) => options.endpointFactory ? options.endpointFactory(currentSelection, clock) : createElectronGattTransportEndpoint({
       factory: createElectronGattTransportFactory({
         consumeSelectionLease: (selected) => selection.consumeSelectionLease(selected),
-        clock
+        clock,
+        // The SDK starts this deadline before writing every 12-byte GATT
+        // fragment. Signed pairing tokens can take more than 5 seconds.
+        requestTimeoutMs: 3e4
       })
     });
     let selection = makeSelection(), endpoint = makeEndpoint(selection);
     let epoch = 0, selectionEpoch = 0, disposed = false, disposing;
     let selectionCancel;
+    let selectionSettled;
     const flights = /* @__PURE__ */ new Map();
     const subscriptions = /* @__PURE__ */ new Map();
     const abortFlights = (connectionId) => {
@@ -524,6 +551,7 @@ ${match.responseMessageType}`;
       ++selectionEpoch;
       selection.cancelSelection();
       selection = makeSelection();
+      return selectionSettled ?? Promise.resolve();
     }
     async function closeAll() {
       ++epoch;
@@ -540,6 +568,7 @@ ${match.responseMessageType}`;
       if (flights.has(requestId)) return;
       const allowed = [
         "connect",
+        "cancelConnect",
         "readDeviceInfo",
         "request",
         "subscribeStatus",
@@ -550,6 +579,16 @@ ${match.responseMessageType}`;
         (key) => !["requestId", "operation", "args"].includes(key)
       )) {
         options.bridge.reply({ requestId, ok: false, code: "INVALID_REQUEST" });
+        return;
+      }
+      if (input.operation === "cancelConnect") {
+        if (input.args.length !== 1 || !identifier(input.args[0])) {
+          options.bridge.reply({ requestId, ok: false, code: "INVALID_REQUEST" });
+          return;
+        }
+        const flight2 = flights.get(input.args[0]);
+        if (flight2?.operation === "connect") flight2.abort.abort();
+        options.bridge.reply({ requestId, ok: true });
         return;
       }
       if (input.operation === "closeAll") {
@@ -570,7 +609,7 @@ ${match.responseMessageType}`;
         return;
       }
       const expected = epoch, current = endpoint, abort = new AbortController();
-      const flight = { abort };
+      const flight = { abort, operation: input.operation };
       flights.set(requestId, flight);
       const active = () => {
         if (disposed || epoch !== expected || abort.signal.aborted)
@@ -680,6 +719,8 @@ ${match.responseMessageType}`;
       requestDeviceFromUserGesture() {
         if (disposed)
           return Promise.reject(failure("LOCAL_TRANSPORT_DISCONNECTED"));
+        if (selectionSettled)
+          return Promise.reject(failure("LOCAL_SELECTION_BUSY"));
         const expected = selectionEpoch, current = selection;
         return new Promise((resolve, reject) => {
           let settled = false;
@@ -698,8 +739,9 @@ ${match.responseMessageType}`;
           }, options.selectionTimeoutMs ?? 12e3);
           selectionCancel = cancel;
           try {
-            void current.requestDeviceFromUserGesture().then(
+            const completed = current.requestDeviceFromUserGesture().then(
               (selected) => {
+                if (selectionSettled === completed) selectionSettled = void 0;
                 if (disposed || expected !== selectionEpoch || settled) {
                   current.cancelSelection();
                   finish(failure("LOCAL_SELECTION_LEASE_INVALID"));
@@ -707,8 +749,12 @@ ${match.responseMessageType}`;
                 }
                 finish(void 0, selected);
               },
-              (error) => finish(error)
+              (error) => {
+                if (selectionSettled === completed) selectionSettled = void 0;
+                finish(error);
+              }
             );
+            selectionSettled = completed;
           } catch (error) {
             finish(error);
           }

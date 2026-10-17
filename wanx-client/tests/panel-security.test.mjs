@@ -102,7 +102,7 @@ test("management retains account, market, and version selection operations", asy
   await h.invoke("applications-select-current", { applicationId: "example.app", version: "1.2.3", sourceDir: "injected" });
   await h.invoke("logout");
   assert.deepEqual(h.calls, [
-    ["loginPassword", { phone: "13800138000", password: "secret" }],
+    ["loginPassword", { phone: "13800138000", password: "secret" }, { waitForDevices: false }],
     ["market.install", "example.app"], ["selectCurrent", "example.app", "1.2.3"], ["invalidateOpen"], ["logout"],
   ]);
 });
@@ -197,4 +197,43 @@ test("panel space upload fixes the root, rejects stale contexts, and exposes onl
     const frame = { sender: h.panel.webContents, senderFrame: { url: "file:///wanx/panel.html" } };
     assert.throws(() => h.handlers.get(`wanx-client:${name}`)(frame, {}), denied);
   }
+});
+
+test("profile writes and file selection are management-only and reject forged fields", async () => {
+  const writes = [];
+  const h = harness({ accountProfile: { save: input => writes.push(input), chooseAvatar: () => writes.push("choose"), removeAvatar: () => writes.push("remove") } });
+  for (const action of ["profile-save", "profile-avatar", "profile-avatar-remove"]) {
+    assert.throws(() => h.invoke(action, { displayName: "test" }, h.panel), denied);
+  }
+  assert.throws(() => h.invoke("profile-save", { displayName: "test", avatarDataUrl: "evil" }), /PROFILE_INVALID_INPUT/);
+  assert.deepEqual(writes, []);
+  await h.invoke("profile-save", { displayName: "test" });
+  assert.deepEqual(writes, [{ displayName: "test" }]);
+  const signedOut = harness({ client: { snapshot: () => ({ account: { phase: "signed_out" } }) } });
+  assert.throws(() => signedOut.invoke("profile-avatar"), /ACCOUNT_LOGIN_REQUIRED/);
+});
+
+
+test("quick panel balance read exposes only available points and does not publish or mutate state", async () => {
+  let reads = 0, publishes = 0;
+  const h = harness({ credits: { balance: async () => { reads++; return { available: 1234, held: 3, paid_available: 1200, gift_available: 34, internal: "private" }; } }, publishState: () => publishes++ });
+  assert.deepEqual(await h.invoke("panel-balance", undefined, h.panel), { available: 1234 });
+  assert.equal(reads, 1); assert.equal(publishes, 0);
+  assert.deepEqual(h.calls, []);
+  const signedOut = harness({ client: { snapshot: () => ({ account: { phase: "signed_out" } }) } });
+  await assert.rejects(signedOut.invoke("panel-balance", undefined, signedOut.panel), /ACCOUNT_LOGIN_REQUIRED/);
+});
+
+test("panel preload exposes a fixed balance reader, retaining the generic-action restrictions", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const vm = await import("node:vm");
+  let api; const calls = [];
+  vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
+    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    ipcRenderer: { invoke: name => { calls.push(name); return Promise.resolve({ available: 55 }); } },
+  }) });
+  assert.deepEqual(await api.getBalance({ accountId: "forged" }), { available: 55 });
+  assert.deepEqual(calls, ["wanx-client:panel-balance"]);
+  await assert.rejects(api.action("credits-balance"), /PANEL_ACTION_NOT_ALLOWED/);
+  await assert.rejects(api.action("profile-save"), /PANEL_ACTION_NOT_ALLOWED/);
 });

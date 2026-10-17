@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, randomUUID, sign } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,11 @@ async function packageManifest(sourceDir) {
   return validateApplicationManifest(JSON.parse(content), { signed: true });
 }
 
+export function assertCurrentMarketProtocol(manifest) {
+  if (manifest.protocolVersion !== 3 || manifest.releaseAccess !== "account")
+    fail("新市场应用包仅支持协议 3 和账号许可，请更新 market/wanx-app.json 后重新打包。");
+}
+
 async function envelopeFor(file, metadata, key) {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(file)) digest.update(chunk);
@@ -52,8 +57,11 @@ async function envelopeFor(file, metadata, key) {
   return { descriptor, descriptorBase64: bytes.toString("base64"), signatureBase64: sign(null, bytes, key).toString("base64") };
 }
 
-/** Package a prepared build directory, never a working tree containing secrets. */
-export async function packageApplication({ sourceDir, outputDir, os = "universal", arch = "universal", keyFile, keyId, minWanxVersion = "0.1.0", buildId }) {
+/** Package a prepared build directory, never a working tree containing secrets.
+ * protocol3 releaseAccess="account" is retained in the normalized ZIP manifest
+ * and the signed descriptor; publication audience is selected later in Admin.
+ */
+export async function packageApplication({ sourceDir, outputDir, os = "universal", arch = "universal", keyFile, keyId, minWanxVersion = "0.1.0", buildId, overwrite = false }) {
   sourceDir = path.resolve(sourceDir); outputDir = path.resolve(outputDir);
   if (!keyId || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId)) fail("需要有效的 --key-id。");
   if (inside(sourceDir, outputDir) || inside(sourceDir, path.resolve(keyFile)))
@@ -97,16 +105,42 @@ export async function packageApplication({ sourceDir, outputDir, os = "universal
     const { descriptor, ...envelope } = await envelopeFor(archivePath, {
       applicationId: manifest.applicationId, version: manifest.version, os, arch,
       packageType: "wanxapp", fileName, minWanxVersion, manifest,
+      ...(manifest.protocolVersion >= 2 ? { schemaVersion: manifest.protocolVersion, compatibility: manifest.compatibility, critical: [] } : {}),
       ...(buildId ? { buildId } : {}),
     }, key);
     await extractApplicationArchive(archivePath, path.join(staging, "validation"), descriptor);
     const destination = path.join(outputDir, fileName), sidecar = `${destination}.release.json`;
-    // Fail on existing output rather than accidentally replacing a published build.
-    const output = createWriteStream(destination, { flags: "wx" });
-    try { await pipeline(createReadStream(archivePath), output); moved = true; }
-    catch (error) { if (error.code !== "EEXIST") await rm(destination, { force: true }); throw error; }
-    try { await writeFile(sidecar, JSON.stringify({ keyId, ...envelope }, null, 2) + "\n", { flag: "wx" }); }
-    catch (error) { if (moved) await rm(destination, { force: true }); throw error; }
+    const envelopeText = JSON.stringify({ keyId, ...envelope }, null, 2) + "\n";
+    if (overwrite) {
+      const nextSidecar = path.join(staging, "next.release.json");
+      const previousArchive = path.join(staging, "previous.wanxapp");
+      const previousSidecar = path.join(staging, "previous.release.json");
+      await writeFile(nextSidecar, envelopeText);
+      const moveIfPresent = async (from, to) => {
+        try { await rename(from, to); return true; }
+        catch (error) { if (error.code === "ENOENT") return false; throw error; }
+      };
+      let oldArchive = false, oldSidecar = false, newArchive = false, newSidecar = false;
+      try {
+        oldArchive = await moveIfPresent(destination, previousArchive);
+        oldSidecar = await moveIfPresent(sidecar, previousSidecar);
+        await rename(archivePath, destination); newArchive = true;
+        await rename(nextSidecar, sidecar); newSidecar = true;
+      } catch (error) {
+        if (newArchive) await rm(destination, { force: true });
+        if (newSidecar) await rm(sidecar, { force: true });
+        if (oldArchive) await rename(previousArchive, destination);
+        if (oldSidecar) await rename(previousSidecar, sidecar);
+        throw error;
+      }
+    } else {
+      // The low-level release tool keeps its original no-overwrite default.
+      const output = createWriteStream(destination, { flags: "wx" });
+      try { await pipeline(createReadStream(archivePath), output); moved = true; }
+      catch (error) { if (error.code !== "EEXIST") await rm(destination, { force: true }); throw error; }
+      try { await writeFile(sidecar, envelopeText, { flag: "wx" }); }
+      catch (error) { if (moved) await rm(destination, { force: true }); throw error; }
+    }
     return { archivePath: destination, envelopePath: sidecar, descriptor };
   } finally { await rm(staging, { recursive: true, force: true }); }
 }
@@ -130,9 +164,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const { values } = parseArgs({ options: { ...options, help: { type: "boolean" } } });
     if (values.help) {
-      console.log("node tools/package-application.mjs --source <build-dir> --out <output-dir> --key <ed25519-private.pem> --key-id <id> [--min-wanx-version 0.1.0] [--build-id <commit>]\n应用包默认通用（universal/universal），仅平台专用应用需指定 --os macos|windows --arch x64|arm64。\n原生安装包签名：将 --source/--out 换为 --file <package.dmg|exe> --application-id <id> --version <semver>，必须指定 --os 和 --arch。");
+      console.log("node tools/package-application.mjs --source <build-dir> --out <output-dir> --key <ed25519-private.pem> --key-id <id> [--min-wanx-version 0.1.0] [--build-id <commit>]\n新市场应用包必须使用协议 3 和账号许可，默认通用（universal/universal）；仅平台专用应用需指定 --os macos|windows --arch x64|arm64。\n原生安装包签名：将 --source/--out 换为 --file <package.dmg|exe> --application-id <id> --version <semver>，必须指定 --os 和 --arch。");
     } else {
       if (!values.key || (values.file && (!values.os || !values.arch)) || (!values.file && (!values.source || !values.out))) fail("参数不完整，使用 --help 查看用法。");
+      if (!values.file) assertCurrentMarketProtocol(await packageManifest(path.resolve(values.source)));
       const input = { sourceDir: values.source, outputDir: values.out, inputFile: values.file, applicationId: values["application-id"], version: values.version, os: values.os, arch: values.arch, keyFile: values.key, keyId: values["key-id"], minWanxVersion: values["min-wanx-version"], buildId: values["build-id"] };
       const result = await (values.file ? signNativePackage(input) : packageApplication(input));
       console.log(JSON.stringify({ package: result.archivePath, signature: result.envelopePath, artifactId: result.descriptor.artifactId, sha256: result.descriptor.sha256 }, null, 2));

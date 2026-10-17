@@ -1,9 +1,11 @@
 import { access, readFile, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { validateVersion } from "./version.mjs";
+import { assertNoCriticalExtensions, validateCompatibility } from "./compatibility.mjs";
 import path from "node:path";
 
 export const WANX_APP_PROTOCOL_VERSION = 1;
+export const WANX_APP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze([1, 2, 3]);
 const ID = /^[a-z][a-z0-9._-]{1,63}$/;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 
@@ -28,11 +30,21 @@ export function validateApplicationManifest(input, { allowLegacyVersion = false,
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw fail("INVALID_APPLICATION_MANIFEST");
   const manifest = input;
+  assertNoCriticalExtensions(manifest);
+  if (manifest.releaseAccess !== undefined && (manifest.protocolVersion !== 3 || manifest.releaseAccess !== "account"))
+    throw fail("APPLICATION_CONTRACT_UNSUPPORTED");
+  if (manifest.protocolVersion === 1 && manifest.compatibility !== undefined)
+    throw fail("APPLICATION_CONTRACT_UNSUPPORTED");
+  if (manifest.protocolVersion >= 2) {
+    const allowed = ["applicationId", "name", "version", "protocolVersion", "runtime", "launchMode", "platform", "arch", "entrypoint", "capabilities", "description", "compatibility", "critical", "releaseAccess",
+      "artifactId", "descriptor", "envelope", "installPath", "installedAt", "previous"];
+    if (Object.keys(manifest).some(key => !allowed.includes(key))) throw fail("APPLICATION_CONTRACT_UNSUPPORTED");
+  }
   if (typeof manifest.applicationId !== "string" || !ID.test(manifest.applicationId)) throw fail("INVALID_APPLICATION_ID");
   if (typeof manifest.name !== "string" || !manifest.name.trim() || manifest.name.length > 128)
     throw fail("INVALID_APPLICATION_NAME");
   if (typeof manifest.version !== "string" || !VERSION.test(manifest.version) || (!allowLegacyVersion && !isComparableApplicationVersion(manifest.version))) throw fail("INVALID_APPLICATION_VERSION");
-  if (manifest.protocolVersion !== WANX_APP_PROTOCOL_VERSION)
+  if (!WANX_APP_SUPPORTED_PROTOCOL_VERSIONS.includes(manifest.protocolVersion))
     throw fail("APPLICATION_PROTOCOL_UNSUPPORTED");
   if (manifest.runtime !== "electron") throw fail("APPLICATION_RUNTIME_UNSUPPORTED");
   const launchMode = manifest.launchMode ?? "shared";
@@ -48,18 +60,20 @@ export function validateApplicationManifest(input, { allowLegacyVersion = false,
   const entrypoint = relativeEntry(manifest.entrypoint);
   const capabilities = manifest.capabilities ?? [];
   const allowed = ["identity.read", "experts.read", "experts.select", "http.request", "chat.stream", "files.upload"];
-  if (signed && (!Array.isArray(capabilities) || capabilities.some(value => !allowed.includes(value)))) throw fail("INVALID_APPLICATION_CAPABILITIES");
+  if ((signed || manifest.protocolVersion >= 2) && (!Array.isArray(capabilities) || capabilities.some(value => !allowed.includes(value)))) throw fail("INVALID_APPLICATION_CAPABILITIES");
   return Object.freeze({
     applicationId: manifest.applicationId,
     name: manifest.name.trim(),
     version: manifest.version,
-    protocolVersion: WANX_APP_PROTOCOL_VERSION,
+    protocolVersion: manifest.protocolVersion,
+    ...(manifest.releaseAccess ? { releaseAccess: manifest.releaseAccess } : {}),
+    ...(manifest.protocolVersion >= 2 ? { compatibility: validateCompatibility(manifest.compatibility, manifest.protocolVersion) } : {}),
     runtime: "electron",
     launchMode,
     ...(manifest.platform ? { platform: manifest.platform } : {}),
     ...(manifest.arch ? { arch: manifest.arch } : {}),
     entrypoint,
-    ...(signed ? { capabilities: Object.freeze([...new Set(capabilities)]) } : {}),
+    ...(signed || manifest.protocolVersion >= 2 ? { capabilities: Object.freeze([...new Set(capabilities)]) } : {}),
     description: typeof manifest.description === "string" ? manifest.description.slice(0, 2000) : "",
   });
 }

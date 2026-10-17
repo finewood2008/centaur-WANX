@@ -6,6 +6,7 @@
   let dragDepth = 0, dragScope = null, dragInvalid = false, interacting = false, pendingRender = false;
   let state = {}, notice = "", selected = "", intentId = "";
   let accountIdentity = "", sessionGeneration = 0;
+  let balance = null, balancePhase = "idle", balanceRequest = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const errorText = error => {
     const code = String(error?.message || error || "");
@@ -114,16 +115,40 @@
     spaceRequest = request;
     return request;
   }
+  function renderBalance() {
+    const points = balance == null ? "—" : balance.toLocaleString("zh-CN");
+    const label = !signedIn() ? "登录后查看" : balancePhase === "loading" ? "正在读取…" : balancePhase === "error" ? "暂不可用" : "查看消耗明细";
+    return `<button class="balance-card" data-page="${signedIn() ? "credits" : "applications"}" aria-label="${signedIn() ? "我的积分，" + (balance == null ? label : points + "点，查看消耗明细") : "登录查看积分"}" ${balancePhase === "loading" ? 'aria-busy="true"' : ""}><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">${points}<small>点</small></span><span class="card-caption">${label}<span aria-hidden="true">↗</span></span></button>`;
+  }
   function render() {
     if (dragDepth || interacting) { pendingRender = true; return; }
     pendingRender = false;
     const connection = state.connection || {};
     const apps = state.applications || [];
     root.innerHTML = `<header><div class="brand"><img src="../renderer/assets/centaurai-mark.png" alt="半人马"><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></div><button class="box-button" data-page="boxes" aria-label="打开盒子"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m12 3 9 5v8l-9 5-9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5"/></svg><span>盒子</span></button></header>
-      <section class="summary" aria-label="万象概览"><div class="box-status" aria-label="当前盒子"><span class="card-label">当前盒子<span class="dot ${ready() ? "ready" : ""}" aria-hidden="true"></span></span><strong class="box-name" title="${escape(connection.name || "我的盒子")}">${escape(connection.name || "我的盒子")}</strong><span class="card-caption">${boxStatus()}</span></div><button class="balance-card" disabled aria-label="积分暂不可用"><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">—<small>点</small></span><span class="card-caption">暂不可用</span></button></section>
+      <section class="summary" aria-label="万象概览"><div class="box-status" aria-label="当前盒子"><span class="card-label">当前盒子<span class="dot ${ready() ? "ready" : ""}" aria-hidden="true"></span></span><strong class="box-name" title="${escape(connection.name || "我的盒子")}">${escape(connection.name || "我的盒子")}</strong><span class="card-caption">${boxStatus()}</span></div>${renderBalance()}</section>
       <section class="my-apps" aria-label="我的应用"><div class="apps-heading"><h2>我的应用</h2><div class="apps-heading-actions">${signedIn() && apps.length ? `<span>${apps.length} 个应用</span>` : ""}<button class="apps-link" data-page="applications" aria-label="打开应用商店">应用<span aria-hidden="true">↗</span></button></div></div><div class="apps">${!signedIn() ? '<div class="empty">登录后，连接盒子并使用你的应用。<br><button class="primary" data-page="applications">登录万象</button></div>' : apps.length ? apps.map(app => { const op = state.ui?.applicationOperations?.[app.applicationId]; return `<div class="app-row"><span class="app-icon" aria-hidden="true">${escape(Array.from(app.name || "应用")[0])}</span><div class="app-body"><div class="app-name">${escape(app.name || app.applicationId)}</div>${op ? `<div class="app-message ${op.phase === "failed" ? "error" : ""}">${op.phase === "failed" ? errorText(op.error) : phaseText[op.phase] || "正在处理…"}</div>` : ""}</div><button class="open" data-app="${escape(app.applicationId)}" aria-label="${op?.phase === "failed" ? "重试打开" : "打开"}${escape(app.name || "应用")}" ${op && op.phase !== "failed" ? "disabled" : ""}>${op?.phase === "failed" ? "重试" : "打开"}</button></div>`; }).join("") : '<p class="empty">还没有应用，去商店挑选一个吧。</p>'}</div></section>
       ${renderIntent()}${notice ? `<p class="notice error" role="status">${escape(notice)}</p>` : ""}${renderSpace()}`;
     resize();
+  }
+  function refreshBalance() {
+    if (!signedIn() || balanceRequest) return;
+    const generation = sessionGeneration;
+    balancePhase = "loading";
+    render();
+    const request = Promise.resolve().then(() => api.getBalance()).then(value => {
+      if (generation !== sessionGeneration) return;
+      if (!Number.isSafeInteger(value?.available) || value.available < 0) throw new Error("invalid_balance");
+      balance = value.available; balancePhase = "ready";
+    }).catch(() => {
+      if (generation !== sessionGeneration) return;
+      balance = null; balancePhase = "error";
+    }).finally(() => {
+      if (generation !== sessionGeneration || balanceRequest !== request) return;
+      balanceRequest = null; render();
+    });
+    balanceRequest = request;
+    return request;
   }
   async function act(name, input) {
     const generation = sessionGeneration;
@@ -212,14 +237,16 @@
       accountIdentity = identity;
       sessionGeneration++;
       selected = ""; intentId = ""; notice = "";
+      balance = null; balancePhase = "idle"; balanceRequest = null;
       if (dragDepth) dragInvalid = true;
       space = { tasks: [] }; spaceRevision++; spaceRequest = null;
     }
     state = value;
     paintOverlay(); render();
     if (changed) void refreshSpace();
+    if (changed && signedIn()) void refreshBalance();
   }
-  window.addEventListener?.("focus", () => { void refreshSpace(); });
+  window.addEventListener?.("focus", () => { void refreshSpace(); void refreshBalance(); });
   window.addEventListener?.("blur", () => { interacting = false; if (pendingRender && !dragDepth) render(); });
   window.addEventListener?.("pagehide", clearDrag);
   api.onSpace?.(acceptSpace);

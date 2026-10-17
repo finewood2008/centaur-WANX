@@ -21,7 +21,7 @@
     "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && node tools/build-discovery.mjs win32-x64 && electron-builder --win nsis",
     "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js",
     "package:application": "node tools/package-application.mjs",
-    "patch:provisioning-sdk": "node tools/patch-provisioning-display-name.mjs",
+    "patch:provisioning-sdk": "node tools/patch-provisioning-display-name.mjs && node tools/patch-provisioning-gatt.mjs",
     "package:windows:x64:internal": "node shell/package-win.mjs",
     "build:maintenance": "node tools/build-maintenance.mjs",
     "prepackage:mac": "npm run build:maintenance",
@@ -33,10 +33,11 @@
     "@nexusaos/device-discovery-electron": "file:vendor/nexusaos-device-discovery-electron-1.0.6.tgz",
     "@nexusaos/local-provisioning-contracts": "file:vendor/nexusaos-local-provisioning-contracts-2.0.1-wanx.2.tgz",
     "@nexusaos/local-provisioning-core": "file:vendor/nexusaos-local-provisioning-core-2.0.1-wanx.2.tgz",
-    "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz",
+    "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1-wanx.2.tgz",
     "semver": "7.8.5",
     "ws": "8.22.0",
-    "yauzl": "3.4.0"
+    "yauzl": "3.4.0",
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "electron": "37.10.3",
@@ -46,7 +47,7 @@
   },
   "build": {
     "appId": "ai.centuarai.wanx.client",
-    "productName": "半人马AI-万象",
+    "productName": "万象",
     "directories": {
       "output": "release"
     },
@@ -60,6 +61,7 @@
       "octop/**",
       "app-host/**",
       "applications/**",
+      "updates/**",
       "resources/**",
       "package.json",
       "README.md"

@@ -1,4 +1,4 @@
-# 万象连接：内置 P2P 网络
+# 万象：内置 P2P 网络
 
 本目录按《万象项目结构与盒端接入设计》提供独立客户端。P2P 用户态引擎随万象一起分发，由万象管理启动、授权、连接和停止；用户不需要另行安装或启动独立网络客户端。默认管理地址为 `https://p2p.qeeshu.com`。
 
@@ -90,7 +90,7 @@ Host 和共享运行时应用启动经过 `shell/entry.mjs`：普通启动进入
 
 发布前可设置 `WANX_PACKAGED_EXECUTABLE` 为打包程序的可执行文件路径，运行 `node --test tests/packaged-application-seam.test.mjs`。该 seam 使用临时用户目录，验证真实打包进程进入 manifest 入口，以及应用异常时返回失败，不会读取真实盒子或账号。
 
-完整产品名称为“半人马AI-万象”，英文为“CentaurAI-WanX”。应用包及窗口内保留现有橙蓝半人马原图；窗口和快捷面板的 Logo 是“关于万象”按钮，打开系统关于弹窗，显示完整中英文名称。macOS 菜单栏使用原图轮廓的单色模板图标，保留透明背景，提供 22 像素及 44 像素 Retina 资源，由系统适配明暗外观；Windows 托盘保留彩色多尺寸图标。资源位于 `resources/`，macOS 执行 `npm run build:icons` 从 `local-ui/renderer/assets/centaurai-mark.png` 生成。品牌展示不改变已有包名、应用 ID、账号目录或加密存储身份。
+正式桌面应用名称为“万象”（macOS 为 `万象.app`），界面品牌为“半人马AI-万象”，英文为“CentaurAI-WanX”。应用包及窗口内保留现有橙蓝半人马原图；窗口和快捷面板的 Logo 是“关于万象”按钮，打开系统关于弹窗。macOS 菜单栏使用原图轮廓的单色模板图标，保留透明背景，提供 22 像素及 44 像素 Retina 资源，由系统适配明暗外观；Windows 托盘保留彩色多尺寸图标。资源位于 `resources/`，macOS 执行 `npm run build:icons` 从 `local-ui/renderer/assets/centaurai-mark.png` 生成。桌面名称调整不改变包名、应用 ID、账号目录或加密存储身份。
 
 macOS 的日常入口为菜单栏快捷面板（宽 400 像素、最高 560 像素）：左击开关，右击提供设置、关于和退出；点击外部或 Escape 收起。宿主不占 Dock，具体应用继续使用正常窗口和 Dock。面板优先显示我的应用，盒子一行仅显示当前名称和状态，底部进入应用商店。管理窗口约 860×640，顶部为“应用商店／设置”；低频的盒子管理和切换归入设置，登录和蓝牙配网仍只在这个持久窗口完成。关闭仅隐藏，保留输入和任务。Windows 保留窗口入口和托盘交互。
 
@@ -131,6 +131,16 @@ npm --prefix wanx-client run package:windows
 ```
 
 引擎输出到忽略版本控制的 `native/bin/`；electron-builder 按目标平台/架构把对应引擎复制到应用的 `resources/network/`。构建同时收集模块版本与许可证文件。没有发布签名证书时，本机验证产物不等同于已签名、公证的正式安装包。
+
+macOS 正式客户端请从仓库根目录运行独立入口（市场应用使用 `wanx-client/package-app.sh`）：
+
+```sh
+./wanx-client/package-client.sh --version 0.1.4 --arch arm64 --notary-profile wanx-release
+# 仅本机验证签名、版本和 DMG 完整性，不提交 Apple 公证：
+./wanx-client/package-client.sh --version 0.1.4 --arch arm64 --local
+```
+
+脚本生成 `万象-<版本>-<架构>.dmg`、`SHA256SUMS.txt` 和 `verification-client.json`，默认输出到 `wanx-client/release/client/<版本>/` 下的新目录。`--version` 写入安装包元数据，不改源码 `package.json`；`--arch` 可选 `arm64` 或 `x64`。首次正式发布可运行 `xcrun notarytool store-credentials wanx-release --apple-id <Apple ID> --team-id <Team ID>`，按交互提示把公证凭据存入钥匙串。正式模式要求 `--notary-profile`，并在公证通过后装订、校验 DMG；`--local` 产物不能作为正式公证包分发。Windows 目前只有未签名内测或基础 NSIS 构建入口，尚未建立可验证的正式 Authenticode 发行脚本。
 
 网络引擎依赖基线为 `0.80.0`、Electron `37.10.3`；具体第三方模块与许可证随构建产物保留。WANX 基线 `6563103` / Octop `1.0.2b4`。不会读取 Octop 数据库、导入 Python 私有模块，或依赖即将退役的 `nexusaos-app`。旧 `wanx-desktop/`、`wanx-admin-desktop/` 已删除；Dashboard 作为盒端控制台保留，盒子管理统一在本客户端完成。
 

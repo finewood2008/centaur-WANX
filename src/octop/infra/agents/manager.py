@@ -2003,6 +2003,55 @@ class AgentManager:
     # Agent config mutations — persona, skills, config_json patches
     # ------------------------------------------------------------------
 
+    async def update_interaction_preferences(
+        self, agent_id: str, values: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Change only the expression layer; reserve idle runtime until reload completes."""
+        from octop.infra.agents.settings.interaction import InteractionPreferences
+
+        preferences = (
+            InteractionPreferences.model_validate(values).model_dump()
+            if values is not None
+            else None
+        )
+        row = self.get_row(agent_id)
+        if row is None:
+            raise OctopError.localized(ErrorCode.AGENT_NOT_FOUND)
+        if row.user_id is None or row.is_shared:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
+        if not self.try_begin_history_backfill(agent_id):
+            raise OctopError.localized(ErrorCode.AGENT_BUSY)
+        key = "interaction_preferences"
+        previous = self.get_config(agent_id).get(key)
+        try:
+            cfg = self.get_config(agent_id)
+            if preferences is None:
+                cfg.pop(key, None)
+            else:
+                cfg[key] = preferences
+            self._repos.agent_repo.update_config(agent_id, config_json=dumps_config(cfg))
+            try:
+                await self._reload_agent(agent_id, strict=True)
+            except BaseException as exc:
+                # Restore just our field, retaining unrelated updates made during reload.
+                restored = self.get_config(agent_id)
+                if previous is None:
+                    restored.pop(key, None)
+                else:
+                    restored[key] = previous
+                self._repos.agent_repo.update_config(agent_id, config_json=dumps_config(restored))
+                try:
+                    await self._reload_agent(agent_id, strict=True)
+                except Exception:
+                    logger.exception("Failed to restore interaction preferences for %s", agent_id)
+                if isinstance(exc, Exception):
+                    logger.exception("Interaction preference reload failed for %s", agent_id)
+                    raise OctopError.localized(ErrorCode.INTERNAL_ERROR) from exc
+                raise
+            return preferences
+        finally:
+            self.end_history_backfill(agent_id)
+
     async def apply_persona_mbti(self, agent_id: str, code: str) -> AgentRow:
         """Persist MBTI persona on the agent row and reload harness runtime."""
         norm = code.upper()
@@ -3029,7 +3078,7 @@ class AgentManager:
     # Internal — background reload worker
     # ------------------------------------------------------------------
 
-    async def _reload_agent(self, agent_id: str) -> None:
+    async def _reload_agent(self, agent_id: str, *, strict: bool = False) -> None:
         assert self._harness_manager is not None
         async with self._lifecycle_lock_for(agent_id):
             self._bootstrap_graph_refresh_pending.discard(agent_id)
@@ -3051,6 +3100,8 @@ class AgentManager:
                 await self._post_start_agent(row, entry.agent, cfg, user_display=user_display)
                 self._repos.agent_repo.set_state(agent_id, "running", error=None)
             except Exception as exc:
+                if strict:
+                    raise
                 recovered = self._octop_harness_or_none(agent_id)
                 if recovered is not None and self._is_already_registered_error(exc):
                     self._repos.agent_repo.set_state(agent_id, "running", error=None)
@@ -3666,6 +3717,16 @@ class AgentManager:
         # OpenSandbox.create is not idempotent — reuse the instance already
         # wrapped by ``ws`` so start does not spawn a second remote sandbox.
         harness_backend: Any = ws.backend if self._spec_is_opensandbox(backend) else backend
+
+        if cfg.get("interaction_preferences") is not None:
+            from octop.infra.agents.middleware.interaction import InteractionPreferencesMiddleware
+            from octop.infra.agents.settings.interaction import InteractionPreferences
+
+            agent_middleware.append(
+                InteractionPreferencesMiddleware(
+                    InteractionPreferences.model_validate(cfg["interaction_preferences"])
+                )
+            )
 
         harness_cfg = HarnessAgentConfig(
             name=_memory_namespace(row.agent_id),

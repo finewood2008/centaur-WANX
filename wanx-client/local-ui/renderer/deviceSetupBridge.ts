@@ -32,6 +32,7 @@ export interface SetupTransportRequest {
   requestId: string;
   operation:
     | "connect"
+    | "cancelConnect"
     | "readDeviceInfo"
     | "request"
     | "subscribeStatus"
@@ -53,7 +54,7 @@ export interface SetupTransportBridge {
 
 export interface DeviceSetupTransport {
   requestDeviceFromUserGesture(): Promise<SelectedDiscoveryCandidate>;
-  cancelSelection(): void;
+  cancelSelection(): Promise<void>;
   dispose(): Promise<void>;
 }
 

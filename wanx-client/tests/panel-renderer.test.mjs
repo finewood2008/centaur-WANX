@@ -14,6 +14,13 @@ const baseState = () => ({
   connection: null, devices: structuredClone(devices), applications: [{ ...application }],
   ui: { pendingOpen: null, applicationOperations: {}, lastDeviceId: "box-102" },
 });
+const connectedState = () => ({
+  ...baseState(), phase: "ready",
+  connection: { mode: "local", deviceId: "box-102", name: "本机万象" },
+});
+const uploadState = () => ({
+  phase: "ready", scope: "scope-a", accountId: "account-1", boxId: "box-102", tasks: [],
+});
 const pendingState = (phase = "confirm") => ({
   ...baseState(), ui: {
     pendingOpen: { id: "intent-1", applicationId: application.applicationId, deviceId: "box-102", phase },
@@ -285,6 +292,8 @@ test("an action rejected after logout and same-account login cannot publish its 
 
 test("whole panel drop overlay is stable through updates and submits multiple files to the captured scope", async () => {
   const h = await harness(connectedState(), undefined, uploadState());
+  assert.match(h.html, /points-value">0<small>点/);
+  assert.match(h.html, /data-page="credits"/);
   const before = h.html, count = h.calls.filter(([name]) => name === "desktop-resize").length;
   await h.drag("dragenter");
   assert.equal(h.overlay.hidden, false);
@@ -355,3 +364,50 @@ test("completed history disappears while the app heading entry and dedicated spa
   await h.click({ page: "applications" });
   assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "applications" }]);
 });
+test("quick panel reads real available points and opens the ledger without launching an application", async () => {
+  const h = await harness(baseState(), async () => ({ available: 1250 }));
+  assert.match(h.html, /1,250<small>点/);
+  assert.match(h.html, /我的积分，1,250点/);
+  assert.match(h.html, /查看消耗明细/);
+  await h.click({ page: "credits" });
+  assert.deepEqual(h.actions(), [["desktop-open", { page: "credits" }]]);
+  await h.focus();
+  assert.equal(h.calls.filter(([name]) => name === "panel-balance").length, 2);
+});
+
+test("balance loading, a real zero and failure remain distinct; repeated focus coalesces requests", async () => {
+  const pending = deferred(); let reads = 0;
+  const h = await harness(baseState(), () => { reads++; return reads === 1 ? pending.promise : Promise.reject(new Error("unavailable")); });
+  assert.match(h.html, /正在读取…/);
+  assert.doesNotMatch(h.html, /points-value">0/);
+  await h.focus(); assert.equal(reads, 1);
+  pending.resolve({ available: 0 }); await settle();
+  assert.match(h.html, /points-value">0<small>点/);
+  await h.focus();
+  assert.match(h.html, /暂不可用/);
+  assert.match(h.html, /points-value">—/);
+  assert.doesNotMatch(h.html, /points-value">0/);
+});
+
+test("account switch and logout discard a delayed balance and never expose previous-account points", async () => {
+  const old = deferred(), newer = deferred(); let reads = 0;
+  const h = await harness(baseState(), () => ++reads === 1 ? old.promise : newer.promise);
+  const next = baseState(); next.account.accountId = "account-2";
+  await h.update(next);
+  old.resolve({ available: 999 }); await settle();
+  assert.doesNotMatch(h.html, /999<small>/);
+  newer.resolve({ available: 42 }); await settle();
+  assert.match(h.html, /42<small>点/);
+  await h.update({ account: { phase: "signed_out" } });
+  assert.match(h.html, /登录后查看/);
+  assert.doesNotMatch(h.html, /42<small>|data-page="credits"/);
+  await h.focus(); assert.equal(reads, 2);
+});
+
+for (const available of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 1]) {
+  test(`invalid point total ${available} is unavailable instead of displayed`, async () => {
+    const h = await harness(baseState(), async () => ({ available }));
+    assert.match(h.html, /暂不可用/);
+    assert.match(h.html, /points-value">—/);
+  });
+}

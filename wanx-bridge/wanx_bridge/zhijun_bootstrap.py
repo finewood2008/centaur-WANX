@@ -1,4 +1,4 @@
-"""Give each verified platform account its own bundled Zhijun expert via HTTP."""
+"""Prepare a Zhijun source without replacing the account's existing choices."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ def _private(row: Any, user_id: int) -> bool:
 async def ensure_private_expert(adapter: Any, token: str, user_id: int) -> None:
     """Preserve existing choices; never share or copy another user's workspace.
 
+    An owned, shared bundled expert is also a usable source: the Zhijun app
+    provisions its private workspace through its existing source binding. Do
+    not create a competing blank expert or change that source's sharing policy.
+
     The adapter's login lock serializes initialization. A deterministic ID and
     ownership-checked conflict recovery also handle process restart/retry.
     Model configuration remains the operator's responsibility: no inference,
@@ -37,7 +41,16 @@ async def ensure_private_expert(adapter: Any, token: str, user_id: int) -> None:
     for row in rows:
         agent_id = row.get("agent_id")
         if (
-            _private(row, user_id)
+            (
+                _private(row, user_id)
+                or (
+                    row.get("user_id") == user_id
+                    and row.get("is_shared") is True
+                    and row.get("kind") != "team"
+                    and row.get("application_id", "wanx") == "wanx"
+                    and row.get("template_name") == "zhijun-personal-companion"
+                )
+            )
             and isinstance(agent_id, str)
             and not agent_id.startswith(("zhijun-lan-user-", "zhijun-role-"))
             and "知君" in str(row.get("name", ""))

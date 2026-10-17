@@ -1,4 +1,8 @@
 import { panelSpaceState } from "./panel-space.mjs";
+import { readAvatar } from "./avatar.mjs";
+import { createCreditsReader } from "../account/credits.mjs";
+import { createApplicationBackend } from "../applications/backend.mjs";
+import { createApplicationReleaseAccess } from "../applications/release-access.mjs";
 import {
   app,
   BrowserWindow,
@@ -14,8 +18,8 @@ import {
   screen,
 } from "electron";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { mkdirSync, readFileSync } from "node:fs";
+import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -46,10 +50,20 @@ import { createStartupSettings } from "./startup.mjs";
 import { createPersonalSpace } from "./personal-space.mjs";
 import { createAdvertisementNames } from "./discovery-names.mjs";
 import { protectPrivateDirectory } from "./private-storage.mjs";
+import { readClientIdentity, installationIdentity } from "../updates/identity.mjs";
+import { createUpdateStore } from "../updates/store.mjs";
+import { createClientUpdates } from "../updates/client-service.mjs";
+import { createBoxUpdates } from "../updates/box-service.mjs";
+import { createElectronUpdateAdapter } from "../updates/electron.mjs";
 
+import { testPackageIdentity, TEST_APP_ID, TEST_PRODUCT_NAME } from "../updates/test-build.mjs";
+import { createTestUpdateRuntime } from "../updates/test-runtime.mjs";
+
+const testBuild = app.isPackaged ? testPackageIdentity(JSON.parse(readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"))) : null;
+const windowName = testBuild ? TEST_PRODUCT_NAME : DESKTOP_NAME;
 const controlURL = new URL("../local-ui/renderer/index.html", import.meta.url).href;
 const panelURL = new URL("../local-ui/panel/index.html", import.meta.url).href;
-if (process.env.WANX_SMOKE_USER_DATA) {
+if (!testBuild && process.env.WANX_SMOKE_USER_DATA) {
   const isolated = path.resolve(process.env.WANX_SMOKE_USER_DATA);
   mkdirSync(isolated, { recursive: true });
   app.setPath("userData", isolated);
@@ -80,6 +94,8 @@ function terminalCommand(argv) {
   openTerminalConsole();
   return true;
 }
+let updates;
+let shutdown;
 
 // Local diagnostics contain fixed steps and allowlisted codes; console output is opt-in.
 async function timed(step, operation) {
@@ -99,7 +115,7 @@ async function marketTrustedKeys() {
 // to finish evaluating before emitting ready.
 // Keep Electron's existing name/data/keychain identity; branding lives in the
 // bundle, About panel and menus. Match the installer identity on Windows.
-if (process.platform === "win32") app.setAppUserModelId("ai.centuarai.wanx.client");
+if (process.platform === "win32") app.setAppUserModelId(testBuild ? TEST_APP_ID : "ai.centuarai.wanx.client");
 if (process.argv.includes("--wanx-managed-app")) {
   marketTrustedKeys().then(trustedKeys => runManagedApplication({
     applicationRoot: path.join(app.getPath("userData"), "applications"), trustedKeys, app,
@@ -157,6 +173,18 @@ if (process.argv.includes("--wanx-managed-app")) {
         }),
         deviceModel: os.hostname(),
       });
+      let creditsServiceURL = process.env.WANX_CREDITS_URL || "";
+      if (!creditsServiceURL) {
+        try {
+          const file = path.join(userData, "credits-service.json");
+          const info = await lstat(file);
+          if (!info.isFile() || info.size > 4096 || (process.platform !== "win32" && (info.uid !== process.getuid() || (info.mode & 0o077))))
+            throw new Error("CREDITS_INVALID_CONFIG");
+          const config = JSON.parse(await readFile(file, "utf8"));
+          if (config.version !== 1 || typeof config.serviceURL !== "string") throw new Error("CREDITS_INVALID_CONFIG");
+          creditsServiceURL = config.serviceURL;
+        } catch (error) { if (error.code !== "ENOENT") reportError(new Error("CREDITS_INVALID_CONFIG")); }
+      }
       const preferenceFile = path.join(userData, "p2p-preference.json");
       const requestAccount = account.request;
       account.request = (input) => {
@@ -251,6 +279,9 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       const trustedKeys = await marketTrustedKeys();
+      const releaseAccess = createApplicationReleaseAccess({ account });
+      const authorizeRelease = (descriptor, options) => releaseAccess.authorize(descriptor, options);
+      const { getCompatibilityContext, prepareApplication } = createApplicationBackend({ client, account, clientVersion: app.getVersion() });
       applications = await createApplicationManager({
         applicationRoot: path.join(userData, "applications"),
         runtimeArgs: process.defaultApp ? [app.getAppPath()] : [],
@@ -260,6 +291,9 @@ if (process.argv.includes("--wanx-managed-app")) {
         stream: (input) => client.applicationStream(input),
         createConnection: (applicationId) => client.applicationConnection(applicationId),
         trustedKeys,
+        getCompatibilityContext,
+        prepareApplication,
+        authorizeRelease,
         launcherArgs: [
           ...(app.isPackaged ? [] : [app.getAppPath()]),
           "--wanx-managed-app",
@@ -276,8 +310,53 @@ if (process.argv.includes("--wanx-managed-app")) {
         arch: process.arch,
         trustedKeys,
         captureSession: () => marketSession.captureSession(),
+        getCompatibilityContext,
+        authorizeRelease,
       });
-      const startup = createStartupSettings({ app });
+      const identity = await readClientIdentity({ app });
+      const testRuntime = await createTestUpdateRuntime({ identity, app, session });
+      let updateTrust = JSON.parse(await readFile(new URL("../updates/trust.json", import.meta.url), "utf8"));
+      if (app.isPackaged) {
+        try { updateTrust = JSON.parse(await readFile(path.join(process.resourcesPath, "wanx-update-trust.json"), "utf8")); }
+        catch (error) { if (error.code !== "ENOENT") updateTrust = { keys: {}, windowsPublisherNames: [] }; }
+      }
+      if (updateTrust?.schemaVersion !== 1 || !updateTrust.keys || typeof updateTrust.keys !== "object" || Array.isArray(updateTrust.keys))
+        updateTrust = { keys: {}, windowsPublisherNames: [] };
+      const clientUpdates = await createClientUpdates({
+        current: identity, keys: updateTrust.keys, applications,
+        request: testRuntime ? input => testRuntime.request(input) : input => account.request(input),
+        captureSession: testRuntime ? testRuntime.captureSession : () => marketSession.captureSession(),
+        installationId: await installationIdentity(app),
+        store: createUpdateStore(path.join(userData, "updates", "client-state.json")),
+        createAdapter: () => createElectronUpdateAdapter({ platform: process.platform,
+          configurationPath: path.join(userData, "updates", "electron-config.yml"),
+          ...(testRuntime ? { cacheDirectoryName: `wanx-client-updater-test-${identity.testRunId}` } : {}),
+          installationDirectory: path.dirname(app.getPath("exe")),
+          windowsPublisherNames: updateTrust.windowsPublisherNames }),
+        requestInstall: finalize => shutdown.requestInstall(finalize).catch(error => {
+          dialog.showErrorBox("客户端更新未完成", "安装未完成。请重新启动万象查看更新诊断，必要时使用正式修复安装包；账号和应用数据会保留。");
+          throw error;
+        }),
+      });
+      const boxUpdates = await createBoxUpdates({
+        request: input => account.request(input), keys: updateTrust.keys,
+        captureSession: () => marketSession.captureSession(),
+        store: createUpdateStore(path.join(userData, "updates", "box-state.json")),
+        getScope: () => ({ accountId: account.snapshot().phase === "authenticated" ? account.getIdentity()?.accountId : null,
+          deviceId: client.snapshot().connection?.deviceId || null }),
+      });
+      updates = { client: clientUpdates, box: boxUpdates };
+      const updateListeners = [clientUpdates.subscribe(() => { void broadcast?.publish(); }),
+        boxUpdates.subscribe(() => { desktop?.sync(client.snapshot()); void broadcast?.publish(); })];
+      let updateAccount = JSON.stringify(account.getIdentity());
+      const unsubscribeUpdateAccount = account.subscribe(state => {
+        const next = JSON.stringify(account.getIdentity());
+        if (state.phase !== "authenticated" || next !== updateAccount) {
+          clientUpdates.invalidate(); boxUpdates.invalidate();
+        }
+        updateAccount = next;
+      });
+      const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
       try { startup.initializeDefault(); } catch (error) { reportError(error); }
       uiState = await createUIState({
         client, account, applications,
@@ -296,7 +375,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         minHeight: 560,
         show: false,
         acceptFirstMouse: true,
-        title: DESKTOP_NAME,
+        title: windowName,
         icon: APP_ICON,
         backgroundColor: "#faf8f4",
         webPreferences: {
@@ -316,7 +395,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           resizable: false, maximizable: false, minimizable: false,
           fullscreenable: false, skipTaskbar: true, hasShadow: true,
           roundedCorners: true, alwaysOnTop: true, backgroundColor: "#faf8f4",
-          title: `${DESKTOP_NAME} · 我的应用`, icon: APP_ICON,
+          title: `${windowName} · 我的应用`, icon: APP_ICON,
           webPreferences: {
             preload: fileURLToPath(new URL("../local-ui/panel-preload.cjs", import.meta.url)),
             nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
@@ -330,7 +409,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         window.webContents.on("will-attach-webview", event => event.preventDefault());
       }
       broadcast = createUIBroadcast({
-        client, applications, uiState, startup, windows: () => [control, panel], onError: reportError,
+        client, applications, uiState, startup, updates, windows: () => [control, panel], onError: reportError,
       });
       let quitPrompt;
       const requestQuit = () => {
@@ -354,6 +433,8 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       desktop = createDesktopIntegration({
         app, Menu, Tray, nativeImage, control, panel, screen, client, requestQuit,
+        versionInfo: identity,
+        checkUpdates: () => clientUpdates.check(),
         onPanelHidden: () => uiState.dismissPanel(),
         openManagement(page) {
           if (control.isDestroyed()) return;
@@ -390,6 +471,19 @@ if (process.argv.includes("--wanx-managed-app")) {
           buttons: ["取消", "彻底删除"], defaultId: 0, cancelId: 0,
         })).response === 1,
 
+        accountProfile: {
+          save: input => account.saveProfile(input),
+          removeAvatar: () => account.saveProfile({ avatarDataUrl: null }),
+          chooseAvatar: () => account.chooseAvatar(async () => {
+            const result = await dialog.showOpenDialog(control, {
+              title: "上传头像", buttonLabel: "使用头像",
+              filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg"] }], properties: ["openFile"],
+            });
+            return result.canceled || !result.filePaths.length ? null : readAvatar(result.filePaths[0], nativeImage);
+          }),
+        },
+        credits: createCreditsReader({ client, authorityDeviceId: process.env.WANX_CREDITS_DEVICE_ID || "",
+          accountRequest: creditsServiceURL ? input => account.creditsRequest({ ...input, serviceURL: creditsServiceURL }) : null }),
         ipcMain,
         control,
         controlURL,
@@ -407,6 +501,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         applications,
         dashboards,
         market,
+        updates,
         allowDevelopmentInstall: !app.isPackaged && process.env.WANX_ALLOW_DEVELOPMENT_INSTALL === "1",
         selectApplicationArchive: async () => {
           const result = await dialog.showOpenDialog(control, {
@@ -423,17 +518,22 @@ if (process.argv.includes("--wanx-managed-app")) {
         dashboards.sync(client.snapshot());
         desktop.sync(client.snapshot());
         openTerminalConsole();
+        boxUpdates.sync();
         void broadcast.publish();
       });
 
-      registerShutdown({
+      shutdown = registerShutdown({
         app,
         async closeApplications() {
           uiState.invalidateOpen();
           marketSession?.close();
+          releaseAccess.close();
           await Promise.all([market.close(), personalSpace?.close(), applications?.close()]);
         },
         async closeHost() {
+          unsubscribeUpdateAccount();
+          for (const remove of updateListeners) remove();
+          clientUpdates.close(); boxUpdates.close();
           desktop.dispose();
           unsubscribe();
           broadcast.dispose();
@@ -450,6 +550,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       app.on("window-all-closed", () => app.quit());
       await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
+      await clientUpdates.ready();
       if (process.env.WANX_SMOKE_USER_DATA)
         await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
       setupRuntime = await createSetupRuntime({
@@ -477,9 +578,11 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       if (!startup.wasOpenedAtLogin()) desktop.show();
       void broadcast.publish();
-      void timed("client.initialize", () => client.initialize()).then(openTerminalConsole).catch(
-        reportError,
-      );
+      const initialization = timed("client.initialize", () => client.initialize()).then(openTerminalConsole);
+      if (testRuntime) {
+        await initialization;
+        await testRuntime.ready(clientUpdates);
+      } else void initialization.catch(reportError);
     })
     .catch((error) => {
       reportError(error);

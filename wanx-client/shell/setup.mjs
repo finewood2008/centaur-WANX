@@ -24,6 +24,9 @@ export async function createSetupRuntime({
     host = await makeHost({
       webContents: control.webContents, ipcMain, documentUrl: controlURL, consumer,
       resumeStore: makeStore({ directory: userData, safeStorage, consumerBaseUrl }),
+      // Public-name probes use their own native GATT connection. Selection
+      // closes the chooser first; wait for the probe process to release it.
+      beforeConnect: () => advertisementNames?.stopAndWait?.(),
       ...JSON.parse(await readFile(new URL('./provisioning-trust.json', import.meta.url), 'utf8')),
     });
     disposeBluetoothSettings = installBluetoothSettings({

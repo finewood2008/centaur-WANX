@@ -10,7 +10,7 @@ import { createPlatformSession } from "../octop/platform.mjs";
 import { createDashboardGateway } from "../octop/gateway.mjs";
 import { createTunnelAgent } from "../network/tunnel.mjs";
 
-async function fixture(t, { lease = 120, tunnel = false } = {}) {
+async function fixture(t, { lease = 120, tunnel = false, failure } = {}) {
   const state = { exchanges: 0, fail: false, expired: 0, calls: [], cloud: [] };
   const sockets = new Set();
   const track = (socket) => {
@@ -31,6 +31,11 @@ async function fixture(t, { lease = 120, tunnel = false } = {}) {
         : null,
     });
     response.setHeader("content-type", "application/json");
+    if (failure?.path === request.url) {
+      response.writeHead(failure.status);
+      response.end(failure.body);
+      return;
+    }
     if (state.fail) {
       response.writeHead(503);
       response.end("{}");
@@ -138,6 +143,43 @@ async function fixture(t, { lease = 120, tunnel = false } = {}) {
     ]);
   });
   return { options, state };
+}
+
+for (const endpoint of ["challenge", "exchange"]) {
+  test(`platform ${endpoint} preserves an allowlisted box error without returning backend details`, async (t) => {
+    const { options } = await fixture(t, { failure: {
+      path: `/api/auth/platform/${endpoint}`, status: 503,
+      body: JSON.stringify({ code: "BOX_ZHIJUN_INITIALIZATION_FAILED", detail: "SECRET private-token", token: "SECRET" }),
+    } });
+    await assert.rejects(createPlatformSession(options), error => {
+      assert.equal(error.code, "BOX_ZHIJUN_INITIALIZATION_FAILED");
+      assert.equal(error.message, error.code);
+      assert.equal(error.status, 503);
+      assert.doesNotMatch(JSON.stringify(error), /SECRET|private-token|detail|token/);
+      return true;
+    });
+  });
+}
+
+for (const body of [
+  '{"code":"SECRET_TOKEN","detail":"BOX_ZHIJUN_INITIALIZATION_FAILED"}',
+  '{"code":"BOX_ZHIJUN_INITIALIZATION_FAILED SECRET_TOKEN"}',
+  '{"code":{"secret":"SECRET_TOKEN"}}',
+  '{"detail":"BOX_UPSTREAM_OIDC_FAILED"}',
+  '"SECRET_TOKEN"', 'null', '<html>SECRET_TOKEN</html>',
+]) {
+  test(`untrusted box error response falls back to a connection error: ${body.slice(0, 28)}`, async (t) => {
+    const { options } = await fixture(t, { failure: {
+      path: "/api/auth/platform/exchange", status: 503, body,
+    } });
+    await assert.rejects(createPlatformSession(options), error => {
+      assert.equal(error.code, "BOX_PLATFORM_AUTH_FAILED");
+      assert.equal(error.message, error.code);
+      assert.equal(error.status, 503);
+      assert.doesNotMatch(JSON.stringify(error), /SECRET|detail|secret/);
+      return true;
+    });
+  });
 }
 
 test("platform challenge and grant exchange use selected tunnel; bootstrap exposes only opaque marker", async (t) => {

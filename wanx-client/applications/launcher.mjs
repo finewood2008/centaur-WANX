@@ -202,6 +202,7 @@ export function createApplicationLauncher({
   function activate(id) {
     const entry = applications.get(id)?.entry;
     if (!entry || entry.exited) return false;
+    try { entry.session.assertLive?.(); } catch { return false; }
     entry.child.send?.({ type: "wanx:application-activate", launchId: entry.session.launchId }, () => {});
     return true;
   }

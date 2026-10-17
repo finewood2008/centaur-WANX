@@ -9,7 +9,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
 
-from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
+from octop.api.common.agent import assert_agent_access_row, assert_agent_owner, user_owns_agent
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
 from octop.api.common.workspace import require_agent_workspace
@@ -20,6 +20,10 @@ from octop.infra.agents.experts.avatar import (
     display_agent_icon_url,
     read_workspace_avatar,
     write_workspace_avatar,
+)
+from octop.infra.agents.settings.interaction import (
+    InteractionPreferences,
+    InteractionPreferencesResponse,
 )
 from octop.infra.agents.settings.profile import (
     id_list_from_row,
@@ -593,3 +597,58 @@ async def agent_status(
         ],
         "memory_maintenance": _memory_maintenance_status(server, agent_id),
     }
+
+
+def _private_interaction_agent(server: Any, agent_id: str, user: Any) -> Any:
+    row = server.app_runtime.agent_registry.get_row(agent_id)
+    if row is None:
+        raise OctopError.localized(ErrorCode.AGENT_NOT_FOUND)
+    # Preferences belong to this person's private role, including for admin accounts.
+    if not user_owns_agent(row, user) or row.is_shared:
+        raise OctopError.localized(ErrorCode.FORBIDDEN)
+    return row
+
+
+@router.get(
+    "/{agent_id}/interaction-preferences",
+    response_model=InteractionPreferencesResponse,
+    summary="Read private agent interaction preferences",
+)
+async def get_interaction_preferences(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> InteractionPreferencesResponse:
+    row = _private_interaction_agent(server, agent_id, user)
+    values = parse_config_json(row.config_json).get("interaction_preferences")
+    return InteractionPreferencesResponse(preferences=values)
+
+
+@router.put(
+    "/{agent_id}/interaction-preferences",
+    response_model=InteractionPreferencesResponse,
+    summary="Save interaction preferences for all conversation channels",
+    description="Owner's private agent only. Rejects a busy agent; returns after runtime reload. Other configuration is preserved.",
+)
+async def put_interaction_preferences(
+    agent_id: str,
+    body: InteractionPreferences,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> InteractionPreferencesResponse:
+    _private_interaction_agent(server, agent_id, user)
+    values = await server.app_runtime.agent_registry.update_interaction_preferences(
+        agent_id, body.model_dump()
+    )
+    return InteractionPreferencesResponse(preferences=values)
+
+
+@router.delete(
+    "/{agent_id}/interaction-preferences",
+    response_model=InteractionPreferencesResponse,
+    summary="Restore the agent's original interaction style",
+)
+async def reset_interaction_preferences(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> InteractionPreferencesResponse:
+    _private_interaction_agent(server, agent_id, user)
+    await server.app_runtime.agent_registry.update_interaction_preferences(agent_id, None)
+    return InteractionPreferencesResponse(preferences=None)

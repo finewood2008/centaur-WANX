@@ -119,7 +119,7 @@ test("a later System Settings opt-out is not overridden by startup defaults", t 
 test("installed branded Mac source bundle supports login settings while raw Electron does not", t => {
   const preferenceFile = preferences(t);
   const branded = harness({ isPackaged: false, installed: true, preferenceFile,
-    executable: "/Users/test/Applications/半人马AI-万象.app/Contents/MacOS/Electron" });
+    executable: "/Users/test/Applications/万象.app/Contents/MacOS/Electron" });
   assert.equal(branded.startup.initializeDefault().enabled, true);
   const electron = harness({ isPackaged: false, installed: true, preferenceFile,
     executable: "/Applications/Electron.app/Contents/MacOS/Electron" });
@@ -149,7 +149,7 @@ test("packaged Windows registers the installed executable with a silent login fl
   assert.equal(h.startup.initializeDefault().enabled, true);
   const options = { path: executable, args: ["--wanx-login-startup"] };
   assert.deepEqual(h.app.readOptions, options);
-  assert.deepEqual(h.writes, [{ openAtLogin: true, ...options, enabled: true, name: "半人马AI-万象" }]);
+  assert.deepEqual(h.writes, [{ openAtLogin: true, ...options, enabled: true, name: "万象" }]);
   assert.equal(h.startup.wasOpenedAtLogin(), false);
   h.startup.set(false);
   const restarted = harness({ platform: "win32", preferenceFile, executable, argv: [executable] });
