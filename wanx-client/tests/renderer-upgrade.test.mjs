@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
-const source = (await Promise.all(["app-catalog.js", "store-carousel.js", "discovery-selection.js", "credits.js", "renderer.js"].map(name => readFile(new URL(`../local-ui/renderer/${name}`, import.meta.url), "utf8")))).join("\n");
+const source = (await Promise.all(["discovery-selection.js", "credits.js", "personal-space.js", "app-catalog.js", "store-carousel.js", "renderer.js"].map(name => readFile(new URL(`../local-ui/renderer/${name}`, import.meta.url), "utf8")))).join("\n");
 const client = { current: { productVersion: "0.1.4", buildId: "dev-abc123", distributionClass: "development", platform: "darwin", arch: "arm64" }, phase: "development" };
 const release = { payload: { releaseId: "box-v2", version: "2.0.0", releaseNotes: "修复稳定性" } };
 const plan = { planId: "plan-1", deviceId: "box-1", releaseId: "box-v2", release, planDigest: "a".repeat(64), expiresAt: new Date(Date.now() + 600000).toISOString(), impact: { serviceInterruption: true, dataMigration: false }, dataPolicy: "backward-compatible" };
@@ -26,6 +26,7 @@ async function harness(initial = state(), onAction = async () => {}, timers = nu
   vm.runInNewContext(source, { window, document: { addEventListener() {}, querySelector: selector => selector === "#app" ? app : null }, Date, TextEncoder,
     setTimeout: timers ? (callback, delay) => { if (delay !== 5000) return setTimeout(callback, delay); const id = Symbol(); timers.set(id, callback); return id; } : setTimeout,
     clearTimeout: timers ? id => { if (typeof id === "symbol") timers.delete(id); else clearTimeout(id); } : clearTimeout,
+    setInterval: () => null, clearInterval: () => {},
   });
   await new Promise(resolve => setImmediate(resolve));
   const click = (action, data = {}) => events.get("click")({ target: { closest: () => ({ dataset: { action, ...data } }) } });

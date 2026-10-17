@@ -711,7 +711,7 @@ function marketErrorMessage(error) {
     MARKET_UNAVAILABLE: "此应用暂时无法安装，请刷新应用市场。",
     MARKET_GRAY_ACCESS_DENIED: "此版本正在灰度测试，当前账号未获测试资格。请使用正式版本，或联系管理员加入测试。",
     MARKET_RELEASE_ACCESS_REQUIRED: "请更新万象并登录有测试资格的账号，再打开此应用。",
-    MARKET_RELEASE_ACCESS_SIGNED_PACKAGE_REQUIRED: "此测试版本需要通过应用商店的签名安装包安装。",
+    MARKET_RELEASE_ACCESS_SIGNED_PACKAGE_REQUIRED: "此测试版本需要通过「应用」页提供的签名安装包安装。",
     MARKET_RELEASE_ACCESS_INVALID: "暂时无法确认此版本的使用资格，请保持联网后重试。",
     MARKET_RELEASE_ACCESS_EXPIRED: "此版本的使用许可已到期，请保持联网后重新打开应用。",
     MARKET_INCOMPATIBLE: "此版本不兼容当前系统或万象版本，请先更新万象。",
@@ -723,7 +723,7 @@ function marketErrorMessage(error) {
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
     APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会检查盒端准备状态。",
     APPLICATION_RESOURCES_NOT_READY: "盒端尚未完成应用准备，请保持盒子联网后重试。",
-    APPLICATION_RESOURCE_ARTIFACT_REQUIRED: "请从应用商店安装已发布的应用版本，再准备盒端资源。",
+    APPLICATION_RESOURCE_ARTIFACT_REQUIRED: "请在「应用」中安装已发布版本，再准备盒端资源。",
     APPLICATION_PREPARATION_INVALID: "盒端准备结果无法核验，请更新盒端后重试。",
     APPLICATION_PREPARATION_UNAVAILABLE: "盒端应用准备服务暂不可用，请检查盒端服务后重试。",
     RESOURCE_SERVICE_NOT_CONFIGURED: "盒端应用准备服务尚未启用，请联系盒主或管理员检查盒端配置。",
@@ -1782,6 +1782,8 @@ function acceptRemoteState(state) {
   if (marketConfirmation?.updateDeviceId && state.upgrades?.box?.canUpgrade !== true) marketConfirmation = null;
   if (marketConfirmation?.updateResumeOperationId && (state.upgrades?.box?.operation?.operationId !== marketConfirmation.updateResumeOperationId || !state.upgrades.box.operation.allowedActions?.includes("resume"))) marketConfirmation = null;
   if (accountChanged) {
+    selectedApplicationId = null;
+    posterPreview = null;
     profileMenuOpen = false;
     storeCarousel.select(0);
     notice = null;
