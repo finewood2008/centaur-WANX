@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
-const source = await readFile(new URL("../local-ui/panel/panel.js", import.meta.url), "utf8");
+const source = (await Promise.all(["../local-ui/renderer/app-catalog.js", "../local-ui/panel/panel.js"].map(file => readFile(new URL(file, import.meta.url), "utf8")))).join("\n");
 const application = { applicationId: "centaurai.wanx.zhijun", name: "知君", version: "0.4.3" };
 const devices = ["102", "103"].map(id => ({
   deviceId: `box-${id}`, displayName: `CentuarAI-AMD-${id}`, accessState: "ready", canOpen: true,
@@ -338,6 +338,12 @@ for (const available of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 1]) {
   });
 }
 
+test("official app icons share the store catalog without changing open behavior", async () => {
+  const h = await harness(baseState());
+  assert.match(h.html, /app-icons\/zhijun-v1\.png/);
+  assert.match(h.html, /data-app="centaurai.wanx.zhijun"/);
+});
+
 test("whole panel drop overlay is stable through updates and submits multiple files to the captured scope", async () => {
   const h = await harness(connectedState(), undefined, uploadState());
   assert.match(h.html, /points-value">0<small>点/);
@@ -415,7 +421,7 @@ test("completed history disappears while the app heading entry and dedicated spa
 test("quick panel reads real available points and opens the ledger without launching an application", async () => {
   const h = await harness(baseState(), async () => ({ available: 1250 }));
   assert.match(h.html, /1,250<small>点/);
-  assert.match(h.html, /我的积分，1,250点/);
+  assert.match(h.html, /积分，1,250点/);
   assert.match(h.html, /查看消耗明细/);
   await h.click({ page: "credits" });
   assert.deepEqual(h.actions(), [["desktop-open", { page: "credits" }]]);

@@ -2063,7 +2063,7 @@ test("catalog product pages have bundled icons, product posters and a safe back 
   const catalogContext = { window: {} };
   vm.runInNewContext(await readFile(new URL("../local-ui/renderer/app-catalog.js", import.meta.url), "utf8"), catalogContext);
   const catalog = catalogContext.window.wanxAppCatalog;
-  for (const id of ["centaurai.wanx.zhijun", "centaurai.wanx.superadvisors", "centaurai.wanx.dialogue", "centaurloop", "centaurai.wanx.ai-browser", "centaurai.media-express"]) assert.ok(catalog[id]);
+  for (const id of ["centaurai.wanx.semantica", "centaurai.wanx.zhijun", "centaurai.wanx.superadvisors", "centaurai.wanx.dialogue", "centaurloop", "centaurai.wanx.ai-browser", "centaurai.media-express"]) assert.ok(catalog[id]);
   assert.equal(catalog.constructor, undefined);
   const items = Object.entries(catalog).map(([applicationId, info]) => ({ applicationId, name: info.key, version: "1.0.0", description: "产品原始描述", previous: "0.9.0" }));
   const h = await harness(state(), items);
