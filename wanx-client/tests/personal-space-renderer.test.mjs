@@ -10,7 +10,7 @@ function harness(action, uploadDroppedFiles, tilePositions = [], dom = {}, surfa
   const events = new Map(), documentEvents = new Map(); let onState;
   const root = { focus() {}, addEventListener: (type, handler) => events.set(type, handler), ...surface };
   const window = { wanxClient: { action, uploadDroppedFiles, onSpaceState: handler => { onState = handler; } } };
-  vm.runInNewContext(source, { window, document: { querySelector: () => root, querySelectorAll: selector => selector === ".space-file-row" ? tilePositions.map(offsetTop => ({ offsetTop })) : [], addEventListener: (type, handler) => documentEvents.set(type, handler) , ...dom }, setInterval() {}, setTimeout, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, queueMicrotask, URL, Blob, atob, TextDecoder });
+  vm.runInNewContext(source, { window, document: { querySelector: selector => dom.nodes?.get(selector) || root, querySelectorAll: selector => selector === ".space-file-row" ? tilePositions.map(offsetTop => ({ offsetTop })) : [], addEventListener: (type, handler) => documentEvents.set(type, handler) , ...dom }, setInterval() {}, setTimeout, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, queueMicrotask, URL, Blob, atob, TextDecoder });
   const space = window.wanxSpace;
   space.bind({ render() {} });
   return { space, emit: value => onState(value), event: (type, value) => events.get(type)(value), keydown: event => documentEvents.get("keydown")(event), pointer: (type, event) => documentEvents.get(type)(event),
@@ -454,4 +454,23 @@ test("restore previous file version submits the observed revision", async () => 
   await h.click("previous",file.id);assert.match(h.space.view(),/当前版本将成为可恢复的上一版本/);
   await h.click("dialog-confirm");
   assert.equal(JSON.stringify(calls.find(([a])=>a==="space.restore-version")[1]),JSON.stringify({ id:file.id, expected:4 }));
+});
+
+
+test("name editor retains its node through broadcasts and does not submit during IME", async () => {
+  const calls = [], notice = {}, input = {dataset: {editorKey: "mkdir:new"}, focus() {}, value: ""};
+  const h = harness(async (action, value) => { calls.push([action, value]); return ok(action === "space.refresh" ? {phase:"ready",tasks:[]} : listed("one")); }, undefined, [], {nodes: new Map([["#space-name", input], ["[data-space-dialog-error]", notice]])});
+  h.space.hostState(connected("box")); h.space.activate(true); await tick();
+  await h.click("mkdir");
+  h.event("compositionstart", {target:{id:"space-name"}});
+  h.event("input", {target:{id:"space-name",value:"项目"}});
+  h.emit({accountId:"owner",boxId:"box",phase:"ready",tasks:[]});
+  assert.equal(h.space.retainEditor(), true);
+  await h.keydown({key:"Escape",isComposing:true});
+  h.event("submit", {target:{dataset:{form:"space"}},preventDefault(){}}); await tick();
+  assert.equal(calls.some(([action])=>action==="space.mkdir"), false);
+  h.event("compositionend", {target:{id:"space-name",value:"项目资料"}});
+  h.event("submit", {target:{dataset:{form:"space"}},preventDefault(){}}); await tick();
+  assert.equal(calls.find(([action])=>action==="space.mkdir")[1].name, "项目资料");
+  assert.equal(h.space.retainEditor(), false);
 });
