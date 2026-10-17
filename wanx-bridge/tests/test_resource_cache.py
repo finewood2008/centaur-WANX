@@ -194,6 +194,32 @@ async def test_gc_keeps_live_references_but_not_unused_historical_resolutions(se
     await catalog.close()
 
 
+async def test_gc_pins_all_candidate_bindings_even_when_another_candidate_is_ready(setup):
+    private, _, config = setup
+    catalog = ResourceCatalog(config)
+    old = _cached(config, private, "previous-candidate")
+    current = _cached(config, private, "new-candidate")
+    unused = _cached(config, private, "unused-candidate")
+    for index, item in enumerate((old, current)):
+        atomic(
+            config.state_dir / "binding-sets" / (str(index) * 64 + ".json"),
+            canonical(
+                {
+                    "schemaVersion": 1,
+                    "scope": {"artifact_id": "artifact-" + str(index)},
+                    "bindingSetStatus": "ready",
+                    "resources": {"expert:companion": _record(item)},
+                }
+            ),
+        )
+    result = await catalog.cleanup()
+    assert result["status"] == "ok"
+    for item in (old, current):
+        assert (config.state_dir / "packages" / (item[0] + ".json")).exists()
+    assert not (config.state_dir / "packages" / (unused[0] + ".json")).exists()
+    await catalog.close()
+
+
 @pytest.mark.parametrize(
     "failure",
     [

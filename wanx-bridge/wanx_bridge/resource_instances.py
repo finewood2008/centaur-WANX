@@ -21,7 +21,8 @@ def instance_identity(payload: dict[str, Any], scope: dict[str, Any]) -> dict[st
             "version": payload["version"],
             "digest": payload["package"]["sha256"],
         }
-    if payload["metadata"].get("expertInstanceScope") != "account":
+    account_scope = payload["metadata"].get("expertInstanceScope") == "account"
+    if not account_scope and "binding_set_id" not in scope:
         return None
     return {
         "kind": "expert",
@@ -29,6 +30,10 @@ def instance_identity(payload: dict[str, Any], scope: dict[str, Any]) -> dict[st
         **{
             key: scope[key] for key in ("device_id", "ownership_epoch", "sub", "user_id", "product")
         },
+        # Candidate operations/artifacts may change while the same application's
+        # private expert and its conversation history remain stable. Legacy
+        # schema-1 per-application identities retain their original behavior.
+        **({"application_id": scope["application_id"]} if not account_scope else {}),
     }
 
 

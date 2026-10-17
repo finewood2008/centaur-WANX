@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 2,
+  "applicationId": "centaurai.resource-fixture",
+  "artifactId": "a81c64e2-5ce7-4f73-a312-0bbef6c54071",
+  "deviceId": "fixture-box",
+  "observedAt": "2026-10-17T05:33:48.039441Z",
+  "status": "ready",
+  "resources": [
+    {
+      "kind": "skill-package",
+      "resourceId": "fixture-skills",
+      "version": "1.0.0",
+      "status": "ready"
+    },
+    {
+      "kind": "expert",
+      "resourceId": "fixture-expert",
+      "version": "1.0.0",
+      "status": "ready"
+    }
+  ],
+  "bindings": [
+    {
+      "kind": "skill-package",
+      "resourceId": "fixture-skills",
+      "version": "1.0.0",
+      "packageId": "GKD8R3",
+      "verification": "api-write-ack-and-skill-text"
+    },
+    {
+      "kind": "expert",
+      "resourceId": "fixture-expert",
+      "version": "1.0.0",
+      "instanceId": "QN90E9"
+    }
+  ],
+  "authorization": {
+    "status": "ready"
+  },
+  "readOnly": false,
+  "backendProductId": "wanx",
+  "bindingSetId": "d29b12128db1e5bad23cacbff1140edb559eb46dac21fe24ab022809ad5f8469",
+  "operationId": "fixture-install-2",
+  "bindingScope": {
+    "accountId": "a898cd6c-bca4-42dc-9a35-4165c20b5d21",
+    "deviceId": "fixture-box",
+    "ownershipEpoch": 1,
+    "artifactId": "a81c64e2-5ce7-4f73-a312-0bbef6c54071"
+  },
+  "updateAvailable": []
+}

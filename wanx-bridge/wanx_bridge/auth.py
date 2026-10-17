@@ -317,3 +317,21 @@ class PlatformAuthService:
     def close(self) -> None:
         self.sessions.clear()
         self.store.close()
+
+    def assert_model_binding(self, snapshot: dict[str, Any]) -> None:
+        """Reject a device model lease superseded by verified platform authority.
+
+        Model providers are shared device services, like native WANX providers;
+        an online desktop session is not required for background agent work.
+        Admin's bounded model lease remains mandatory at the model transport.
+        """
+        with self.store.lock:
+            for (raw,) in self.store.db.execute("SELECT context FROM leases"):
+                context = json.loads(raw)
+                if context["device_id"] != self.config.device_id:
+                    continue
+                if context["ownership_epoch"] > snapshot["ownershipEpoch"] or (
+                    context["ownership_epoch"] == snapshot["ownershipEpoch"]
+                    and context["authorization_version"] > snapshot["authVersion"]
+                ):
+                    raise BridgeAuthError("MODEL_PROVIDER_AUTHORIZATION_CHANGED", 403)

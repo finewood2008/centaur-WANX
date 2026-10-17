@@ -64,10 +64,12 @@ def validate_readiness_request(body: Any) -> dict[str, Any]:
         and isinstance(body.get("compatibility"), dict)
         and "resourceDependencies" in body["compatibility"]
     )
+    candidate = resources and body.get("schemaVersion") == 2
     _keys(
         body,
         {"schemaVersion", "applicationId", "compatibility"}
-        | ({"artifactId"} if resources else set()),
+        | ({"artifactId"} if resources else set())
+        | ({"bindingSetId"} if candidate else set()),
     )
     if resources:
         try:
@@ -77,8 +79,13 @@ def validate_readiness_request(body: Any) -> dict[str, Any]:
             raise _invalid() from None
     if (
         type(body["schemaVersion"]) is not int
-        or body["schemaVersion"] != 1
+        or body["schemaVersion"] != (2 if candidate else 1)
         or not _identifier(body["applicationId"])
+    ):
+        raise _invalid()
+    if candidate and (
+        not isinstance(body["bindingSetId"], str)
+        or not re.fullmatch(r"[a-f0-9]{64}", body["bindingSetId"])
     ):
         raise _invalid()
     requirements = body["compatibility"]
@@ -222,9 +229,12 @@ async def diagnose_application(
         elif result["authorization"]["status"] == "ready":
             inspection = await inspect_resources(
                 {
-                    "schemaVersion": 1,
+                    "schemaVersion": body["schemaVersion"],
                     "applicationId": body["applicationId"],
                     "artifactId": body["artifactId"],
+                    **(
+                        {"bindingSetId": body["bindingSetId"]} if body["schemaVersion"] == 2 else {}
+                    ),
                 }
             )
             if (
@@ -234,6 +244,19 @@ async def diagnose_application(
                 or inspection.get("backendProductId") != product
             ):
                 raise BridgeAuthError("RESOURCE_APPLICATION_SCOPE_INVALID", 403)
+            if body["schemaVersion"] == 2:
+                if (
+                    inspection.get("schemaVersion") != 2
+                    or inspection.get("bindingSetId") != body["bindingSetId"]
+                ):
+                    raise BridgeAuthError("RESOURCE_APPLICATION_SCOPE_INVALID", 403)
+                result.update(
+                    schemaVersion=2,
+                    artifactId=body["artifactId"],
+                    bindingSetId=inspection["bindingSetId"],
+                    bindingScope=inspection.get("bindingScope"),
+                    operationId=inspection.get("operationId"),
+                )
             result["authorization"] = inspection.get("authorization", {"status": "unknown"})
             result["resources"] = inspection.get("resources", [])
             result["bindings"] = inspection.get("bindings", [])

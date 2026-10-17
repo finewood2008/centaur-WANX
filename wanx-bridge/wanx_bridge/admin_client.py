@@ -111,13 +111,15 @@ class AdminClient:
             raise BridgeUpstreamError("BOX_UPSTREAM_ADMIN_REQUIRED")
         self._admin_token, self._admin_id = token, user["id"]
 
-    async def _admin(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    async def _admin(
+        self, method: str, path: str, *, retry_auth: bool = True, **kwargs: Any
+    ) -> httpx.Response:
         if not self._admin_token:
             await self._admin_login()
         response = await self._request(
             method, path, headers={"Authorization": "Bearer " + self._admin_token}, **kwargs
         )
-        if response.status_code == 401:
+        if response.status_code == 401 and retry_auth:
             await self._admin_login()
             response = await self._request(
                 method, path, headers={"Authorization": "Bearer " + self._admin_token}, **kwargs
@@ -127,8 +129,10 @@ class AdminClient:
             self._admin_token = renewed
         return response
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        return self._json(await self._admin(method, path, **kwargs))
+    async def request(
+        self, method: str, path: str, *, retry_auth: bool = True, **kwargs: Any
+    ) -> dict[str, Any]:
+        return self._json(await self._admin(method, path, retry_auth=retry_auth, **kwargs))
 
     async def close(self) -> None:
         self._admin_token = ""
