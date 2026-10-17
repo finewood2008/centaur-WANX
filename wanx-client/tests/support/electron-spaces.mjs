@@ -22,6 +22,10 @@ try{
   ipcMain.handle('wanx-client:space-mkdir',(_event,input)=>{calls.push(['mkdir',input]);return {};});
   ipcMain.handle('wanx-client:space-links-spaces',()=>spaces);
   ipcMain.handle('wanx-client:space-links-requests',()=>[]);
+  let directoryChoice={path:'/tmp/space-test'};
+  ipcMain.handle('wanx-client:space-links-storage-choose',()=>directoryChoice);
+  let storageFailure=true;
+  ipcMain.handle('wanx-client:space-links-storage-set',(_event,input)=>{calls.push(['storage',input]);if(storageFailure){storageFailure=false;throw Error('SPACE_LINK_UPGRADE_REQUIRED');}return {cleanup_pending:0};});
   ipcMain.handle("wanx-client:credits-balance",()=>({available:0}));ipcMain.handle("wanx-client:credits-transactions",()=>({items:[]}));
   win=new BrowserWindow({show:false,width:1280,height:900,webPreferences:{preload:fileURLToPath(new URL('../../local-ui/remote-preload.cjs',import.meta.url)),contextIsolation:true,nodeIntegration:false,sandbox:true}});
   await win.loadFile(fileURLToPath(new URL('../../local-ui/renderer/index.html',import.meta.url)));
@@ -72,6 +76,19 @@ try{
   assert.equal(calls.find(c=>c[0]==='mkdir')[1].parent,third);
   assert.equal(calls.find(c=>c[0]==='mkdir')[1].space_id,spaceA);
   if(process.env.WANX_SPACES_SCREENSHOT)await writeFile(process.env.WANX_SPACES_SCREENSHOT,(await win.webContents.capturePage()).toPNG());
+  await click('[data-workspace-action="storage"]');
+  assert.equal(await js(`Boolean(document.querySelector('#workspace-name'))`),false);
+  await click('[data-workspace-action="storage-choose"]');
+  win.webContents.send('wanx-client:state',state);win.webContents.send('wanx-client:space-content-changed');await pause(80);
+  assert.equal(await js(`document.querySelector('[data-storage-path]').textContent`),'/tmp/space-test');
+  assert.equal(calls.filter(c=>c[0]==='storage').length,0);
+  directoryChoice={canceled:true};await click('[data-workspace-action="storage-choose"]');
+  assert.equal(await js(`document.querySelector('[data-storage-path]').textContent`),'/tmp/space-test');
+  await click('[data-workspace-form] button[type="submit"]');
+  assert.match(await js(`document.querySelector('[data-workspace-error]').textContent`),/主机服务需要更新/);
+  assert.equal(await js(`document.querySelector('[data-storage-path]').textContent`),'/tmp/space-test');
+  await click('[data-workspace-form] button[type="submit"]');
+  assert.deepEqual(calls.find(c=>c[0]==='storage')[1],{id:spaceA,path:'/tmp/space-test'});
   console.log('SPACES_ELECTRON_PASS: native character input, selection, cursor insertion, Chromium IME with broadcasts, hierarchy and history, scoped create');
 }catch(error){console.error(error);process.exitCode=1;}finally{win?.destroy();app.exit(process.exitCode||0);}
 

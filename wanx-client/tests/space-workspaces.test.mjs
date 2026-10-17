@@ -6,7 +6,7 @@ const source=await readFile(new URL('../local-ui/renderer/space-workspaces.js',i
 function setup(){
  const events={},saved=new Map(),calls=[],positions=[];
  const spaces=[{id:'personal',root:'',name:'我的空间',connections:[]},{id:'agent',root:'agent-root',name:'同名 Agent',connections:[],bytes:2},{id:'other',root:'other-root',name:'同名 Agent',connections:[],bytes:3}];
- let resolveStat,delay=false;
+ let resolveStat,delay=false,selection={path:'/Volumes/Space Drive'};
  const rows=new Map([['folder',{id:'folder',name:'原名',space_id:'agent',kind:'folder'}]]);
  const root={addEventListener(type,fn){events[type]=fn;}},doc={querySelector:s=>s==='#app'?root:null,addEventListener(){},querySelectorAll:()=>[]};
  const window={location:{origin:'file://'}};
@@ -15,6 +15,7 @@ function setup(){
  w.bind({render(){},navigate:async(...p)=>positions.push(p),reload:async()=>{},message:e=>e.message,error:e=>{throw Error(e);},call:async(method,input)=>{
  calls.push([method,input]);
  if(method==='links-spaces')return spaces;
+ if(method==='links-storage-choose')return typeof selection==='function'?selection(input):selection;
  if(method==='links-requests')return [{id:'one',profile:'profile-one',name:'Same',status:'pending'},{id:'two',profile:'profile-two',name:'Same',status:'pending'}];
  if(method==='stat'){if(delay)return new Promise(r=>resolveStat=r);if(!rows.has(input.id))throw Error('SPACE_NOT_FOUND');return rows.get(input.id);}
  if(method==='list')return {items:[],breadcrumbs:[]};
@@ -22,7 +23,7 @@ function setup(){
  }});
  w.reset('account:box');w.storageScope('platform:account:box');
  const click=(action,data={})=>events.click({preventDefault(){},target:{closest:()=>({dataset:{workspaceAction:action,...data}})}});
- return {w,spaces,rows,saved,calls,positions,click,events,delay(){delay=true;},resolve(v){resolveStat(v);}};
+ return {w,spaces,rows,saved,calls,positions,click,events,select(v){selection=v;},delay(){delay=true;},resolve(v){resolveStat(v);}};
 }
 test('favorites follow resource IDs across rename and move and remain isolated by platform/account/box',async()=>{
  const h=setup();await h.w.refresh();await h.w.observe({space:'agent',parent:'agent-root',trash:false},{items:[],breadcrumbs:[]});await h.w.pin({id:'folder',name:'原名'});
@@ -49,4 +50,32 @@ test('approval of same-name requests uses the selected persistent identity and e
 });
 test('a stale favorite lookup cannot refill a switched account',async()=>{
  const h=setup();await h.w.refresh();await h.w.pin({id:'folder',name:'秘密资料'});h.delay();const pending=h.w.refresh();await new Promise(r=>setImmediate(r));h.w.reset('new-account');h.resolve({id:'folder',name:'旧账号',space_id:'agent'});await assert.rejects(pending,/SPACE_CONTEXT_CHANGED/);assert.doesNotMatch(h.w.sidebar(),/秘密资料|旧账号/);
+});
+test('storage settings use a directory picker for the selected space without a path text input',async()=>{
+ const h=setup();await h.w.refresh();await h.w.observe({space:'agent',parent:'agent-root',trash:false},{items:[],breadcrumbs:[]});
+ assert.match(h.w.storageView(),/data-space="agent"/);
+ await h.click('storage',{space:'agent'});assert.match(h.w.dialogView(),/选择文件夹…/);assert.doesNotMatch(h.w.dialogView(),/<input/);
+ await h.click('storage-choose');assert.match(h.w.dialogView(),/Volumes\/Space Drive/);
+ assert.ok(!h.calls.some(([m])=>m==='links-storage-set'));
+ h.select({canceled:true});await h.click('storage-choose');assert.match(h.w.dialogView(),/Volumes\/Space Drive/);
+ h.events.submit({target:{hasAttribute:()=>true},preventDefault(){}});await new Promise(r=>setImmediate(r));
+ const setting=h.calls.find(([m])=>m==='links-storage-set');assert.equal(setting[1].id,'agent');assert.equal(setting[1].path,'/Volumes/Space Drive');
+ await h.w.observe({space:'agent',parent:'',trash:true},{items:[],breadcrumbs:[]});assert.equal(h.w.storageView(),'');
+});
+
+test('remote folder picker navigates the host tree and only saves after explicit selection',async()=>{
+ const h=setup();await h.click('storage',{space:'personal'});
+ h.select(({path})=>({browse:true,path:path||'/',root:'/',parent:'/',entries:path?[{path:'/data/projects',name:'projects'}]:[{path:'/data',name:'data'}]}));
+ await h.click('storage-choose');assert.match(h.w.dialogView(),/万象主机文件夹/);
+ await h.click('storage-browse',{path:'/data'});assert.match(h.w.dialogView(),/projects/);
+ await h.click('storage-select');assert.match(h.w.dialogView(),/title="\/data"/);
+ assert.ok(!h.calls.some(([m])=>m==='links-storage-set'));
+ h.events.submit({target:{hasAttribute:()=>true},preventDefault(){}});await new Promise(r=>setImmediate(r));
+ assert.equal(h.calls.find(([m])=>m==='links-storage-set')[1].path,'/data');
+});
+test('directory selection finishing after an account change cannot reopen or submit the old modal',async()=>{
+ const h=setup();await h.click('storage',{space:'personal'});let resolve;
+ h.select(()=>new Promise(r=>resolve=r));const pending=h.click('storage-choose');await new Promise(r=>setImmediate(r));
+ h.w.reset('changed-account');resolve({path:'/old-account'});await pending;
+ assert.equal(h.w.dialogView(),'');assert.ok(!h.calls.some(([m])=>m==='links-storage-set'));
 });

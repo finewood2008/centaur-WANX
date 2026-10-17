@@ -64,6 +64,11 @@ export function createAgentSpaces({state, scope, assertScope, remote, persist, o
       await persist(); onChanged(); return publicRecord(record);
     }
     const id = value => { if (!/^[a-f0-9]{32}$/.test(value || '')) throw fail('SPACE_INVALID_ID',400); return value; };
+    if (action === 'storage-set') {
+      if(input.id!=='personal')id(input.id);
+      const result=(await remote(bound,`/spaces/${input.id}/storage`,{method:'POST',body:{path:String(input.path || '')}})).value;
+      onChanged();return result;
+    }
     if (action === 'space-manage') return (await remote(bound,`/spaces/${id(input.id)}/manage`,{method:'POST',body:{action:input.action,name:input.name || ''}})).value;
     if (action === 'connection-manage') {
       const result=(await remote(bound,`/connections/${id(input.id)}/manage`,{method:'POST',body:{action:input.action}})).value;

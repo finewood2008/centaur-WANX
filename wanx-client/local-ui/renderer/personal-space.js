@@ -8,7 +8,6 @@
     SPACE_ALREADY_CONNECTED: "此身份或空间已有接入，请刷新后重试。",
     SPACE_MANAGED_ROOT: "请通过空间管理操作空间本身。",
     SPACE_LINK_PORT_IN_USE: "Agent 链接端口被其他程序占用，请释放端口后重启万象。旧链接没有更换。",
-    SPACE_LINK_UPGRADE_REQUIRED: "当前盒子尚不支持 Agent 访问链接，请升级盒端服务。",
     SPACE_LINK_START_FAILED: "Agent 链接服务未启动，请检查系统钥匙串并重启万象。",
     SPACE_VERSION_CONFLICT: "文件已经更新，请刷新后再操作，避免覆盖其他修改。",
     SPACE_UPGRADE_REQUIRED: "当前盒子尚不支持文件空间，请升级盒端服务。",
@@ -28,6 +27,11 @@
     SPACE_CONNECTION_TIMEOUT: "盒子响应超时，传输进度已保留，可以稍后重试。",
     BOX_CONNECTION_REQUIRED: "请先在设置中连接盒子。",
     SPACE_STORAGE_UNAVAILABLE: "盒子的文件存储暂不可用，请稍后重试。",
+    SPACE_STORAGE_PATH_INVALID: "请选择万象主机上可用的文件夹，不能使用系统根目录或万象索引目录。",
+    SPACE_LINK_UPGRADE_REQUIRED: "当前万象主机服务需要更新，才能使用空间管理和存储目录迁移。请更新服务后重试。",
+    SPACE_DIRECTORY_PICKER_UNAVAILABLE: "文件夹选择器暂不可用，请重启万象客户端后重试。",
+    SPACE_STORAGE_SOURCE_MISSING: "原存储中的文件缺失，已停止迁移并保留原位置。",
+    SPACE_STORAGE_TARGET_CONFLICT: "目标位置存在不匹配的存储文件，已停止迁移，请选择其他目录。",
     SECURE_STORAGE_READ_FAILED: "无法读取加密的传输记录，请检查系统钥匙串后重启万象。",
     SECURE_STORAGE_WRITE_FAILED: "无法保存传输记录，请检查本机存储空间。",
   };
@@ -110,8 +114,10 @@
   const percent = task => task.phase === "complete" ? 100 : task.size ? Math.min(100, Math.max(0, Math.floor(task.offset / task.size * 100))) : 0;
   function boxName() { return host?.devices?.find(d => d.deviceId === host.activeDeviceId)?.name || host?.connection?.name || "万象盒子"; }
   function storage() {
-    const data = status.overview, volume = data?.volume;
-    return `<section class="space-storage" aria-label="存储空间"><div class="space-storage-title"><span>空间文件</span><strong>${size(data?.filesBytes)}</strong></div>${volume ? `<progress class="space-capacity" max="${volume.total || 1}" value="${volume.used}" aria-label="存储卷已用容量"></progress><p>可用 ${size(volume.free)}<br>共 ${size(volume.total)}</p>` : '<p>正在获取容量…</p>'}<small>磁盘容量含盒子其他数据</small></section>`;
+    const data = status.overview, current = workspaces?.current(), location = current?.storage;
+    const volume = location ? (location.available ? location : null) : data?.volume;
+    const used = typeof current?.bytes === "number" ? current.bytes + (current.pending_bytes || 0) : data?.filesBytes;
+    return `<section class="space-storage" aria-label="存储空间"><div class="space-storage-title"><span>空间文件</span><strong>${size(used)}</strong></div>${volume ? `<progress class="space-capacity" max="${volume.total || 1}" value="${volume.used}" aria-label="存储卷已用容量"></progress><p>可用 ${size(volume.free)}<br>共 ${size(volume.total)}</p>` : `<p>${location ? "存储目录暂不可用" : "正在获取容量…"}</p>`}<small>磁盘容量含该卷其他数据</small></section>${workspaces?.storageView?.() || ""}`;
   }
   function transfers() {
     const tasks = status.tasks || [];

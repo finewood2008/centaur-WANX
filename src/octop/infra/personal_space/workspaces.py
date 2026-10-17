@@ -8,10 +8,12 @@ import secrets
 import shutil
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from .links import SpaceLinks
 from .service import SpaceError, validate_name
+from .storage import bind_object, cleanup, directory_for, info, relocate, set_storage
 
 
 class Workspaces(SpaceLinks):
@@ -39,6 +41,7 @@ class Workspaces(SpaceLinks):
             result = []
             for row in db.execute("SELECT * FROM spaces ORDER BY created,id"):
                 item = dict(row)
+                item["storage"] = info(self, db, row["id"])
                 item["bytes"] = db.execute(
                     "SELECT COALESCE(SUM(size+previous_size),0) FROM entries WHERE space_id=?",
                     (row["id"],),
@@ -56,6 +59,9 @@ class Workspaces(SpaceLinks):
                 ]
                 result.append(item)
             return result
+
+    def storage_location(self, space_id: str, path: str) -> dict[str, Any]:
+        return set_storage(self, space_id, path)
 
     def approve(
         self, profile: str, name: str, space_id: str = "", credential: str = ""
@@ -311,7 +317,8 @@ class Workspaces(SpaceLinks):
     def transfer(
         self, item_id: str, parent: str, space_id: str, copy: bool = False
     ) -> dict[str, Any]:
-        created: list[str] = []
+        created: list[Path] = []
+        originals: list[Path] = []
         try:
             with self._db() as db:
                 item = self._entry(db, item_id)
@@ -338,12 +345,13 @@ class Workspaces(SpaceLinks):
                         new_id = mapping[current]
                         new_parent = parent if current == item_id else mapping[row["parent"]]
                         if row["kind"] == "file":
+                            bind_object(self, db, new_id, space_id)
                             # Stream copy to a new immutable object; never share lifecycle ownership.
                             with (
                                 self._open(row["blob"] or current) as source,
                                 self._open(new_id, write=True) as dest,
                             ):
-                                created.append(new_id)
+                                created.append(self._object(new_id))
                                 shutil.copyfileobj(source, dest, 4194304)
                                 dest.flush()
                                 os.fsync(dest.fileno())
@@ -361,28 +369,45 @@ class Workspaces(SpaceLinks):
                                 row["trashed"],
                             ),
                         )
-                    return dict(self._entry(db, mapping[item_id]))
-                db.execute(
-                    "UPDATE entries SET parent=?,name=? WHERE id=?",
-                    (parent, self._name(db, parent, item["name"], item_id), item_id),
-                )
-                for current in ids:
-                    db.execute(
-                        "UPDATE entries SET space_id=?,version=version+1,modified=? WHERE id=?",
-                        (space_id, time.time(), current),
+                    result = dict(self._entry(db, mapping[item_id]))
+                else:
+                    required: dict[str, tuple[int, str]] = {}
+                    for current in ids:
+                        row = self._entry(db, current, trash=True)
+                        if row["kind"] == "file":
+                            required[row["blob"] or current] = (row["size"], row["digest"] or "")
+                            if row["previous_blob"]:
+                                required[row["previous_blob"]] = (
+                                    row["previous_size"],
+                                    row["previous_digest"] or "",
+                                )
+                    originals, created = relocate(
+                        self, db, set(required), directory_for(self, db, space_id), required
                     )
-                    if item["space_id"] != space_id:
+                    db.execute(
+                        "UPDATE entries SET parent=?,name=? WHERE id=?",
+                        (parent, self._name(db, parent, item["name"], item_id), item_id),
+                    )
+                    for current in ids:
                         db.execute(
-                            "UPDATE agent_links SET revoked=? WHERE root=?", (time.time(), current)
+                            "UPDATE entries SET space_id=?,version=version+1,modified=? WHERE id=?",
+                            (space_id, time.time(), current),
                         )
-                        db.execute(
-                            "UPDATE space_grants SET revoked=? WHERE root=?", (time.time(), current)
-                        )
-                return dict(self._entry(db, item_id))
+                        if item["space_id"] != space_id:
+                            db.execute(
+                                "UPDATE agent_links SET revoked=? WHERE root=?",
+                                (time.time(), current),
+                            )
+                            db.execute(
+                                "UPDATE space_grants SET revoked=? WHERE root=?",
+                                (time.time(), current),
+                            )
+                    result = dict(self._entry(db, item_id))
         except BaseException:
-            for blob in created:
-                self._object(blob).unlink(missing_ok=True)
+            cleanup(self, created)
             raise
+        cleanup(self, originals)
+        return result
 
     def app_folder(self, application: str, name: str) -> dict[str, Any]:
         if not application or len(application) > 200:

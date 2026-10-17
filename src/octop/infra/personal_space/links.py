@@ -146,7 +146,12 @@ class SpaceLinks(PersonalSpace):
             if not db.execute(
                 "SELECT 1 FROM entries WHERE COALESCE(blob,id)=? OR previous_blob=?", (blob, blob)
             ).fetchone():
-                self._object(blob).unlink(missing_ok=True)
+                try:
+                    self._object(blob).unlink(missing_ok=True)
+                except (OSError, SpaceError):
+                    # Offline optional storage must not block unrelated Agent operations.
+                    continue
+                db.execute("DELETE FROM object_locations WHERE id=?", (blob,))
                 db.execute("DELETE FROM retired_blobs WHERE id=?", (blob,))
 
     def execute(

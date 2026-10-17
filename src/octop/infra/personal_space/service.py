@@ -16,6 +16,7 @@ import stat
 import time
 import uuid
 from collections.abc import Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 
@@ -58,6 +59,9 @@ def _safe_file(path: Path, *, missing: bool = False) -> None:
 
 class PersonalSpace:
     def __init__(self, root: Path, user_id: int) -> None:
+        self._active_db: ContextVar[sqlite3.Connection | None] = ContextVar(
+            "space_db", default=None
+        )
         if not isinstance(user_id, int) or user_id <= 0:
             raise SpaceError("SPACE_FORBIDDEN", 403)
         # All descendants are service-owned, not selected by a request.
@@ -115,6 +119,19 @@ class PersonalSpace:
                 "INSERT OR IGNORE INTO spaces VALUES('personal','我的空间','',?,NULL)",
                 (time.time(),),
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS space_storage (space_id TEXT PRIMARY KEY, base TEXT NOT NULL, directory TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS object_locations (id TEXT PRIMARY KEY, directory TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS space_storage_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO space_storage_meta VALUES('namespace',?)",
+                (uuid.uuid4().hex,),
+            )
 
     def _space(self, db: sqlite3.Connection, space_id: str) -> sqlite3.Row:
         row = db.execute(
@@ -136,11 +153,16 @@ class PersonalSpace:
 
     @contextlib.contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
+        active = self._active_db.get()
+        if active is not None:
+            yield active
+            return
         _safe_file(self.database, missing=True)
         for suffix in ("-journal", "-wal", "-shm"):
             _safe_file(Path(str(self.database) + suffix), missing=True)
         db = sqlite3.connect(self.database, timeout=10)
         db.row_factory = sqlite3.Row
+        token = self._active_db.set(db)
         try:
             db.execute("BEGIN IMMEDIATE")
             yield db
@@ -149,12 +171,21 @@ class PersonalSpace:
             db.rollback()
             raise
         finally:
+            self._active_db.reset(token)
             db.close()
 
     def _object(self, item_id: str, partial: bool = False) -> Path:
         if not _ID.fullmatch(item_id):
             raise SpaceError("SPACE_NOT_FOUND", 404)
-        return self.objects / (item_id + (".part" if partial else ".blob"))
+        from .storage import safe_directory
+
+        with self._db() as db:
+            row = db.execute(
+                "SELECT directory FROM object_locations WHERE id=?", (item_id,)
+            ).fetchone()
+            directory = Path(row[0]) if row else self.objects
+            safe_directory(directory)
+            return directory / (item_id + (".part" if partial else ".blob"))
 
     @contextlib.contextmanager
     def _open(
@@ -314,8 +345,9 @@ class PersonalSpace:
             for current in reversed(ids):
                 # Objects have opaque names; deleting a link cannot follow its target.
                 record = self._entry(db, current, trash=True)
-                for blob in {current, record["blob"], record["previous_blob"]} - {None}:
+                for blob in {record["blob"] or current, record["previous_blob"]} - {None}:
                     self._object(blob).unlink(missing_ok=True)
+                    db.execute("DELETE FROM object_locations WHERE id=?", (blob,))
                 db.execute("DELETE FROM entries WHERE id=?", (current,))
 
     def upload_create(
@@ -333,7 +365,10 @@ class PersonalSpace:
                     raise SpaceError("SPACE_UPLOAD_CONFLICT", 409)
                 return dict(existing)
             self._folder(db, parent)
-            if size > shutil.disk_usage(self.objects).free:
+            from .storage import bind_object
+
+            bind_object(self, db, upload_id, self._space_for(db, parent))
+            if size > shutil.disk_usage(self._object(upload_id).parent).free:
                 raise SpaceError("SPACE_DISK_FULL", 507)
             db.execute(
                 "INSERT INTO uploads(id,parent,name,size,modified,space_id) VALUES(?,?,?,?,?,?)",
@@ -362,7 +397,7 @@ class PersonalSpace:
                 raise SpaceError("SPACE_CONTEXT_CHANGED", 409)
             if offset + len(data) > row["size"]:
                 raise SpaceError("SPACE_INVALID_SIZE")
-            if len(data) > shutil.disk_usage(self.objects).free:
+            if len(data) > shutil.disk_usage(self._object(upload_id).parent).free:
                 raise SpaceError("SPACE_DISK_FULL", 507)
             with self._open(upload_id, partial=True, write=True) as handle:
                 if os.fstat(handle.fileno()).st_size < offset:
@@ -402,7 +437,7 @@ class PersonalSpace:
                 os.replace(partial, final)
                 if os.name == "posix":
                     # Publish the directory entry durably before SQLite commits it.
-                    fd = os.open(self.objects, os.O_RDONLY)
+                    fd = os.open(final.parent, os.O_RDONLY)
                     try:
                         os.fsync(fd)
                     finally:
@@ -437,6 +472,7 @@ class PersonalSpace:
             if row and row["state"] == "pending":
                 self._object(upload_id, True).unlink(missing_ok=True)
                 self._object(upload_id).unlink(missing_ok=True)
+                db.execute("DELETE FROM object_locations WHERE id=?", (upload_id,))
                 db.execute("DELETE FROM uploads WHERE id=?", (upload_id,))
 
     def metadata(self, item_id: str) -> dict[str, Any]:
