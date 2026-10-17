@@ -90,6 +90,18 @@ class PersonalSpace:
                 );
             """)
 
+        with self._db() as db:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(entries)")}
+            for column, definition in {
+                "version": "INTEGER NOT NULL DEFAULT 1",
+                "blob": "TEXT",
+                "previous_blob": "TEXT",
+                "previous_size": "INTEGER NOT NULL DEFAULT 0",
+                "previous_digest": "TEXT",
+            }.items():
+                if column not in columns:
+                    db.execute(f"ALTER TABLE entries ADD COLUMN {column} {definition}")
+
     @contextlib.contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
         _safe_file(self.database, missing=True)
@@ -199,7 +211,7 @@ class PersonalSpace:
                     raise SpaceError("SPACE_INVALID_DESTINATION")
                 cursor = self._entry(db, cursor)["parent"]
             db.execute(
-                "UPDATE entries SET parent=?,name=?,modified=? WHERE id=?",
+                "UPDATE entries SET parent=?,name=?,modified=?,version=version+1 WHERE id=?",
                 (parent, self._name(db, parent, name, item_id), time.time(), item_id),
             )
             return dict(self._entry(db, row["id"]))
@@ -207,7 +219,9 @@ class PersonalSpace:
     def trash(self, item_id: str) -> None:
         with self._db() as db:
             self._entry(db, item_id)
-            db.execute("UPDATE entries SET trashed=? WHERE id=?", (time.time(), item_id))
+            db.execute(
+                "UPDATE entries SET trashed=?,version=version+1 WHERE id=?", (time.time(), item_id)
+            )
 
     def restore(self, item_id: str) -> dict[str, Any]:
         with self._db() as db:
@@ -220,7 +234,7 @@ class PersonalSpace:
             except SpaceError:
                 parent = ""
             db.execute(
-                "UPDATE entries SET parent=?,name=?,trashed=NULL WHERE id=?",
+                "UPDATE entries SET parent=?,name=?,trashed=NULL,version=version+1 WHERE id=?",
                 (parent, self._name(db, parent, row["name"], item_id), item_id),
             )
             return dict(self._entry(db, item_id))
@@ -237,7 +251,9 @@ class PersonalSpace:
                 )
             for current in reversed(ids):
                 # Objects have opaque names; deleting a link cannot follow its target.
-                self._object(current).unlink(missing_ok=True)
+                record = self._entry(db, current, trash=True)
+                for blob in {current, record["blob"], record["previous_blob"]} - {None}:
+                    self._object(blob).unlink(missing_ok=True)
                 db.execute("DELETE FROM entries WHERE id=?", (current,))
 
     def upload_create(self, parent: str, name: str, size: int, upload_id: str) -> dict[str, Any]:
@@ -364,14 +380,36 @@ class PersonalSpace:
             row = self._entry(db, item_id)
             if row["kind"] != "file":
                 raise SpaceError("SPACE_NOT_FILE")
-            with self._open(item_id) as handle:
+            with self._open(row["blob"] or item_id) as handle:
                 handle.seek(offset)
                 return handle.read(length), dict(row)
+
+    def restore_version(self, item_id: str, expected: int) -> dict[str, Any]:
+        with self._db() as db:
+            row = self._entry(db, item_id)
+            if row["version"] != expected:
+                raise SpaceError("SPACE_VERSION_CONFLICT", 409)
+            if not row["previous_blob"]:
+                raise SpaceError("SPACE_PREVIOUS_VERSION_MISSING", 404)
+            db.execute(
+                "UPDATE entries SET blob=?,size=?,digest=?,previous_blob=?,previous_size=?,previous_digest=?,version=version+1,modified=? WHERE id=?",
+                (
+                    row["previous_blob"],
+                    row["previous_size"],
+                    row["previous_digest"],
+                    row["blob"] or item_id,
+                    row["size"],
+                    row["digest"],
+                    time.time(),
+                    item_id,
+                ),
+            )
+            return dict(self._entry(db, item_id))
 
     def overview(self) -> dict[str, Any]:
         with self._db() as db:
             used = db.execute(
-                "SELECT COALESCE(SUM(size),0) FROM entries WHERE kind='file'"
+                "SELECT COALESCE(SUM(size + previous_size),0) FROM entries WHERE kind='file'"
             ).fetchone()[0]
             pending = db.execute(
                 "SELECT COALESCE(SUM(offset),0) FROM uploads WHERE state='pending'"

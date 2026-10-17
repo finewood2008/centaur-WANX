@@ -7,6 +7,10 @@ export interface DriveEntry {
   modified: number;
   trashed: number | null;
   digest: string | null;
+  /** Present on boxes supporting atomic versioned updates. */
+  version?: number;
+  previous_size?: number;
+  previous_digest?: string | null;
 }
 export interface DriveListing {
   items: DriveEntry[];
