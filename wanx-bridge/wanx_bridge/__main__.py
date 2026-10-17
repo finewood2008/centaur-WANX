@@ -28,6 +28,8 @@ from fastapi.responses import JSONResponse
 from .admin_client import AdminClient
 from .auth import PlatformAuthService
 from .config import BridgeAuthError, PlatformConfig
+from .model_provider_catalog import ModelProviderCatalog, ModelProviderConfig
+from .model_provider_runtime import ModelProviderRuntime
 from .oidc import OidcError, OidcProvider, loopback_origin
 from .resources import ResourceCatalog, ResourceConfig
 from .resources_runtime import ResourceRuntime
@@ -272,6 +274,22 @@ async def run(stop: asyncio.Event | None = None) -> None:
     except (BridgeAuthError, OSError):
         # Optional resource setup cannot take existing logins/apps offline.
         print("RESOURCE_SERVICE_NOT_CONFIGURED", file=sys.stderr)
+    models = None
+    model_task = None
+    try:
+        model_config = ModelProviderConfig.from_env()
+        if model_config is not None:
+            if model_config.identity_device_id != config.device_id:
+                raise BridgeAuthError("MODEL_PROVIDER_DEVICE_IDENTITY_MISMATCH", 503)
+            models = ModelProviderRuntime(
+                ModelProviderCatalog(model_config),
+                AdminClient(runtime.upstream_url, runtime.credentials_file),
+                runtime.issuer,
+                authority_check=auth.assert_model_binding,
+            )
+    except (BridgeAuthError, OSError) as exc:
+        # A model configuration outage must not take box login or local providers down.
+        print(getattr(exc, "code", "MODEL_PROVIDER_LOCAL_CONFIG_INVALID"), file=sys.stderr)
     servers: list[uvicorn.Server] = []
     tasks: list[asyncio.Task[None]] = []
     pending: asyncio.Task[Any] | None = None
@@ -293,7 +311,10 @@ async def run(stop: asyncio.Event | None = None) -> None:
         await adapter.initialize()
 
     try:
-        private = _new_server(create_private_app(provider), runtime.oidc_host, runtime.oidc_port)
+        private_app = create_private_app(provider)
+        if models is not None:
+            models.register_routes(private_app)
+        private = _new_server(private_app, runtime.oidc_host, runtime.oidc_port)
         servers.append(private)
         tasks.append(asyncio.create_task(_serve(private)))
         pending = asyncio.create_task(startup())
@@ -307,6 +328,8 @@ async def run(stop: asyncio.Event | None = None) -> None:
             raise RuntimeFailure("BOX_BRIDGE_LISTENER_FAILED")
         await pending
         pending = None
+        if models is not None:
+            model_task = asyncio.create_task(models.poll())
         public = _new_server(
             create_app(auth, adapter, upstream_url=runtime.upstream_url, resources=resources),
             runtime.bind_host,
@@ -320,6 +343,9 @@ async def run(stop: asyncio.Event | None = None) -> None:
                 await task
             raise RuntimeFailure("BOX_BRIDGE_LISTENER_FAILED")
     finally:
+        if model_task is not None:
+            model_task.cancel()
+            await asyncio.gather(model_task, return_exceptions=True)
         if pending is not None:
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
@@ -334,6 +360,8 @@ async def run(stop: asyncio.Event | None = None) -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
         stopping.cancel()
         await asyncio.gather(stopping, return_exceptions=True)
+        if models is not None:
+            await models.close()
         try:
             await adapter.close()
         finally:

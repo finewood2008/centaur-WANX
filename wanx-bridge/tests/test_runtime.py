@@ -239,6 +239,62 @@ async def test_supervision_orders_startup_and_closes_both(supervision):
     assert "private_stopped" in events and "public_stopped" in events
 
 
+async def test_model_poll_is_supervised_and_closed_without_blocking_public(
+    supervision, monkeypatch, platform
+):
+    events, _servers, _state, stop = supervision
+
+    class Models:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def register_routes(self, _app):
+            events.append("models_registered")
+
+        async def poll(self):
+            events.append("models_poll")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("models_cancelled")
+
+        async def close(self):
+            events.append("models_closed")
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        runtime.ModelProviderConfig,
+        "from_env",
+        lambda: SimpleNamespace(identity_device_id=platform.device_id),
+    )
+    monkeypatch.setattr(runtime, "ModelProviderCatalog", lambda config: config)
+    monkeypatch.setattr(runtime, "ModelProviderRuntime", Models)
+    monkeypatch.setattr(runtime, "AdminClient", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime.PlatformAuthService, "assert_model_binding", lambda *_args: None, raising=False
+    )
+    await runtime.run(stop)
+    assert events.index("models_registered") < events.index("private_started")
+    assert events.index("initialize") < events.index("models_poll")
+    assert "public_started" in events
+    assert events.index("models_cancelled") < events.index("models_closed")
+
+
+async def test_model_identity_mismatch_does_not_take_login_down(supervision, monkeypatch, capsys):
+    events, _servers, _state, stop = supervision
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        runtime.ModelProviderConfig,
+        "from_env",
+        lambda: SimpleNamespace(identity_device_id="another-box"),
+    )
+    await runtime.run(stop)
+    assert "public_started" in events
+    assert "MODEL_PROVIDER_DEVICE_IDENTITY_MISMATCH" in capsys.readouterr().err
+
+
 async def test_initialization_failure_never_opens_public_and_closes_resources(supervision):
     events, servers, state, stop = supervision
     state["init_error"] = True

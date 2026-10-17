@@ -703,7 +703,7 @@ function marketErrorMessage(error) {
     MARKET_NOT_CONFIGURED: "应用市场尚未配置完成，请联系管理员。",
     CLIENT_VERSION_INCOMPATIBLE: "请先在设置中更新万象，再安装或打开此应用。",
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
-    APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会检查盒端准备状态。",
+    APPLICATION_RESOURCES_PENDING: "应用包已下载，尚未完成安装。连接盒子后点击“继续安装”。",
     APPLICATION_RESOURCES_NOT_READY: "盒端尚未完成应用准备，请保持盒子联网后重试。",
     APPLICATION_RESOURCE_ARTIFACT_REQUIRED: "请从应用商店安装已发布的应用版本，再准备盒端资源。",
     APPLICATION_PREPARATION_INVALID: "盒端准备结果无法核验，请更新盒端后重试。",
@@ -712,6 +712,13 @@ function marketErrorMessage(error) {
     APP_ENTITLEMENT_REQUIRED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
     RESOURCE_PRODUCT_PROFILE_UNSUPPORTED: "此应用暂不支持自动准备专家，请联系应用提供方更新应用。",
     RESOURCE_PREPARATION_BUSY: "盒子正在准备应用所需资源，请稍后重试。",
+    RESOURCE_COORDINATION_BUSY: "盒子正在处理另一项更新，请稍后重试。",
+    RESOURCE_COORDINATION_CLOSED: "盒子正在更新服务，完成后可继续安装应用。",
+    RESOURCE_OTA_IN_PROGRESS: "盒子正在更新服务，完成后可继续安装应用。",
+    RESOURCE_COORDINATION_GENERATION_CHANGED: "盒端服务已更新，请重试以重新检查应用依赖。",
+    RESOURCE_COORDINATION_INVALID: "盒端更新协调配置无法核验，请联系维护人员检查。现有应用已保留。",
+    RESOURCE_WRITE_UNCERTAIN: "盒端尚未确认上次准备结果，已保留现有应用。请联系维护人员检查。",
+    RESOURCE_PREPARATION_UNCERTAIN: "盒端尚未确认上次准备结果，已保留现有应用。请联系维护人员检查。",
     RESOURCE_NOT_PREPARED: "应用所需资源尚未准备好，请保持盒子联网后重新打开应用。",
     RESOURCE_UPSTREAM_PERMISSION_DENIED: "当前账号无权准备此应用的专家，请联系盒主或管理员。",
     RESOURCE_USER_MODIFIED: "现有专家或技能包已被修改，万象已保留这些内容，请联系维护人员确认后再更新。",
@@ -793,14 +800,18 @@ function applicationCard(item, installed = true) {
   const operation = operationFor(item.applicationId);
   const disabled = operationBusy(item.applicationId) ? "disabled" : "";
   const previous = typeof item.previous === "string" ? item.previous : item.previous?.version;
+  const staged = item.installationState === "pending" ? item : item.pendingInstallation;
+  const active = installed && item.installationState !== "pending";
   const status = operationMessage(operation);
   const actions = item.selectionRequired
     ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => `<button class="button small" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" ${disabled}>使用 ${escapeHTML(version)}</button>`).join("")}</div>`
-    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
+    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${active ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${staged ? active ? "重试更新" : "继续安装" : active ? "更新" : "安装"}</button>` : ""}${active ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
+  const preparation = staged ? `${active ? `v${staged.version} 尚未启用，当前版本可继续使用。` : "应用包已下载，等待完成盒端准备。"}${staged.resourcePreparation?.code ? marketErrorMessage({ code: staged.resourcePreparation.code }) : "连接盒子后重试。"}`
+    : item.resourcePreparation?.status === "pending" ? "打开时将检查盒端专家和技能包。" : candidateLabel(candidate);
   return `<article class="application-card" data-application="${id}">${applicationIcon(item)}<div class="application-main">
     <div class="application-title"><h3>${escapeHTML(item.name)}</h3>${installed && item.version ? `<span class="muted">v${escapeHTML(item.version)}</span>` : ""}</div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
-    <p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || (item.resourcePreparation?.status === "pending" ? "打开时将自动检查并准备盒端专家和技能包。" : candidateLabel(candidate)))}</p>
+    <p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(operation?.error || operationBusy(item.applicationId) ? status : preparation)}</p>
     <details class="application-details" data-detail-id="${id}" ${expandedDetails.has(item.applicationId) ? "open" : ""}><summary>应用详情</summary>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</details>
     </div>${actions}</article>`;
 }
@@ -815,7 +826,7 @@ function applicationsView() {
   const installed = new Set(applications.map((item) => item.applicationId));
   const available = marketItems.filter((item) => !installed.has(item.applicationId));
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用商店")}<div class="page-content">
-    <div class="page-heading"><div><h2>应用商店</h2><p class="muted">通用应用包支持 Windows 和 macOS。安装与更新无需连接盒子。</p></div><button class="text-button" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div>
+    <div class="page-heading"><div><h2>应用商店</h2><p class="muted">通用应用包支持 Windows 和 macOS。可先下载应用，连接盒子后完成所需准备。</p></div><button class="text-button" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div>
     <div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="content-section" aria-label="我的应用"><div class="section-heading"><h3>我的应用 <span class="count">${applications.length}</span></h3></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>

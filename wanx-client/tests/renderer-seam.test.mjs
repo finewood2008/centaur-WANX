@@ -246,6 +246,26 @@ test("login opens the store while the network prepares, with registration availa
   assert.doesNotMatch(h.app.innerHTML, /account-1/);
 });
 
+test("a staged first installation offers continuation without claiming the app is usable", async () => {
+  const pending = { ...application, installationState: "pending", resourcePreparation: { status: "pending", code: "APPLICATION_RESOURCES_PENDING" } };
+  const h = await harness(state(), [pending], { candidate: async () => ({ status: "available", release: { version: application.version } }) });
+  await h.click("market-refresh");
+  assert.match(h.app.innerHTML, /应用包已下载/);
+  assert.match(h.app.innerHTML, /继续安装/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"/);
+  assert.doesNotMatch(h.app.innerHTML, /安装与更新无需连接盒子/);
+});
+
+test("a blocked candidate exposes retry and leaves the installed application's open button", async () => {
+  const next = { ...application, version: "0.5.0", installationState: "pending", resourcePreparation: { status: "blocked", code: "RESOURCE_MIGRATION_REQUIRED" } };
+  const h = await harness(state(), [{ ...application, pendingInstallation: next }], { candidate: async () => ({ status: "available", release: { version: next.version } }) });
+  await h.click("market-refresh");
+  assert.match(h.app.innerHTML, /v0.5.0 尚未启用，当前版本可继续使用/);
+  assert.match(h.app.innerHTML, /重试更新/);
+  assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+  assert.match(h.app.innerHTML, /v0.4.3/);
+});
+
 for (const [code, message] of [["APPLICATION_START_FAILED", "应用启动失败"], ["APPLICATION_START_TIMEOUT", "应用启动超时"]]) {
   test(`store surfaces ${code} and allows retry without disconnecting the box`, async () => {
     const h = await harness(state("ready", "ready", "box-102"));
