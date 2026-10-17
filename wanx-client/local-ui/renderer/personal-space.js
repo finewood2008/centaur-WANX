@@ -31,8 +31,9 @@
   let lastSeen = null, dragDepth = 0, transfersOpen = false;
   let selectedId = "", anchorId = "", selectedIds = new Set(), contextMenu = null, query = "", sortBy = "name", sortDirection = 1;
   let marquee = null, moving = null, movePointer = null, ignoreSelectionClick = false, batchBusy = false;
+  let pendingRefresh = false, composing = false;
   let error = null, loading = false, active = false, fileView = false, dialog = null, previewURL = null, render = () => {};
-  function closeDialog() { dialog = null; if (previewURL) URL.revokeObjectURL(previewURL); previewURL = null; }
+  function closeDialog() { dialog = null; composing = false; if (pendingRefresh) { pendingRefresh = false; queueMicrotask(() => { if (active && !dialog) void load(); }); } if (previewURL) URL.revokeObjectURL(previewURL); previewURL = null; }
   function clearSelection() { selectedIds.clear(); selectedId = ""; anchorId = ""; }
   const selectedItems = () => visibleItems().filter(item => selectedIds.has(item.id));
   function selectItem(item, event = {}) {
@@ -178,9 +179,19 @@
       body = dialog.type === "text/plain" ? `<pre class="space-text-preview">${esc(dialog.text)}</pre>` : dialog.type === "application/pdf" ? `<embed class="space-preview" type="application/pdf" src="${previewURL}" title="PDF 预览">` : `<img class="space-preview" src="${previewURL}" alt="${esc(dialog.title)}">`;
     } else if (dialog.kind === "move") {
       body = `<p class="muted">将所选 ${dialog.items.length} 项移动到：</p><div class="space-breadcrumbs"><button class="text-button" data-action="space-move-folder" data-id="">我的文件</button>${dialog.crumbs.map(c => `<button class="text-button" data-action="space-move-folder" data-id="${c.id}">／ ${esc(c.name)}</button>`).join("")}</div><div class="space-folder-picker">${dialog.folders.map(f => `<button class="space-folder-choice" data-action="space-move-folder" data-id="${f.id}">▱ ${esc(f.name)}</button>`).join("") || '<p class="muted">此处没有子文件夹</p>'}</div>`;
-    } else if (["mkdir", "rename"].includes(dialog.kind)) body = `<form id="space-form" data-form="space"><label for="space-name">名称</label><input id="space-name" name="name" value="${esc(dialog.name)}" required maxlength="240" autocomplete="off"/><button type="submit" class="button primary">保存</button></form>`;
+    } else if (["mkdir", "rename"].includes(dialog.kind)) body = `<form id="space-form" data-form="space"><label for="space-name">名称</label><input id="space-name" name="name" value="${esc(dialog.name)}" data-editor-key="${dialog.kind}:${dialog.item?.id || "new"}" required maxlength="240" autocomplete="off"/><button type="submit" class="button primary">保存</button></form>`;
     else body = `<p>所选 ${dialog.items.length} 个项目将移入回收站，之后可以恢复。</p><ul class="space-selection-summary">${dialog.items.slice(0, 6).map(item => `<li>${esc(item.name)}</li>`).join("")}${dialog.items.length > 6 ? `<li>以及其他 ${dialog.items.length - 6} 项</li>` : ""}</ul>`;
-    return `<section class="market-confirmation" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title"><div class="market-confirm-card space-dialog"><h2 id="space-dialog-title">${esc(dialog.title)}</h2>${body}${dialog.error ? `<p class="inline-error" role="alert">${esc(dialog.error)}</p>` : ""}<div class="market-actions"><button class="button" data-action="space-dialog-close" ${dialog.saving ? "disabled" : ""}>${dialog.kind === "preview" ? "关闭" : "取消"}</button>${["move", "trash", "previous"].includes(dialog.kind) ? `<button class="button primary" data-action="space-dialog-confirm" ${dialog.saving ? "disabled" : ""}>${dialog.saving ? "正在处理…" : dialog.kind === "move" ? "移到这里" : dialog.kind === "previous" ? "恢复上一版" : "移入回收站"}</button>` : ""}</div></div></section>`;
+    return `<section class="market-confirmation" role="dialog" aria-modal="true" aria-labelledby="space-dialog-title"><div class="market-confirm-card space-dialog"><h2 id="space-dialog-title">${esc(dialog.title)}</h2>${body}<p data-space-dialog-error class="inline-error" role="alert" ${dialog.error ? "" : "hidden"}>${esc(dialog.error || "")}</p><div class="market-actions"><button class="button" data-action="space-dialog-close" ${dialog.saving ? "disabled" : ""}>${dialog.kind === "preview" ? "关闭" : "取消"}</button>${["move", "trash", "previous"].includes(dialog.kind) ? `<button class="button primary" data-action="space-dialog-confirm" ${dialog.saving ? "disabled" : ""}>${dialog.saving ? "正在处理…" : dialog.kind === "move" ? "移到这里" : dialog.kind === "previous" ? "恢复上一版" : "移入回收站"}</button>` : ""}</div></div></section>`;
+  }
+  // Keep the editing subtree attached: refocusing a replaced node breaks IME.
+  function retainEditor() {
+    if (!dialog || !["mkdir", "rename"].includes(dialog.kind)) return false;
+    const input = document.querySelector("#space-name");
+    if (input?.dataset?.editorKey !== `${dialog.kind}:${dialog.item?.id || "new"}`) return false;
+    const notice = document.querySelector("[data-space-dialog-error]");
+    if (notice) { notice.textContent = dialog.error || ""; notice.hidden = !dialog.error; }
+    for (const button of document.querySelectorAll?.(".space-dialog button") || []) button.disabled = Boolean(dialog.saving);
+    return true;
   }
   function view() {
     if (!host?.canLaunchApplications) return `<section class="empty-state space-connect"><h3>连接盒子，访问自己的文件</h3><p>${host?.connectionPhase === "recovering" ? "正在恢复与盒子的连接。" : "连接盒子后，即可像使用硬盘一样管理文件。"}</p>${lastSeen ? `<p class="muted">${esc(lastSeen.name)} · 上次更新 ${new Date(lastSeen.at * 1000).toLocaleString()}，当前状态待重新确认。</p>` : ""}<button class="button" data-action="show-boxes">前往盒子管理</button></section>`;
@@ -229,8 +240,8 @@
   }
   async function submit() {
     const current = dialog;
-    if (!current || current.saving) return;
-    current.saving = true;
+    if (!current || current.saving || composing) return;
+    current.saving = true; render();
     try {
       if (current.kind === "previous") await call("restore-version", { id: current.item.id, expected: current.item.version });
       if (current.kind === "mkdir") await call("mkdir", { parent, name: current.name });
@@ -320,7 +331,7 @@
       if (["restore", "purge"].includes(kind) && item) { await call(kind, { id: item.id }); await load(); }
       if (kind === "preview" && item) await openItem(item);
       render();
-      if (["mkdir", "rename"].includes(kind)) document.querySelector("#space-name")?.focus();
+      if (["mkdir", "rename"].includes(kind)) { const input = document.querySelector("#space-name"); input?.focus(); if (kind === "rename") input?.select?.(); }
     } catch (cause) { error = message(cause); render(); }
   });
   const root = document.querySelector("#app");
@@ -537,13 +548,15 @@
     if (epoch === revision) render();
   });
   document.addEventListener("dragend", () => { const wasMoving = Boolean(moving); clearDrag(); if (wasMoving) render(); });
+  root.addEventListener("compositionstart", event => { if (event.target.id === "space-name") composing = true; });
+  root.addEventListener("compositionend", event => { if (event.target.id === "space-name") { composing = false; if (dialog) dialog.name = event.target.value; } });
   root.addEventListener("input", event => {
     if (event.target.id === "space-name" && dialog) dialog.name = event.target.value;
     if (event.target.id === "space-search") { stopMarquee(); query = event.target.value; clearSelection(); contextMenu = null; render(); }
   });
   document.querySelector("#app").addEventListener("submit", event => { if (event.target.dataset.form === "space") { event.preventDefault(); void submit(); } });
   document.addEventListener("keydown", async event => {
-    if (!active || !fileView) return;
+    if (!active || !fileView || composing || event.isComposing) return;
     if (event.key === "Escape") { if (batchBusy || dialog?.saving) return; if (movePointer || moving) clearDrag(); else if (dialog) closeDialog(); else if (marquee) stopMarquee(true); else if (!contextMenu) clearSelection(); contextMenu = null; render(); return; }
     if (dialog || batchBusy || marquee || moving || event.target?.closest?.("input, textarea, select")) return;
     if (contextMenu) {
@@ -574,7 +587,7 @@
       if (event.key === "F2") document.querySelector("#space-name")?.focus?.();
     } catch (cause) { error = message(cause); render(); }
   });
-  window.wanxClient.onSpaceContentChanged?.(() => { if (active && !loading && !dialog && !moving && !marquee) void load(); });
+  window.wanxClient.onSpaceContentChanged?.(() => { if (dialog) { pendingRefresh = true; return; } if (active && !loading && !dialog && !moving && !marquee) void load(); });
   window.wanxClient.onSpaceState?.(next => {
     if (!host?.canLaunchApplications) return;
     if (next.accountId !== host.account?.accountId || next.boxId !== host.activeDeviceId) {
@@ -590,5 +603,5 @@
     }
   });
   setInterval(() => { if (active && !document.hidden && host?.canLaunchApplications && !loading && !dialog && !moving && !movePointer && !marquee) void load(); }, 15000);
-  window.wanxSpace = { view, hostState, overview: () => status.overview, bind(options) { render = options.render; }, isSelecting: () => Boolean(marquee), isDragging: () => Boolean(movePointer || moving), activate(value, visible = value) { if (fileView !== visible) { stopMarquee(); clearDrag(); contextMenu = null; } fileView = visible; if (active === value) return; active = value; if (active) void load(); else { closeDialog(); clearDrag(); } } };
+  window.wanxSpace = { view, hostState, retainEditor, overview: () => status.overview, bind(options) { render = options.render; }, isSelecting: () => Boolean(marquee), isDragging: () => Boolean(movePointer || moving), activate(value, visible = value) { if (fileView !== visible) { stopMarquee(); clearDrag(); contextMenu = null; } fileView = visible; if (active === value) return; active = value; if (active) void load(); else { closeDialog(); clearDrag(); } } };
 })();
