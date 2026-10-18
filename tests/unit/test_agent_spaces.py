@@ -55,6 +55,66 @@ def test_legacy_migration_and_two_independent_agents(tmp_path):
     assert Workspaces(tmp_path, 1).agent_execute(a["token"], "stat")["id"] == a["root"]
 
 
+def test_mkdir_parent_alias_preserves_destination_and_scope(tmp_path):
+    s = Workspaces(tmp_path, 1)
+    a = s.approve("a", "Agent")
+    b = s.approve("b", "Agent")
+    folder = s.agent_execute(a["token"], "mkdir", name="project")
+    child = s.agent_execute(a["token"], "mkdir", parent=folder["id"], name="archive")
+    assert child["parent"] == folder["id"]
+    nested = s.agent_execute(
+        a["token"], "mkdir", target=child["id"], parent=child["id"], name="nested"
+    )
+    assert nested["parent"] == child["id"]
+    with pytest.raises(SpaceError, match="SPACE_INVALID_DESTINATION"):
+        s.agent_execute(
+            a["token"], "mkdir", target=folder["id"], parent=child["id"], name="conflict"
+        )
+    with pytest.raises(SpaceError, match="SPACE_LINK_SCOPE"):
+        s.agent_execute(a["token"], "mkdir", parent=b["root"], name="escape")
+    assert [f["id"] for f in s.agent_execute(a["token"], "list")["items"]] == [folder["id"]]
+
+
+def test_recycle_metadata_supports_restore_without_guessing_versions(tmp_path):
+    s = Workspaces(tmp_path, 1)
+    a = s.approve("a", "A")
+    b = s.approve("b", "B")
+    folder = s.agent_execute(a["token"], "mkdir", name="project")
+    f = write(s, a["token"], folder["id"])
+    trashed = s.agent_execute(a["token"], "trash", target=f["id"], expected=f["version"])
+    assert trashed["ok"] and trashed["id"] == f["id"] and trashed["trashed"]
+    restarted = Workspaces(tmp_path, 1)
+    info = restarted.agent_execute(a["token"], "stat", target=f["id"])
+    assert info["version"] == trashed["version"]
+    assert "blob" not in info and "previous_blob" not in info
+    with pytest.raises(SpaceError, match="SPACE_NOT_FOUND"):
+        s.agent_execute(a["token"], "read", target=f["id"])
+    with pytest.raises(SpaceError, match="SPACE_LINK_SCOPE"):
+        s.agent_execute(b["token"], "stat", target=f["id"])
+    s.connection_action(a["id"], "pause")
+    with pytest.raises(SpaceError, match="SPACE_AGENT_PAUSED"):
+        s.agent_execute(a["token"], "stat", target=f["id"])
+    s.connection_action(a["id"], "resume")
+    s.restore(f["id"])
+    s.trash(f["id"])
+    with pytest.raises(SpaceError, match="SPACE_VERSION_CONFLICT"):
+        s.agent_execute(a["token"], "restore", target=f["id"], expected=info["version"])
+    info = s.agent_execute(a["token"], "stat", target=f["id"])
+    restored = s.agent_execute(a["token"], "restore", target=f["id"], expected=info["version"])
+    assert restored["id"] == f["id"] and restored["parent"] == folder["id"]
+    assert s.agent_execute(a["token"], "read", target=f["id"])[0] == b"small"
+    deleted_folder = s.agent_execute(
+        a["token"], "trash", target=folder["id"], expected=folder["version"]
+    )
+    with pytest.raises(SpaceError, match="SPACE_NOT_FOUND"):
+        s.agent_execute(a["token"], "stat", target=f["id"])
+    s.agent_execute(a["token"], "restore", target=folder["id"], expected=deleted_folder["version"])
+    assert s.agent_execute(a["token"], "read", target=f["id"])[0] == b"small"
+    s.connection_action(a["id"], "disconnect")
+    with pytest.raises(SpaceError, match="SPACE_AGENT_DISCONNECTED"):
+        s.agent_execute(a["token"], "stat", target=f["id"])
+
+
 def test_pause_revoke_and_recycle_stop_write_commit(tmp_path):
     s = Workspaces(tmp_path, 1)
     a = s.approve("a", "Agent")

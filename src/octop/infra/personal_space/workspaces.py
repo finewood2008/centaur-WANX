@@ -267,7 +267,9 @@ class Workspaces(SpaceLinks):
                 if grant is None or self._entry(db, grant["root"])["space_id"] != grant["space_id"]:
                     raise SpaceError("SPACE_LINK_SCOPE", 403)
                 root = grant["root"]
-            target = args.get("target") or root
+            target = (
+                self._creation_target(action, args.get("target") or "", args.get("parent")) or root
+            )
             if target == space["root"] and action in {
                 "move",
                 "trash",

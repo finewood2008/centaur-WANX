@@ -140,6 +140,14 @@ class SpaceLinks(PersonalSpace):
         if expected is None or row["version"] != expected:
             raise SpaceError("SPACE_VERSION_CONFLICT", 409)
 
+    @staticmethod
+    def _creation_target(action: str, target: str, parent: str | None) -> str:
+        if action == "mkdir" and parent is not None:
+            if target and target != parent:
+                raise SpaceError("SPACE_INVALID_DESTINATION")
+            return parent
+        return target
+
     def _collect(self, db: sqlite3.Connection) -> None:
         for row in db.execute("SELECT id FROM retired_blobs").fetchall():
             blob = row["id"]
@@ -176,7 +184,7 @@ class SpaceLinks(PersonalSpace):
             with self._db() as db:
                 link = self._authorized(db, token)
                 link_id, root = link["id"], link["root"]
-                target = target or root
+                target = self._creation_target(action, target, parent) or root
                 self._collect(db)
                 result = self._execute(
                     db,
@@ -233,7 +241,7 @@ class SpaceLinks(PersonalSpace):
         digest: str,
         data: bytes,
     ) -> Any:
-        row = self._within(db, root, target, trash=action == "restore")
+        row = self._within(db, root, target, trash=action in {"restore", "stat"})
         if action in {"describe", "stat"}:
             return public(row, root)
         if action == "list":
@@ -265,7 +273,7 @@ class SpaceLinks(PersonalSpace):
                 return public(self.move(target, destination, name), root)
             if action == "trash":
                 self.trash(target)
-                return {"ok": True}
+                return {"ok": True, **public(self._entry(db, target, trash=True), root)}
             if action == "restore":
                 self._within(db, root, row["parent"])
                 return public(self.restore(target), root)

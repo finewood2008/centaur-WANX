@@ -145,15 +145,42 @@ def test_folder_pagination_moves_trash_restore_and_audit(tmp_path: Path) -> None
     file = s.execute(
         token, "move", target=file["id"], parent=child["id"], name=file["name"], expected=1
     )
-    s.execute(token, "trash", target=file["id"], expected=file["version"])
+    trashed = s.execute(token, "trash", target=file["id"], expected=file["version"])
+    assert trashed["ok"] and trashed["id"] == file["id"] and trashed["trashed"]
+    info = SpaceLinks(tmp_path, 1).execute(token, "stat", target=file["id"])
+    assert info["version"] == trashed["version"]
     with pytest.raises(SpaceError, match="SPACE_NOT_FOUND"):
         s.execute(token, "read", target=file["id"])
-    restored = s.execute(token, "restore", target=file["id"], expected=file["version"] + 1)
+    restored = s.execute(token, "restore", target=file["id"], expected=info["version"])
     assert restored["parent"] == child["id"]
     assert any(r["action"] == "restore" and r["result"] == "ok" for r in s.audit(link["id"]))
     s.trash(folder)
     with pytest.raises(SpaceError, match="SPACE_NOT_FOUND"):
         s.execute(token, "describe")
+    with pytest.raises(SpaceError, match="SPACE_NOT_FOUND"):
+        s.execute(token, "stat")
+
+
+def test_link_mkdir_parent_alias_and_trashed_metadata_stay_scoped(tmp_path: Path) -> None:
+    s = SpaceLinks(tmp_path, 1)
+    root = s.mkdir("", "root")["id"]
+    token = s.create_link(root)["token"]
+    folder = s.execute(token, "mkdir", name="project")
+    child = s.execute(token, "mkdir", parent=folder["id"], name="archive")
+    assert child["parent"] == folder["id"]
+    with pytest.raises(SpaceError, match="SPACE_INVALID_DESTINATION"):
+        s.execute(token, "mkdir", target=root, parent=child["id"], name="conflict")
+    outside = s.mkdir("", "outside")["id"]
+    with pytest.raises(SpaceError, match="SPACE_LINK_SCOPE"):
+        s.execute(token, "mkdir", parent=outside, name="escape")
+    file = write(s, token, child["id"], b"tiny")
+    file_token = s.create_link(file["id"])["token"]
+    s.execute(token, "trash", target=file["id"], expected=file["version"])
+    with pytest.raises(SpaceError, match="SPACE_NOT_FOUND"):
+        s.execute(file_token, "stat")
+    s.move(child["id"], outside, "moved")
+    with pytest.raises(SpaceError, match="SPACE_LINK_SCOPE"):
+        s.execute(token, "stat", target=file["id"])
 
 
 def test_write_cannot_reuse_existing_upload_and_traversal_rejected(tmp_path: Path) -> None:
