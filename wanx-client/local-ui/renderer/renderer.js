@@ -759,6 +759,7 @@ function marketErrorMessage(error) {
     APPLICATION_PREPARATION_INVALID: "盒端准备结果无法核验，请更新盒端后重试。",
     APPLICATION_PREPARATION_UNAVAILABLE: "盒端应用准备服务暂不可用，请检查盒端服务后重试。",
     RESOURCE_SERVICE_NOT_CONFIGURED: "盒端应用准备服务尚未启用，请联系盒主或管理员检查盒端配置。",
+    RESOURCE_EXPERT_START_FAILED: "应用所需专家未能启动，请联系盒主或管理员检查模型配置和专家运行状态后重试。",
     APP_ENTITLEMENT_REQUIRED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
     RESOURCE_PRODUCT_PROFILE_UNSUPPORTED: "此应用暂不支持自动准备专家，请联系应用提供方更新应用。",
     RESOURCE_PREPARATION_BUSY: "盒子正在准备应用所需资源，请稍后重试。",
