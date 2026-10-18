@@ -2426,3 +2426,34 @@ test("transport timeout guidance describes Bluetooth rather than a claim-window 
   assert.match(h.app.innerHTML, /检查电脑蓝牙/);
   assert.doesNotMatch(h.app.innerHTML, /处于配网模式|开启配网窗口/);
 });
+
+test("box overview shows WANX-wide usage and the box public IP, never private or proxy addresses", async () => {
+  const h = await harness(state("ready", "ready", "box-102"));
+  h.window.wanxSpace.overview = () => ({
+    filesBytes: 123,
+    wanxStorage: { bytes: 5 * 1024 ** 3, complete: true },
+    network: { publicIp: "8.8.4.4", addresses: ["192.168.1.25", "fd00::25"], scope: "host" },
+  });
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /万象占用<\/span><strong>5\.0 GB/);
+  assert.match(h.app.innerHTML, /数据、应用与运行组件/);
+  assert.match(h.app.innerHTML, /<code>8\.8\.4\.4<\/code>/);
+  assert.match(h.app.innerHTML, /盒子 IP/);
+  assert.doesNotMatch(h.app.innerHTML, /192\.168\.1\.25|fd00::25/);
+  assert.doesNotMatch(h.app.innerHTML, /123 B|41000|__wanx_session/);
+  h.window.wanxSpace.overview = () => ({ filesBytes: 123 });
+  h.update(state("ready", "ready", "box-102"));
+  assert.match(h.app.innerHTML, /等待盒子返回完整统计/);
+  assert.doesNotMatch(h.app.innerHTML, /123 B|192\.168\.1\.25/);
+  h.window.wanxSpace.overview = () => ({
+    wanxStorage: { bytes: 1024, complete: false },
+    network: { publicIp: null, addresses: ["172.17.0.2"], scope: "container" },
+  });
+  h.update(state("ready", "ready", "box-102"));
+  assert.match(h.app.innerHTML, /≥ 1\.0 KB/);
+  assert.match(h.app.innerHTML, /部分目录暂时无法读取/);
+  assert.match(h.app.innerHTML, /暂未获取盒子 IP/);
+  assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|容器 IP/);
+  h.update({ ...state("ready", "ready", "box-102"), phase: "recovering" });
+  assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|≥ 1\.0 KB/);
+});

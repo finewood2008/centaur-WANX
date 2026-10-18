@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import current_user, get_server
+from octop.infra.box_resources import box_resources
 from octop.infra.personal_space.service import CHUNK_SIZE, PersonalSpace, SpaceError
 
 router = APIRouter()
@@ -98,6 +99,20 @@ class CPU(BaseModel):
     percent: float
 
 
+class WanxStorage(BaseModel):
+    bytes: int
+    complete: bool
+    collectedAt: float
+    scope: str
+
+
+class BoxNetwork(BaseModel):
+    addresses: list[str]
+    scope: str
+    publicIp: str | None = None
+    publicIpCollectedAt: float | None = None
+
+
 class Overview(BaseModel):
     protocolVersion: int
     chunkSize: int
@@ -108,6 +123,8 @@ class Overview(BaseModel):
     memory: Memory | None
     cpu: CPU | None
     container: bool
+    wanxStorage: WanxStorage | None = None
+    network: BoxNetwork | None = None
 
 
 async def space(
@@ -137,10 +154,16 @@ async def call[T](operation: Callable[..., T], *args: Any) -> T:
 @router.get(
     "/overview",
     response_model=Overview,
-    summary="Personal space capability and measured storage resources",
+    summary="Personal space capability and box-wide WANX storage and network resources",
 )
-async def overview(service: PersonalSpace = Depends(space)) -> Any:
-    return await call(service.overview)
+async def overview(
+    service: PersonalSpace = Depends(space), server: Any = Depends(get_server)
+) -> Any:
+    result = await call(service.overview)
+    result.update(
+        await asyncio.to_thread(box_resources, server.paths.root, container=result["container"])
+    )
+    return result
 
 
 @router.get("/files", response_model=Listing, summary="List your files or recycle bin")
