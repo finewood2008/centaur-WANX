@@ -10,6 +10,8 @@
 
 更新前先保留工作区中的未提交修改，再获取 CodeUp 的 `wanx` 分支。图标、海报须与引用它们的 HTML、素材目录、轮播脚本和样式一起交付；macOS、Windows 打包须保留完整 `local-ui/**`。拉取源码后还需构建、安装新客户端，已安装程序不会仅因源码更新而自动替换。
 
+盒子页的万象占用、盒子 IP（公网出口）及 Agent 接入弹窗更新，见 [变更与部署说明](../docs/wanx-box-resources-agent-access-20261017.md)；统计范围和接口字段见 [盒子资源统计](../docs/box-resources.md)。
+
 ## 使用与开发
 
 在 `centuarai-wanx/` 根目录运行：

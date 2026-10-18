@@ -10,11 +10,19 @@ from fastapi import FastAPI
 
 from octop.api.deps import current_user, get_server
 from octop.api.routers.personal_space import router
+from octop.infra import box_resources
 from octop.infra.personal_space.service import CHUNK_SIZE
 
 
 @pytest.mark.asyncio
-async def test_api_identity_chunk_contract_and_application_boundary(tmp_path: Path) -> None:
+async def test_api_identity_chunk_contract_and_application_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        box_resources,
+        "public_address",
+        lambda: {"publicIp": "8.8.4.4", "publicIpCollectedAt": 100.0},
+    )
     app = FastAPI()
     app.include_router(router, prefix="/api/personal-space")
     identity = SimpleNamespace(id=1, application_id="wanx")
@@ -27,6 +35,11 @@ async def test_api_identity_chunk_contract_and_application_boundary(tmp_path: Pa
     ) as client:
         response = await client.get("/api/personal-space/overview")
         assert response.json()["protocolVersion"] == 1
+        assert response.json()["wanxStorage"]["scope"] == "wanx-managed-files"
+        assert response.json()["wanxStorage"]["bytes"] >= 0
+        assert isinstance(response.json()["network"]["addresses"], list)
+        assert response.json()["network"]["publicIp"] == "8.8.4.4"
+        assert str(tmp_path) not in response.text
         body = {"id": "a" * 32, "name": "report.txt", "size": 3}
         assert (
             await client.post("/api/personal-space/uploads", json={**body, "user_id": 2})

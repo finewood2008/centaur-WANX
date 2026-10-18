@@ -5,10 +5,18 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+import pytest
+
+from octop.infra import box_resources
 from tests.support.auth import TEST_PASSWORD, create_user
 
 
-async def test_personal_files_are_isolated_by_authenticated_user_and_application(env: Any) -> None:
+async def test_personal_files_are_isolated_by_authenticated_user_and_application(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        box_resources, "public_address", lambda: {"publicIp": None, "publicIpCollectedAt": 100.0}
+    )
     client, _server, owner = env
     other = await create_user(client, owner, username="other")
     prefix = "/api/personal-space"
