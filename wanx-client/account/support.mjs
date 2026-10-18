@@ -41,7 +41,7 @@ export function readSupportRequest(value, device, now = Date.now()) {
   return result;
 }
 
-export function createRemoteSupport({ account, now = Date.now }) {
+export function createRemoteSupport({ account, now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   let generation = 0, closed = false, identity = JSON.stringify(account.getIdentity());
   const active = new Set();
   const unsubscribe = account.subscribe(state => {
@@ -62,6 +62,25 @@ export function createRemoteSupport({ account, now = Date.now }) {
     };
     check(); return { check, captured };
   }
+  async function readCurrent(prefix, check) {
+    const delays = [250, 500, 1000];
+    for (let attempt = 0; ; attempt++) {
+      check();
+      try {
+        const result = await account.request({ path: `${prefix}/support-requests/current` });
+        check(); return result;
+      } catch (error) {
+        check();
+        // Older Admin deployments wrap current-read deadlocks as business 500.
+        // Retry only this GET for the two known server errors; decisions and
+        // revocations may already have committed and are never replayed here.
+        const retryable = (error.code === "SUPPORT_AUTHORIZATION_BUSY" && error.status === 409) ||
+          (error.code === "ACCOUNT_REQUEST_FAILED" && error.status === 500);
+        if (!retryable || attempt >= delays.length) throw error;
+        await wait(delays[attempt]);
+      }
+    }
+  }
   async function run(input, mutation, action) {
     const { check, captured } = context(input, mutation);
     const deviceId = input.deviceId, key = `${captured}:${deviceId}`;
@@ -74,7 +93,7 @@ export function createRemoteSupport({ account, now = Date.now }) {
       if (!device || device.role !== "owner" || device.status !== "active" || !Number.isSafeInteger(device.ownershipEpoch) || device.ownershipEpoch < 1) throw fail("OWNER_REQUIRED");
       if (mutation && device.ownershipEpoch !== input.ownershipEpoch) throw fail("OWNER_CHANGED");
       const prefix = `/app-api/devices/${encodeURIComponent(deviceId)}`;
-      const current = readSupportRequest(await account.request({ path: `${prefix}/support-requests/current` }), device, now()); check();
+      const current = readSupportRequest(await readCurrent(prefix, check), device, now()); check();
       const result = await action({ device, current, prefix, check }); check();
       return { deviceId, ownershipEpoch: device.ownershipEpoch, request: result };
     } finally { active.delete(key); }

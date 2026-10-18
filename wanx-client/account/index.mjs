@@ -356,9 +356,10 @@ export function createAccount({
           throw failure("MARKET_RELEASE_CAPABILITY_UNSUPPORTED", 422);
         // Never expose arbitrary server text, request bodies or token values.
         const remoteCode =
-          payload.errorCode || payload.data?.errorCode || (supportRoute ? payload.detail?.errorCode : null) || payload.code;
+          payload.errorCode || payload.data?.errorCode || (supportRoute ? payload.detail?.errorCode || payload.msg?.errorCode : null) || payload.code;
         const explicitSupportCode = supportRoute && ["OWNER_REQUIRED", "OWNER_CHANGED", "DEVICE_NOT_FOUND", "DEVICE_DISABLED",
-          "SUPPORT_REQUEST_NOT_FOUND", "REQUEST_DIGEST_MISMATCH", "REQUEST_EXPIRED", "DECISION_CONFLICT", "SUPPORT_NOT_ACTIVE"].includes(remoteCode);
+          "SUPPORT_REQUEST_NOT_FOUND", "REQUEST_DIGEST_MISMATCH", "REQUEST_EXPIRED", "DECISION_CONFLICT", "SUPPORT_NOT_ACTIVE",
+          "SUPPORT_AUTHORIZATION_BUSY"].includes(remoteCode);
         const explicitNetworkCode =
           typeof remoteCode === "string" &&
           /^NETWORK_[A-Z0-9_]{1,64}$/.test(remoteCode);

@@ -72,7 +72,7 @@ async function harness(initial = state(), installed = [application], options = {
     set innerHTML(value) {
       markup = value; renderCount++;
       forms = new Map([...value.matchAll(/<form\b[^>]*data-form="([^"]+)"[^>]*>/g)].map(([, name]) => {
-        const submit = { disabled: false, textContent: "" };
+        const submit = { disabled: false, textContent: "", innerHTML: "", classList: { toggle() {} }, setAttribute() {} };
         const transferPhone = { focus: () => calls.push(["focus-transfer-phone"]) };
         const wifiNodes = new Map();
         const passwordNotice = {};
@@ -120,9 +120,9 @@ async function harness(initial = state(), installed = [application], options = {
       return { passwordReset: true };
     },
     logout: async () => { rawState = { account: { phase: "signed_out", logoutPending: true } }; notify(); await options.logoutRequest?.(); },
-    connectBox: async (deviceId) => { if (options.connectFailure) throw new Error(options.connectFailure); rawState = state("ready", "ready", deviceId); notify(); },
+    connectBox: async (deviceId) => { await options.connectRequest?.(deviceId); if (options.connectFailure) throw new Error(options.connectFailure); rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
-    refreshDevices: async () => {},
+    refreshDevices: async () => { await options.refreshRequest?.(); if (options.refreshFailure) throw new Error(options.refreshFailure); },
     lookupDeviceDiscovery: async (deviceIds) => {
       calls.push(["lookup-device-discovery", [...deviceIds]]);
       return options.lookupDeviceDiscovery ? options.lookupDeviceDiscovery(deviceIds) : {
@@ -1165,6 +1165,71 @@ test("an explicit account owner or member remains claimed and the owner's existi
   assert.equal(h.calls.find(([name]) => name === "wanx-client:connect-box")[1], id);
 });
 
+test("refreshing boxes shows progress until the device request settles", async () => {
+  let finish;
+  const waiting = new Promise(resolve => { finish = resolve; });
+  const h = await harness(state(), [application], { refreshRequest: () => waiting });
+  h.navigate("boxes");
+  const request = h.click("refresh");
+  assert.match(h.app.innerHTML, /data-action="refresh" aria-busy="true" disabled/);
+  assert.match(h.app.innerHTML, /activity-spinner[^>]*><\/span>正在刷新…/);
+  assert.match(h.app.innerHTML, /role="status"><span class="activity-spinner"[^>]*><\/span>正在读取最新设备状态…/);
+  finish();
+  await request;
+  assert.match(h.app.innerHTML, /data-action="refresh" aria-busy="false"/);
+  assert.doesNotMatch(h.app.innerHTML, /正在读取最新设备状态…/);
+});
+
+test("connecting a box shows progress on its card and restores the action on failure", async () => {
+  let finish;
+  const waiting = new Promise(resolve => { finish = resolve; });
+  const h = await harness(state(), [application], { connectRequest: () => waiting, connectFailure: "DEVICE_OFFLINE" });
+  h.navigate("boxes");
+  const request = h.click("connect", { deviceId: "box-102" });
+  assert.match(h.app.innerHTML, /activity-spinner[^>]*><\/span>正在连接…/);
+  assert.equal((h.app.innerHTML.match(/正在连接…<\/button>/g) || []).length, 1);
+  finish();
+  await request;
+  assert.doesNotMatch(h.app.innerHTML, /正在连接…<\/button>/);
+  assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
+});
+
+test("market installation shows progress on the clicked app until it completes", async () => {
+  const install = pendingResponse();
+  const h = await harness(state(), [], { install: () => install.promise });
+  await h.click("market-install", { applicationId: application.applicationId });
+  const request = h.click("market-confirm");
+  assert.match(h.app.innerHTML, /data-action="market-install"[^>]*aria-busy="true" disabled><span class="activity-spinner"[^>]*><\/span>正在安装…/);
+  install.resolve(application);
+  await request;
+  assert.doesNotMatch(h.app.innerHTML, /正在安装…/);
+});
+
+test("reset-code request shows sending progress and restores the button", async () => {
+  const code = pendingResponse();
+  const h = await harness({ account: { phase: "signed_out" } }, [], { passwordCodeRequest: () => code.promise });
+  await h.click("auth-reset");
+  h.form("auth").values.username = "13800138000";
+  const request = h.click("send-reset-code");
+  assert.match(h.app.innerHTML, /data-action="send-reset-code" aria-busy="true" disabled><span class="activity-spinner"[^>]*><\/span>正在发送…/);
+  code.resolve();
+  await request;
+  assert.doesNotMatch(h.app.innerHTML, /正在发送…/);
+});
+
+test("profile save keeps its form while showing progress", async () => {
+  const save = pendingResponse();
+  const h = await harness(state(), [], { accountProfile: { save: () => save.promise } });
+  await h.click("show-profile");
+  const form = h.form("profile");
+  const request = h.submit("profile", { displayName: "新昵称" });
+  assert.equal(h.form("profile"), form);
+  assert.match(form.querySelector('button[type="submit"]').innerHTML, /activity-spinner[^>]*><\/span>正在保存…/);
+  save.resolve({ displayName: "新昵称" });
+  await request;
+  assert.doesNotMatch(form.querySelector('button[type="submit"]').innerHTML, /正在保存…/);
+});
+
 test("each new scan refreshes inventory names and claim state", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const id = discoveryId(7);
@@ -1625,6 +1690,39 @@ test("Owner support uses cloud IPC while offline, confirms approval and keeps re
   await h.click("support-close");
 });
 
+for (const expired of [false, true]) test(`pending support ${expired ? "expiry" : "approval"} takes priority over a fresh idle-device observation`, async () => {
+  const receipt = supportReceipt({
+    requestExpiresAt: new Date(Date.now() + (expired ? -60000 : 300000)).toISOString(),
+    observation: { supportRevision: 0, requestId: null, supportSessionId: null, observedAt: new Date().toISOString(),
+      desktop: "closed", connection: "disconnected" },
+  });
+  const h = await harness(supportState(), [], { support: { current: async () => receipt } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, expired ? /请求时间已到，请刷新确认/ : /等待你确认/);
+  assert.doesNotMatch(h.app.innerHTML, /设备已确认桌面关闭、连接断开/);
+  if (expired) assert.doesNotMatch(h.app.innerHTML, /data-action="support-approve"/);
+  else {
+    assert.match(h.app.innerHTML, /data-action="support-approve"/);
+    await h.click("support-approve");
+    assert.match(h.app.innerHTML, /确认允许.*15 分钟/);
+    assert.equal(h.calls.filter(([name]) => name === "wanx-client:support-decide").length, 0);
+    await h.click("support-cancel");
+  }
+  await h.click("support-close");
+});
+
+test("pending support still exposes a fresh device cleanup failure", async () => {
+  const receipt = supportReceipt({ observation: { supportRevision: 0, requestId: null, supportSessionId: null,
+    observedAt: new Date().toISOString(), desktop: "cleanup_failed", connection: "disconnected" } });
+  const h = await harness(supportState(), [], { support: { current: async () => receipt } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, /设备清理失败，请联系维护人员继续处理/);
+  assert.doesNotMatch(h.app.innerHTML, /role="status">等待你确认/);
+  await h.click("support-close");
+});
+
 test("support entry is Owner-only and cancelling a confirmation never submits a decision", async () => {
   let calls = 0;
   const h = await harness({ ...supportState(), devices: [{ ...supportState().devices[0], deviceRole: "member" }] }, [], { support: { current: async () => { calls++; return supportReceipt(); } } });
@@ -1651,6 +1749,32 @@ test("failed support decision never shows approval success and requires reading 
   assert.doesNotMatch(h.app.innerHTML, /已同意本次远程桌面协助|data-action="support-approve"/);
   await h.click("support-refresh");
   assert.match(h.app.innerHTML, /等待你确认/);
+  await h.click("support-close");
+});
+
+for (const stage of ["current", "decide"]) for (const wrapped of [false, true]) test(`support ${stage} busy ${wrapped ? "Electron" : "typed"} error requests an original-request refresh without repeating approval`, async () => {
+  let fail = true, decisions = 0;
+  const code = "SUPPORT_AUTHORIZATION_BUSY";
+  const error = wrapped ? new Error(`Error invoking remote method 'wanx-client:support-${stage}': Error: ${code}`)
+    : Object.assign(new Error(code), { code });
+  const h = await harness(supportState(), [], { support: {
+    current: async () => { if (stage === "current" && fail) throw error; return supportReceipt(); },
+    decide: async () => { decisions++; throw error; },
+  } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  if (stage === "decide") {
+    await h.click("support-approve");
+    await h.click("support-confirm");
+    assert.match(h.app.innerHTML, /操作结果待确认，请刷新原请求；不要重复批准/);
+  }
+  assert.match(h.app.innerHTML, /远程协助服务繁忙，请稍后刷新原请求确认状态。/);
+  assert.doesNotMatch(h.app.innerHTML, /检查电脑联网|已同意本次远程桌面协助|data-action="support-approve"/);
+  assert.equal(decisions, stage === "decide" ? 1 : 0);
+  fail = false;
+  await h.click("support-refresh");
+  assert.match(h.app.innerHTML, /等待你确认/);
+  assert.equal(decisions, stage === "decide" ? 1 : 0);
   await h.click("support-close");
 });
 

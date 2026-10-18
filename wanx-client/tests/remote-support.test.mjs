@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createAccount } from "../account/index.mjs";
 import { createRemoteSupport, readSupportRequest } from "../account/support.mjs";
 
 const NOW = Date.parse("2026-10-17T08:00:00Z");
@@ -51,7 +52,7 @@ function harness(t, options = {}) {
         : approved({ authorization: "revoked", supportRevision: 5 });
     },
   };
-  const service = createRemoteSupport({ account, now: () => NOW });
+  const service = createRemoteSupport({ account, now: () => NOW, wait: options.wait || (async () => {}) });
   t.after(() => service.close());
   return { service, calls, listeners,
     devices(next) { rows = next; }, current(next) { current = next; },
@@ -68,6 +69,85 @@ test("cloud current reads the explicitly selected offline Owner box without a bu
   assert.deepEqual(h.calls, [["devices"], ["request", { path: `/app-api/devices/${DEVICE}/support-requests/current` }]]);
   h.current(null);
   assert.deepEqual(await h.service.current({ deviceId: DEVICE }), { deviceId: DEVICE, ownershipEpoch: 7, request: null });
+});
+
+for (const [name, status, body] of [
+  ["busy envelope", 409, { code: 409, msg: { errorCode: "SUPPORT_AUTHORIZATION_BUSY", message: "SUPPORT_AUTHORIZATION_BUSY" } }],
+  ["HTTP 200 with business 500 deadlock envelope", 200, { code: 500, msg: "服务器内部错误" }],
+  ["HTTP 500 envelope", 500, { code: 500, msg: "服务器内部错误" }],
+]) test(`production ${name} crosses the account transport and retries only current before one decision`, async t => {
+  let saved = null, reads = 0, decisions = 0;
+  const waits = [];
+  const reply = data => new Response(JSON.stringify({ code: 200, data }));
+  const account = createAccount({
+    store: { load: async () => structuredClone(saved), save: async value => { saved = structuredClone(value); }, clear: async () => { saved = null; } },
+    fetch: async (url, options) => {
+      if (url.endsWith("/login")) return reply({ accountId: "owner-1", clientId: JSON.parse(options.body).clientId,
+        accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresIn: 3600 });
+      if (url.endsWith("/devices")) return reply([owner()]);
+      if (url.endsWith("/support-requests/current")) {
+        reads++;
+        if (reads <= 2) return new Response(JSON.stringify(body), { status });
+        return reply(request());
+      }
+      assert.equal(url.endsWith("/support-requests/request-1/decision"), true);
+      assert.equal(options.method, "POST");
+      decisions++;
+      return reply(approved());
+    },
+  });
+  t.after(() => account.close());
+  await account.loginSMS({ phone: "13800138000", code: "123456" });
+  const service = createRemoteSupport({ account, now: () => NOW, wait: async ms => { waits.push(ms); } });
+  t.after(() => service.close());
+  assert.equal((await service.decide(decisionInput())).request.authorization, "active");
+  assert.equal(reads, 3);
+  assert.equal(decisions, 1);
+  assert.deepEqual(waits, [250, 500]);
+});
+
+const busy = () => Object.assign(new Error("SUPPORT_AUTHORIZATION_BUSY"), { code: "SUPPORT_AUTHORIZATION_BUSY", status: 409 });
+const serverFailure = () => Object.assign(new Error("ACCOUNT_REQUEST_FAILED"), { code: "ACCOUNT_REQUEST_FAILED", status: 500 });
+
+for (const error of [busy(), serverFailure()]) test(`${error.code} current retries are bounded and never send a decision when exhausted`, async t => {
+  const waits = [];
+  const h = harness(t, { request: () => { throw error; }, wait: async ms => { waits.push(ms); } });
+  await assert.rejects(h.service.decide(decisionInput()), { code: error.code, status: error.status });
+  assert.equal(h.calls.filter(call => call[0] === "request").length, 4);
+  assert.equal(h.calls.some(call => call[1]?.method), false);
+  assert.deepEqual(waits, [250, 500, 1000]);
+});
+
+test("only current lock contention or a recognized 500 is retryable, never a decision or revoke", async t => {
+  for (const error of [Object.assign(new Error("REQUEST_EXPIRED"), { code: "REQUEST_EXPIRED", status: 409 }),
+    Object.assign(new Error("ACCOUNT_NETWORK_ERROR"), { code: "ACCOUNT_NETWORK_ERROR" }),
+    Object.assign(busy(), { status: 403 }),
+    ...[401, 403, 404, 409, 422, 502, "500", undefined].map(status => Object.assign(serverFailure(), { status })),
+    Object.assign(new Error("ACCOUNT_INVALID_RESPONSE"), { code: "ACCOUNT_INVALID_RESPONSE", status: 500 })]) {
+    const h = harness(t, { request: () => { throw error; }, wait: () => assert.fail("must not retry") });
+    await assert.rejects(h.service.current({ deviceId: DEVICE }), { code: error.code });
+    assert.equal(h.calls.filter(call => call[0] === "request").length, 1);
+  }
+  for (const kind of ["decide", "revoke"]) for (const error of [busy(), serverFailure()]) {
+    const h = harness(t, { request: input => {
+      if (input.method) throw error;
+      return kind === "decide" ? request() : approved();
+    }, wait: () => assert.fail("must not retry a mutation") });
+    await assert.rejects(h.service[kind](kind === "decide" ? decisionInput() : revokeInput()), { code: error.code });
+    assert.equal(h.calls.filter(call => call[1]?.method).length, 1);
+  }
+});
+
+for (const error of [busy(), serverFailure()]) test(`account changes during ${error.code} read backoff cancel before another read or decision`, async t => {
+  const delay = deferred();
+  const h = harness(t, { request: () => { throw error; }, wait: () => delay.promise });
+  const operation = h.service.decide(decisionInput());
+  const rejected = assert.rejects(operation, { code: "SUPPORT_SESSION_CHANGED" });
+  await flush();
+  h.publish("authenticated", { accountId: "owner-2", clientId: "client-1" });
+  delay.resolve();
+  await rejected;
+  assert.equal(h.calls.filter(call => call[0] === "request").length, 1);
 });
 
 test("server-valid multiline Unicode reason preserves the exact canonical digest bytes", () => {
