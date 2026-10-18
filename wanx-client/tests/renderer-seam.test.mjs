@@ -287,12 +287,22 @@ test("a blocked candidate exposes retry and leaves the installed application's o
   assert.match(h.app.innerHTML, /v0.4.3/);
 });
 
-for (const [code, message] of [["APPLICATION_START_FAILED", "应用启动失败"], ["APPLICATION_START_TIMEOUT", "应用启动超时"]]) {
+for (const [code, message] of [
+  ["APPLICATION_START_FAILED", "应用启动失败"],
+  ["APPLICATION_START_TIMEOUT", "应用启动超时"],
+  ["RESOURCE_EXPERT_START_FAILED", "应用所需专家未能启动，请联系盒主或管理员检查模型配置和专家运行状态后重试。"],
+  ["APP_ENTITLEMENT_REQUIRED", "此账号尚未获得应用使用权限，请联系管理员启用并授权。"],
+  ["APP_AUTHORIZATION_UNVERIFIED", "应用使用权限尚未确认，请重新登录后重试，或联系盒主。"],
+  ["RESOURCE_SERVICE_NOT_CONFIGURED", "盒端应用准备服务尚未启用，请联系盒主或管理员检查盒端配置。"],
+  ["BACKEND_CONTRACT_INCOMPATIBLE", "此应用需要更新盒端服务，请联系盒主更新后再试。"],
+  ["APPLICATION_PREPARATION_UNAVAILABLE", "盒端应用准备服务暂不可用，请检查盒端服务后重试。"],
+]) {
   test(`store surfaces ${code} and allows retry without disconnecting the box`, async () => {
     const h = await harness(state("ready", "ready", "box-102"));
     h.failLaunch(code);
     await h.click("applications-launch", { applicationId: application.applicationId });
     assert.ok(h.app.innerHTML.includes(message));
+    if (code === "APP_AUTHORIZATION_UNVERIFIED") assert.doesNotMatch(h.app.innerHTML, /此账号尚未获得应用使用权限/);
     assert.doesNotMatch(h.app.innerHTML, new RegExp(code));
     assert.match(h.app.innerHTML, /已连接 CentuarAI-AMD-102/);
     assert.match(h.app.innerHTML, /data-action="applications-launch"[^>]*>打开/);

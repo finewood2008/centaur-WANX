@@ -3,6 +3,20 @@ import { evaluateApplicationCompatibility, validateCompatibility } from "./compa
 const fail = code => Object.assign(new Error(code), { code });
 const safeCode = value => typeof value === "string" && /^[A-Z][A-Z0-9_]{1,80}$/.test(value);
 
+function preparationResponse(response) {
+  let value;
+  try { value = JSON.parse(response.body.toString("utf8")); }
+  catch { if (response.status >= 200 && response.status < 300) throw fail("APPLICATION_PREPARATION_INVALID"); }
+  if (response.status < 200 || response.status >= 300) {
+    // An HTTP authentication failure is not evidence of a missing app grant.
+    const code = ["AUTH_FAILED", "FORBIDDEN"].includes(value?.code) ? "APP_AUTHORIZATION_UNVERIFIED"
+      : safeCode(value?.code) ? value.code : [401, 403].includes(response.status) ? "APP_AUTHORIZATION_UNVERIFIED"
+      : response.status === 404 ? "BACKEND_CONTRACT_INCOMPATIBLE" : "APPLICATION_PREPARATION_UNAVAILABLE";
+    throw fail(code);
+  }
+  return value;
+}
+
 /** No credentials or readiness evidence survive the authenticated box connection. */
 export function createApplicationBackend({ client, account, clientVersion }) {
   function assertIdentity(captured, connection) {
@@ -22,13 +36,7 @@ export function createApplicationBackend({ client, account, clientVersion }) {
       check();
       const response = await connection.request({ path, method: "POST", headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(body)) });
       check();
-      let value;
-      try { value = JSON.parse(response.body.toString("utf8")); }
-      catch { if (response.status >= 200 && response.status < 300) throw fail("APPLICATION_PREPARATION_INVALID"); }
-      if (response.status < 200 || response.status >= 300)
-        throw fail(safeCode(value?.code) ? value.code : [401, 403].includes(response.status) ? "APP_ENTITLEMENT_REQUIRED"
-          : response.status === 404 ? "BACKEND_CONTRACT_INCOMPATIBLE" : "APPLICATION_PREPARATION_UNAVAILABLE");
-      return value;
+      return preparationResponse(response);
     }
     return { connection, current, check, post };
   }
@@ -117,8 +125,7 @@ export function createApplicationBackend({ client, account, clientVersion }) {
       const response = await client.applicationRequest({ path: "/api/platform/applications/readiness", method: "POST",
         headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ schemaVersion: 1, applicationId: manifest.applicationId, compatibility })) });
       if (captured !== JSON.stringify({ account: account.getIdentity(), deviceId: client.snapshot().connection?.deviceId })) throw fail("UPDATE_SESSION_CHANGED");
-      if (response.status < 200 || response.status >= 300) throw fail("CONTRACT_UNSUPPORTED");
-      result.backend = JSON.parse(response.body.toString("utf8"));
+      result.backend = preparationResponse(response);
       return result;
     }
     const fixed = await fixedConnection(manifest.applicationId, compatibility);
