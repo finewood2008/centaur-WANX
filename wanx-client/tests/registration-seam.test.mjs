@@ -14,7 +14,8 @@ async function harness(t, options = {}) {
   const events = new Map(), calls = [];
   const app = { innerHTML: "", addEventListener: (name, fn) => events.set(name, fn) };
   const state = { route: "auth", phase: "signed_out" };
-  const button = { disabled: false, textContent: "获取验证码" };
+  const button = { disabled: false, textContent: "获取验证码", classList: { toggle() {} }, setAttribute() {},
+    set innerHTML(value) { this.textContent = value.replace(/<[^>]*>/g, ""); } };
   const inputs = { "#account-name": { value: "13800138000" }, '[data-action="send-registration-code"]': button };
   vm.runInNewContext(source, {
     window: { wanxClient: {

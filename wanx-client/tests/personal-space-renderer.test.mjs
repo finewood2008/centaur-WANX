@@ -36,6 +36,25 @@ test("an early box event clears private content and late results cannot refill t
   assert.doesNotMatch(h.space.view(), /secret/);
 });
 
+test("file refresh shows progress while the listing is loading", async () => {
+  let finish;
+  let hold = false;
+  const h = harness(async action => {
+    if (action === "space.refresh") return ok({ phase: "ready", tasks: [] });
+    if (hold) return new Promise(resolve => { finish = resolve; });
+    return ok(listed("file.txt"));
+  });
+  h.space.hostState(connected("box")); h.space.activate(true); await tick();
+  hold = true;
+  const request = h.click("refresh");
+  await tick();
+  assert.match(h.space.view(), /class="space-icon-button space-refreshing"[^>]*aria-busy="true"[^>]*disabled/);
+  assert.match(h.space.view(), /正在刷新文件…/);
+  finish(ok(listed("file.txt")));
+  await request;
+  assert.doesNotMatch(h.space.view(), /space-refreshing|正在刷新文件…/);
+});
+
 test("rapid folder navigation ignores the late listing from a previous folder", async () => {
   let resolveFolder;
   const h = harness(async (action, input) => action === "space.refresh" ? ok({ phase: "ready", tasks: [] }) : input.parent ? new Promise(resolve => { resolveFolder = resolve; }) : ok(listed("root-file.txt")));
