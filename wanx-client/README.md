@@ -144,6 +144,8 @@ npm --prefix wanx-client run package:windows
 
 引擎输出到忽略版本控制的 `native/bin/`；electron-builder 按目标平台/架构把对应引擎复制到应用的 `resources/network/`。构建同时收集模块版本与许可证文件。没有发布签名证书时，本机验证产物不等同于已签名、公证的正式安装包。
 
+客户端打包通过 `afterPack` 强制检查交付目录中的网络引擎和发现助手：缺失、空文件、执行权限不正确或与本次构建输入不一致都会停止打包；同平台同架构还会执行无账号的引擎状态检查。带品牌的 Electron 运行包即使返回 `isPackaged=false`，从 `Resources/app` 加载时也使用 `resources/network`。更新须交付完整应用及匹配的网络组件，避免只覆盖源码。详细规则与回归命令见[网络组件打包与更新校验](../docs/wanx-native-packaging-20261019.md)。
+
 macOS 正式客户端请从仓库根目录运行独立入口（市场应用使用 `wanx-client/package-app.sh`）：
 
 ```sh

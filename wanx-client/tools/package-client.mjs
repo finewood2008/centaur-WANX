@@ -11,6 +11,7 @@ import { readSourceClientManifest, assertSourceClientManifestUnchanged, readPack
 import { clientBuildSource, clientTestSourceSnapshot } from "./package-client-source.mjs";
 import { clientTrustFingerprints, validateClientTrust } from "./package-client-trust.mjs";
 import { prepareMacUpdatePermissions } from "./package-client-permissions.mjs";
+import { readPackagedNativeBinaries } from "./package-client-native.mjs";
 import { TEST_APP_ID, TEST_PACKAGE_NAME, TEST_PRODUCT_NAME, testPackageIdentity, validTestRunId } from "../updates/test-build.mjs";
 import { testFeedURL as validateTestFeedURL } from "../updates/test-runtime.mjs";
 
@@ -100,7 +101,7 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
   const testCASnapshot = path.join(configurationDirectory, "test-ca.pem");
   if (test) await writeFile(testCASnapshot, testCA, { mode: 0o600 });
   await writeFile(configurationFile, JSON.stringify({ ...pkg.build, appId, productName: name,
-    afterPack: path.join(root, "tools/package-client-permissions.mjs"),
+    afterPack: path.join(root, "tools/package-client-native.mjs"),
     forceCodeSigning: true, mac: { ...pkg.build.mac, defaultArch: "x64" },
     directories: { ...pkg.build.directories, output: outputDir }, extraMetadata: { version, wanxBuild: build,
       ...(test ? { name: TEST_PACKAGE_NAME, productName: TEST_PRODUCT_NAME, main: "updates/test-entry.mjs" } : {}) },
@@ -127,8 +128,8 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
   const executable = await mustExist(path.join(app, "Contents/MacOS", plistValue("CFBundleExecutable")));
   if (!output("lipo", ["-archs", executable]).split(/\s+/).includes(arch === "x64" ? "x86_64" : arch))
     throw new Error("应用包处理器架构不匹配。");
-  for (const binary of [`wanx-netbird-darwin-${arch}`, `wanx-discovery-darwin-${arch}`])
-    await mustExist(path.join(app, "Contents/Resources/network", binary));
+  const nativeBinaries = await readPackagedNativeBinaries({ resourcesPath: path.join(app, "Contents/Resources"),
+    platform: "darwin", arch });
   const packed = readPackagedClientManifest(path.join(app, "Contents/Resources/app.asar"));
   if (packed.version !== version) throw new Error("包内 package.json 版本与发行参数不一致。");
   if (packed.wanxBuild?.buildId !== build.buildId) throw new Error("包内构建身份与发行参数不一致。");
@@ -176,7 +177,7 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
   await mkdir(outputDir, { recursive: true });
   await writeFile(path.join(outputDir, "SHA256SUMS.txt"), `${digest}  ${path.basename(dmg)}\n${zipDigest}  ${path.basename(zip)}\n`);
   const report = { version, appId, name, platform: "macos", arch, dmg, sha256: digest,
-    build, updateTrust, updateArtifact: { path: zip, kind: "mac-zip", notarized: !local && !test, sizeBytes: (await stat(zip)).size, sha256: zipDigest, sha512: zipSha512.digest("base64") },
+    build, updateTrust, nativeBinaries, updateArtifact: { path: zip, kind: "mac-zip", notarized: !local && !test, sizeBytes: (await stat(zip)).size, sha256: zipDigest, sha512: zipSha512.digest("base64") },
     signed: true, notarized: !local && !test, distributionClass: build.distributionClass };
   await writeFile(path.join(outputDir, "verification-client.json"), JSON.stringify(report, null, 2) + "\n");
   return report;

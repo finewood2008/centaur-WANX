@@ -77,6 +77,7 @@ test("formal Windows build pins certificate, publisher, current-user NSIS scope 
   const config = windowsReleaseConfiguration(input);
   await validateConfiguration(config, { isEnabled: false });
   assert.equal(config.forceCodeSigning, true); assert.equal(config.win.forceCodeSigning, true);
+  assert.equal(config.afterPack, "tools/package-client-native.mjs");
   assert.equal(config.win.verifyUpdateCodeSignature, true);
   assert.deepEqual(config.win.signtoolOptions.publisherName, ["Example Publisher"]);
   assert.equal(config.nsis.perMachine, false); assert.equal(config.nsis.allowElevation, false);
@@ -146,7 +147,7 @@ for (const arch of ["arm64", "x64"]) test(`formal macOS ${arch} verifies the act
       fs.mkdirSync(path.join(app, "Contents/Resources/network"), { recursive: true });
       fs.writeFileSync(path.join(app, "Contents/MacOS/WANX"), "fixture");
       for (const name of [`wanx-netbird-darwin-${arch}`, `wanx-discovery-darwin-${arch}`])
-        fs.writeFileSync(path.join(app, "Contents/Resources/network", name), "fixture");
+        fs.writeFileSync(path.join(app, "Contents/Resources/network", name), "fixture", { mode: 0o755 });
       const resource = config.extraResources.find(item => item.to === "wanx-update-trust.json");
       assert.notEqual(resource.from, trustFile, "the packaged trust must be the validated snapshot");
       fs.copyFileSync(resource.from, path.join(app, "Contents/Resources/wanx-update-trust.json"));
@@ -164,6 +165,7 @@ for (const arch of ["arm64", "x64"]) test(`formal macOS ${arch} verifies the act
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const report = await packageClient({ version: "2.0.0", arch, out, trustFile, notaryProfile: "fixture" });
   assert.deepEqual(report.updateTrust, clientTrustFingerprints(trust));
+  assert.equal(report.nativeBinaries.engine.sha256, createHash("sha256").update("fixture").digest("hex"));
   assert.equal(report.updateArtifact.notarized, true);
   assert.equal(report.updateArtifact.sha256, createHash("sha256").update("ZIP containing stapled application").digest("hex"));
   const submitted = calls.filter(call => call[0] === "xcrun" && call[1] === "notarytool" && call[2] === "submit").map(call => path.extname(call[3]));

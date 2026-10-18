@@ -26,6 +26,7 @@ import os from "node:os";
 import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
 import { createSidecar } from "../network/sidecar.mjs";
+import { nativeBinaryPaths } from "./native-binaries.mjs";
 import { registerControlActions, openConnectedDashboard } from "./control.mjs";
 import { createDashboardWindows } from "./dashboard.mjs";
 import { APP_ICON, DESKTOP_NAME, createDesktopIntegration } from "./desktop.mjs";
@@ -133,9 +134,8 @@ if (process.argv.includes("--wanx-managed-app")) {
   app
     .whenReady()
     .then(async () => {
-      const binaryName = `wanx-netbird-${process.platform}-${process.arch}${
-        process.platform === "win32" ? ".exe" : ""
-      }`;
+      const nativePaths = nativeBinaryPaths({ appPath: app.getAppPath(),
+        resourcesPath: process.resourcesPath, packaged: app.isPackaged });
       const userData = app.getPath("userData");
       await protectPrivateDirectory(userData, { packaged: app.isPackaged });
       if (process.argv.includes("--wanx-smoke-safe-storage")) {
@@ -160,11 +160,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       const staticCache = createStaticAssetCache({
         directory: path.join(userData, "static-assets"),
       });
-      const binaryPath = app.isPackaged
-        ? path.join(process.resourcesPath, "network", binaryName)
-        : fileURLToPath(
-            new URL(`../native/bin/${binaryName}`, import.meta.url),
-          );
+      const binaryPath = nativePaths.engine;
       const account = createAccount({
         ...(process.env.WANX_CONSUMER_URL
           ? { baseURL: process.env.WANX_CONSUMER_URL }
@@ -587,9 +583,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         advertisementNames: createAdvertisementNames({
           lookupName: (deviceId) => account.lookupDeviceName(deviceId),
           cacheScope: () => account.getIdentity()?.accountId || null,
-          helperPath: app.isPackaged
-            ? path.join(process.resourcesPath, "network", `wanx-discovery-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`)
-            : fileURLToPath(new URL(`../native/bin/wanx-discovery-${process.platform}-${process.arch}${process.platform === "win32" ? ".exe" : ""}`, import.meta.url)),
+          helperPath: nativePaths.discovery,
         }),
         consumerBaseUrl: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onError: reportError,
