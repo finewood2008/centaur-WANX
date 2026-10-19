@@ -24,6 +24,21 @@ const devices = ["102", "103"].map((id) => ({
   deviceId: `box-${id}`, displayName: `CentuarAI-AMD-${id}`, accessState: "ready", canOpen: true,
 }));
 
+const supportDeviceId = "centauros-37859979e324b9e257c586da";
+function supportState() {
+  // The real network directory intentionally does not include ownershipEpoch.
+  return { ...state("unavailable", "disabled"), network: { enabled: false, phase: "disabled" },
+    devices: [{ deviceId: supportDeviceId, displayName: "离线测试盒", deviceRole: "owner", canOpen: false, accessState: "authorization_pending" }] };
+}
+function supportReceipt(overrides = {}) {
+  return { deviceId: supportDeviceId, ownershipEpoch: 7, request: {
+    registryDeviceId: supportDeviceId, ownershipEpoch: 7, requestId: "request-1", requestDigest: "a".repeat(64),
+    operatorName: "维护人员 <甲>", operatorId: "admin:7", reason: "检查桌面 <img src=x>", scope: "support.vnc", durationMinutes: 15,
+    requestExpiresAt: new Date(Date.now() + 300000).toISOString(), decision: "pending", authorization: "none", supportRevision: 0,
+    supportSessionId: null, observation: null, ...overrides,
+  } };
+}
+
 function state(platformPhase = "ready", networkPhase = "ready", boxId = null) {
   return {
     account: { phase: "authenticated", accountId: "account-1" },
@@ -57,7 +72,7 @@ async function harness(initial = state(), installed = [application], options = {
     set innerHTML(value) {
       markup = value; renderCount++;
       forms = new Map([...value.matchAll(/<form\b[^>]*data-form="([^"]+)"[^>]*>/g)].map(([, name]) => {
-        const submit = { disabled: false, textContent: "" };
+        const submit = { disabled: false, textContent: "", innerHTML: "", classList: { toggle() {} }, setAttribute() {} };
         const transferPhone = { focus: () => calls.push(["focus-transfer-phone"]) };
         const wifiNodes = new Map();
         const passwordNotice = {};
@@ -105,9 +120,9 @@ async function harness(initial = state(), installed = [application], options = {
       return { passwordReset: true };
     },
     logout: async () => { rawState = { account: { phase: "signed_out", logoutPending: true } }; notify(); await options.logoutRequest?.(); },
-    connectBox: async (deviceId) => { if (options.connectFailure) throw new Error(options.connectFailure); rawState = state("ready", "ready", deviceId); notify(); },
+    connectBox: async (deviceId) => { await options.connectRequest?.(deviceId); if (options.connectFailure) throw new Error(options.connectFailure); rawState = state("ready", "ready", deviceId); notify(); },
     disconnect: async () => { rawState = state(); notify(); },
-    refreshDevices: async () => {},
+    refreshDevices: async () => { await options.refreshRequest?.(); if (options.refreshFailure) throw new Error(options.refreshFailure); },
     lookupDeviceDiscovery: async (deviceIds) => {
       calls.push(["lookup-device-discovery", [...deviceIds]]);
       return options.lookupDeviceDiscovery ? options.lookupDeviceDiscovery(deviceIds) : {
@@ -151,7 +166,9 @@ async function harness(initial = state(), installed = [application], options = {
       rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
     },
     credits: options.credits,
+    creditWallet: options.creditWallet,
     accountProfile: options.accountProfile,
+    support: options.support,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -247,12 +264,46 @@ test("login opens the store while the network prepares, with registration availa
   assert.doesNotMatch(h.app.innerHTML, /account-1/);
 });
 
-for (const [code, message] of [["APPLICATION_START_FAILED", "应用启动失败"], ["APPLICATION_START_TIMEOUT", "应用启动超时"]]) {
+test("a staged first installation offers continuation without claiming the app is usable", async () => {
+  const pending = { ...application, installationState: "pending", resourcePreparation: { status: "pending", code: "APPLICATION_RESOURCES_PENDING" } };
+  const h = await harness(state(), [pending], { candidate: async () => ({ status: "available", release: { version: application.version } }) });
+  await h.click("market-refresh");
+  assert.match(h.app.innerHTML, /应用包已下载/);
+  assert.match(h.app.innerHTML, /继续安装/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"/);
+  assert.match(h.app.innerHTML, /部分应用待完成安装/);
+  assert.match(h.app.innerHTML, /部分应用需连接盒子完成安装/);
+  await h.click("store-details", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /待安装版本/);
+  assert.match(h.app.innerHTML, /待完成盒端准备/);
+});
+
+test("a blocked candidate exposes retry and leaves the installed application's open button", async () => {
+  const next = { ...application, version: "0.5.0", installationState: "pending", resourcePreparation: { status: "blocked", code: "RESOURCE_MIGRATION_REQUIRED" } };
+  const h = await harness(state(), [{ ...application, pendingInstallation: next }], { candidate: async () => ({ status: "available", release: { version: next.version } }) });
+  await h.click("market-refresh");
+  assert.match(h.app.innerHTML, /v0.5.0 尚未启用，当前版本可继续使用/);
+  assert.match(h.app.innerHTML, /重试更新/);
+  assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+  assert.match(h.app.innerHTML, /v0.4.3/);
+});
+
+for (const [code, message] of [
+  ["APPLICATION_START_FAILED", "应用启动失败"],
+  ["APPLICATION_START_TIMEOUT", "应用启动超时"],
+  ["RESOURCE_EXPERT_START_FAILED", "应用所需专家未能启动，请联系盒主或管理员检查模型配置和专家运行状态后重试。"],
+  ["APP_ENTITLEMENT_REQUIRED", "此账号尚未获得应用使用权限，请联系管理员启用并授权。"],
+  ["APP_AUTHORIZATION_UNVERIFIED", "应用使用权限尚未确认，请重新登录后重试，或联系盒主。"],
+  ["RESOURCE_SERVICE_NOT_CONFIGURED", "盒端应用准备服务尚未启用，请联系盒主或管理员检查盒端配置。"],
+  ["BACKEND_CONTRACT_INCOMPATIBLE", "此应用需要更新盒端服务，请联系盒主更新后再试。"],
+  ["APPLICATION_PREPARATION_UNAVAILABLE", "盒端应用准备服务暂不可用，请检查盒端服务后重试。"],
+]) {
   test(`store surfaces ${code} and allows retry without disconnecting the box`, async () => {
     const h = await harness(state("ready", "ready", "box-102"));
     h.failLaunch(code);
     await h.click("applications-launch", { applicationId: application.applicationId });
     assert.ok(h.app.innerHTML.includes(message));
+    if (code === "APP_AUTHORIZATION_UNVERIFIED") assert.doesNotMatch(h.app.innerHTML, /此账号尚未获得应用使用权限/);
     assert.doesNotMatch(h.app.innerHTML, new RegExp(code));
     assert.match(h.app.innerHTML, /已连接 CentuarAI-AMD-102/);
     assert.match(h.app.innerHTML, /data-action="applications-launch"[^>]*>打开/);
@@ -1220,6 +1271,71 @@ test("an explicit account owner or member remains claimed and the owner's existi
   assert.equal(h.calls.find(([name]) => name === "wanx-client:connect-box")[1], id);
 });
 
+test("refreshing boxes shows progress until the device request settles", async () => {
+  let finish;
+  const waiting = new Promise(resolve => { finish = resolve; });
+  const h = await harness(state(), [application], { refreshRequest: () => waiting });
+  h.navigate("boxes");
+  const request = h.click("refresh");
+  assert.match(h.app.innerHTML, /data-action="refresh" aria-busy="true" disabled/);
+  assert.match(h.app.innerHTML, /activity-spinner[^>]*><\/span>正在刷新…/);
+  assert.match(h.app.innerHTML, /role="status"><span class="activity-spinner"[^>]*><\/span>正在读取最新设备状态…/);
+  finish();
+  await request;
+  assert.match(h.app.innerHTML, /data-action="refresh" aria-busy="false"/);
+  assert.doesNotMatch(h.app.innerHTML, /正在读取最新设备状态…/);
+});
+
+test("connecting a box shows progress on its card and restores the action on failure", async () => {
+  let finish;
+  const waiting = new Promise(resolve => { finish = resolve; });
+  const h = await harness(state(), [application], { connectRequest: () => waiting, connectFailure: "DEVICE_OFFLINE" });
+  h.navigate("boxes");
+  const request = h.click("connect", { deviceId: "box-102" });
+  assert.match(h.app.innerHTML, /activity-spinner[^>]*><\/span>正在连接…/);
+  assert.equal((h.app.innerHTML.match(/正在连接…<\/button>/g) || []).length, 1);
+  finish();
+  await request;
+  assert.doesNotMatch(h.app.innerHTML, /正在连接…<\/button>/);
+  assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
+});
+
+test("market installation shows progress on the clicked app until it completes", async () => {
+  const install = pendingResponse();
+  const h = await harness(state(), [], { install: () => install.promise });
+  await h.click("market-install", { applicationId: application.applicationId });
+  const request = h.click("market-confirm");
+  assert.match(h.app.innerHTML, /data-action="market-install"[^>]*aria-busy="true" disabled><span class="activity-spinner"[^>]*><\/span>正在安装…/);
+  install.resolve(application);
+  await request;
+  assert.doesNotMatch(h.app.innerHTML, /正在安装…/);
+});
+
+test("reset-code request shows sending progress and restores the button", async () => {
+  const code = pendingResponse();
+  const h = await harness({ account: { phase: "signed_out" } }, [], { passwordCodeRequest: () => code.promise });
+  await h.click("auth-reset");
+  h.form("auth").values.username = "13800138000";
+  const request = h.click("send-reset-code");
+  assert.match(h.app.innerHTML, /data-action="send-reset-code" aria-busy="true" disabled><span class="activity-spinner"[^>]*><\/span>正在发送…/);
+  code.resolve();
+  await request;
+  assert.doesNotMatch(h.app.innerHTML, /正在发送…/);
+});
+
+test("profile save keeps its form while showing progress", async () => {
+  const save = pendingResponse();
+  const h = await harness(state(), [], { accountProfile: { save: () => save.promise } });
+  await h.click("show-profile");
+  const form = h.form("profile");
+  const request = h.submit("profile", { displayName: "新昵称" });
+  assert.equal(h.form("profile"), form);
+  assert.match(form.querySelector('button[type="submit"]').innerHTML, /activity-spinner[^>]*><\/span>正在保存…/);
+  save.resolve({ displayName: "新昵称" });
+  await request;
+  assert.doesNotMatch(form.querySelector('button[type="submit"]').innerHTML, /正在保存…/);
+});
+
 test("each new scan refreshes inventory names and claim state", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const id = discoveryId(7);
@@ -1343,7 +1459,7 @@ test("numeric box display names remain visible during discovery and identity pre
   h.setup({ state: "previewReady", preview: { device_id: deviceId, display_name: "CentaurOS-22",
     cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 0 } });
   assert.match(h.app.innerHTML, /<dt>设备名称<\/dt><dd>CentaurOS-22<\/dd>/);
-  assert.match(h.app.innerHTML, /盒子尚未准备好首次配网/);
+  assert.match(h.app.innerHTML, /盒子正在准备配网，请稍后重新选择/);
   assert.doesNotMatch(h.app.innerHTML, /PROTOCOL_CHANGED/);
 });
 
@@ -1375,7 +1491,7 @@ test("provisioning explains unregistered and closed-window boxes and does not bl
   assert.match(h.app.innerHTML, /盒子尚未完成平台注册/);
   assert.match(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
   h.setup({ state: "previewReady", preview: { ...preview, cloud_enrollment_status: "ready" } });
-  assert.match(h.app.innerHTML, /盒子尚未准备好首次配网/);
+  assert.match(h.app.innerHTML, /盒子正在准备配网，请稍后重新选择/);
   assert.match(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
   h.setup({ state: "previewReady", preview: { ...preview, cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 300 } });
   assert.doesNotMatch(h.app.innerHTML, /data-action="provisioning-confirm" disabled/);
@@ -1610,6 +1726,19 @@ test("a late Wi-Fi scan cannot overwrite a new pairing session", async () => {
   assert.match(options, /Office/); assert.doesNotMatch(options, /Old secret/);
 });
 
+test("renewing a pairing session clears the previous Wi-Fi choice and password", async () => {
+  const h = await harness(state(), [application], { scanWifi: async () => [officeWifi] });
+  await h.click("provisioning"); h.setup({ state: "awaitingWifi", pairingSessionId: "session-1" }); await flushWifi();
+  h.changeWifi(wifiChoice(officeWifi));
+  const form = h.form("wifi");
+  form.values.password = "old-secret";
+  h.setup({ state: "awaitingWifi", pairingSessionId: "session-1", sessionRenewed: true }); await flushWifi();
+  assert.equal(form.values.password, "");
+  assert.equal(h.form("wifi").values.password, "");
+  assert.equal(h.form("wifi").querySelector('[data-input="wifi-network"]').value, "");
+  assert.match(h.app.innerHTML, /安全会话已自动更新，请重新选择网络并确认/);
+});
+
 for (const action of ["cancel-provisioning", "logout", "back-devices"]) test(`leaving Wi-Fi through ${action} clears secrets and ignores scan completion`, async () => {
   let complete;
   const h = await harness(state(), [application], { scanWifi: () => new Promise(resolve => { complete = resolve; }) });
@@ -1632,6 +1761,171 @@ function pendingResponse() {
 }
 const flushActions = () => new Promise(resolve => setImmediate(resolve));
 const actionButton = (h, action) => h.app.innerHTML.match(new RegExp(`<button[^>]*data-action="${action}"[^>]*>[\\s\\S]*?</button>`))?.[0];
+
+test("Owner support uses cloud IPC while offline, confirms approval and keeps revocation pending device cleanup", async () => {
+  let receipt = supportReceipt();
+  const decisions = [], revocations = [];
+  const h = await harness(supportState(), [], { support: {
+    current: async input => { assert.equal(input.deviceId, supportDeviceId); return receipt; },
+    decide: async input => { decisions.push(input); receipt = supportReceipt({ decision: input.decision, authorization: "active", supportRevision: 1, supportSessionId: "session-1", expiresAt: new Date(Date.now() + 900000).toISOString() }); return receipt; },
+    revoke: async input => { revocations.push(input); receipt = supportReceipt({ ...receipt.request, authorization: "revoked", supportRevision: 2 }); return receipt; },
+  } });
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /data-action="support-open"/);
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, /等待你确认/);
+  for (const detail of [/维护人员 &lt;甲&gt;/, /admin:7/, /检查桌面 &lt;img src=x&gt;/, /查看并控制盒子桌面/, /15 分钟/]) assert.match(h.app.innerHTML, detail);
+  assert.doesNotMatch(h.app.innerHTML, /<img src=x>/);
+  await h.click("support-approve");
+  assert.equal(decisions.length, 0);
+  assert.match(h.app.innerHTML, /确认允许.*15 分钟/);
+  await h.click("support-confirm");
+  assert.equal(decisions.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(decisions[0])), { deviceId: supportDeviceId, ownershipEpoch: 7, requestId: "request-1", requestDigest: "a".repeat(64), decision: "approved", confirmed: true });
+  assert.match(h.app.innerHTML, /已同意本次远程桌面协助/);
+  await h.click("support-revoke");
+  assert.equal(revocations.length, 0);
+  await h.click("support-confirm");
+  assert.equal(revocations[0].supportSessionId, "session-1");
+  assert.match(h.app.innerHTML, /等待设备确认会话结束/);
+  assert.doesNotMatch(h.app.innerHTML, /设备已确认桌面关闭/);
+  receipt = supportReceipt({ ...receipt.request, observation: { supportRevision: 2, requestId: "request-1", supportSessionId: "session-1", observedAt: new Date().toISOString(), desktop: "closed", connection: "disconnected" } });
+  await h.click("support-refresh");
+  assert.match(h.app.innerHTML, /设备已确认桌面关闭、连接断开/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
+  await h.click("support-close");
+});
+
+for (const expired of [false, true]) test(`pending support ${expired ? "expiry" : "approval"} takes priority over a fresh idle-device observation`, async () => {
+  const receipt = supportReceipt({
+    requestExpiresAt: new Date(Date.now() + (expired ? -60000 : 300000)).toISOString(),
+    observation: { supportRevision: 0, requestId: null, supportSessionId: null, observedAt: new Date().toISOString(),
+      desktop: "closed", connection: "disconnected" },
+  });
+  const h = await harness(supportState(), [], { support: { current: async () => receipt } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, expired ? /请求时间已到，请刷新确认/ : /等待你确认/);
+  assert.doesNotMatch(h.app.innerHTML, /设备已确认桌面关闭、连接断开/);
+  if (expired) assert.doesNotMatch(h.app.innerHTML, /data-action="support-approve"/);
+  else {
+    assert.match(h.app.innerHTML, /data-action="support-approve"/);
+    await h.click("support-approve");
+    assert.match(h.app.innerHTML, /确认允许.*15 分钟/);
+    assert.equal(h.calls.filter(([name]) => name === "wanx-client:support-decide").length, 0);
+    await h.click("support-cancel");
+  }
+  await h.click("support-close");
+});
+
+test("pending support still exposes a fresh device cleanup failure", async () => {
+  const receipt = supportReceipt({ observation: { supportRevision: 0, requestId: null, supportSessionId: null,
+    observedAt: new Date().toISOString(), desktop: "cleanup_failed", connection: "disconnected" } });
+  const h = await harness(supportState(), [], { support: { current: async () => receipt } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, /设备清理失败，请联系维护人员继续处理/);
+  assert.doesNotMatch(h.app.innerHTML, /role="status">等待你确认/);
+  await h.click("support-close");
+});
+
+test("support entry is Owner-only and cancelling a confirmation never submits a decision", async () => {
+  let calls = 0;
+  const h = await harness({ ...supportState(), devices: [{ ...supportState().devices[0], deviceRole: "member" }] }, [], { support: { current: async () => { calls++; return supportReceipt(); } } });
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /data-action="support-open"/);
+  await h.click("support-open", { deviceId: supportDeviceId });
+  assert.equal(calls, 0);
+  h.update(supportState());
+  await h.click("support-open", { deviceId: supportDeviceId });
+  await h.click("support-reject");
+  assert.match(h.app.innerHTML, /确认拒绝这次/);
+  await h.click("support-cancel");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:support-decide").length, 0);
+  await h.click("support-close");
+});
+
+test("failed support decision never shows approval success and requires reading the original request", async () => {
+  const h = await harness(supportState(), [], { support: { current: async () => supportReceipt(), decide: async () => { throw new Error("ACCOUNT_NETWORK_ERROR"); } } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  await h.click("support-approve");
+  await h.click("support-confirm");
+  assert.match(h.app.innerHTML, /操作结果待确认，请刷新原请求/);
+  assert.doesNotMatch(h.app.innerHTML, /已同意本次远程桌面协助|data-action="support-approve"/);
+  await h.click("support-refresh");
+  assert.match(h.app.innerHTML, /等待你确认/);
+  await h.click("support-close");
+});
+
+for (const stage of ["current", "decide"]) for (const wrapped of [false, true]) test(`support ${stage} busy ${wrapped ? "Electron" : "typed"} error requests an original-request refresh without repeating approval`, async () => {
+  let fail = true, decisions = 0;
+  const code = "SUPPORT_AUTHORIZATION_BUSY";
+  const error = wrapped ? new Error(`Error invoking remote method 'wanx-client:support-${stage}': Error: ${code}`)
+    : Object.assign(new Error(code), { code });
+  const h = await harness(supportState(), [], { support: {
+    current: async () => { if (stage === "current" && fail) throw error; return supportReceipt(); },
+    decide: async () => { decisions++; throw error; },
+  } });
+  await h.click("show-boxes");
+  await h.click("support-open", { deviceId: supportDeviceId });
+  if (stage === "decide") {
+    await h.click("support-approve");
+    await h.click("support-confirm");
+    assert.match(h.app.innerHTML, /操作结果待确认，请刷新原请求；不要重复批准/);
+  }
+  assert.match(h.app.innerHTML, /远程协助服务繁忙，请稍后刷新原请求确认状态。/);
+  assert.doesNotMatch(h.app.innerHTML, /检查电脑联网|已同意本次远程桌面协助|data-action="support-approve"/);
+  assert.equal(decisions, stage === "decide" ? 1 : 0);
+  fail = false;
+  await h.click("support-refresh");
+  assert.match(h.app.innerHTML, /等待你确认/);
+  assert.equal(decisions, stage === "decide" ? 1 : 0);
+  await h.click("support-close");
+});
+
+test("support preload projects only the frozen action fields and no endpoints or Owner override", async () => {
+  const received = [];
+  const h = await harness(supportState(), [], { support: {
+    current: async input => { received.push(input); return supportReceipt(); },
+    decide: async input => { received.push(input); return supportReceipt(); },
+    revoke: async input => { received.push(input); return supportReceipt(); },
+  } });
+  const common = { deviceId: supportDeviceId, ownershipEpoch: 7, requestId: "request-1", requestDigest: "a".repeat(64), confirmed: true };
+  const injected = { owner: true, role: "owner", url: "https://untrusted.invalid", token: "secret", scope: "support.exec" };
+  await h.window.wanxClient.action("support.current", { ...common, ...injected });
+  await h.window.wanxClient.action("support.decide", { ...common, ...injected, decision: "approved" });
+  await h.window.wanxClient.action("support.revoke", { ...common, ...injected, supportSessionId: "session-1" });
+  assert.deepEqual(JSON.parse(JSON.stringify(received)), [{ deviceId: supportDeviceId }, { ...common, decision: "approved" }, { ...common, supportSessionId: "session-1" }]);
+});
+
+test("late approval result after account change cannot show a successful grant to the new account", async () => {
+  const pending = pendingResponse();
+  const h = await harness(supportState(), [], { support: { current: async () => supportReceipt(), decide: () => pending.promise } });
+  await h.click("show-boxes"); await h.click("support-open", { deviceId: supportDeviceId });
+  await h.click("support-approve"); const approving = h.click("support-confirm");
+  await flushActions();
+  h.update({ ...supportState(), account: { phase: "authenticated", accountId: "other-owner" } });
+  pending.resolve(supportReceipt({ decision: "approved", authorization: "active", supportSessionId: "session-1" }));
+  await approving;
+  assert.doesNotMatch(h.app.innerHTML, /support-panel|已同意本次远程桌面协助|data-action="support-revoke"/);
+});
+
+for (const transition of ["account", "same-account-login", "page", "ownership"]) {
+  test(`late support reads cannot reopen or expose a request after ${transition} changes`, async () => {
+    const pending = pendingResponse();
+    const h = await harness(supportState(), [], { support: { current: () => pending.promise } });
+    await h.click("show-boxes");
+    const opening = h.click("support-open", { deviceId: supportDeviceId });
+    await flushActions();
+    if (transition === "account") h.update({ ...supportState(), account: { phase: "authenticated", accountId: "other-owner" } });
+    if (transition === "same-account-login") { h.update({ account: { phase: "signed_out" } }); h.update(supportState()); }
+    if (transition === "page") await h.click("show-applications");
+    if (transition === "ownership") h.update({ ...supportState(), devices: [{ ...supportState().devices[0], deviceRole: "member" }] });
+    pending.resolve(supportReceipt()); await opening;
+    assert.doesNotMatch(h.app.innerHTML, /support-panel|维护人员 &lt;甲&gt;|data-action="support-approve"/);
+  });
+}
 
 for (const fails of [false, true]) test(`identity loading prevents another scan and recovers after ${fails ? "failure" : "success"}`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
@@ -2016,23 +2310,32 @@ test("expired setup sessions offer a new scan without requiring a deployment win
   const h = await harness(state(), [application], { setupRequest: async () => ({ state: "idle" }) });
   await h.click("provisioning");
   h.setup({ state: "restartRequired", errorCode: "PAIRING_EXPIRED" });
-  assert.match(h.app.innerHTML, /本次配网会话已超时，请重新扫描并重试/);
+  assert.match(h.app.innerHTML, /本次安全会话已到期，请重新选择盒子开始新会话/);
   assert.doesNotMatch(actionButton(h, "start-provisioning"), /disabled/);
   assert.doesNotMatch(h.app.innerHTML, /联系设备提供方|开启配网窗口/);
 });
 
 
-test("credits entry opens a read-only account ledger with real IPC data", async () => {
-  const h = await harness(state(), [application], { credits: {
-    balance: async () => ({ available: 1250, held: 40, paid_available: 1000, gift_available: 250 }),
-    transactions: async () => ({ items: [], after: 0, hasMore: false }),
+test("wallet entry reads the versioned account ledger through real IPC without a box", async () => {
+  const envelope = data => ({ schema_version: "1", request_id: "wallet-seam", data });
+  const h = await harness(state(), [application], { creditWallet: {
+    balance: async () => envelope({ balance_credit_atoms: "1250000000", debt_credit_atoms: "0", ledger_sequence: 1, execution_slot_state: "none" }),
+    catalog: async () => envelope({ recharge_enabled: false, timezone: "Asia/Shanghai", tiers: [] }),
+    orders: async () => envelope({ items: [], next_cursor: null }),
+    entries: async () => envelope({ items: [], next_cursor: null, through_ledger_sequence: 1 }),
+    calls: async () => envelope({ items: [], next_cursor: null }),
+    summary: async () => envelope({ gross_consumed_credit_atoms: "0", correction_credit_atoms: "0", net_consumed_credit_atoms: "0", pending_call_count: 0, ledger_sequence: 1 }),
   } });
-  assert.match(h.app.innerHTML, /1,250 点/);
+  assert.match(h.app.innerHTML, /1,250\.00 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.app.innerHTML, /积分/);
-  assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
-  assert.match(h.app.innerHTML, /还没有积分记录/);
+  assert.match(h.app.innerHTML, /账号积分/);
+  assert.match(h.app.innerHTML, /data-action="credits-open"/);
+  assert.doesNotMatch(h.app.innerHTML, /积分流水|调用记录|充值订单|role="dialog"/);
+  await h.click("credits-open");
+  assert.match(h.app.innerHTML, /role="dialog"/);
+  assert.match(h.app.innerHTML, /购买暂不可用/);
+  assert.doesNotMatch(h.app.innerHTML, /赠送积分|预计消耗|预留额度/);
 });
 
 test("box maintenance opens the current box terminal and desktop through trusted IPC", async () => {
@@ -2214,6 +2517,29 @@ test("four official posters rotate in the requested order without adding app ope
   assert.match(h.app.innerHTML, /暂未提供可安装版本/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"|data-action="applications-launch"/);
   assert.equal(h.calls.length, before);
+});
+
+for (const [ownershipState, copy] of [
+  ["owned_self", /已属于当前账号，无需再次认领/],
+  ["owned_other", /已属于其他账号，需要原主人完成转移/],
+  ["legacy_bound", /保留旧版账号绑定/],
+  ["history_review", /有尚待核对的交付历史/],
+  ["reset_pending", /正在完成重置/],
+]) test(`claim preview presents authoritative ${ownershipState} independently of the BLE countdown`, async () => {
+  const h = await harness(); await h.click("provisioning");
+  h.setup({ state: "previewReady", ownershipState, canClaim: false,
+    preview: { device_id: "box-102", cloud_enrollment_status: "ready", pairing_mode_remaining_seconds: 600 } });
+  assert.match(h.app.innerHTML, copy);
+  assert.match(actionButton(h, "provisioning-confirm"), /disabled/);
+  assert.doesNotMatch(h.app.innerHTML, /进入配网模式|开启配网窗口|连接盒子超时/);
+});
+
+test("transport timeout guidance describes Bluetooth rather than a claim-window state", async () => {
+  const h = await harness(); await h.click("provisioning");
+  h.setup({ state: "terminalError", errorCode: "LOCAL_CONNECT_TIMEOUT" });
+  assert.match(h.app.innerHTML, /蓝牙连接盒子超时/);
+  assert.match(h.app.innerHTML, /检查电脑蓝牙/);
+  assert.doesNotMatch(h.app.innerHTML, /处于配网模式|开启配网窗口/);
 });
 
 test("box overview shows WANX-wide usage and the box public IP, never private or proxy addresses", async () => {

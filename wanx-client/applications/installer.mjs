@@ -11,6 +11,16 @@ import { assertApplicationCompatibility } from "./compatibility.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 const safePart = value => value.replace(/[^A-Za-z0-9._-]/g, "_");
+const operationIdValid = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+function bindingSelection(value, artifactId, code = "APPLICATION_CURRENT_INVALID") {
+  if (!value || !["bindingSetId", "operationId", "bindingScope"].some(key => Object.hasOwn(value, key))) return {};
+  const scope = value.bindingScope;
+  if (typeof value.bindingSetId !== "string" || !/^[a-f0-9]{64}$/.test(value.bindingSetId) || !operationIdValid(value.operationId) ||
+      !scope || scope.artifactId !== artifactId || !Number.isSafeInteger(scope.ownershipEpoch) || scope.ownershipEpoch < 1 ||
+      [scope.accountId, scope.deviceId].some(item => typeof item !== "string" || !item || item.length > 256)) throw fail(code);
+  return { bindingSetId: value.bindingSetId, operationId: value.operationId,
+    bindingScope: { accountId: scope.accountId, deviceId: scope.deviceId, ownershipEpoch: scope.ownershipEpoch, artifactId: scope.artifactId } };
+}
 
 export function createApplicationInstaller({ rootDir, now = () => Date.now(), copy = cp, trustedKeys = {}, getCompatibilityContext, hasTrustedDataContinuity, prepareApplication, authorizeRelease } = {}) {
   if (typeof rootDir !== "string" || !rootDir) throw new TypeError("rootDir is required");
@@ -76,7 +86,9 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       const record = records.find(record => current.key ? path.basename(record.installPath) === current.key : record.version === current.version);
       if (!record) throw fail("APPLICATION_CURRENT_INVALID");
       const previous = records.find(record => path.basename(record.installPath) === current.previousKey);
-      return { ...record, ...(previous?.envelope ? { previous: { version: previous.version, artifactId: previous.artifactId } } : {}) };
+      return { ...record, ...bindingSelection(current, record.artifactId), ...(previous?.envelope ? {
+        previous: { version: previous.version, artifactId: previous.artifactId, ...bindingSelection(current.previousBinding, previous.artifactId) },
+      } : {}) };
     }
     // A signed artifact without a committed pointer is an interrupted install.
     records = records.filter(record => !record.envelope);
@@ -95,6 +107,45 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       assertSession();
       renameSync(temporary, path.join(directory, ".current-version.json"));
     } finally { await rm(temporary, { force: true }); }
+  }
+  async function pendingFor(id, records = null) {
+    let pending;
+    try { pending = JSON.parse(await readFile(path.join(appDirectory(id), ".pending-install.json"), "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return null; throw fail("APPLICATION_PENDING_INVALID"); }
+    records ||= await recordsFor(id);
+    const record = records.find(item => item.envelope && item.artifactId === pending.artifactId);
+    if (pending.schemaVersion !== 1 || !record || !["pending", "blocked"].includes(pending.preparation?.status) ||
+        typeof pending.preparation.code !== "string" || !/^[A-Z][A-Z0-9_]{1,80}$/.test(pending.preparation.code) ||
+        pending.operationId !== undefined && !operationIdValid(pending.operationId))
+      throw fail("APPLICATION_PENDING_INVALID");
+    return { ...record, ...(pending.operationId ? { operationId: pending.operationId } : {}), installationState: "pending", resourcePreparation: pending.preparation };
+  }
+  async function savePending(id, artifactId, operationId, preparation, check) {
+    const directory = appDirectory(id), temporary = path.join(directory, `.pending-${randomUUID()}.tmp`);
+    try {
+      await writeFile(temporary, JSON.stringify({ schemaVersion: 1, artifactId, operationId, preparation }), { mode: 0o600, flag: "wx" });
+      check();
+      renameSync(temporary, path.join(directory, ".pending-install.json"));
+    } finally { await rm(temporary, { force: true }); }
+  }
+  async function clearPending(id, artifactId) {
+    const pending = await pendingFor(id);
+    if (pending?.artifactId === artifactId) await rm(path.join(appDirectory(id), ".pending-install.json"), { force: true });
+  }
+  const preparationView = value => ({
+    status: value?.status === "blocked" ? "blocked" : "pending",
+    code: typeof value?.code === "string" && /^[A-Z][A-Z0-9_]{1,80}$/.test(value.code)
+      ? value.code : "APPLICATION_RESOURCES_PENDING",
+  });
+  async function installationView(id) {
+    const current = await currentFor(id);
+    let pending;
+    try { pending = await pendingFor(id); }
+    catch (error) { if (!current) throw error; return current; }
+    if (!current) return pending;
+    // A committed pointer wins over a leftover intent after a process exits
+    // between pointer publication and pending-marker cleanup.
+    return pending && pending.artifactId !== current.artifactId ? { ...current, pendingInstallation: pending } : current;
   }
 
   async function install({ archivePath, sourceDir, ...options } = {}, { signal } = {}) {
@@ -164,8 +215,9 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     const result = [];
     for (const app of apps) {
       if (!app.isDirectory() || !/^[a-z][a-z0-9._-]{1,63}$/.test(app.name)) continue;
-      const current = await serialize(app.name, () => currentFor(app.name));
+      const current = await serialize(app.name, () => installationView(app.name));
       if (current) result.push(current.protocolVersion === 3 && current.compatibility.resourceDependencies.length
+        && current.installationState !== "pending"
         ? { ...current, resourcePreparation: { status: "pending", code: "APPLICATION_RESOURCES_PENDING" } } : current);
     }
     return result;
@@ -174,7 +226,7 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     appDirectory(id);
     return serialize(id, async () => {
       const current = await currentFor(id);
-      if (!current) throw fail("APPLICATION_NOT_INSTALLED");
+      if (!current) throw fail(await pendingFor(id) ? "APPLICATION_RESOURCES_PENDING" : "APPLICATION_NOT_INSTALLED");
       if (current.selectionRequired) throw fail("APPLICATION_VERSION_SELECTION_REQUIRED");
       return current;
     });
@@ -187,21 +239,28 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
         throw fail("APPLICATION_VERSION_SELECTION_INVALID");
       const selected = (await recordsFor(id)).find(record => record.version === version);
       await assertApplicationCompatibility(selected, { getCompatibilityContext, descriptor: selected.descriptor, phase: "select" });
-      await publish(id, { version }, signal);
+      let pointer = {};
+      try { pointer = JSON.parse(await readFile(path.join(appDirectory(id), ".current-version.json"), "utf8")); }
+      catch (error) { if (error.code !== "ENOENT") throw fail("APPLICATION_CURRENT_INVALID"); }
+      const binding = selected.artifactId === pointer.key ? bindingSelection(pointer, selected.artifactId) : {};
+      await publish(id, { version, ...(selected.artifactId ? { key: selected.artifactId } : {}), ...binding }, signal);
       return currentFor(id);
     });
   }
   async function prune(id, inUseVersion) {
     return serialize(id, async () => {
       const records = await recordsFor(id), current = await currentFor(id, records);
+      let pending;
+      try { pending = await pendingFor(id, records); } catch { return; }
       if (!current || current.selectionRequired) return;
       for (const record of records) {
-        if (record.version !== current.version && record.version !== inUseVersion && !(record.artifactId && record.artifactId === current.previous?.artifactId))
+        if (record.version !== current.version && record.version !== inUseVersion && !(record.artifactId &&
+            [current.previous?.artifactId, pending?.artifactId].includes(record.artifactId)))
           await rm(record.installPath, { recursive: true, force: true });
       }
     });
   }
-  async function installVerifiedPackage({ archivePath, envelope, assertSession = () => {} } = {}, { signal } = {}) {
+  async function installVerifiedPackage({ archivePath, envelope, assertSession = () => {}, onlyIfMissing = false } = {}, { signal } = {}) {
     const descriptor = verifyEnvelope(envelope, trustedKeys);
     if (descriptor.packageType !== "wanxapp") throw marketFailure("MARKET_INCOMPATIBLE");
     let access;
@@ -218,6 +277,13 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     }
     return serialize(descriptor.applicationId, async () => {
       check();
+      // Delivery defaults must never replace a version installed by the user,
+      // including one committed while the package was downloading.
+      if (onlyIfMissing) {
+        const existing = await currentFor(descriptor.applicationId);
+        check();
+        if (existing) return existing;
+      }
       await confirmAccess();
       await assertApplicationCompatibility(descriptor.manifest, {
         getCompatibilityContext, descriptor, phase: "install",
@@ -232,7 +298,7 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       const directory = appDirectory(descriptor.applicationId), target = path.join(directory, descriptor.artifactId);
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const temporary = path.join(directory, `.staging-${randomUUID()}`);
-      let moved = false, committed = false;
+      let moved = false, committed = false, staged = false, preparation;
       try {
         await verifyPackageHash(archivePath, descriptor, check);
         const manifest = await extractVerifiedArchive(archivePath, temporary, descriptor, check);
@@ -248,22 +314,87 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
           moved = true;
         }
         const selection = current && !isComparableApplicationVersion(current.version)
-          ? { choices: [current.version, record.version] }
-          : { version: record.version, key: descriptor.artifactId, previousKey: current ? path.basename(current.installPath) : null };
-        // Package bytes and the manifest have been verified before any box-side
-        // mutation. Offline installs retain the frontend; launch must prepare.
-        const preparation = manifest.protocolVersion === 3
-          ? await prepareApplication?.({ manifest, descriptor, phase: "install" }) || { status: "pending", code: "APPLICATION_RESOURCES_PENDING" }
-          : null;
+          ? { choices: [current.version, record.version], key: descriptor.artifactId }
+          : { version: record.version, key: descriptor.artifactId, previousKey: current ? path.basename(current.installPath) : null,
+            ...(current?.bindingSetId ? { previousBinding: bindingSelection(current, current.artifactId) } : {}) };
+        // Keep a durable candidate independently of the current pointer. A box
+        // error, offline install or process restart must not activate this copy.
+        if (manifest.protocolVersion === 3 && manifest.compatibility.resourceDependencies.length) {
+          const pending = await pendingFor(descriptor.applicationId);
+          const operationId = pending?.artifactId === descriptor.artifactId && pending.operationId || randomUUID();
+          await savePending(descriptor.applicationId, descriptor.artifactId, operationId, preparationView(), check);
+          staged = true;
+          try { preparation = await prepareApplication?.({ manifest, descriptor, operationId, phase: "install" }); }
+          catch (error) {
+            check();
+            await savePending(descriptor.applicationId, descriptor.artifactId, operationId,
+              preparationView({ status: "blocked", code: error.code }), check);
+            throw error;
+          }
+          check();
+          preparation?.assertCurrent?.();
+          if (preparation?.status !== "ready") {
+            await savePending(descriptor.applicationId, descriptor.artifactId, operationId, preparationView(preparation), check);
+            return installationView(descriptor.applicationId);
+          }
+          if (preparation.operationId !== operationId || !preparation.bindingSetId) throw fail("APPLICATION_PREPARATION_INVALID");
+          Object.assign(selection, bindingSelection(preparation, descriptor.artifactId, "APPLICATION_PREPARATION_INVALID"));
+        }
         check();
         await confirmAccess();
-        await publish(descriptor.applicationId, selection, signal, () => { check(); access?.assertLive(); });
+        await publish(descriptor.applicationId, selection, signal, () => {
+          check(); access?.assertLive(); preparation?.assertCurrent?.();
+        });
         committed = true;
-        return selection.choices ? choice([current, record]) : { ...await currentFor(descriptor.applicationId), ...(preparation ? { resourcePreparation: preparation } : {}) };
+        if (staged) await clearPending(descriptor.applicationId, descriptor.artifactId);
+        return selection.choices ? choice([current, record]) : { ...await currentFor(descriptor.applicationId),
+          ...(preparation ? { resourcePreparation: { status: "ready" } } : {}) };
       } finally {
         await rm(temporary, { recursive: true, force: true });
-        if (moved && !committed) await rm(target, { recursive: true, force: true });
+        if (moved && !committed && !staged) await rm(target, { recursive: true, force: true });
       }
+    });
+  }
+  async function prepareCurrent(id, { assertSession = () => {}, signal } = {}) {
+    appDirectory(id);
+    return serialize(id, async () => {
+      const current = await currentFor(id);
+      if (!current || current.selectionRequired) throw fail("APPLICATION_NOT_INSTALLED");
+      if (current.protocolVersion !== 3 || !current.compatibility.resourceDependencies.length) return current;
+      if (!current.envelope) throw fail("APPLICATION_RESOURCE_ARTIFACT_REQUIRED");
+      // The local install record is not an authority for the resource manifest.
+      const descriptor = verifyEnvelope(current.envelope, trustedKeys), manifest = descriptor.manifest;
+      if (descriptor.artifactId !== current.artifactId) throw fail("APPLICATION_CURRENT_INVALID");
+      let permit;
+      const check = () => { signal?.throwIfAborted(); assertSession(); permit?.assertSession?.(); };
+      async function confirmAccess() {
+        check();
+        if (manifest.releaseAccess !== "account") return;
+        if (!authorizeRelease) throw fail("MARKET_RELEASE_ACCESS_REQUIRED");
+        const next = await authorizeRelease(descriptor, { signal });
+        check();
+        if (!next) throw fail("MARKET_RELEASE_ACCESS_REQUIRED");
+        next.assertLive(); permit = next;
+      }
+      await confirmAccess();
+      const operationId = current.operationId || `rebind-${descriptor.artifactId}`;
+      const preparation = await prepareApplication?.({ manifest, descriptor, operationId, phase: "rebind" });
+      check(); preparation?.assertCurrent?.();
+      if (preparation?.status !== "ready") return { ...current, resourcePreparation: preparationView(preparation) };
+      if (preparation.operationId !== operationId || !preparation.bindingSetId) throw fail("APPLICATION_PREPARATION_INVALID");
+      const binding = bindingSelection(preparation, descriptor.artifactId, "APPLICATION_PREPARATION_INVALID");
+      await confirmAccess();
+      const assertCurrent = () => { check(); permit?.assertLive(); preparation.assertCurrent?.(); };
+      if (JSON.stringify(bindingSelection(current, current.artifactId)) === JSON.stringify(binding)) {
+        assertCurrent();
+        return { ...current, resourcePreparation: { status: "ready" } };
+      }
+      const selection = { version: current.version, key: current.artifactId,
+        previousKey: current.previous?.artifactId || null, ...binding,
+        ...(current.previous?.bindingSetId ? { previousBinding: bindingSelection(current.previous, current.previous.artifactId) } : {}),
+      };
+      await publish(id, selection, signal, assertCurrent);
+      return { ...await currentFor(id), resourcePreparation: { status: "ready" } };
     });
   }
   async function recover() {
@@ -273,14 +404,16 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       if (app.name.startsWith(".removed-") || app.name.startsWith(".unpacking-")) {
         await rm(path.join(rootDir, app.name), { recursive: true, force: true });
       } else if (app.isDirectory() && /^[a-z][a-z0-9._-]{1,63}$/.test(app.name)) {
-        let current;
-        try { current = await currentFor(app.name); } catch { continue; }
+        let current, pending;
+        try { current = await currentFor(app.name); pending = await pendingFor(app.name); } catch { continue; }
         const retainedVersions = current?.selectionRequired ? current.versions.map(item => item.version) : [current?.version, current?.previous?.version];
         for (const record of await recordsFor(app.name)) {
-          if (record.envelope && !retainedVersions.includes(record.version)) await rm(record.installPath, { recursive: true, force: true });
+          if (record.envelope && !retainedVersions.includes(record.version) && record.artifactId !== pending?.artifactId)
+            await rm(record.installPath, { recursive: true, force: true });
         }
+        if (pending && pending.artifactId === current?.artifactId) await clearPending(app.name, pending.artifactId);
         for (const item of await readdir(appDirectory(app.name))) {
-          if (item.startsWith(".staging-") || item.startsWith(".installing-") ||
+          if (item.startsWith(".staging-") || item.startsWith(".installing-") || item.startsWith(".pending-") && item.endsWith(".tmp") ||
               (item.startsWith(".current-") || item.startsWith(".wanx-state.json.")) && item.endsWith(".tmp"))
             await rm(path.join(appDirectory(app.name), item), { recursive: true, force: true });
         }
@@ -303,23 +436,69 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       const current = await currentFor(id), records = await recordsFor(id);
       const previous = current?.previous && records.find(record => record.artifactId === current.previous.artifactId);
       if (!previous?.envelope) throw marketFailure("MARKET_ROLLBACK_UNAVAILABLE");
-      await checkRollback(current, previous);
+      const prepared = await prepareRollback(current, previous, assertSession);
       await resolveApplicationEntry(previous.installPath, previous);
-      await publish(id, { version: previous.version, key: previous.artifactId, previousKey: path.basename(current.installPath) }, undefined, assertSession);
+      await publish(id, { version: previous.version, key: previous.artifactId, previousKey: path.basename(current.installPath),
+        ...bindingSelection(prepared.selected, previous.artifactId),
+        ...(current.bindingSetId ? { previousBinding: bindingSelection(current, current.artifactId) } : {}),
+      }, undefined, prepared.assertCurrent);
       return currentFor(id);
     });
   }
+  async function prepareRollback(current, previous, assertSession = () => {}) {
+    const descriptor = verifyEnvelope(previous.envelope, trustedKeys), manifest = descriptor.manifest;
+    if (descriptor.artifactId !== previous.artifactId) throw fail("APPLICATION_CURRENT_INVALID");
+    let selected = { ...previous, descriptor, ...bindingSelection(current.previous, previous.artifactId) };
+    let access, preparation;
+    const check = () => { assertSession(); access?.assertSession?.(); preparation?.assertCurrent?.(); };
+    async function confirmAccess() {
+      check();
+      if (manifest.releaseAccess !== "account") return;
+      if (!authorizeRelease) throw fail("MARKET_RELEASE_ACCESS_REQUIRED");
+      const next = await authorizeRelease(descriptor);
+      check();
+      if (!next) throw fail("MARKET_RELEASE_ACCESS_REQUIRED");
+      next.assertLive(); access = next;
+    }
+    await confirmAccess();
+    if (manifest.protocolVersion === 3 && manifest.compatibility.resourceDependencies.length) {
+      // A retained binding belongs to its original account and box. Prepare a
+      // candidate in the current scope without changing either active pointer.
+      const operationId = selected.operationId || `rollback-${descriptor.artifactId}`;
+      preparation = await prepareApplication?.({ manifest, descriptor, operationId, phase: "rollback" });
+      check();
+      if (preparation?.status !== "ready") throw fail(preparationView(preparation).code);
+      if (preparation.operationId !== operationId || !preparation.bindingSetId) throw fail("APPLICATION_PREPARATION_INVALID");
+      selected = { ...selected, ...bindingSelection(preparation, descriptor.artifactId, "APPLICATION_PREPARATION_INVALID") };
+    }
+    const compatibility = await checkRollback(current, selected);
+    await confirmAccess();
+    const assertCurrent = () => { check(); access?.assertLive(); compatibility.assertCurrent?.(); };
+    assertCurrent();
+    return { selected, compatibility: compatibility.compatibility, assertCurrent };
+  }
   async function checkRollback(current, previous) {
     if (current?.protocolVersion >= 2 && previous.protocolVersion < 2) throw fail("APPLICATION_DATA_COMPATIBILITY_UNKNOWN");
-    return assertApplicationCompatibility(previous, { getCompatibilityContext, descriptor: previous.descriptor, phase: "rollback" });
+    let assertCurrent;
+    const compatibility = await assertApplicationCompatibility(previous, {
+      getCompatibilityContext: async input => {
+        const context = await getCompatibilityContext?.(input);
+        assertCurrent = context?.assertCurrent;
+        return context;
+      }, descriptor: previous.descriptor, phase: "rollback",
+    });
+    return { compatibility, assertCurrent };
   }
   async function assertRollbackCompatible(id) {
-    const current = await currentFor(id), records = await recordsFor(id);
-    const previous = current?.previous && records.find(record => record.artifactId === current.previous.artifactId);
-    if (!previous?.envelope) throw marketFailure("MARKET_ROLLBACK_UNAVAILABLE");
-    return checkRollback(current, previous);
+    appDirectory(id);
+    return serialize(id, async () => {
+      const current = await currentFor(id), records = await recordsFor(id);
+      const previous = current?.previous && records.find(record => record.artifactId === current.previous.artifactId);
+      if (!previous?.envelope) throw marketFailure("MARKET_ROLLBACK_UNAVAILABLE");
+      return (await prepareRollback(current, previous)).compatibility;
+    });
   }
-  return Object.freeze({ install, installVerifiedPackage, list, installedPath, resolveCurrent, selectCurrent, prune, recover, uninstall, rollback, assertRollbackCompatible });
+  return Object.freeze({ install, installVerifiedPackage, prepareCurrent, list, installedPath, resolveCurrent, selectCurrent, prune, recover, uninstall, rollback, assertRollbackCompatible });
 }
 
 // Reinstalling the retained previous artifact must not overwrite a usable copy.

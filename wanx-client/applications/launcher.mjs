@@ -70,7 +70,8 @@ export function createApplicationLauncher({
     if (previous) {
       let live = !previous.exited;
       try { previous.session.assertLive?.(); } catch { live = false; }
-      if (live && previous.version === record.version && previous.installPath === record.installPath) {
+      if (live && previous.version === record.version && previous.installPath === record.installPath &&
+          previous.bindingSetId === record.bindingSetId) {
         previous.child.send?.({ type: "wanx:application-activate", launchId: previous.session.launchId }, () => {});
         return { applicationId: record.applicationId, launchId: previous.session.launchId, state: "running" };
       }
@@ -94,7 +95,8 @@ export function createApplicationLauncher({
         detached: false,
       });
       let exited;
-      entry = { child, session, installPath: record.installPath, version: record.version, exited: false, exit: new Promise(resolve => { exited = resolve; }) };
+      entry = { child, session, installPath: record.installPath, version: record.version, bindingSetId: record.bindingSetId,
+        exited: false, exit: new Promise(resolve => { exited = resolve; }) };
       state.entry = entry;
       const onExit = () => {
         entry.exited = true;

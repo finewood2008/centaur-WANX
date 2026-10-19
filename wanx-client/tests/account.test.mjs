@@ -556,6 +556,38 @@ test("market errors preserve safe codes without exposing backend messages or arb
   await assert.rejects(account.request({ path: "/app-api/market/apps" }), { code: "ACCOUNT_REQUEST_FAILED", message: "ACCOUNT_REQUEST_FAILED" });
 });
 
+test("support errors retain only contract codes on the exact signed Consumer support routes", async t => {
+  const store = memoryStore(), setup = fixture({ store });
+  t.after(() => setup.account.close());
+  await setup.account.loginSMS({ phone: "13800138000", code: "123456" });
+  let code = "REQUEST_DIGEST_MISMATCH", envelope = "detail";
+  const calls = [];
+  const account = createAccount({ store, fetch: async (url, options) => {
+    if (url.endsWith("/auth/refresh")) return reply({ ...(await store.load()).active.session, expiresIn: 3600 });
+    calls.push(options);
+    return new Response(JSON.stringify({ code: 409, [envelope]: { errorCode: code, message: "private-server-details" } }), { status: 409 });
+  } });
+  t.after(() => account.close());
+  await account.restore();
+  const prefix = "/app-api/devices/centauros-37859979e324b9e257c586da";
+  for (const path of [`${prefix}/support-requests/current`, `${prefix}/support-requests/request-1/decision`, `${prefix}/support-sessions/session-1`]) {
+    await assert.rejects(account.request({ path }), { code, message: code });
+    assert.match(calls.at(-1).headers.Authorization, /^Bearer /);
+  }
+  code = "PRIVATE_UNEXPECTED_DETAIL";
+  await assert.rejects(account.request({ path: `${prefix}/support-requests/current` }), { code: "ACCOUNT_REQUEST_FAILED", message: "ACCOUNT_REQUEST_FAILED" });
+  code = "REQUEST_DIGEST_MISMATCH";
+  await assert.rejects(account.request({ path: "/app-api/other" }), { code: "ACCOUNT_REQUEST_FAILED", message: "ACCOUNT_REQUEST_FAILED" });
+  // Production Admin's HTTPException handler wraps the typed error in msg.
+  envelope = "msg";
+  code = "SUPPORT_AUTHORIZATION_BUSY";
+  for (const path of [`${prefix}/support-requests/current`, `${prefix}/support-requests/request-1/decision`])
+    await assert.rejects(account.request({ path }), { code, message: code, status: 409 });
+  await assert.rejects(account.request({ path: "/app-api/other" }), { code: "ACCOUNT_REQUEST_FAILED", message: "ACCOUNT_REQUEST_FAILED" });
+  code = "PRIVATE_UNEXPECTED_DETAIL";
+  await assert.rejects(account.request({ path: `${prefix}/support-requests/current` }), { code: "ACCOUNT_REQUEST_FAILED", message: "ACCOUNT_REQUEST_FAILED" });
+});
+
 test("network 404 distinguishes an undeployed API from a missing enrollment", async () => {
   const store = memoryStore();
   const setup = fixture({ store });

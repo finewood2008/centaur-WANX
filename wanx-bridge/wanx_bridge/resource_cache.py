@@ -182,13 +182,22 @@ def _references(directory: Path, verify: Callable[[Any], dict[str, Any]]) -> set
                 record(dependency)
         collect(value)
 
-    for path in _state_files(directory / "bindings"):
+    # Candidate ledgers pin the previous and newly prepared bindings until an
+    # explicit future retention protocol can prove that no client selects them.
+    # Merely having a newer candidate does not authorize deleting the old bytes.
+    for path in _state_files(directory / "bindings") + _state_files(directory / "binding-sets"):
         value = _json(path)
+        candidate = path.parent.name == "binding-sets"
         if (
-            set(value) - {"schemaVersion", "scope", "resources", "pendingResources"}
+            set(value)
+            - (
+                {"schemaVersion", "scope", "resources", "pendingResources"}
+                | ({"bindingSetStatus"} if candidate else set())
+            )
             or not isinstance(value.get("scope"), dict)
             or not isinstance(value.get("resources"), dict)
             or not isinstance(value.get("pendingResources", {}), dict)
+            or (candidate and value.get("bindingSetStatus") not in {"preparing", "ready"})
         ):
             raise ValueError("unknown binding ledger")
         for group in (value["resources"], value.get("pendingResources", {})):

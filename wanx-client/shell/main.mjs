@@ -1,6 +1,8 @@
 import { panelSpaceState } from "./panel-space.mjs";
 import { readAvatar } from "./avatar.mjs";
 import { createCreditsReader } from "../account/credits.mjs";
+import { createCreditWallet } from "../account/credit-wallet.mjs";
+import { createRemoteSupport } from "../account/support.mjs";
 import { createApplicationBackend } from "../applications/backend.mjs";
 import { createApplicationReleaseAccess } from "../applications/release-access.mjs";
 import {
@@ -39,6 +41,8 @@ import { createLocalBoxes } from "../octop/local-boxes.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
 import { createApplicationMarket } from "../applications/market.mjs";
+import { createDefaultApplicationDelivery } from "../applications/delivery.mjs";
+import { createDefaultApplicationScheduler } from "../applications/delivery-scheduler.mjs";
 import { runManagedApplication } from "../applications/runtime.mjs";
 import { createMarketSessionGuard } from "./market-session.mjs";
 import { monitorNetworkChanges } from "./network-monitor.mjs";
@@ -301,6 +305,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         ],
       });
       marketSession = createMarketSessionGuard(account);
+      const support = createRemoteSupport({ account });
       const market = createApplicationMarket({
         request: (input) => account.request(input),
         applications,
@@ -312,6 +317,18 @@ if (process.argv.includes("--wanx-managed-app")) {
         getCompatibilityContext,
         authorizeRelease,
       });
+      const deliveryScope = () => {
+        const state = client.snapshot();
+        const accountId = account.snapshot().phase === "authenticated" ? account.getIdentity()?.accountId : null;
+        return accountId && state.phase === "ready" && state.connection?.deviceId
+          ? { accountId, deviceId: state.connection.deviceId } : null;
+      };
+      const defaultApplications = createDefaultApplicationDelivery({
+        market, applications, getScope: deliveryScope,
+        captureSession: () => marketSession.captureSession(),
+        onChanged: () => { void broadcast?.publish(); },
+      });
+      const deliveryScheduler = createDefaultApplicationScheduler({ delivery: defaultApplications, getScope: deliveryScope });
       const identity = await readClientIdentity({ app });
       const testRuntime = await createTestUpdateRuntime({ identity, app, session });
       let updateTrust = JSON.parse(await readFile(new URL("../updates/trust.json", import.meta.url), "utf8"));
@@ -354,6 +371,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           clientUpdates.invalidate(); boxUpdates.invalidate();
         }
         updateAccount = next;
+        deliveryScheduler.sync();
       });
       const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
       try { startup.initializeDefault(); } catch (error) { reportError(error); }
@@ -507,6 +525,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             return result.canceled || !result.filePaths.length ? null : readAvatar(result.filePaths[0], nativeImage);
           }),
         },
+        creditWallet: createCreditWallet({ request: input => account.request(input) }),
         credits: createCreditsReader({ client, authorityDeviceId: process.env.WANX_CREDITS_DEVICE_ID || "",
           accountRequest: creditsServiceURL ? input => account.creditsRequest({ ...input, serviceURL: creditsServiceURL }) : null }),
         ipcMain,
@@ -527,6 +546,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         dashboards,
         market,
         updates,
+        support,
         allowDevelopmentInstall: !app.isPackaged && process.env.WANX_ALLOW_DEVELOPMENT_INSTALL === "1",
         selectApplicationArchive: async () => {
           const result = await dialog.showOpenDialog(control, {
@@ -544,6 +564,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         desktop.sync(client.snapshot());
         openTerminalConsole();
         boxUpdates.sync();
+        deliveryScheduler.sync();
         void broadcast.publish();
       });
 
@@ -551,11 +572,14 @@ if (process.argv.includes("--wanx-managed-app")) {
         app,
         async closeApplications() {
           uiState.invalidateOpen();
+          deliveryScheduler.close();
+          await defaultApplications.close();
           marketSession?.close();
           releaseAccess.close();
           await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
         },
         async closeHost() {
+          support.close();
           unsubscribeUpdateAccount();
           for (const remove of updateListeners) remove();
           clientUpdates.close(); boxUpdates.close();
@@ -574,10 +598,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       app.on("window-all-closed", () => app.quit());
-      await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
-      await clientUpdates.ready();
-      if (process.env.WANX_SMOKE_USER_DATA)
-        await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
+      let setupStartFailed = false;
       setupRuntime = await createSetupRuntime({
         control, controlURL, ipcMain, account, client, safeStorage, userData,
         advertisementNames: createAdvertisementNames({
@@ -589,17 +610,23 @@ if (process.argv.includes("--wanx-managed-app")) {
         onError: reportError,
       }).catch((error) => {
         reportError(error);
-        control.webContents.send("wanx:setup:state", {
-          state: "terminalError", errorCode: "SETUP_START_FAILED",
-        });
+        setupStartFailed = true;
         return null;
       });
+      await Promise.all([control.loadURL(controlURL), panel?.loadURL(panelURL)]);
+      if (setupStartFailed) control.webContents.send("wanx:setup:state", {
+        state: "terminalError", errorCode: "SETUP_START_FAILED",
+      });
+      await clientUpdates.ready();
+      if (process.env.WANX_SMOKE_USER_DATA)
+        await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
       stopNetworkMonitor = monitorNetworkChanges({
         powerMonitor,
         onChange: () => client.networkChanged(),
         onError: reportError,
       });
       if (!startup.wasOpenedAtLogin()) desktop.show();
+      deliveryScheduler.sync();
       void broadcast.publish();
       const initialization = timed("client.initialize", () => client.initialize()).then(openTerminalConsole);
       if (testRuntime) {

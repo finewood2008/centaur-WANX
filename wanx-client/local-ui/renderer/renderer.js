@@ -6,9 +6,15 @@ let posterPreview = null;
 let profileMenuOpen = false;
 const storeCarousel = window.createStoreCarousel();
 const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurai.wanx.centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
-const creditsView = window.createCreditsView({ request: async (action, input) => {
+const creditsView = window.createWalletView({ request: async (action, input) => {
   const response = await window.wanxClient.action(action, input);
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
+  if (!response.ok) throw Object.assign(new Error(response.code), { code: response.code, request_id: response.request_id, details: response.details, retryable: response.retryable });
+  return response.value;
+}, changed: () => { if (currentState) render(currentState); } });
+const supportView = window.createSupportView({ request: async (action, input) => {
+  const response = await window.wanxClient.action(action, input);
+  if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) throw new Error("SUPPORT_SESSION_CHANGED");
   if (!response.ok) throw new Error(response.code);
   return response.value;
 }, changed: () => { if (currentState) render(currentState); } });
@@ -41,6 +47,8 @@ let pendingSelection = null;
 const expandedDetails = new Set();
 let busy = false;
 let busyRequest = null;
+function busyFor(action) { return busyRequest?.action === action; }
+function activityLabel(label) { return `<span class="activity-spinner" aria-hidden="true"></span>${escapeHTML(label)}`; }
 let boxUpdatePollTimer;
 let boxUpdatePollKey = null;
 let boxUpdatePollError = null;
@@ -187,7 +195,7 @@ const selection = createDiscoverySelection({
       expired: "扫描结果已过期，请重新扫描盒子。",
       reselect_failed: "未能连接所选盒子，请靠近盒子并重新扫描后重试。",
       selection_cancel_failed: "蓝牙扫描未能正常结束，请关闭并重新打开万象后再扫描。",
-      empty: "未发现可用盒子，请确认盒子已进入配网模式后重新扫描。",
+      empty: "未发现可用盒子，请确认盒子通电、靠近电脑，并检查电脑蓝牙后重新扫描。",
     };
     notice = issue ? messages[issue.kind] || issue.message : null;
   },
@@ -202,7 +210,7 @@ const selection = createDiscoverySelection({
     void run("provisioning.start", { candidate, mode: selected?.mode || "claim" });
   },
 });
-window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); }, { once: true });
+window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); supportView.close(); }, { once: true });
 window.addEventListener?.("pagehide", () => { clearTimeout(resendTimer); clearTimeout(transferResendTimer); clearTimeout(passwordResendTimer); }, { once: true });
 const stageLabels = {
   discover: "发现盒子",
@@ -253,9 +261,17 @@ function authorizationHint() {
 
 function deviceCard(device) {
   const selected = currentState.activeDeviceId === device.deviceId;
+  const connecting = (busyRequest?.action === "devices.connect" && busyRequest.deviceId === device.deviceId) ||
+    ((currentState.selectedDeviceId || currentState.activeDeviceId) === device.deviceId &&
+      ["connecting", "resolving", "recovering"].includes(currentState.connectionPhase));
+  const disconnecting = busyFor("devices.disconnect") && busyRequest.deviceId === device.deviceId;
   const available = deviceCanConnect(device);
   const needsSetup = ["discovered", "unclaimed", "uninitialized"].includes(device.accessState);
-  const action = selected
+  const action = disconnecting
+    ? `<button class="button small activity-button" aria-busy="true" disabled>${activityLabel("正在断开…")}</button>`
+    : connecting
+    ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
+    : selected
     ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>断开</button>`
     : available && (device.local || currentState.networkReady)
       ? `<button class="button small" data-action="connect" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>${currentState.activeDeviceId ? "切换并连接" : "连接"}</button>`
@@ -266,7 +282,7 @@ function deviceCard(device) {
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
     <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
@@ -295,15 +311,16 @@ function shellHeader(title) {
     <h1 class="sr-only">${title}</h1>
     <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["space", "空间"], ["boxes", "盒子"], ["credits", "积分"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
     <div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" ${busy ? "disabled" : ""}>退出登录</button></div>` : ""}</div></header>`;
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></header>`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
+  const avatarPending = busyFor("profile.avatar") || busyFor("profile.avatar-remove");
   return `<div class="app-layout">${shellHeader("个人资料")}<div class="page-content profile-page">
     <div class="page-heading"><h2>个人资料</h2><p class="muted">用你熟悉的样子，在万象相见。</p></div>
     ${notice ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="profile-card"><div class="profile-avatar-row"><button class="profile-avatar-button" data-action="profile-avatar" aria-label="上传头像" ${busy ? "disabled" : ""}>${profileAvatar(true)}<span>更换头像</span></button><div><h3>你的头像</h3><p class="muted">支持 JPG、PNG，最大 5 MB。图片将居中裁为方形。</p><div class="settings-actions"><button class="button small" data-action="profile-avatar" ${busy ? "disabled" : ""}>上传头像</button>${profile.avatarDataUrl ? `<button class="text-button" data-action="profile-avatar-remove" ${busy ? "disabled" : ""}>恢复默认</button>` : ""}</div></div></div>
-    <form data-form="profile"><label for="profile-name">昵称</label><input id="profile-name" name="displayName" value="${escapeHTML(profile.displayName || "万象用户")}" maxlength="80" required autocomplete="nickname" /><p class="muted">最多 40 个字符，昵称不会改变登录账号。</p><button class="button primary" type="submit" ${busy ? "disabled" : ""}>保存资料</button></form></section>
+    <section class="profile-card"><div class="profile-avatar-row"><button class="profile-avatar-button" data-action="profile-avatar" aria-label="上传头像" ${busy ? "disabled" : ""}>${profileAvatar(true)}<span>更换头像</span></button><div><h3>你的头像</h3><p class="muted">支持 JPG、PNG，最大 5 MB。图片将居中裁为方形。</p><div class="settings-actions"><button class="button small ${busyFor("profile.avatar") ? "activity-button" : ""}" data-action="profile-avatar" aria-busy="${busyFor("profile.avatar")}" ${busy ? "disabled" : ""}>${busyFor("profile.avatar") ? activityLabel("正在更新…") : "上传头像"}</button>${profile.avatarDataUrl ? `<button class="text-button ${busyFor("profile.avatar-remove") ? "activity-button" : ""}" data-action="profile-avatar-remove" aria-busy="${busyFor("profile.avatar-remove")}" ${busy ? "disabled" : ""}>${busyFor("profile.avatar-remove") ? activityLabel("正在恢复…") : "恢复默认"}</button>` : ""}</div></div></div>${avatarPending ? `<p class="muted activity-status" role="status">${activityLabel("正在更新头像…")}</p>` : ""}
+    <form data-form="profile"><label for="profile-name">昵称</label><input id="profile-name" name="displayName" value="${escapeHTML(profile.displayName || "万象用户")}" maxlength="80" required autocomplete="nickname" /><p class="muted">最多 40 个字符，昵称不会改变登录账号。</p><button class="button primary ${busyFor("profile.save") ? "activity-button" : ""}" type="submit" aria-busy="${busyFor("profile.save")}" ${busy ? "disabled" : ""}>${busyFor("profile.save") ? activityLabel("正在保存…") : "保存资料"}</button></form></section>
     <section class="profile-card profile-account"><h3>万象账号</h3><dl><dt>绑定手机号</dt><dd>${escapeHTML(account.maskedPhone || "暂未提供")}</dd><dt>资料保存</dt><dd>当前电脑</dd></dl><p class="muted">头像和昵称仅保存在这台电脑，按万象账号分别保存。</p></section>
     </div></div>`;
 }
@@ -318,7 +335,10 @@ function updateResendButton() {
   const button = document.querySelector('[data-action="send-registration-code"]');
   if (button) {
     button.disabled = busy || remaining > 0;
-    button.textContent = remaining ? `${remaining} 秒后重新获取` : "获取验证码";
+    const sending = busyFor("auth.send-code");
+    button.classList.toggle("activity-button", sending);
+    button.setAttribute("aria-busy", String(sending));
+    button.innerHTML = sending ? activityLabel("正在发送…") : remaining ? `${remaining} 秒后重新获取` : "获取验证码";
   }
   if (remaining) resendTimer = setTimeout(updateResendButton, 1000);
 }
@@ -340,7 +360,8 @@ function authSubmitLabel() {
 
 function passwordFields(prefix, action, until) {
   const remaining = Math.max(0, Math.ceil((until - Date.now()) / 1000));
-  return `<label for="${prefix}-confirm-password">确认密码</label><input id="${prefix}-confirm-password" name="confirmPassword" type="password" required autocomplete="new-password" placeholder="再次输入密码" /><label for="${prefix}-code">短信验证码</label><div class="code-field"><input id="${prefix}-code" name="code" required pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" placeholder="输入 6 位验证码" /><button class="button small" type="button" data-action="${action}" ${busy || remaining ? "disabled" : ""}>${remaining ? `${remaining} 秒后重新获取` : "获取验证码"}</button></div>`;
+  const sending = busyFor({ "send-registration-code": "auth.send-code", "send-reset-code": "auth.send-reset-code", "send-change-code": "auth.send-change-code" }[action]);
+  return `<label for="${prefix}-confirm-password">确认密码</label><input id="${prefix}-confirm-password" name="confirmPassword" type="password" required autocomplete="new-password" placeholder="再次输入密码" /><label for="${prefix}-code">短信验证码</label><div class="code-field"><input id="${prefix}-code" name="code" required pattern="[0-9]{6}" inputmode="numeric" autocomplete="one-time-code" placeholder="输入 6 位验证码" /><button class="button small ${sending ? "activity-button" : ""}" type="button" data-action="${action}" aria-busy="${sending}" ${busy || remaining ? "disabled" : ""}>${sending ? activityLabel("正在发送…") : remaining ? `${remaining} 秒后重新获取` : "获取验证码"}</button></div>`;
 }
 
 function updatePasswordCodeButtons() {
@@ -351,7 +372,10 @@ function updatePasswordCodeButtons() {
     const button = document.querySelector(`[data-action="${action}"]`);
     if (button) {
       button.disabled = busy || remaining > 0;
-      button.textContent = remaining ? `${remaining} 秒后重新获取` : "获取验证码";
+      const sending = busyFor(action === "send-reset-code" ? "auth.send-reset-code" : "auth.send-change-code");
+      button.classList.toggle("activity-button", sending);
+      button.setAttribute("aria-busy", String(sending));
+      button.innerHTML = sending ? activityLabel("正在发送…") : remaining ? `${remaining} 秒后重新获取` : "获取验证码";
       waiting ||= remaining > 0;
     }
   }
@@ -440,14 +464,16 @@ function clientUpdateView() {
     blocked: "此更新暂不可用", downloading: "正在下载更新…", downloaded: "更新已下载，可选择现在重启安装",
     installing: "正在准备重启安装…", failed: "更新未完成，当前版本仍保留", succeeded: "已完成客户端更新",
   };
-  const pending = ["checking", "downloading", "installing"].includes(phase);
+  const checking = phase === "checking" || busyFor("updates.client.check");
+  const downloading = phase === "downloading" || busyFor("updates.client.download");
+  const pending = checking || downloading || phase === "installing";
   const disabled = busy || pending ? "disabled" : "";
   const progress = update.progress;
   const transferred = Number(progress?.transferred);
   const total = Number(progress?.total);
   const hasProgress = progress && Number.isFinite(transferred) && transferred >= 0;
   const hasTotal = hasProgress && Number.isFinite(total) && total > 0;
-  return `<article class="update-card"><div class="update-heading"><div><h3>万象客户端 <span class="update-version">${current.productVersion ? `v${escapeHTML(current.productVersion)}` : "版本待核验"}</span></h3><p class="muted" role="status">${escapeHTML(labels[phase] || "更新状态待确认")}</p></div><div class="settings-actions">${!["development", "unavailable", "downloaded", "installing"].includes(phase) ? `<button class="button small" data-action="updates-client-check" ${disabled}>${phase === "checking" ? "检查中…" : "检查更新"}</button>` : ""}${phase === "available" && candidate ? `<button class="button primary small" data-action="updates-client-download" ${disabled}>下载更新</button>` : ""}${phase === "downloaded" && candidate ? `<button class="button primary small" data-action="updates-client-install" ${disabled}>重启并更新</button>` : ""}</div></div>
+  return `<article class="update-card"><div class="update-heading"><div><h3>万象客户端 <span class="update-version">${current.productVersion ? `v${escapeHTML(current.productVersion)}` : "版本待核验"}</span></h3><p class="muted ${pending ? "activity-status" : ""}" role="status">${pending ? '<span class="activity-spinner" aria-hidden="true"></span>' : ""}${escapeHTML(checking ? labels.checking : downloading ? labels.downloading : labels[phase] || "更新状态待确认")}</p></div><div class="settings-actions">${!["development", "unavailable", "downloaded", "installing"].includes(phase) ? `<button class="button small ${checking ? "activity-button" : ""}" data-action="updates-client-check" aria-busy="${checking}" ${disabled}>${checking ? activityLabel("检查中…") : "检查更新"}</button>` : ""}${phase === "available" && candidate ? `<button class="button primary small ${downloading ? "activity-button" : ""}" data-action="updates-client-download" aria-busy="${downloading}" ${disabled}>${downloading ? activityLabel("正在下载…") : "下载更新"}</button>` : ""}${phase === "downloaded" && candidate ? `<button class="button primary small" data-action="updates-client-install" ${disabled}>重启并更新</button>` : ""}</div></div>
     ${candidate ? `<p class="update-candidate">可用版本 v${escapeHTML(candidate.productVersion || "待核验")}${candidate.size != null ? ` · ${escapeHTML(updateBytes(candidate.size))}` : ""}${candidate.requiresRestart ? " · 需要重启万象" : ""}</p>${candidate.releaseNotes ? `<p class="update-notes">${escapeHTML(candidate.releaseNotes)}</p>` : ""}` : ""}
     ${hasProgress ? `<div class="update-progress" role="status"><progress aria-label="客户端下载进度" ${hasTotal ? `max="${total}" value="${Math.min(transferred, total)}"` : ""}></progress><span>${escapeHTML(updateBytes(transferred))}${hasTotal ? ` / ${escapeHTML(updateBytes(total))}` : " · 总大小待确认"}</span></div>` : ""}
     ${updateIssueView(update)}
@@ -472,12 +498,14 @@ function boxUpdateView() {
   const operation = update.operation;
   const state = operation?.state;
   const labels = { queued: "等待盒子领取任务", prechecking: "正在检查更新条件", downloading: "正在下载", staged: "制品已准备好", waiting_window: "等待更新时机", applying: "正在安装，服务可能暂时中断", verifying: "正在核验运行版本", succeeded: "已核验更新成功", rolling_back: "正在恢复先前程序", rolled_back: "已恢复先前程序，本次更新未成功", failed: "本次更新未完成", needs_attention: "需要维护人员处理", cancelled: "更新已取消" };
-  const pending = ["checking", "planning"].includes(update.phase);
+  const checking = update.phase === "checking" || busyFor("updates.box.check");
+  const planning = update.phase === "planning" || busyFor("updates.box.plan");
+  const pending = checking || planning;
   const active = operation && !["succeeded", "rolled_back", "failed", "needs_attention", "cancelled"].includes(state);
   const disabled = busy || pending ? "disabled" : "";
   const actions = operation?.allowedActions || [];
-  const status = operation ? labels[state] || "任务结果待确认" : update.phase === "checking" ? "正在检查更新…" : candidate?.status === "current" && verified ? "最近检查未发现适用更新" : update.phase === "blocked" || candidate?.status === "blocked" ? "暂不可更新" : release ? `有可用版本 v${release.version}` : inventory ? "已取得版本报告" : "尚未取得运行版本";
-  return `<article class="update-card"><div class="update-heading"><div><h3>${escapeHTML(activeDeviceName())} <span class="update-version">${escapeHTML(actual)}</span></h3><p class="muted" role="status">${escapeHTML(status)}</p></div><div class="settings-actions"><button class="button small" data-action="updates-box-check" ${disabled}>${pending ? "检查中…" : "检查更新"}</button>${update.canUpgrade === true && release && candidate.status === "available" && !active && state !== "needs_attention" && (state !== "rolled_back" || actions.includes("replan")) ? `<button class="button primary small" data-action="updates-box-plan" ${disabled}>${["failed", "rolled_back"].includes(state) ? "重新预检" : "准备更新"}</button>` : ""}</div></div>
+  const status = operation ? labels[state] || "任务结果待确认" : checking ? "正在检查更新…" : planning ? "正在准备更新…" : candidate?.status === "current" && verified ? "最近检查未发现适用更新" : update.phase === "blocked" || candidate?.status === "blocked" ? "暂不可更新" : release ? `有可用版本 v${release.version}` : inventory ? "已取得版本报告" : "尚未取得运行版本";
+  return `<article class="update-card"><div class="update-heading"><div><h3>${escapeHTML(activeDeviceName())} <span class="update-version">${escapeHTML(actual)}</span></h3><p class="muted ${pending ? "activity-status" : ""}" role="status">${pending ? '<span class="activity-spinner" aria-hidden="true"></span>' : ""}${escapeHTML(status)}</p></div><div class="settings-actions"><button class="button small ${checking ? "activity-button" : ""}" data-action="updates-box-check" aria-busy="${checking}" ${disabled}>${checking ? activityLabel("检查中…") : "检查更新"}</button>${update.canUpgrade === true && release && candidate.status === "available" && !active && state !== "needs_attention" && (state !== "rolled_back" || actions.includes("replan")) ? `<button class="button primary small ${planning ? "activity-button" : ""}" data-action="updates-box-plan" aria-busy="${planning}" ${disabled}>${planning ? activityLabel("正在准备…") : ["failed", "rolled_back"].includes(state) ? "重新预检" : "准备更新"}</button>` : ""}</div></div>
     ${inventory?.observedAt ? `<p class="muted">版本报告时间：${escapeHTML(inventory.observedAt)}${Date.now() - Date.parse(inventory.observedAt) > 15 * 60 * 1000 ? " · 报告已过期，当前状态待核验" : ""}</p>` : ""}
     ${release && candidate.status === "available" ? `<p class="update-candidate">可用版本 v${escapeHTML(release.version)} · 更新期间盒端应用可能暂时不可用</p>` : ""}
     ${release && candidate.status === "available" && update.canUpgrade !== true ? '<p class="muted">盒端更新需由盒主或受权维护人员执行，请联系盒主更新。</p>' : ""}
@@ -542,9 +570,9 @@ function settingsView() {
     <div class="page-heading"><h2>设置</h2><p class="muted">让万象在需要时，安静地为你准备好。</p></div>
     ${notice && !passwordEditing ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
     ${versionUpdatesView()}
-    <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small" data-action="logout" ${busy ? "disabled" : ""}>退出当前账号</button></div></section>
+    <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small ${busyFor("auth.logout") ? "activity-button" : ""}" data-action="logout" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出当前账号"}</button></div></section>
     ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
-    <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted">${escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
+    <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted ${busyFor("desktop.startup.set") ? "activity-status" : ""}" role="status">${busyFor("desktop.startup.set") ? activityLabel("正在保存设置…") : escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" aria-busy="${busyFor("desktop.startup.set")}" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
     <section class="settings-panel"><div><h3>关于万象</h3><p class="muted">半人马AI-万象 · CentaurAI-WanX</p></div><button class="button small" data-action="desktop-about">关于</button></section>
     <div class="settings-foot"><p class="muted">关闭窗口后继续后台运行。完全退出请在万象菜单中选择“退出万象”。</p></div>
   </div></div>${confirmationView()}`;
@@ -558,20 +586,22 @@ function resourceSize(value) {
 }
 function boxesView() {
   const devices = currentState.devices || [], ready = currentState.canLaunchApplications;
+  const refreshing = busyRequest?.action === "devices.refresh";
   const metrics = window.wanxSpace?.overview?.();
   const storage = ready ? metrics?.wanxStorage : null;
   const publicIP = ready ? metrics?.network?.publicIp : null;
   const network = networkStatus(), enabled = currentState.network?.enabled !== false;
   const status = ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content space-page-content box-page-content">
-    <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small" data-action="refresh" ${busy ? "disabled" : ""}>刷新设备</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
+    <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="box-overview" aria-label="当前盒子"><div class="box-overview-heading"><div class="box-identity"><img src="./assets/centaurai-mark.png" alt=""/><div><span class="box-eyebrow">当前使用的盒子</span><h3 class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</h3><p>${ready ? currentState.connection?.mode === "local" ? "本机万象 · 文件与服务运行在这台电脑上" : "万象网络 · 已建立盒子连接" : network.detail}</p><div class="box-addresses" aria-label="盒子 IP" title="由当前盒子查询的公网出口地址"><span>盒子 IP</span>${publicIP ? `<code>${escapeHTML(publicIP)}</code>` : `<span>${ready ? "暂未获取盒子 IP" : "连接后显示"}</span>`}</div></div></div><span class="box-status ${ready ? "ready" : ""}"><i class="status-dot ${ready ? "ready" : ""}"></i>${status}</span></div>
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
-    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted">连接或切换盒子后，文件空间和应用将使用所选盒子。</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
-    <section class="box-network" aria-label="连接设置"><div><h3>万象网络</h3><p class="muted">${network.label} · ${network.detail}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
+    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
+    <section class="box-network" aria-label="连接设置"><div><h3>万象网络</h3><p class="muted ${busyFor("network.set-enabled") ? "activity-status" : ""}" role="status">${busyFor("network.set-enabled") ? activityLabel("正在切换网络…") : `${network.label} · ${network.detail}`}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" aria-busy="${busyFor("network.set-enabled")}" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
     ${ownershipView()}
+    ${supportView.render()}
   </div></div>${confirmationView()}`;
 }
 
@@ -622,7 +652,7 @@ function maintenanceToolsView() {
     ["terminal", "终端", "执行命令、查看日志与检查服务。", '<span aria-hidden="true">&gt;_</span>'],
     ["desktop", "远程桌面", "查看并操作盒子的桌面。", '<svg aria-hidden="true" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="26" height="18" rx="3"/><path d="M16 22v6M10 28h12"/></svg>'],
   ];
-  return `<section class="content-section box-operations" aria-label="盒子运维工具"><div class="box-section-heading"><div><h3>运维工具</h3><p class="muted">${ready ? `操作当前盒子：${escapeHTML(activeDeviceName())}` : "请先连接一台盒子"}</p></div><span class="box-operations-note">独立窗口打开</span></div><div class="box-operations-grid">${tools.map(([tool, title, description, icon]) => `<article class="box-operation"><div class="maintenance-icon box-operation-${tool}">${icon}</div><div class="box-operation-copy"><h4>${title}</h4><p>${description}</p></div><button class="button small ${tool === "terminal" ? "primary" : ""}" data-action="maintenance-open" data-tool="${tool}" ${!ready || busy ? "disabled" : ""}>打开${title}<span aria-hidden="true"> ↗</span></button></article>`).join("")}</div><p class="box-operations-footnote">终端与远程桌面使用当前盒子连接；切换或断开后，相关窗口会自动关闭。</p></section>`;
+  return `<section class="content-section box-operations" aria-label="盒子运维工具"><div class="box-section-heading"><div><h3>运维工具</h3><p class="muted">${ready ? `操作当前盒子：${escapeHTML(activeDeviceName())}` : "请先连接一台盒子"}</p></div><span class="box-operations-note">独立窗口打开</span></div><div class="box-operations-grid">${tools.map(([tool, title, description, icon]) => { const opening = busyFor("maintenance.open") && busyRequest.tool === tool; return `<article class="box-operation"><div class="maintenance-icon box-operation-${tool}">${icon}</div><div class="box-operation-copy"><h4>${title}</h4><p>${description}</p></div><button class="button small ${tool === "terminal" ? "primary" : ""} ${opening ? "activity-button" : ""}" aria-busy="${opening}" data-action="maintenance-open" data-tool="${tool}" ${!ready || busy ? "disabled" : ""}>${opening ? activityLabel("正在打开…") : `打开${title}<span aria-hidden="true"> ↗</span>`}</button></article>`; }).join("")}</div><p class="box-operations-footnote">终端与远程桌面使用当前盒子连接；切换或断开后，相关窗口会自动关闭。</p></section>`;
 }
 
 function operationFor(id) {
@@ -666,7 +696,7 @@ function pendingOpenView() {
   return `<section class="pending-open" aria-label="连接盒子并打开应用" role="status"><div><h3>${processing ? pending.phase === "connecting" ? "正在连接盒子…" : "正在打开应用…" : "连接盒子并打开应用"}</h3><p class="muted">${escapeHTML(application?.name || "此应用")}需要一台盒子提供服务。</p></div>
     ${pending.error ? `<p class="inline-error">${escapeHTML(operationErrorMessage(pending.error))}</p>` : ""}
     ${authorizing ? `<p class="muted">正在同步盒子访问权限。${authorizationHint()}</p>` : ""}
-    <div class="pending-open-actions">${devices.length ? `<select aria-label="用于打开应用的盒子" data-input="pending-device" ${processing ? "disabled" : ""}>${devices.map((device) => `<option value="${escapeHTML(device.deviceId)}" ${pendingSelection.deviceId === device.deviceId ? "selected" : ""}>${escapeHTML(device.name || device.displayName || "万象盒子")}</option>`).join("")}</select><button class="button primary small" data-action="pending-confirm" ${processing || !selectedReady ? "disabled" : ""}>${processing ? "处理中…" : "连接并打开"}</button>` : '<button class="button small" data-action="show-boxes">发现或管理盒子</button>'}<button class="text-button" data-action="pending-cancel">取消</button></div>
+    <div class="pending-open-actions">${devices.length ? `<select aria-label="用于打开应用的盒子" data-input="pending-device" ${processing ? "disabled" : ""}>${devices.map((device) => `<option value="${escapeHTML(device.deviceId)}" ${pendingSelection.deviceId === device.deviceId ? "selected" : ""}>${escapeHTML(device.name || device.displayName || "万象盒子")}</option>`).join("")}</select><button class="button primary small ${processing ? "activity-button" : ""}" data-action="pending-confirm" aria-busy="${processing}" ${processing || !selectedReady ? "disabled" : ""}>${processing ? activityLabel("处理中…") : "连接并打开"}</button>` : '<button class="button small" data-action="show-boxes">发现或管理盒子</button>'}<button class="text-button" data-action="pending-cancel">取消</button></div>
     ${!selectedReady ? `<p class="muted">${networkStatus().label}。<button class="text-button" data-action="show-settings">检查网络</button></p>` : ""}</section>`;
 }
 
@@ -729,6 +759,7 @@ function marketErrorMessage(error) {
     APPLICATION_PREPARATION_INVALID: "盒端准备结果无法核验，请更新盒端后重试。",
     APPLICATION_PREPARATION_UNAVAILABLE: "盒端应用准备服务暂不可用，请检查盒端服务后重试。",
     RESOURCE_SERVICE_NOT_CONFIGURED: "盒端应用准备服务尚未启用，请联系盒主或管理员检查盒端配置。",
+    RESOURCE_EXPERT_START_FAILED: "应用所需专家未能启动，请联系盒主或管理员检查模型配置和专家运行状态后重试。",
     APP_ENTITLEMENT_REQUIRED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
     RESOURCE_PRODUCT_PROFILE_UNSUPPORTED: "此应用暂不支持自动准备专家，请联系应用提供方更新应用。",
     RESOURCE_PREPARATION_BUSY: "盒子正在准备应用所需资源，请稍后重试。",
@@ -813,15 +844,33 @@ function applicationTone(item) {
   const id = item.applicationId || "";
   return id.includes("zhijun") ? "conversation" : id.includes("superadvisor") ? "council" : id.includes("dialogue") ? "perspectives" : id.includes("loop") ? "automation" : "creation";
 }
+function stagedInstallation(item) {
+  return item.installationState === "pending" ? item : item.pendingInstallation;
+}
+function applicationPreparationStatus(item) {
+  const staged = stagedInstallation(item);
+  if (staged) {
+    const description = item.installationState === "pending"
+      ? "应用包已下载，等待完成盒端准备。"
+      : `v${staged.version} 尚未启用，当前版本可继续使用。`;
+    return `${description}${staged.resourcePreparation?.code ? marketErrorMessage({ code: staged.resourcePreparation.code }) : "连接盒子后重试。"}`;
+  }
+  return item.resourcePreparation?.status === "pending" ? "打开时将检查盒端专家和技能包。" : "";
+}
 function applicationActions(item, installed) {
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
   const status = operationMessage(operation);
   const disabled = operationBusy(item.applicationId) ? "disabled" : "";
+  const active = installed && item.installationState !== "pending";
+  const staged = stagedInstallation(item);
+  const installing = ["installing", "updating"].includes(operation?.phase);
+  const selecting = operation?.phase === "selecting";
+  const opening = ["opening", "connecting"].includes(operation?.phase);
   return item.selectionRequired
-    ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => `<button class="button small" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" ${disabled}>使用 ${escapeHTML(version)}</button>`).join("")}</div>`
-    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${installed ? "" : "primary"} small" data-action="market-install" data-application-id="${id}" ${disabled}>${installed ? "更新" : "安装"}</button>` : ""}${installed ? `<button class="button primary small" data-action="applications-launch" data-application-id="${id}" ${disabled}>${operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
+    ? `<p class="muted">历史版本无法自动比较，请选择当前版本。</p><div class="version-choices">${item.versions.map(({ version }) => { const pending = selecting && operation.version === version; return `<button class="button small ${pending ? "activity-button" : ""}" data-action="applications-select-current" data-application-id="${id}" data-version="${escapeHTML(version)}" aria-busy="${pending}" ${disabled}>${pending ? activityLabel("正在选择…") : `使用 ${escapeHTML(version)}`}</button>`; }).join("")}</div>`
+    : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${active ? "" : "primary"} small ${installing ? "activity-button" : ""}" data-action="market-install" data-application-id="${id}" aria-busy="${installing}" ${disabled}>${installing ? activityLabel(status || "正在安装…") : staged ? active ? "重试更新" : "继续安装" : active ? "更新" : "安装"}</button>` : ""}${active ? `<button class="button primary small ${opening ? "activity-button" : ""}" data-action="applications-launch" data-application-id="${id}" aria-busy="${opening}" ${disabled}>${opening ? activityLabel(status || "正在打开…") : operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
 }
 function applicationManagement(item, installed) {
   const candidate = marketCandidates.get(item.applicationId);
@@ -829,7 +878,11 @@ function applicationManagement(item, installed) {
   const id = escapeHTML(item.applicationId);
   const previous = typeof item.previous === "string" ? item.previous : item.previous?.version;
   const disabled = operationBusy(item.applicationId) ? "disabled" : "";
-  return `<div class="store-detail-body"><p class="store-full-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>${installed && item.version ? `<p class="muted">当前版本 v${escapeHTML(item.version)}</p>` : ""}<p class="market-status">${escapeHTML(availability)}</p>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</div>`;
+  const active = installed && item.installationState !== "pending";
+  const operation = operationFor(item.applicationId);
+  const restoring = ["rolling_back", "rollback", "rolling-back"].includes(operation?.phase);
+  const uninstalling = operation?.phase === "uninstalling";
+  return `<div class="store-detail-body"><p class="store-full-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>${installed && item.version ? `<p class="muted">${active ? "当前版本" : "待安装版本"} v${escapeHTML(item.version)}</p>` : ""}<p class="market-status">${escapeHTML(availability)}</p>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${active && previous ? `<button class="text-button ${restoring ? "activity-button" : ""}" data-action="market-rollback" data-application-id="${id}" aria-busy="${restoring}" ${disabled}>${restoring ? activityLabel("正在恢复…") : "恢复上一版本"}</button>` : ""}<button class="text-button danger-text ${uninstalling ? "activity-button" : ""}" data-action="market-uninstall" data-application-id="${id}" aria-busy="${uninstalling}" ${disabled}>${uninstalling ? activityLabel("正在卸载…") : "卸载"}</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</div>`;
 }
 function applicationCard(item, installed = true) {
   item = withMarketName(item);
@@ -837,11 +890,12 @@ function applicationCard(item, installed = true) {
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
   const status = operationMessage(operation);
+  const preparation = applicationPreparationStatus(item);
   const actions = applicationActions(item, installed);
   return `<article class="application-card" data-application="${id}" data-tone="${applicationTone(item)}"><button class="store-icon-link" data-action="store-details" data-application-id="${id}" aria-label="了解${escapeHTML(item.name)}">${applicationIcon(item)}</button><div class="application-main">
     <div class="application-title"><h3><button class="store-title-link" data-action="store-details" data-application-id="${id}">${escapeHTML(item.name)}</button></h3></div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
-    ${status ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status)}</p>` : ""}
+    ${status || preparation ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || preparation)}</p>` : ""}
     ${!installed && candidate?.status !== "available" ? `<p class="market-status" role="status">${escapeHTML(candidate ? candidateLabel(candidate) : marketLoading ? "正在检查可安装版本…" : "暂未提供可安装版本")}</p>` : ""}
     </div>${actions}
     <button class="store-detail-link" data-action="store-details" data-application-id="${id}">了解应用 <span aria-hidden="true">›</span></button>
@@ -886,12 +940,13 @@ function applicationDetailView() {
   const candidate = marketCandidates.get(selectedApplicationId);
   const operation = operationFor(selectedApplicationId);
   const status = operationMessage(operation);
+  const preparation = item && applicationPreparationStatus(item);
   const modal = posterPreview !== null && media[posterPreview];
   return `<div class="app-layout store-layout" ${marketConfirmation || modal ? "inert" : ""}>${shellHeader("应用介绍")}<div class="page-content app-detail-page">
     <button class="store-back" data-action="store-back"><span aria-hidden="true">‹</span> 应用</button>
     ${item ? `<section class="app-detail-hero" data-application-detail="${escapeHTML(item.applicationId)}" data-tone="${applicationTone(item)}">${applicationIcon(item)}<div class="app-detail-identity"><p class="app-detail-category">${escapeHTML(metadata?.category || "万象应用")}</p><h2 class="app-detail-title" tabindex="-1">${escapeHTML(item.name)}</h2><p class="app-detail-tagline">${escapeHTML(metadata?.tagline || item.description || "在你的盒子上使用 AI 服务。")}</p>${applicationActions(item, Boolean(installedItem))}${item.editorialOnly ? '<p class="muted app-editorial-notice">产品介绍 · 暂未提供可安装版本</p>' : ""}</div></section>
-    ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}${status ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status)}</p>` : ""}
-    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${installedItem ? installedItem.selectionRequired ? "待选择当前版本" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
+    ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}${status || preparation ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || preparation)}</p>` : ""}
+    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem?.installationState === "pending" ? "待安装版本" : installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${installedItem ? installedItem.selectionRequired ? "待选择当前版本" : installedItem.installationState === "pending" ? "待完成盒端准备" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
     ${media.length ? `<section class="app-detail-section"><div class="section-heading"><h3>产品介绍</h3><span class="app-preview-hint">点击图片，放大查看</span></div><div class="app-poster-gallery ${media.length === 1 ? "single" : ""}" role="region" aria-label="${escapeHTML(item.name)}产品海报" tabindex="0">${media.map(([file, caption, context], index) => `<figure><button class="app-poster" data-action="poster-open" data-poster-index="${index}" aria-label="放大：${escapeHTML(caption)}"><img src="./assets/posters/${file}" alt="${escapeHTML(caption)}" decoding="async" /></button><figcaption><strong>${escapeHTML(caption)}</strong><span>${escapeHTML(context)}</span></figcaption></figure>`).join("")}</div></section>` : ""}
     <section class="app-detail-section app-detail-about"><p class="app-detail-category">为你的日常而设计</p><h3>关于${escapeHTML(item.name)}</h3><p>${escapeHTML(metadata?.introduction || item.description || "在你的盒子上使用 AI 服务。")}</p>${metadata ? `<div class="app-feature-grid">${metadata.features.map(([title, description], index) => `<article><span class="app-feature-number">0${index + 1}</span><h4>${escapeHTML(title)}</h4><p>${escapeHTML(description)}</p></article>`).join("")}</div>` : ""}</section>
     <section class="app-detail-section app-version-section"><h3>版本与管理</h3>${applicationManagement(item, Boolean(installedItem))}</section>
@@ -907,16 +962,17 @@ function confirmationView() {
 function applicationsView() {
   const applications = currentState.applications || [];
   const installed = new Set(applications.map((item) => item.applicationId));
+  const pendingInstallations = applications.some((item) => item.installationState === "pending");
   const available = discoverableApplications().filter((item) => !installed.has(item.applicationId));
   return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用")}<div class="page-content store-page">
-    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? "正在检查…" : "检查更新"}</button></div></div>
+    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" aria-busy="${marketLoading}" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在检查…") : "检查更新"}</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     ${storeFeatures()}
-    <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
+    <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${pendingInstallations ? "部分应用待完成安装" : applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>
-    ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)} <button class="text-button" data-action="market-refresh">刷新重试</button></div>` : ""}
+    ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)} <button class="text-button ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在刷新…") : "刷新重试"}</button></div>` : ""}
     ${available.length ? `<div class="application-list">${available.map((item) => applicationCard(item, false)).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用…" : marketError ? "稍后刷新即可重试。" : marketItems.length ? "商店中的应用均已安装。" : "暂无已上架应用。"}</p>`}</section>
-    <div class="store-footnote"><span>Windows 与 macOS 通用</span><span aria-hidden="true">·</span><span>安装和更新无需连接盒子</span></div>
+    <div class="store-footnote"><span>Windows 与 macOS 通用</span><span aria-hidden="true">·</span><span>下载无需连接盒子，部分应用需连接盒子完成安装</span></div>
   </div></div>${confirmationView()}`;
 }
 
@@ -1034,29 +1090,32 @@ function provisioningView() {
   };
   const running = provisioning.phase === "running";
   const preview = setupState.preview || setupState.compatiblePreview;
-  const previewBlocked = preview?.cloud_enrollment_status === "not_enrolled" ? "DEVICE_NOT_ENROLLED" :
-    !wifiOnly && preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null;
+  const ownershipBlock = !wifiOnly && ({ owned_self: "DEVICE_ALREADY_OWNED", owned_other: "DEVICE_OWNED_BY_OTHER",
+    legacy_bound: "LEGACY_BINDING_REVIEW_REQUIRED", history_review: "CLAIM_HISTORY_REVIEW_REQUIRED",
+    reset_pending: "DEVICE_RESET_PENDING" })[setupState.ownershipState];
+  const previewBlocked = setupState.claimStatusError || ownershipBlock || (preview?.cloud_enrollment_status === "not_enrolled" ? "DEVICE_NOT_ENROLLED" :
+    !wifiOnly && preview?.pairing_mode_remaining_seconds === 0 ? "PAIRING_MODE_CLOSED" : null);
   const setupPhase = setupState.state || "idle";
   const stages = Object.entries(stageLabels).filter(([key]) => !wifiOnly || !["claim", "initialize"].includes(key));
-  const setupCopy = starting ? "正在通过蓝牙读取盒子身份，请稍候。" : cancelling ? "正在停止本次配网，请稍候。" : {
+  const setupCopy = starting ? (setupState.connectionAttempt === 2 ? "蓝牙连接暂未成功，正在自动重连…" : "正在通过蓝牙读取盒子身份，请稍候。") : cancelling ? "正在停止本次配网，请稍候。" : {
     idle: "让盒子保持通电，点击扫描并选择附近的盒子。已认领的盒子可由主人修改 Wi-Fi。",
     attentionRequired: cloudCopy,
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
     verifyingLocalDevice: "正在验证设备身份和主人权限…",
     establishingSecureChannel: "正在建立加密连接…",
-    awaitingWifi: wifiOnly ? "主人权限已验证，请选择新的 Wi-Fi。认领关系和盒子数据将保留。" : "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
+    awaitingWifi: setupState.sessionRenewed ? "安全会话已自动更新，请重新选择网络并确认。上次提交不会自动重复。" : wifiOnly ? "主人权限已验证，请选择新的 Wi-Fi。认领关系和盒子数据将保留。" : "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
     awaitingOwnershipConfirmation: "设备已准备联网，请确认绑定到当前账号。",
     submittingAppProof: "正在提交账号绑定证明…",
     provisioningWifi: "正在通过加密通道配置 Wi‑Fi…",
     waitingCloud: cloudCopy,
     completed: wifiOnly ? "Wi-Fi 配置成功，认领关系和盒子数据已保留。" : "设备已完成联网和账号绑定。",
     cancelled: "本次配网已取消。",
-  }[setupPhase] || "请让设备进入配置模式后开始扫描。";
+  }[setupPhase] || "让盒子保持通电并靠近电脑，然后开始扫描。";
   const previewBlock = preview ? `<dl class="setup-preview"><dt>设备名称</dt><dd>${escapeHTML(preview.display_name)}</dd><dt>设备 ID</dt><dd>${escapeHTML(preview.device_id)}</dd><dt>型号</dt><dd>${escapeHTML(preview.model)}</dd><dt>身份公钥指纹</dt><dd>${escapeHTML(preview.identity_public_key_sha256)}</dd></dl>` : "";
   const { candidates, selecting, retained } = discoveryView;
-  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，本轮结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(candidate => discoveryCard(candidate)).join("") : "<p>正在等待附近的盒子，请确认盒子已进入配置模式。</p>"}</div>` : "";
+  const discoveryBlock = selecting || retained ? `<div class="discovery-list"><p>${retained ? "扫描已结束，本轮结果保留 2 分钟。请选择要配置的盒子：" : "选择要配置的盒子："}</p>${candidates.length ? candidates.map(candidate => discoveryCard(candidate)).join("") : "<p>正在等待附近的盒子，请让盒子保持通电并靠近电脑。</p>"}</div>` : "";
   const controls = setupPhase === "previewReady"
-    ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? "盒子尚未准备好配网" : "确认设备身份"}</button>`
+    ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? (wifiOnly ? "暂不能配置网络" : "暂不能认领") : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
       ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>${wifiOnly ? "连接 Wi-Fi" : "继续绑定账号"}</button></form>`
       : !wifiOnly && setupPhase === "awaitingOwnershipConfirmation"
@@ -1105,12 +1164,14 @@ function render(state) {
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
   window.wanxSpace?.activate(!auth && ["space", "boxes"].includes(page), page === "space");
+  supportView.sync(auth || state.account?.phase !== "authenticated" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]), state.devices || []);
+  supportView.visible(!auth && page === "boxes");
   scheduleBoxUpdatePolling();
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
-    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if (markup === renderedMarkup) { syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
@@ -1126,8 +1187,10 @@ function render(state) {
   const profileForm = !auth && page === "profile" ? app.querySelector?.('[data-form="profile"]') : null;
   const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
+  const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  const walletFocus = walletDialog?.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
   const scroller = document.scrollingElement;
-  const scroll = retainedForm && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+  const scroll = (retainedForm || walletDialog) && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
   const spaceList = page === "space" ? app.querySelector?.(".space-file-list") : null;
   const spacePosition = spaceList ? { key: spaceList.dataset.location, top: spaceList.scrollTop } : null;
   const spaceFocus = spaceList?.contains?.(document.activeElement) ? document.activeElement.closest?.("[data-entry-id]")?.dataset.entryId || "" : null;
@@ -1176,10 +1239,24 @@ function render(state) {
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
       submit.disabled = busy;
-      if (authForm) submit.textContent = busy ? authBusyLabel() : authSubmitLabel();
-      if (passwordForm) submit.textContent = busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改";
+      const pending = authForm ? busy && ["auth.login", "auth.register", "auth.reset-password"].includes(busyRequest?.action)
+        : passwordForm ? busyFor("auth.change-password") : profileForm ? busyFor("profile.save") : false;
+      submit.classList.toggle("activity-button", pending);
+      submit.setAttribute("aria-busy", String(pending));
+      if (authForm) submit.innerHTML = pending ? activityLabel(authBusyLabel()) : busy ? authBusyLabel() : authSubmitLabel();
+      if (passwordForm) submit.innerHTML = pending ? activityLabel("正在修改…") : busy ? "处理中…" : "确认修改";
+      if (profileForm) submit.innerHTML = pending ? activityLabel("正在保存…") : "保存资料";
     }
     focused?.focus({ preventScroll: true });
+  }
+  const nextWalletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  if (nextWalletDialog) {
+    const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled)'));
+    const previous = buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount);
+    (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
+    if (walletDialog) nextWalletDialog.scrollTop = walletDialog.scrollTop;
+  } else if (walletDialog && page === 'credits' && !auth) {
+    app.querySelector?.('[data-action="credits-open"]')?.focus({ preventScroll: true });
   }
   syncFormState();
   // Reattaching a focused form must not pull the user back after they scroll away.
@@ -1218,14 +1295,23 @@ function syncFormState() {
 function setupErrorMessage(error) {
   const code = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
-    DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，暂不能配网或绑定。请先由设备管理员完成注册，再让盒子进入配网模式并重新扫描。",
-    PAIRING_MODE_CLOSED: "盒子尚未准备好首次配网，请确认已更新盒端程序并完成初始化，然后重新扫描。",
+    DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，请联系设备管理员完成初始化。",
+    CLAIM_STATUS_CHECKING: "正在核对盒子归属…",
+    CLAIM_STATUS_UNAVAILABLE: "暂时无法核对盒子归属，请检查网络后重新选择盒子；如仍失败，请管理员检查账号服务版本。",
+    DEVICE_ALREADY_OWNED: "这台盒子已属于当前账号，无需再次认领。返回盒子列表即可连接或修改 Wi-Fi。",
+    DEVICE_OWNED_BY_OTHER: "这台盒子已属于其他账号，需要原主人完成转移后才能认领。",
+    LEGACY_BINDING_REVIEW_REQUIRED: "这台盒子保留旧版账号绑定，请联系管理员迁移归属，或完成重置后重新交付。",
+    CLAIM_HISTORY_REVIEW_REQUIRED: "这台盒子有尚待核对的交付历史，请联系管理员处理后再认领。",
+    DEVICE_RESET_PENDING: "盒子正在完成重置，请等待管理员确认交付就绪后再试。",
+    PAIRING_MODE_CLOSED: "盒子正在准备配网，请稍后重新选择；如持续未就绪，请管理员更新并检查盒端状态。",
     PROTOCOL_CHANGED: "盒子与客户端的配网协议未能匹配，接入已停止（PROTOCOL_CHANGED）。",
     DEVICE_IDENTITY_MISMATCH: "盒子身份校验未通过，接入已停止。请核对目标盒子。",
     LOCAL_TRANSPORT_DISCONNECTED: "蓝牙连接已断开，请靠近盒子并重新扫描。",
-    LOCAL_CONNECT_TIMEOUT: "连接盒子超时，请确认盒子处于配网模式后重试。",
+    LOCAL_CONNECT_TIMEOUT: "蓝牙连接盒子超时。请靠近盒子，检查电脑蓝牙后重试。",
     GATT_FRAGMENT_INCOMPLETE: "未完整收到盒子的蓝牙响应，请靠近盒子后重试。",
-    PAIRING_EXPIRED: "本次配网会话已超时，请重新扫描并重试。",
+    PAIRING_EXPIRED: "本次安全会话已到期，请重新选择盒子开始新会话。未认领盒子会持续可用。",
+    HELLO_CONTEXT_EXPIRED: "本次身份验证已到期，请重新选择盒子重试。",
+    OWNER_AUTHORIZATION_SYNC_PENDING: "盒子正在同步归属状态，请稍后重新选择。",
     OWNER_REQUIRED: "只有盒子的主人可以修改 Wi-Fi，请刷新盒子列表后重试。",
     OWNER_WIFI_UNSUPPORTED: "盒端程序尚不支持修改 Wi-Fi，请更新盒端程序后重试。",
     CONTRACT_MISMATCH: "账号服务的配网响应不兼容，请联系管理员核对服务版本（CONTRACT_MISMATCH）。",
@@ -1347,8 +1433,8 @@ async function run(action, input = {}) {
   const isAppOperation = Boolean(applicationId) && (action.startsWith("market.") || action.startsWith("applications."));
   if (isAppOperation && operationBusy(applicationId)) return null;
   const holdBusy = !isAppOperation && !["applications.confirm-open", "applications.cancel-open", "desktop.about"].includes(action);
-  if (isAppOperation) localOperations.set(applicationId, { phase: { "market.install": "installing", "market.uninstall": "uninstalling", "market.rollback": "rolling_back", "applications.select-current": "selecting" }[action] || "opening" });
-  const operation = { action };
+  if (isAppOperation) localOperations.set(applicationId, { phase: { "market.install": "installing", "market.uninstall": "uninstalling", "market.rollback": "rolling_back", "applications.select-current": "selecting" }[action] || "opening", version: input.version });
+  const operation = { action, deviceId: input.deviceId || (action === "devices.disconnect" ? currentState.activeDeviceId : undefined), tool: input.tool };
   if (holdBusy) { busy = true; busyRequest = operation; }
   render(currentState);
   let failure;
@@ -1405,7 +1491,7 @@ app.addEventListener("click", async (event) => {
   if (target.disabled) return;
   const action = target.dataset.action;
   if (action === "profile-menu" && page !== "provisioning") { profileMenuOpen = !profileMenuOpen; render(currentState); if (profileMenuOpen) app.querySelector?.('[data-action="show-profile"]')?.focus(); return; }
-  if (profileMenuOpen) profileMenuOpen = false;
+  if (profileMenuOpen && action !== "logout") profileMenuOpen = false;
   if (action === "profile-avatar" || action === "profile-avatar-remove") {
     if (busy || page !== "profile") return;
     await run(action === "profile-avatar" ? "profile.avatar" : "profile.avatar-remove"); return;
@@ -1439,6 +1525,12 @@ app.addEventListener("click", async (event) => {
     app.querySelector?.('[data-action="poster-close"]')?.focus?.(); return;
   }
   if (action === "poster-close") { posterPreview = null; render(currentState); app.querySelector?.('[data-action="poster-open"]')?.focus?.(); return; }
+  if (action.startsWith("support-")) {
+    if (busy || page !== "boxes") return;
+    await supportView.action(action, target.dataset);
+    if (action === "support-open") app.querySelector?.(".support-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    return;
+  }
   if (action === "market-cancel") { marketConfirmation = null; render(currentState); return; }
   if (action === "market-confirm") {
     const confirmation = marketConfirmation;
@@ -1523,9 +1615,7 @@ app.addEventListener("click", async (event) => {
     render(currentState); return;
   }
   if (action?.startsWith("credits-")) {
-    const pending = creditsView.action(action, target.dataset);
-    if (action === "credits-detail") document.querySelector(".credits-detail")?.scrollIntoView?.({ block: "start" });
-    await pending;
+    await creditsView.action(action, target.dataset);
     return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
@@ -1537,12 +1627,6 @@ app.addEventListener("click", async (event) => {
     if (page === "boxes") void refreshTransfers();
     notice = null;
     render(currentState);
-    return;
-  }
-  if (action?.startsWith("credits-")) {
-    const pending = creditsView.action(action, target.dataset);
-    if (action === "credits-detail") document.querySelector(".credits-detail")?.scrollIntoView?.({ block: "start" });
-    await pending;
     return;
   }
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
@@ -1579,7 +1663,7 @@ app.addEventListener("click", async (event) => {
     if (currentState.canOpenDashboard && ["terminal", "desktop"].includes(target.dataset.tool)) await run("maintenance.open", { tool: target.dataset.tool, deviceId: currentState.activeDeviceId });
     return;
   }
-  if (action === "market-refresh") { await refreshMarket(); return; }
+  if (action === "market-refresh") { if (!marketLoading) await refreshMarket(); return; }
   if (["market-install", "market-uninstall", "market-rollback"].includes(action)) {
     const applicationId = target.dataset.applicationId;
     const installed = (currentState.applications || []).find((item) => item.applicationId === applicationId);
@@ -1698,6 +1782,18 @@ app.addEventListener("toggle", (event) => {
 }, true);
 
 app.addEventListener("keydown", (event) => {
+  const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  if (walletDialog && event.key === 'Escape') { event.preventDefault(); releaseInteraction(); void creditsView.action('credits-dismiss'); return; }
+  if (walletDialog && event.key === 'Tab') {
+    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled)'));
+    if (buttons.length) {
+      event.preventDefault();
+      const index = buttons.indexOf(document.activeElement);
+      const next = index < 0 ? (event.shiftKey ? buttons.length - 1 : 0) : (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next].focus();
+    }
+    return;
+  }
   if (event.key === " " && event.target?.closest?.("button")) { clearTimeout(interactionTimer); activeInteraction = true; }
   if (posterPreview !== null && event.key === "Escape") { event.preventDefault(); posterPreview = null; render(currentState); app.querySelector?.('[data-action="poster-open"]')?.focus?.(); return; }
   if (posterPreview !== null && event.key === "Tab") { event.preventDefault(); app.querySelector?.('[data-action="poster-close"]')?.focus?.(); return; }
@@ -1862,7 +1958,8 @@ window.wanxClient.onNavigate?.((destination) => {
   render(currentState);
 });
 window.wanxSetup?.subscribe((snapshot) => {
-  if (snapshot.pairingSessionId && wifiPicker.sessionId && snapshot.pairingSessionId !== wifiPicker.sessionId) resetWifiPicker();
+  if ((snapshot.pairingSessionId && wifiPicker.sessionId && snapshot.pairingSessionId !== wifiPicker.sessionId) ||
+      (snapshot.sessionRenewed && !setupState.sessionRenewed)) resetWifiPicker();
   if (snapshot.pairingSessionId) wifiPicker.sessionId = snapshot.pairingSessionId;
   if (["cancelled", "completed", "terminalError", "restartRequired", "idle"].includes(snapshot.state)) resetWifiPicker();
   setupState = snapshot;

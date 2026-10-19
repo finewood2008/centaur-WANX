@@ -14,10 +14,10 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
   const targetOS = ({ darwin: "macos", win32: "windows", macos: "macos", windows: "windows" })[platform];
   const offers = new Map(), operations = new Set(), pending = new Set();
   const controller = new AbortController();
-  function session() {
+  function session(assertCurrent = () => {}) {
     const captured = captureSession();
-    const check = () => { controller.signal.throwIfAborted(); captured(); };
-    check.signal = AbortSignal.any([controller.signal, ...(captured.signal ? [captured.signal] : [])]);
+    const check = () => { controller.signal.throwIfAborted(); captured(); assertCurrent(); };
+    check.signal = AbortSignal.any([controller.signal, ...(captured.signal ? [captured.signal] : []), ...(assertCurrent.signal ? [assertCurrent.signal] : [])]);
     check();
     return check;
   }
@@ -34,7 +34,10 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
     assertId(id);
     assertSession();
     if (!targetOS || !["x64", "arm64"].includes(arch)) return { status: "incompatible", reason: "unsupported_platform" };
-    const installed = (await applications.listInstalled()).find((item) => item.applicationId === id);
+    const local = (await applications.listInstalled()).find((item) => item.applicationId === id);
+    // A downloaded frontend whose box dependencies are still pending has no
+    // current version. Keep offering the same signed artifact for preparation.
+    const installed = local?.installationState === "pending" ? null : local;
     assertSession();
     if (installed?.selectionRequired) return { status: "incompatible", reason: "version_selection_required" };
     const comparable = installed && isComparableApplicationVersion(installed.version);
@@ -164,17 +167,22 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
       if (!Array.isArray(result?.items)) throw marketFailure("MARKET_INVALID_RESPONSE");
       return result;
     },
-    async candidate(id) {
-      const assertSession = session();
+    async candidate(id, { assertSession: assertCurrent } = {}) {
+      const assertSession = session(assertCurrent);
       const result = await resolveCandidate(id, assertSession);
       if (result.status === "available") offers.set(id, { artifactId: result.artifact.artifactId, assertSession });
       else offers.delete(id);
       return result;
     },
-    async install(id) {
+    async install(id, { assertSession: assertCurrent, onlyIfMissing = false } = {}) {
       return locked(id, async () => {
-        const assertSession = session(), offered = offers.get(id);
+        const assertSession = session(assertCurrent), offered = offers.get(id);
         assertSession();
+        if (onlyIfMissing) {
+          const existing = (await applications.listInstalled()).find(item => item.applicationId === id && item.installationState !== "pending");
+          assertSession();
+          if (existing) return existing;
+        }
         if (!offered) throw marketFailure("MARKET_CANDIDATE_CHANGED");
         offered.assertSession();
         const candidate = await resolveCandidate(id, assertSession);
@@ -186,7 +194,7 @@ export function createApplicationMarket({ request, applications, wanxVersion, pl
           const archivePath = path.join(temporary, "application.wanxapp");
           await download(descriptor, assertSession, archivePath);
           assertSession();
-          const result = await applications.installVerifiedPackage({ archivePath, envelope: candidate.artifact.envelope, descriptor, assertSession });
+          const result = await applications.installVerifiedPackage({ archivePath, envelope: candidate.artifact.envelope, descriptor, assertSession, onlyIfMissing });
           offers.delete(id);
           return result;
         } finally { await rm(temporary, { recursive: true, force: true }); }

@@ -81,13 +81,13 @@ async function harness(t, { writeMs = 100, respond = true, silentOperation, slow
     if (input.operation !== silentOperation) listener?.(input);
   };
   const host = await createProvisioningHost({ webContents: contents, ipcMain, documentUrl: contents.mainFrame.url,
-    consumer: { current: async () => ({ accountId: 'test-account', clientId: 'test-client' }), pairingApi: async () => ({}) },
+    consumer: { current: async () => ({ accountId: 'test-account', clientId: 'test-client' }), pairingApi: async () => ({ getClaimState: async deviceId => ({ data: { deviceId, ownershipState: 'unclaimed', canClaim: true, nextAction: 'claim', reasonCode: null } }) }) },
     cryptoFactory: () => ({}), resumeStore: {}, trustedRootCertificatesPem: [], trustedRootSpkiPins: [],
     clock: { monotonicMs: () => Date.now(), nowUtc: () => new Date().toISOString() },
     coordinatorFactory: ({ transportFactory }) => ({
       subscribe: () => () => {},
       getSnapshot: () => ({ flowId: 'timeout-test', state: 'previewReady', preview: {
-        cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 600,
+        device_id: 'box-timeout', cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 600,
       } }),
       async begin(input, signal) { transport = await transportFactory.connect(input.selected, signal); },
       async confirmPhysicalDevice(signal) { response = await transport.request(frame, match, signal); },
@@ -173,7 +173,7 @@ test('a missing renderer request reply has a bounded 35s IPC fallback', async t 
   assert.equal((await outcome).code, 'GATT_FRAGMENT_INCOMPLETE');
 });
 
-test('connect retains its shorter 10s IPC deadline', async t => {
+test('connect retries once with a bounded 10s deadline per attempt', async t => {
   const h = await harness(t, { silentOperation: 'connect' });
   let settled = false;
   const outcome = h.begin().then(() => null, error => error).finally(() => { settled = true; });
@@ -181,6 +181,9 @@ test('connect retains its shorter 10s IPC deadline', async t => {
   t.mock.timers.tick(9999); await flush();
   assert.equal(settled, false);
   t.mock.timers.tick(1); await flush();
+  assert.equal(settled, false, 'second automatic attempt is still bounded');
+  assert.equal(h.operations.filter(value => value === 'connect').length, 2);
+  t.mock.timers.tick(10000); await flush();
   assert.equal((await outcome).code, 'LOCAL_CONNECT_TIMEOUT');
 });
 
@@ -190,11 +193,21 @@ test('a timed-out connect cannot disconnect a new connection when its notificati
   const first = h.begin().then(() => null, error => error);
   await flush();
   t.mock.timers.tick(10000); await flush();
-  assert.equal((await first).code, 'LOCAL_CONNECT_TIMEOUT');
+  assert.equal(await first, null, 'same selection automatically reconnects');
   assert.equal(h.disconnects, 1, 'timeout immediately retires the physical attempt');
-  await h.begin();
+  assert.equal(h.operations.filter(value => value === 'connect').length, 2);
   const before = h.disconnects;
   h.releaseFirstConnect(); await flush();
   assert.equal(h.disconnects, before, 'retired connect must not disconnect the new connection');
   assert.deepEqual(Array.from(await h.read()), [123, 125]);
+});
+
+test('cancellation during a connecting attempt stops all automatic retries', async t => {
+  const h = await harness(t, { silentOperation: 'connect' });
+  const outcome = h.begin().then(() => null, error => error);
+  await flush();
+  await h.host.cancel();
+  assert.equal((await outcome).name, 'AbortError');
+  t.mock.timers.tick(20000); await flush();
+  assert.equal(h.operations.filter(value => value === 'connect').length, 1);
 });

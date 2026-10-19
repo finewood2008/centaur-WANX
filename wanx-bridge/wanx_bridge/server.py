@@ -26,6 +26,7 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from .assets import DashboardAssets, installed_dashboard
+from .browser_expert import BrowserExpertPreparer
 from .config import BridgeAuthError
 from .managed_resource_guard import ManagedResourceGuard
 from .readiness import diagnose_application
@@ -216,6 +217,9 @@ def create_app(
     # This boundary stays active even when background resource synchronization
     # is disabled: previously installed controlled packages must remain private.
     managed_resources = ManagedResourceGuard(adapter)
+    browser_experts = BrowserExpertPreparer(
+        getattr(getattr(auth, "config", None), "state_dir", None)
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -293,8 +297,7 @@ def create_app(
         await _call(auth.assert_live, session)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/platform/applications/prepare")
-    async def application_prepare(request: Request) -> JSONResponse:
+    async def resource_operation(request: Request, operation: str) -> JSONResponse:
         marker = _credentials(request.headers, request.query_params, required=True)
         session = await _call(auth.authorize, marker)
         body = await _body(request)
@@ -307,6 +310,8 @@ def create_app(
 
         async def upstream_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
             await live()
+            if operation == "inspect_candidate" and (method != "GET" or kwargs):
+                raise _error("RESOURCE_READ_ONLY_VIOLATION", 500)
             if not path.startswith("/api/") or path.startswith("//"):
                 raise _error("RESOURCE_UPSTREAM_PATH_INVALID", 400)
             req = client.build_request(
@@ -321,9 +326,24 @@ def create_app(
             await live()
             return response
 
-        result = await resources.prepare(body, session, context, upstream_request, live)
+        handler = getattr(resources, operation, None)
+        if handler is None:
+            raise _error("APPLICATION_CONTRACT_UNSUPPORTED", 422)
+        result = await handler(body, session, context, upstream_request, live)
         await live()
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/platform/applications/prepare")
+    async def application_prepare(request: Request) -> JSONResponse:
+        return await resource_operation(request, "prepare")
+
+    @app.post("/api/platform/applications/candidates/prepare")
+    async def application_candidate_prepare(request: Request) -> JSONResponse:
+        return await resource_operation(request, "prepare_candidate")
+
+    @app.post("/api/platform/applications/candidates/inspect")
+    async def application_candidate_inspect(request: Request) -> JSONResponse:
+        return await resource_operation(request, "inspect_candidate")
 
     @app.post("/api/platform/applications/readiness")
     async def application_readiness(request: Request) -> JSONResponse:
@@ -357,7 +377,13 @@ def create_app(
                 return await get(path)
 
             context = await _call(auth.resource_context, session)
-            return await resources.inspect(resource_body, session, context, request_resource, live)
+            operation = (
+                "inspect_candidate" if resource_body.get("schemaVersion") == 2 else "inspect"
+            )
+            handler = getattr(resources, operation, None)
+            if handler is None:
+                raise _error("APPLICATION_CONTRACT_UNSUPPORTED", 422)
+            return await handler(resource_body, session, context, request_resource, live)
 
         result = await diagnose_application(
             body,
@@ -367,6 +393,33 @@ def create_app(
             inspect_resources=inspect_resources,
         )
         await _call(auth.assert_live, session)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/platform/browser/expert/ensure")
+    async def ensure_browser_expert(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        body = await _body(request, limit=65536)
+
+        async def live() -> None:
+            await _call(auth.assert_live, session)
+
+        async def upstream_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+            await live()
+            req = client.build_request(
+                method,
+                origin + path,
+                headers={"Authorization": "Bearer " + _field(session, "upstream_token")},
+                timeout=30,
+                **kwargs,
+            )
+            req.headers.pop("cookie", None)
+            response = await client.send(req)
+            await live()
+            return response
+
+        result = await browser_experts.ensure(body, _field(session, "user"), upstream_request, live)
+        await live()
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.api_route(

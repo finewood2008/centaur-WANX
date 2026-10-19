@@ -5,7 +5,10 @@ import { createSetupRuntime } from '../shell/setup.mjs';
 import { createProvisioningHost } from '../shell/provisioning-host.cjs';
 const candidate = { candidateId: 'candidate', transport: 'ble-gatt', transportHandle: 'handle', selectionLeaseId: 'lease', advertisedName: 'CentaurOS-Setup', rssi: -40, firstSeenMonotonicMs: 0, lastSeenMonotonicMs: 1 };
 async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_mode_remaining_seconds: 300 }, scanWifi = async () => [], ownerWifi = false,
-  advertisementNames = { subscribe() { return () => {}; } }, connectTransport = false } = {}) {
+  advertisementNames = { subscribe() { return () => {}; } }, connectTransport = false,
+  ownershipState = 'unclaimed', claimStatusUnavailable = false, expireHandshake = 0, expireOwnership = false,
+  changedIdentityOnReconnect = false, claimStatusWait, taskClock } = {}) {
+  preview = { device_id: 'box-new', identity_public_key_sha256: 'a'.repeat(64), ...preview };
   const ipcMain = new EventEmitter(); const handlers = new Map();
   ipcMain.handle = (name, fn) => handlers.set(name, fn);
   ipcMain.removeHandler = (name) => handlers.delete(name);
@@ -18,9 +21,16 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
   };
   let identity = { accountId: 'a', clientId: 'c' }, refreshes = 0, pickerDisposed = 0, handshakes = 0;
   const accountListeners = new Set();
-  const account = { getIdentity: () => identity, snapshot: () => ({ phase: identity ? 'authenticated' : 'signed_out' }),
+  const account = { request: async () => {
+    await claimStatusWait;
+    if (claimStatusUnavailable) throw Object.assign(new Error('offline'), { code: 'ACCOUNT_SERVICE_UNAVAILABLE' });
+    const actions = { unclaimed: 'claim', owned_self: 'connect', owned_other: 'transfer', legacy_bound: 'contact_operator',
+      history_review: 'contact_operator', reset_pending: 'wait_for_reset' };
+    return { data: { deviceId: 'box-new', ownershipState, canClaim: ownershipState === 'unclaimed', nextAction: actions[ownershipState], reasonCode: null },
+      requestId: 'req-1', serverTime: '2026-10-17T00:00:00Z', receivedMonotonicMs: 1 };
+  }, getIdentity: () => identity, snapshot: () => ({ phase: identity ? 'authenticated' : 'signed_out' }),
     subscribe: (fn) => { accountListeners.add(fn); return () => accountListeners.delete(fn); } };
-  let pickerInput;
+  let pickerInput, coordinators = 0, ownershipSubmissions = 0;
   const runtime = await createSetupRuntime({ control: { webContents, isDestroyed: () => false }, controlURL: webContents.mainFrame.url,
     ipcMain, account, client: { refreshDevices: async () => { refreshes++; } },
     consumerBaseUrl: 'https://consumer.example', userData: 'unused',
@@ -28,8 +38,10 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
     makeStore: () => ({ load: async () => [] }),
     installPicker: (input) => { pickerInput = input; return () => { pickerDisposed++; }; },
     makeHost: (options) => {
-      const factory = ({ transportFactory }) => {
-      let state = { flowId: 'flow-1', state: 'idle', preview, ...(ownerWifi ? { mode: 'wifi' } : {}) }, notify;
+      const factory = ({ transportFactory, consumerApi }) => {
+      coordinators++;
+      const currentPreview = changedIdentityOnReconnect && coordinators > 1 ? { ...preview, identity_public_key_sha256: 'b'.repeat(64) } : preview;
+      let state = { flowId: 'flow-1', state: 'idle', preview: currentPreview, ...(ownerWifi ? { mode: 'wifi' } : {}) }, notify;
       const set = (next) => { state = { ...state, state: next }; notify?.(); };
       return { getSnapshot: () => state, subscribe: (fn) => { notify = fn; return () => {}; },
         begin: async (input, signal) => {
@@ -37,26 +49,29 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
           set('previewReady');
         }, confirmPhysicalDevice: async () => {
           handshakes++;
+          if (handshakes <= expireHandshake) throw Object.assign(new Error('expired'), { code: 'PAIRING_EXPIRED' });
           if (ownerWifi) state.pairingSessionId = '11111111-1111-4111-8111-111111111111';
+          state.pairingExpiresInMs = 300000;
           set('awaitingWifi');
         },
         scanWifi,
         provideWifi: async (wifi) => { assert.equal(wifi.ssid, 'office'); set(ownerWifi ? 'completed' : 'awaitingOwnershipConfirmation'); },
-        confirmOwnership: async () => set('completed'), cancel: async () => set('cancelled'),
+        confirmOwnership: async () => { ownershipSubmissions++; if (expireOwnership) { await consumerApi.provePairing().catch(() => {}); throw Object.assign(new Error('expired'), { code: 'PAIRING_EXPIRED' }); } set('completed'); }, cancel: async () => set('cancelled'),
         suspend: async () => {}, dispose: async () => {},
       };
       };
-      return createProvisioningHost({ ...options, cryptoFactory: () => ({}), coordinatorFactory: factory,
+      return createProvisioningHost({ ...options, ...(taskClock ? { clock: taskClock } : {}), cryptoFactory: () => ({}), coordinatorFactory: factory,
         ...(ownerWifi ? { ownerWifiCoordinatorFactory: factory } : {}) });
     },
   });
-  return { runtime, handlers, event, sent, pickerInput, advertisementNames, handshakes: () => handshakes, refreshes: () => refreshes, pickerDisposed: () => pickerDisposed,
+  return { ownershipSubmissions: () => ownershipSubmissions, runtime, handlers, event, sent, pickerInput, advertisementNames, handshakes: () => handshakes, refreshes: () => refreshes, pickerDisposed: () => pickerDisposed,
     logout() { identity = null; for (const fn of accountListeners) fn(); },
     invoke: (name, input) => handlers.get(`wanx:setup:${name}`)(event, input),
   };
 }
 test('trusted setup IPC completes identity, Wi-Fi and ownership then refreshes only the directory', async () => {
   const h = await harness();
+  assert.ok(h.handlers.has('wanx:discovery:bluetooth-state'));
   assert.equal(h.pickerInput.documentUrl, h.event.senderFrame.url);
   assert.equal(h.pickerInput.advertisementNames, h.advertisementNames);
   assert.ok(h.sent.some(([name]) => name === 'wanx:setup:ready'));
@@ -181,3 +196,107 @@ for (const [preview, code] of [
     } finally { await h.runtime.dispose(); }
   });
 }
+
+for (const [ownershipState, code] of [
+  ['owned_self', 'DEVICE_ALREADY_OWNED'], ['owned_other', 'DEVICE_OWNED_BY_OTHER'],
+  ['legacy_bound', 'LEGACY_BINDING_REVIEW_REQUIRED'], ['history_review', 'CLAIM_HISTORY_REVIEW_REQUIRED'],
+  ['reset_pending', 'DEVICE_RESET_PENDING'],
+]) test(`authoritative ${ownershipState} blocks a claim before hello despite BLE availability`, async () => {
+  const h = await harness({ ownershipState });
+  try {
+    const result = await h.invoke('begin', candidate);
+    assert.equal(result.value.ownershipState, ownershipState);
+    assert.equal(result.value.canClaim, false);
+    assert.equal((await h.invoke('confirmPhysical')).code, code);
+    assert.equal(h.handshakes(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+test('unavailable ownership lookup fails closed before any claim handshake', async () => {
+  const h = await harness({ claimStatusUnavailable: true });
+  try {
+    assert.equal((await h.invoke('begin', candidate)).value.claimStatusError, 'CLAIM_STATUS_UNAVAILABLE');
+    assert.equal((await h.invoke('confirmPhysical')).code, 'CLAIM_STATUS_UNAVAILABLE');
+    assert.equal(h.handshakes(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+test('expired preparation reconnects the selected identity and starts one fresh session', async () => {
+  const h = await harness({ expireHandshake: 1, connectTransport: true });
+  try {
+    await h.invoke('begin', candidate);
+    const result = await h.invoke('confirmPhysical');
+    assert.equal(result.value.state, 'awaitingWifi');
+    assert.equal(result.value.sessionRenewed, true);
+    assert.equal(h.handshakes(), 2);
+    assert.equal(h.ownershipSubmissions(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+test('persistent expiry is bounded and never starts ownership submission', async () => {
+  const h = await harness({ expireHandshake: 2 });
+  try {
+    await h.invoke('begin', candidate);
+    assert.equal((await h.invoke('confirmPhysical')).code, 'PAIRING_EXPIRED');
+    assert.equal(h.handshakes(), 2);
+    assert.equal(h.ownershipSubmissions(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+test('renewal revalidates the exact device identity before preparing another session', async () => {
+  const h = await harness({ expireHandshake: 1, changedIdentityOnReconnect: true });
+  try {
+    await h.invoke('begin', candidate);
+    assert.equal((await h.invoke('confirmPhysical')).code, 'DEVICE_IDENTITY_MISMATCH');
+    assert.equal(h.handshakes(), 1);
+    assert.equal((await h.invoke('state')).value.state, 'idle');
+  } finally { await h.runtime.dispose(); }
+});
+test('an expired read-only Wi-Fi scan renews preparation without replaying a Wi-Fi write', async () => {
+  let scans = 0;
+  const h = await harness({ scanWifi: async () => {
+    if (++scans === 1) throw Object.assign(new Error('expired'), { code: 'PAIRING_EXPIRED' });
+    return [{ ssid: 'office', signal: 90, security: 'open' }];
+  } });
+  try {
+    await h.invoke('begin', candidate); await h.invoke('confirmPhysical');
+    assert.deepEqual((await h.invoke('scanWifi')).value, [{ ssid: 'office', signal: 90, security: 'open' }]);
+    assert.equal(h.handshakes(), 2);
+    assert.equal(h.ownershipSubmissions(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+test('ownership submission is never automatically repeated when its response expires', async () => {
+  const h = await harness({ expireOwnership: true });
+  try {
+    await h.invoke('begin', candidate); await h.invoke('confirmPhysical');
+    await h.invoke('wifi', { ssid: 'office', hidden: false, security: 'open' });
+    assert.equal((await h.invoke('confirmOwnership')).code, 'PAIRING_EXPIRED');
+    assert.equal(h.ownershipSubmissions(), 1);
+    assert.equal(h.handshakes(), 1);
+  } finally { await h.runtime.dispose(); }
+});
+
+test('preview publication cannot start hello while the ownership lookup is pending', async () => {
+  let release;
+  const h = await harness({ claimStatusWait: new Promise(resolve => { release = resolve; }) });
+  try {
+    const beginning = h.invoke('begin', candidate);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await h.invoke('state')).value.state, 'previewReady');
+    assert.equal((await h.invoke('confirmPhysical')).code, 'CLAIM_STATUS_CHECKING');
+    assert.equal(h.handshakes(), 0);
+    release();
+    assert.equal((await beginning).value.canClaim, true);
+  } finally { release(); await h.runtime.dispose(); }
+});
+
+for (const step of ['wifi', 'confirmOwnership']) test(`idle expiry before ${step} renews the session and requires fresh input without writes`, async () => {
+  let now = 0;
+  const h = await harness({ taskClock: { monotonicMs: () => now, nowUtc: () => '2026-10-17T00:00:00Z' } });
+  try {
+    await h.invoke('begin', candidate); await h.invoke('confirmPhysical');
+    if (step === 'confirmOwnership') await h.invoke('wifi', { ssid: 'office', hidden: false, security: 'open' });
+    now = 300001;
+    const result = await h.invoke(step, step === 'wifi' ? { ssid: 'office', hidden: false, security: 'open' } : undefined);
+    assert.equal(result.value.state, 'awaitingWifi');
+    assert.equal(result.value.sessionRenewed, true);
+    assert.equal(h.handshakes(), 2);
+    assert.equal(h.ownershipSubmissions(), 0);
+  } finally { await h.runtime.dispose(); }
+});

@@ -47,7 +47,9 @@ export function registerControlActions({
   confirmSpacePurge,
   updates,
   credits,
+  creditWallet,
   accountProfile,
+  support,
   uiState,
   desktop,
   getState,
@@ -64,7 +66,7 @@ export function registerControlActions({
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
   ]);
-  const reads = new Set(["panel-application-names", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -75,6 +77,14 @@ export function registerControlActions({
       if (reads.has(name)) return result;
       return Promise.resolve(result).finally(() => publishState());
     });
+  };
+  const creditsRead = async action => {
+    try { return await action(); }
+    catch (error) {
+      if (error?.code === "CREDITS_NOT_CONFIGURED" || error?.message === "CREDITS_NOT_CONFIGURED")
+        return { ok: false, code: "CREDITS_NOT_CONFIGURED" };
+      throw error;
+    }
   };
   for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
     register(`space-links-${action}`, input => {
@@ -137,16 +147,36 @@ export function registerControlActions({
     const { items } = await market.list();
     return items.map(({ applicationId, name }) => ({ applicationId, name }));
   });
-  register("panel-balance", async () => {
+  register("panel-balance", () => creditsRead(async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
     const balance = await credits.balance();
     return { available: balance.available };
-  });
+  }));
   for (const method of ["balance", "transactions", "reservation", "tasks"]) {
-    register(`credits-${method}`, (input) => {
+    register(`credits-${method}`, (input) => creditsRead(() => {
       if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
       return credits[method](input);
+    }));
+  }
+  for (const method of ["catalog", "balance", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+    if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
+    register(`wallet-${method}`, async input => {
+      try {
+        if (client.snapshot().account?.phase !== "authenticated") throw Object.assign(new Error(), { code: "ACCOUNT_LOGIN_REQUIRED" });
+        if (!creditWallet) throw Object.assign(new Error(), { code: "CONTRACT_NOT_CONFIGURED" });
+        return { ok: true, value: await creditWallet[method](input) };
+      } catch (error) {
+        // Electron does not preserve custom Error fields. Use a narrow result
+        // record so the UI retains contract codes and support request IDs.
+        return { ok: false, error: {
+          code: /^[A-Z][A-Z0-9_]{1,79}$/.test(error?.code || "") ? error.code : "CREDITS_REQUEST_FAILED",
+          status: Number.isInteger(error?.status) ? error.status : null,
+          request_id: error?.request_id || null,
+          retryable: error?.retryable === true,
+          details: error?.details || {},
+        } };
+      }
     });
   }
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
@@ -217,6 +247,11 @@ export function registerControlActions({
     return client.lookupDeviceDiscovery([...ids]);
   });
   register("ownership-list", () => client.listOwnershipTransfers());
+  for (const method of ["current", "decide", "revoke"]) register(`support-${method}`, input => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!support) throw new Error("SUPPORT_UNAVAILABLE");
+    return support[method](input);
+  });
   register("ownership-send-code", () => client.sendTransferCode());
   register("ownership-create", (input) => {
     if (input?.retainData !== true) throw new Error("ACCOUNT_INVALID_INPUT");

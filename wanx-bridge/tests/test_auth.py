@@ -61,6 +61,26 @@ class Adapter:
 
 
 @pytest.mark.asyncio
+async def test_model_lease_rejects_superseded_platform_authority_without_requiring_online_owner(
+    setup_auth,
+):
+    auth, key, _ = setup_auth
+    snapshot = {"ownershipEpoch": 1, "authVersion": 1}
+    auth.assert_model_binding(snapshot)
+    await auth.exchange(issue(auth, key), Adapter())
+    auth.assert_model_binding(snapshot)
+    # The platform may observe withdrawal/transfer before the next model poll.
+    await auth.exchange(issue(auth, key, authorization_version=2), Adapter())
+    with pytest.raises(BridgeAuthError, match="MODEL_PROVIDER_AUTHORIZATION_CHANGED"):
+        auth.assert_model_binding(snapshot)
+    auth.assert_model_binding({"ownershipEpoch": 1, "authVersion": 2})
+    await auth.exchange(issue(auth, key, sub="new-owner", ownership_epoch=2), Adapter())
+    with pytest.raises(BridgeAuthError, match="MODEL_PROVIDER_AUTHORIZATION_CHANGED"):
+        auth.assert_model_binding({"ownershipEpoch": 1, "authVersion": 99})
+    auth.assert_model_binding({"ownershipEpoch": 2, "authVersion": 1})
+
+
+@pytest.mark.asyncio
 async def test_exchange_replay_and_restart(setup_auth):
     auth, key, config = setup_auth
     grant = issue(auth, key)

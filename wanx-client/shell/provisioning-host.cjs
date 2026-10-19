@@ -94,6 +94,12 @@ function snapshot(value) {
     "retryable",
     "supportCode",
     "restartReason",
+    "ownershipState",
+    "nextAction",
+    "canClaim",
+    "claimStatusError",
+    "connectionAttempt",
+    "sessionRenewed",
   ]) {
     if (value[key] !== undefined) result[key] = value[key];
   }
@@ -186,7 +192,9 @@ async function createProvisioningHost({
   };
   const state = () =>
     snapshot(
-      context?.coordinator.getSnapshot() || { flowId: "", state: "idle" },
+      context ? { ...context.coordinator.getSnapshot(), ...context.claimStatus,
+        ...(context.connectionAttempt ? { connectionAttempt: context.connectionAttempt } : {}),
+        ...(context.sessionRenewed ? { sessionRenewed: true } : {}) } : { flowId: "", state: "idle" },
     );
   const publish = () => {
     const value = state();
@@ -260,7 +268,19 @@ async function createProvisioningHost({
         throw localFailure("LOCAL_CONNECT_TIMEOUT");
       }
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const id = await rpc("connect", [candidate], signal);
+      let id;
+      // A connect/read-only handshake may be retried. Never replay protocol
+      // writes here: ownership and Wi-Fi mutations have separate reconciliation.
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        if (context) { context.connectionAttempt = attempt; publish(); }
+        try {
+          id = await rpc("connect", [candidate], signal);
+          break;
+        } catch (error) {
+          if (signal.aborted || attempt === 2 ||
+              !["LOCAL_CONNECT_TIMEOUT", "LOCAL_TRANSPORT_DISCONNECTED"].includes(error?.code)) throw error;
+        }
+      }
       if (!text(id)) throw failure("PROTOCOL_CHANGED");
       if (signal.aborted) {
         await rpc("close", [id]).catch(() => {});
@@ -422,6 +442,8 @@ async function createProvisioningHost({
   function createContext(session, pairing, mode = 'claim') {
     const current = {
       mode,
+      pairing,
+      claimStatus: mode === 'claim' ? { claimStatusError: 'CLAIM_STATUS_CHECKING' } : undefined,
       accountId: session.accountId,
       clientId: session.clientId,
       abort: new AbortController(),
@@ -440,6 +462,7 @@ async function createProvisioningHost({
       consumerApi[method] = async (...args) => {
         try {
           await check(current);
+          if (method === 'provePairing') current.proofSubmitted = true;
           const result = await pairing[method](...args);
           await check(current);
           return result;
@@ -470,6 +493,81 @@ async function createProvisioningHost({
     });
     return current;
   }
+  async function readClaimStatus(current) {
+    if (current.mode === 'wifi') return;
+    if (typeof current.pairing.getClaimState !== 'function') {
+      current.claimStatus = { claimStatusError: 'CLAIM_STATUS_UNAVAILABLE' };
+      publish();
+      return;
+    }
+    const value = current.coordinator.getSnapshot();
+    const preview = value.preview ?? value.compatiblePreview;
+    if (preview?.cloud_enrollment_status === 'not_enrolled') {
+      current.claimStatus = undefined;
+      publish();
+      return;
+    }
+    const deviceId = preview?.device_id;
+    if (!deviceId) throw failure('PROTOCOL_CHANGED');
+    current.claimStatus = { claimStatusError: 'CLAIM_STATUS_CHECKING' };
+    publish();
+    try {
+      const result = await current.pairing.getClaimState(deviceId, current.abort.signal);
+      await check(current);
+      const data = result.data;
+      if (data?.deviceId !== deviceId) throw failure('DEVICE_IDENTITY_MISMATCH');
+      current.claimStatus = { ownershipState: data.ownershipState, canClaim: data.canClaim,
+        nextAction: data.nextAction };
+    } catch (error) {
+      await check(current);
+      if (current.abort.signal.aborted) throw error;
+      current.claimStatus = { claimStatusError: 'CLAIM_STATUS_UNAVAILABLE' };
+    }
+    publish();
+  }
+  function claimBlock(current) {
+    if (current.mode === 'wifi') return undefined;
+    if (current.claimStatus?.claimStatusError) return current.claimStatus.claimStatusError;
+    if (!current.claimStatus) return 'CLAIM_STATUS_UNAVAILABLE';
+    if (current.claimStatus.ownershipState === 'unclaimed' && current.claimStatus.canClaim === true) return undefined;
+    return ({ owned_self: 'DEVICE_ALREADY_OWNED', owned_other: 'DEVICE_OWNED_BY_OTHER',
+      legacy_bound: 'LEGACY_BINDING_REVIEW_REQUIRED', history_review: 'CLAIM_HISTORY_REVIEW_REQUIRED',
+      reset_pending: 'DEVICE_RESET_PENDING' })[current.claimStatus?.ownershipState] || 'CLAIM_STATUS_UNAVAILABLE';
+  }
+  async function renewPreparation(current) {
+    await check(current);
+    if (!current.beginInput || current.sessionRenewed) throw failure('PAIRING_EXPIRED');
+    const old = current.coordinator.getSnapshot();
+    const identity = old.preview ?? old.compatiblePreview;
+    const next = createContext({ accountId: current.accountId, clientId: current.clientId }, current.pairing, current.mode);
+    next.beginInput = current.beginInput;
+    next.sessionRenewed = true;
+    context = next;
+    await release(current, 'session_expired');
+    await check(next);
+    await next.coordinator.begin(next.beginInput, next.abort.signal);
+    await check(next);
+    const value = next.coordinator.getSnapshot();
+    const preview = value.preview ?? value.compatiblePreview;
+    if (!identity || preview?.device_id !== identity.device_id ||
+        preview?.identity_public_key_sha256 !== identity.identity_public_key_sha256) {
+      await reset('identity_changed');
+      throw failure('DEVICE_IDENTITY_MISMATCH');
+    }
+    await readClaimStatus(next);
+    const blocked = claimBlock(next);
+    if (blocked) throw failure(blocked);
+    // Only repeat identity/session preparation, before any ownership submission.
+    await next.coordinator.confirmPhysicalDevice(next.abort.signal);
+    await check(next);
+    rememberDeadline(next);
+    return next;
+  }
+  function rememberDeadline(current) {
+    const remaining = current.coordinator.getSnapshot().pairingExpiresInMs;
+    if (Number.isFinite(remaining) && remaining > 0)
+      current.preparedDeadline = clock.monotonicMs() + remaining;
+  }
   async function invoke(method, argument) {
     const current = await check(context);
     if (current.suspending) await current.suspending;
@@ -483,14 +581,37 @@ async function createProvisioningHost({
       // Discovery also exposes read-only previews outside pairing mode. Do not
       // attempt hello, device proof or account claim for these candidates.
       if (preview?.cloud_enrollment_status === "not_enrolled") throw failure("DEVICE_NOT_ENROLLED");
+      const blocked = claimBlock(current);
+      if (blocked) throw failure(blocked);
       if (preview?.cloud_enrollment_status !== "ready" ||
         !Number.isInteger(preview.pairing_mode_remaining_seconds)) throw failure("PROTOCOL_CHANGED");
       if (current.mode !== 'wifi' && preview.pairing_mode_remaining_seconds <= 0) throw failure("PAIRING_MODE_CLOSED");
     }
-    await current.coordinator[method](
-      ...(argument === undefined ? [current.abort.signal] : [argument]),
-    );
+    // A user can spend longer than the session lifetime entering Wi-Fi. Renew
+    // before submission, discard the old credentials, and return to the input
+    // step. Never automatically replay a write or an uncertain account proof.
+    if (['provideWifi', 'confirmOwnership'].includes(method) && !current.proofSubmitted &&
+        !current.sessionRenewed && current.preparedDeadline !== undefined &&
+        clock.monotonicMs() >= current.preparedDeadline) {
+      argument?.passwordUtf8?.fill(0);
+      await renewPreparation(current);
+      return state();
+    }
+    try {
+      await current.coordinator[method](
+        ...(argument === undefined ? [current.abort.signal] : [argument]),
+      );
+    } catch (error) {
+      if (['confirmPhysicalDevice', 'provideWifi', 'confirmOwnership'].includes(method) &&
+          !current.proofSubmitted && !current.abort.signal.aborted && !current.sessionRenewed &&
+          ['HELLO_CONTEXT_EXPIRED', 'PAIRING_EXPIRED'].includes(error?.code)) {
+        await renewPreparation(current);
+        return state();
+      }
+      throw error;
+    }
     await check(current);
+    if (method === 'confirmPhysicalDevice') rememberDeadline(current);
     return state();
   }
   const api = {
@@ -535,8 +656,7 @@ async function createProvisioningHost({
           throw failure("STALE_GENERATION");
         const current = createContext(session, pairing, mode);
         context = current;
-        await current.coordinator.begin(
-          {
+        current.beginInput = {
             selected: candidate,
             accountId: current.accountId,
             clientId: current.clientId,
@@ -544,10 +664,10 @@ async function createProvisioningHost({
               { darwin: "macos", win32: "windows", linux: "linux" }[
                 process.platform
               ] || "unknown",
-          },
-          current.abort.signal,
-        );
+          };
+        await current.coordinator.begin(current.beginInput, current.abort.signal);
         await check(current);
+        await readClaimStatus(current);
         return state();
       } finally {
         beginning = false;
@@ -639,7 +759,17 @@ async function createProvisioningHost({
         if (current.abort.signal.aborted) cancel();
         current.wifiScanAbort = abort;
         current.wifiScan = (async () => {
-          const networks = await current.coordinator.scanWifi(abort.signal);
+          let networks;
+          try {
+            networks = await current.coordinator.scanWifi(abort.signal);
+          } catch (error) {
+            if (!abort.signal.aborted && !current.sessionRenewed &&
+                ['HELLO_CONTEXT_EXPIRED', 'PAIRING_EXPIRED'].includes(error?.code)) {
+              await renewPreparation(current);
+              return api.scanWifi();
+            }
+            throw error;
+          }
           await check(current);
           if (current.coordinator.getSnapshot().state !== "awaitingWifi")
             throw failure("CLAIM_INVALID_STATE");

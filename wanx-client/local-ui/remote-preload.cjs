@@ -4,6 +4,22 @@ function errorCode(error) {
   return String(error?.code || error?.message || "CLIENT_REQUEST_FAILED");
 }
 
+async function creditsRead(method, input) {
+  const value = await ipcRenderer.invoke(`wanx-client:credits-${method}`, input);
+  if (value?.ok === false && value.code === "CREDITS_NOT_CONFIGURED")
+    throw Object.assign(new Error(value.code), { code: value.code });
+  return value;
+}
+
+async function walletRequest(method, input) {
+  const result = await ipcRenderer.invoke(`wanx-client:wallet-${method}`, input);
+  if (result?.ok !== true) {
+    const error = result?.error || { code: "CREDITS_INVALID_RESPONSE" };
+    throw Object.assign(new Error(error.code), error);
+  }
+  return result.value;
+}
+
 function projectState(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const account = source.account || { phase: "signed_out" };
@@ -58,13 +74,23 @@ async function rawState() {
 }
 
 const actions = {
+  "wallet.catalog": () => walletRequest("catalog"),
+  "wallet.balance": () => walletRequest("balance"),
+  "wallet.orders": input => walletRequest("orders", input),
+  "wallet.order": input => walletRequest("order", input),
+  "wallet.entries": input => walletRequest("entries", input),
+  "wallet.calls": input => walletRequest("calls", input),
+  "wallet.call": input => walletRequest("call", input),
+  "wallet.summary": input => walletRequest("summary", input),
+  "wallet.createOrder": input => walletRequest("createOrder", input),
+  "wallet.closeOrder": input => walletRequest("closeOrder", input),
   "profile.save": input => ipcRenderer.invoke("wanx-client:profile-save", { displayName: input?.displayName }),
   "profile.avatar": () => ipcRenderer.invoke("wanx-client:profile-avatar"),
   "profile.avatar-remove": () => ipcRenderer.invoke("wanx-client:profile-avatar-remove"),
-  "credits.tasks": () => ipcRenderer.invoke("wanx-client:credits-tasks"),
-  "credits.balance": () => ipcRenderer.invoke("wanx-client:credits-balance"),
-  "credits.transactions": input => ipcRenderer.invoke("wanx-client:credits-transactions", { after: input?.after }),
-  "credits.reservation": input => ipcRenderer.invoke("wanx-client:credits-reservation", { id: input?.id }),
+  "credits.tasks": () => creditsRead("tasks"),
+  "credits.balance": () => creditsRead("balance"),
+  "credits.transactions": input => creditsRead("transactions", { after: input?.after }),
+  "credits.reservation": input => creditsRead("reservation", { id: input?.id }),
   "auth.login": (input) =>
     ipcRenderer.invoke("wanx-client:login-password", {
       phone: input?.username,
@@ -85,6 +111,15 @@ const actions = {
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
+  "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
+  "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {
+    deviceId: input?.deviceId, ownershipEpoch: input?.ownershipEpoch, requestId: input?.requestId,
+    requestDigest: input?.requestDigest, decision: input?.decision, confirmed: input?.confirmed,
+  }),
+  "support.revoke": input => ipcRenderer.invoke("wanx-client:support-revoke", {
+    deviceId: input?.deviceId, ownershipEpoch: input?.ownershipEpoch, requestId: input?.requestId,
+    requestDigest: input?.requestDigest, supportSessionId: input?.supportSessionId, confirmed: input?.confirmed,
+  }),
   "ownership.send-code": () => ipcRenderer.invoke("wanx-client:ownership-send-code"),
   "ownership.create": (input) => ipcRenderer.invoke("wanx-client:ownership-create", input),
   "ownership.accept": (input) => ipcRenderer.invoke("wanx-client:ownership-accept", input),
@@ -131,7 +166,9 @@ async function action(name, input = {}) {
     const value = await handler(input);
     return { ok: true, value, state: await getLocalState() };
   } catch (error) {
-    return { ok: false, code: errorCode(error), state: await getLocalState() };
+    return { ok: false, code: errorCode(error), state: await getLocalState(),
+      ...(name.startsWith("wallet.") ? { request_id: error.request_id || null, details: error.details || {},
+        retryable: error.retryable === true, status: error.status || null } : {}) };
   }
 }
 
