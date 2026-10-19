@@ -47,6 +47,7 @@ export function registerControlActions({
   confirmSpacePurge,
   updates,
   credits,
+  creditWallet,
   accountProfile,
   support,
   uiState,
@@ -151,6 +152,26 @@ export function registerControlActions({
       if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
       return credits[method](input);
     }));
+  }
+  for (const method of ["catalog", "balance", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+    if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
+    register(`wallet-${method}`, async input => {
+      try {
+        if (client.snapshot().account?.phase !== "authenticated") throw Object.assign(new Error(), { code: "ACCOUNT_LOGIN_REQUIRED" });
+        if (!creditWallet) throw Object.assign(new Error(), { code: "CONTRACT_NOT_CONFIGURED" });
+        return { ok: true, value: await creditWallet[method](input) };
+      } catch (error) {
+        // Electron does not preserve custom Error fields. Use a narrow result
+        // record so the UI retains contract codes and support request IDs.
+        return { ok: false, error: {
+          code: /^[A-Z][A-Z0-9_]{1,79}$/.test(error?.code || "") ? error.code : "CREDITS_REQUEST_FAILED",
+          status: Number.isInteger(error?.status) ? error.status : null,
+          request_id: error?.request_id || null,
+          retryable: error?.retryable === true,
+          details: error?.details || {},
+        } };
+      }
+    });
   }
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {
