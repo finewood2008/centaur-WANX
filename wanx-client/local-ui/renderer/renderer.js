@@ -6,10 +6,10 @@ let posterPreview = null;
 let profileMenuOpen = false;
 const storeCarousel = window.createStoreCarousel();
 const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurai.wanx.centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
-const creditsView = window.createCreditsView({ request: async (action, input) => {
+const creditsView = window.createWalletView({ request: async (action, input) => {
   const response = await window.wanxClient.action(action, input);
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
-  if (!response.ok) throw new Error(response.code);
+  if (!response.ok) throw Object.assign(new Error(response.code), { code: response.code, request_id: response.request_id, details: response.details, retryable: response.retryable });
   return response.value;
 }, changed: () => { if (currentState) render(currentState); } });
 const supportView = window.createSupportView({ request: async (action, input) => {
@@ -1171,7 +1171,7 @@ function render(state) {
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
-    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout">${shellHeader("积分")}${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if (markup === renderedMarkup) { syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
@@ -1187,8 +1187,10 @@ function render(state) {
   const profileForm = !auth && page === "profile" ? app.querySelector?.('[data-form="profile"]') : null;
   const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
+  const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  const walletFocus = walletDialog?.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
   const scroller = document.scrollingElement;
-  const scroll = retainedForm && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+  const scroll = (retainedForm || walletDialog) && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
   const spaceList = page === "space" ? app.querySelector?.(".space-file-list") : null;
   const spacePosition = spaceList ? { key: spaceList.dataset.location, top: spaceList.scrollTop } : null;
   const spaceFocus = spaceList?.contains?.(document.activeElement) ? document.activeElement.closest?.("[data-entry-id]")?.dataset.entryId || "" : null;
@@ -1246,6 +1248,15 @@ function render(state) {
       if (profileForm) submit.innerHTML = pending ? activityLabel("正在保存…") : "保存资料";
     }
     focused?.focus({ preventScroll: true });
+  }
+  const nextWalletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  if (nextWalletDialog) {
+    const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled)'));
+    const previous = buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount);
+    (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
+    if (walletDialog) nextWalletDialog.scrollTop = walletDialog.scrollTop;
+  } else if (walletDialog && page === 'credits' && !auth) {
+    app.querySelector?.('[data-action="credits-open"]')?.focus({ preventScroll: true });
   }
   syncFormState();
   // Reattaching a focused form must not pull the user back after they scroll away.
@@ -1604,9 +1615,7 @@ app.addEventListener("click", async (event) => {
     render(currentState); return;
   }
   if (action?.startsWith("credits-")) {
-    const pending = creditsView.action(action, target.dataset);
-    if (action === "credits-detail") document.querySelector(".credits-detail")?.scrollIntoView?.({ block: "start" });
-    await pending;
+    await creditsView.action(action, target.dataset);
     return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
@@ -1618,12 +1627,6 @@ app.addEventListener("click", async (event) => {
     if (page === "boxes") void refreshTransfers();
     notice = null;
     render(currentState);
-    return;
-  }
-  if (action?.startsWith("credits-")) {
-    const pending = creditsView.action(action, target.dataset);
-    if (action === "credits-detail") document.querySelector(".credits-detail")?.scrollIntoView?.({ block: "start" });
-    await pending;
     return;
   }
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
@@ -1779,6 +1782,18 @@ app.addEventListener("toggle", (event) => {
 }, true);
 
 app.addEventListener("keydown", (event) => {
+  const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  if (walletDialog && event.key === 'Escape') { event.preventDefault(); releaseInteraction(); void creditsView.action('credits-dismiss'); return; }
+  if (walletDialog && event.key === 'Tab') {
+    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled)'));
+    if (buttons.length) {
+      event.preventDefault();
+      const index = buttons.indexOf(document.activeElement);
+      const next = index < 0 ? (event.shiftKey ? buttons.length - 1 : 0) : (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next].focus();
+    }
+    return;
+  }
   if (event.key === " " && event.target?.closest?.("button")) { clearTimeout(interactionTimer); activeInteraction = true; }
   if (posterPreview !== null && event.key === "Escape") { event.preventDefault(); posterPreview = null; render(currentState); app.querySelector?.('[data-action="poster-open"]')?.focus?.(); return; }
   if (posterPreview !== null && event.key === "Tab") { event.preventDefault(); app.querySelector?.('[data-action="poster-close"]')?.focus?.(); return; }

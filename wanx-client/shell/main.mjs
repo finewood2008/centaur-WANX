@@ -1,6 +1,7 @@
 import { panelSpaceState } from "./panel-space.mjs";
 import { readAvatar } from "./avatar.mjs";
 import { createCreditsReader } from "../account/credits.mjs";
+import { createCreditWallet } from "../account/credit-wallet.mjs";
 import { createRemoteSupport } from "../account/support.mjs";
 import { createApplicationBackend } from "../applications/backend.mjs";
 import { createApplicationReleaseAccess } from "../applications/release-access.mjs";
@@ -509,6 +510,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             return result.canceled || !result.filePaths.length ? null : readAvatar(result.filePaths[0], nativeImage);
           }),
         },
+        creditWallet: createCreditWallet({ request: input => account.request(input) }),
         credits: createCreditsReader({ client, authorityDeviceId: process.env.WANX_CREDITS_DEVICE_ID || "",
           accountRequest: creditsServiceURL ? input => account.creditsRequest({ ...input, serviceURL: creditsServiceURL }) : null }),
         ipcMain,
