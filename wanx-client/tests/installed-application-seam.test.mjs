@@ -63,6 +63,37 @@ async function rejectsBeforeLoading(h, launch, code) {
   assert.equal(process.env.WANX_HOST_APPLICATION_DATA, h.previousData);
 }
 
+for (const platform of ["win32", "darwin"]) {
+  for (const [label, launch, signed] of [["market", runManagedApplication, true], ["local", launchInstalledApplication, false]]) {
+    test(`${label} bootstrap hides every Windows application window menu and preserves macOS menus (${platform})`, async t => {
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { value: platform });
+      t.after(() => Object.defineProperty(process, "platform", originalPlatform));
+      const h = await fixture(t, { signed });
+      const menuCalls = [];
+      h.options.load = async () => {
+        for (let index = 0; index < 2; index++) {
+          const webContents = new EventEmitter();
+          const window = Object.assign(new EventEmitter(), { webContents,
+            setMenu: value => menuCalls.push([index, "menu", value]),
+            setMenuBarVisibility: value => menuCalls.push([index, "visible", value]),
+          });
+          h.options.app.emit("browser-window-created", {}, window);
+          assert.deepEqual(menuCalls, platform === "win32"
+            ? Array.from({ length: index + 1 }, (_, n) => [[n, "menu", null], [n, "visible", false]]).flat()
+            : []);
+          webContents.emit("did-finish-load");
+          window.emit("closed");
+        }
+      };
+      await launch(h.options);
+      h.options.app.emit("host-message", { type: "wanx:application-activate", launchId: "launch" });
+      h.options.app.emit("before-quit");
+      assert.deepEqual(h.messages, [{ type: "wanx:application-ready", launchId: "launch" }]);
+    });
+  }
+}
+
 for (const [label, launch, signed] of [["market", runManagedApplication, true], ["local", launchInstalledApplication, false]]) {
   test(`${label} bootstrap accepts HTTP-only launch environment, configures the profile and reports readiness once`, label === "market" ? managedOnly : {}, async t => {
     const h = await fixture(t, { signed });
@@ -72,6 +103,7 @@ for (const [label, launch, signed] of [["market", runManagedApplication, true], 
     assert.deepEqual(h.messages, []);
     const contents = new EventEmitter();
     const window = Object.assign(new EventEmitter(), { webContents: contents, isDestroyed: () => false,
+      setMenu() {}, setMenuBarVisibility() {},
       isMinimized: () => true, restore: () => h.effects.push(["restore"]), show: () => h.effects.push(["show"]), focus: () => {} });
     h.options.app.emit("browser-window-created", {}, window);
     contents.emit("did-fail-load", {}, -105, "subframe", "", false);
@@ -231,7 +263,7 @@ for (const [label, launch, signed] of [["market", runManagedApplication, true], 
     const h = await fixture(t, { signed });
     await launch(h.options);
     const webContents = new EventEmitter();
-    h.options.app.emit("browser-window-created", {}, Object.assign(new EventEmitter(), { webContents }));
+    h.options.app.emit("browser-window-created", {}, Object.assign(new EventEmitter(), { webContents, setMenu() {}, setMenuBarVisibility() {} }));
     webContents.emit("did-fail-load", {}, -105, "private diagnostic", "private URL", true);
     webContents.emit("did-finish-load");
     h.options.app.emit("before-quit");

@@ -412,15 +412,55 @@ test("market cancellation, uninstall and rollback require explicit confirmation"
   assert.match(h.app.innerHTML, /安装你的第一个应用/);
 });
 
-test("unlisted official apps remain discoverable after uninstall and a fresh start", async () => {
+test("discovery follows the remote catalog when apps are added and removed", async () => {
+  const remote = { applicationId: "publisher.new-app", name: "服务端新应用", description: "动态目录中的应用" };
+  let items = [remote];
+  const h = await harness(state(), [], { list: async () => ({ items }) });
+  const cards = () => [...h.app.innerHTML.matchAll(/class="application-card" data-application="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(cards(), [remote.applicationId]);
+  assert.match(h.app.innerHTML, /服务端新应用/);
+  items = [application];
+  await h.click("market-refresh");
+  assert.deepEqual(cards(), [application.applicationId]);
+  items = [];
+  await h.click("market-refresh");
+  assert.deepEqual(cards(), []);
+});
+
+test("empty remote discovery never invents official application cards", async () => {
+  const h = await harness(state(), [], { list: async () => ({ items: [] }) });
+  assert.doesNotMatch(h.app.innerHTML, /class="application-card" data-application=/);
+  assert.match(h.app.innerHTML, /暂无已上架应用/);
+});
+
+test("discovery shows loading and retry states without bundled application cards", async () => {
+  let rejectList;
+  let fail = true;
+  const h = await harness(state(), [], { list: () => fail
+    ? new Promise((resolve, reject) => { rejectList = reject; })
+    : Promise.resolve({ items: [application] }) });
+  assert.match(h.app.innerHTML, /正在加载应用/);
+  assert.doesNotMatch(h.app.innerHTML, /class="application-card" data-application=/);
+  rejectList(new Error("ACCOUNT_NETWORK_ERROR"));
+  await flushActions();
+  assert.match(h.app.innerHTML, /刷新重试/);
+  assert.doesNotMatch(h.app.innerHTML, /class="application-card" data-application=/);
+  fail = false;
+  await h.click("market-refresh");
+  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.zhijun"/);
+});
+
+test("unlisted official apps stay installed but do not reappear in discovery after uninstall or restart", async () => {
   const dialogue = { applicationId: "centaurai.wanx.dialogue", name: "众见", version: "0.3.3" };
   const options = { list: async () => ({ items: [] }), candidate: async () => ({ status: "unavailable", reason: "application_unlisted" }) };
   const h = await harness(state(), [dialogue], options);
+  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
+  assert.match(h.app.innerHTML, /data-action="applications-launch"/);
   await h.click("market-uninstall", { applicationId: dialogue.applicationId });
   await h.click("market-confirm");
   assert.match(h.app.innerHTML, /我的应用 <span class="count">0<\/span>/);
-  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
-  assert.match(h.app.innerHTML, /暂未提供可安装版本/);
+  assert.doesNotMatch(h.app.innerHTML, /class="application-card" data-application=/);
+  assert.match(h.app.innerHTML, /暂无已上架应用/);
   await h.click("store-details", { applicationId: dialogue.applicationId });
   assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.dialogue"/);
   assert.match(h.app.innerHTML, /dialogue-product-v1.png/);
@@ -428,8 +468,7 @@ test("unlisted official apps remain discoverable after uninstall and a fresh sta
   await h.click("market-install", { applicationId: dialogue.applicationId });
   assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
   const restarted = await harness(state(), [], options);
-  assert.match(restarted.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
-  assert.equal((restarted.app.innerHTML.match(/class="application-card" data-application="centaurai.wanx.dialogue"/g) || []).length, 1);
+  assert.doesNotMatch(restarted.app.innerHTML, /class="application-card" data-application=/);
 });
 
 test("published official apps are listed once and can be reinstalled after uninstall", async () => {
