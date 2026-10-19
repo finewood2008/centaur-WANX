@@ -893,6 +893,8 @@ export function createPlatformClient({
       return emit();
     },
     loginPassword: (input, options) => afterLogin(() => account.loginPassword(input), options),
+    getRememberedLogin: () => account.getRememberedLogin(),
+    forgetRememberedLogin: () => account.forgetRememberedLogin(),
     loginSMS: (input, options) => afterLogin(() => account.loginSMS(input), options),
     register: (input, options) => afterLogin(() => account.register(input), options),
     sendSMS: ({ phone, scene }) => account.sendSMS(phone, scene),

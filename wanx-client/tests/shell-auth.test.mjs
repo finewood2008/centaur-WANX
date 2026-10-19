@@ -11,6 +11,8 @@ function harness() {
     [
       "snapshot",
       "loginPassword",
+      "getRememberedLogin",
+      "forgetRememberedLogin",
       "loginSMS",
       "register",
       "sendSMS",
@@ -121,6 +123,19 @@ test("account IPC validates and forwards only allowed fields preserving password
       /invalid_sms_code/,
     );
 });
+test("remembered login uses protected IPC and validates the remember flag", () => {
+  const h = harness();
+  h.invoke("remembered-login-get");
+  h.invoke("remembered-login-forget");
+  h.invoke("login-password", { phone: "13800000000", password: " secret ", remember: true });
+  assert.deepEqual(h.calls, [
+    ["getRememberedLogin", undefined],
+    ["forgetRememberedLogin", undefined],
+    ["loginPassword", { phone: "13800000000", password: " secret ", remember: true }, { waitForDevices: false }],
+  ]);
+  assert.throws(() => h.invoke("login-password", { phone: "13800000000", password: "secret", remember: "true" }), /invalid_credentials/);
+});
+
 test("box actions accept only bounded IDs and direct connection cannot inject transport credentials", () => {
   const h = harness();
   for (const input of [null, {}, " ", "a".repeat(129)])

@@ -65,7 +65,7 @@ export function registerControlActions({
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
   ]);
-  const reads = new Set(["support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -178,8 +178,13 @@ export function registerControlActions({
       Buffer.byteLength(input.password, "utf8") > 72
     )
       throw new Error("invalid_credentials");
-    return client.loginPassword({ phone: number, password: input.password }, { waitForDevices: false });
+    if (input.remember !== undefined && typeof input.remember !== "boolean")
+      throw new Error("invalid_credentials");
+    return client.loginPassword({ phone: number, password: input.password,
+      ...(input.remember !== undefined ? { remember: input.remember } : {}) }, { waitForDevices: false });
   });
+  register("remembered-login-get", () => client.getRememberedLogin());
+  register("remembered-login-forget", () => client.forgetRememberedLogin());
   register("login-sms", (input) => {
     const number = phone(input);
     const code = text(input?.code, 12, "invalid_sms_code");
