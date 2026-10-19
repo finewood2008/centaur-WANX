@@ -899,19 +899,17 @@ function applicationCard(item, installed = true) {
     <details class="application-details" data-detail-id="${id}" ${expandedDetails.has(item.applicationId) ? "open" : ""}><summary>版本与管理${candidate?.status === "available" && installed ? '<span class="store-update-dot">可更新</span>' : ""}</summary>${applicationManagement(item, installed)}</details></article>`;
 }
 function discoverableApplications() {
-  // Product introductions survive uninstall; only trusted market candidates enable installation.
-  const items = new Map(marketItems.map(item => [item.applicationId, item]));
-  for (const [applicationId, metadata] of Object.entries(window.wanxAppCatalog || {})) {
-    if (!items.has(applicationId)) items.set(applicationId, {
-      applicationId, name: metadata.name, description: metadata.tagline || metadata.introduction,
-      editorialOnly: marketCandidates.get(applicationId)?.status !== "available",
-    });
-  }
-  return [...items.values()];
+  // Only the account's remote catalog determines which apps are discoverable.
+  return [...new Map(marketItems.map(item => [item.applicationId, item])).values()];
 }
 function storeApplication(id) {
-  return currentState.applications?.find(item => item.applicationId === id)
-    || discoverableApplications().find(item => item.applicationId === id) || null;
+  const item = currentState.applications?.find(item => item.applicationId === id)
+    || discoverableApplications().find(item => item.applicationId === id);
+  if (item) return item;
+  // Featured posters may open a bundled introduction without adding a market listing.
+  const metadata = window.wanxAppCatalog?.[id];
+  return metadata ? { applicationId: id, name: metadata.name,
+    description: metadata.tagline || metadata.introduction, editorialOnly: true } : null;
 }
 function storeFeatures() {
   const slides = featuredApplicationIds.map(id => ({ id, metadata: window.wanxAppCatalog?.[id] })).filter(item => item.metadata?.posters?.length);
