@@ -166,6 +166,7 @@ async function harness(initial = state(), installed = [application], options = {
       rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
     },
     credits: options.credits,
+    creditWallet: options.creditWallet,
     accountProfile: options.accountProfile,
     support: options.support,
     applications, uiState, getState: snapshot, publishState: publish,
@@ -2315,17 +2316,26 @@ test("expired setup sessions offer a new scan without requiring a deployment win
 });
 
 
-test("credits entry opens a read-only account ledger with real IPC data", async () => {
-  const h = await harness(state(), [application], { credits: {
-    balance: async () => ({ available: 1250, held: 40, paid_available: 1000, gift_available: 250 }),
-    transactions: async () => ({ items: [], after: 0, hasMore: false }),
+test("wallet entry reads the versioned account ledger through real IPC without a box", async () => {
+  const envelope = data => ({ schema_version: "1", request_id: "wallet-seam", data });
+  const h = await harness(state(), [application], { creditWallet: {
+    balance: async () => envelope({ balance_credit_atoms: "1250000000", debt_credit_atoms: "0", ledger_sequence: 1, execution_slot_state: "none" }),
+    catalog: async () => envelope({ recharge_enabled: false, timezone: "Asia/Shanghai", tiers: [] }),
+    orders: async () => envelope({ items: [], next_cursor: null }),
+    entries: async () => envelope({ items: [], next_cursor: null, through_ledger_sequence: 1 }),
+    calls: async () => envelope({ items: [], next_cursor: null }),
+    summary: async () => envelope({ gross_consumed_credit_atoms: "0", correction_credit_atoms: "0", net_consumed_credit_atoms: "0", pending_call_count: 0, ledger_sequence: 1 }),
   } });
-  assert.match(h.app.innerHTML, /1,250 点/);
+  assert.match(h.app.innerHTML, /1,250\.00 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.app.innerHTML, /积分/);
-  assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
-  assert.match(h.app.innerHTML, /还没有积分记录/);
+  assert.match(h.app.innerHTML, /账号积分/);
+  assert.match(h.app.innerHTML, /data-action="credits-open"/);
+  assert.doesNotMatch(h.app.innerHTML, /积分流水|调用记录|充值订单|role="dialog"/);
+  await h.click("credits-open");
+  assert.match(h.app.innerHTML, /role="dialog"/);
+  assert.match(h.app.innerHTML, /购买暂不可用/);
+  assert.doesNotMatch(h.app.innerHTML, /赠送积分|预计消耗|预留额度/);
 });
 
 test("box maintenance opens the current box terminal and desktop through trusted IPC", async () => {

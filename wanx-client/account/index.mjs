@@ -1,4 +1,5 @@
 import { publicProfile, validateProfilePatch } from "./profile.mjs";
+import { decodeCreditEnvelope } from "./credit-wallet.mjs";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 
 export const DEFAULT_CONSUMER_URL = "https://boss.nexusaos.qitus.cn/prod-api";
@@ -216,6 +217,7 @@ export function createAccount({
   ) {
     const checkGeneration = () => { if (!detached) assert(generation); };
     const url = route(path);
+    const creditRoute = path.startsWith("/app-api/v1/credits/");
     checkGeneration();
     const text = body === undefined ? "" : JSON.stringify(body);
     const controller = new AbortController();
@@ -232,7 +234,7 @@ export function createAccount({
     if (idempotencyKey !== undefined) {
       if (
         typeof idempotencyKey !== "string" ||
-        !/^[\w-]{1,128}$/.test(idempotencyKey)
+        !(creditRoute ? /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/ : /^[\w-]{1,128}$/).test(idempotencyKey)
       )
         throw failure("ACCOUNT_INVALID_INPUT");
       headers["Idempotency-Key"] = idempotencyKey;
@@ -297,6 +299,8 @@ export function createAccount({
       try {
         payload = JSON.parse(responseText);
       } catch {
+        if (creditRoute && response.status === 404)
+          throw failure("CREDITS_SERVICE_UNAVAILABLE", 404);
         if (missingNetworkRoute)
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
         if (missingMarketRoute)
@@ -316,6 +320,10 @@ export function createAccount({
       }
       checkGeneration();
       let metadata;
+      if (creditRoute && response.status === 404 &&
+          Object.keys(payload).length === 1 && payload.detail === "Not Found")
+        throw failure("CREDITS_SERVICE_UNAVAILABLE", 404);
+      if (creditRoute) return decodeCreditEnvelope(payload, response.status);
       if (responseMetadata) {
         if (response.status === 401 || payload.code === 401)
           throw failure("ACCOUNT_SESSION_EXPIRED", 401);
