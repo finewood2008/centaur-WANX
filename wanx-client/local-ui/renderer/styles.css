@@ -233,8 +233,9 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 
 .setup-wifi [hidden] { display: none; }
 .wifi-picker { grid-column: 1 / -1; display: flex; gap: 14px; align-items: end; }
-.wifi-picker label { flex: 1; min-width: 0; }
+.wifi-picker label { flex: 1; min-width: 0; margin-bottom: 0; }
 .wifi-picker select { width: 100%; }
+.wifi-picker select, .wifi-picker > .button { height: 40px; }
 .setup-wifi .wifi-status, .setup-wifi .wifi-mode { grid-column: 1 / -1; }
 .setup-wifi .wifi-mode { justify-self: start; margin: 0 0 14px; }
 @media (max-width: 600px) { .wifi-picker { align-items: stretch; flex-direction: column; } }
