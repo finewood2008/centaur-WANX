@@ -40,10 +40,16 @@ test("real HTTP service, client gateway, loopback link and stdio MCP: small-file
   await assert.rejects(callTool("space_write_text",{link:link.url,target:file.id,expected:first.version,text:"stale"}),/SPACE_VERSION_CONFLICT/);
   file=await spaceRequest({link:link.url,action:"restore-version",target:file.id,expected:file.version});
   assert.equal((await callTool("space_read_text",{link:link.url,target:file.id})).text,"Agent 测试\n".repeat(64));
-  const nested=await spaceRequest({link:link.url,action:"mkdir",name:"nested"});
+  const project=await spaceRequest({link:link.url,action:"mkdir",name:"project"});
+  const nested=await spaceRequest({link:link.url,action:"mkdir",parent:project.id,name:"nested"});
+  assert.equal(nested.parent,project.id);
   file=await spaceRequest({link:link.url,action:"move",target:file.id,parent:nested.id,name:"moved.txt",expected:file.version});
-  await spaceRequest({link:link.url,action:"trash",target:file.id,expected:file.version});
-  file=await spaceRequest({link:link.url,action:"restore",target:file.id,expected:file.version+1});
+  const trashed=await spaceRequest({link:link.url,action:"trash",target:file.id,expected:file.version});
+  assert.ok(trashed.ok && trashed.trashed);
+  const recycled=await spaceRequest({link:link.url,action:"stat",target:file.id});
+  assert.equal(recycled.version,trashed.version);
+  await assert.rejects(callTool("space_read_text",{link:link.url,target:file.id}),/SPACE_NOT_FOUND/);
+  file=await spaceRequest({link:link.url,action:"restore",target:file.id,expected:recycled.version});
   assert.equal((await spaceRequest({link:link.url,action:"list",target:nested.id})).items[0].id,file.id);
   // Exercise actual stdio framing in a separate agent-side process.
   const mcp=spawn(process.execPath,[fileURLToPath(new URL("../shell/space-links-mcp.mjs",import.meta.url))],{stdio:["pipe","pipe","pipe"]});

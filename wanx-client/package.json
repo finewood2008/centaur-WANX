@@ -47,6 +47,7 @@
   },
   "build": {
     "appId": "ai.centuarai.wanx.client",
+    "afterPack": "tools/package-client-native.mjs",
     "productName": "万象",
     "directories": {
       "output": "release"

@@ -22,6 +22,10 @@ function attachElectronHost() {
     window.show(); window.focus(); app.focus({steal:true});
   });
   app.on('browser-window-created', (_event, window) => {
+    if (process.platform === 'win32') {
+      window.setMenu(null);
+      window.setMenuBarVisibility(false);
+    }
     windows.add(window);
     window.once('closed', () => windows.delete(window));
     window.webContents.once('did-finish-load', () => report('wanx:application-ready'));

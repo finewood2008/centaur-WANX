@@ -9,6 +9,7 @@ import semver from "semver";
 import { readSourceClientManifest, assertSourceClientManifestUnchanged, readPackagedClientManifest } from "./client-package-manifest.mjs";
 import { clientBuildSource } from "./package-client-source.mjs";
 import { clientTrustFingerprints, validateClientTrust } from "./package-client-trust.mjs";
+import { readPackagedNativeBinaries } from "./package-client-native.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
@@ -93,14 +94,14 @@ export async function packageWindowsClient({ version, arch = "x64", out, trustFi
   const packedTrust = validateWindowsTrust(JSON.parse(await readFile(path.join(unpacked, "resources/wanx-update-trust.json"), "utf8")), publisherName);
   if (JSON.stringify(clientTrustFingerprints(packedTrust)) !== JSON.stringify(updateTrust))
     throw new Error("包内更新信任根与已验证配置不一致。");
-  for (const name of [`wanx-netbird-win32-${arch}.exe`, "wanx-discovery-win32-x64.exe"])
-    await access(path.join(unpacked, "resources/network", name));
+  const nativeBinaries = await readPackagedNativeBinaries({ resourcesPath: path.join(unpacked, "resources"),
+    platform: "win32", arch });
   clientBuildSource(root, { expectedCommit: source.sourceCommit });
   const sha256 = createHash("sha256"), sha512 = createHash("sha512");
   for await (const chunk of createReadStream(installer)) { sha256.update(chunk); sha512.update(chunk); }
   const digest = sha256.digest("hex");
   const report = { version, appId: pkg.build.appId, name: pkg.build.productName, platform: "windows", arch,
-    signed: true, authenticodeVerified: true, publisherName, distributionClass: "formal", build, updateTrust,
+    signed: true, authenticodeVerified: true, publisherName, distributionClass: "formal", build, updateTrust, nativeBinaries,
     updateArtifact: { path: installer, kind: "nsis", sha256: digest, sha512: sha512.digest("base64"), sizeBytes: (await stat(installer)).size } };
   await mkdir(out, { recursive: true });
   await writeFile(path.join(out, "SHA256SUMS.txt"), `${digest}  ${path.basename(installer)}\n`);
