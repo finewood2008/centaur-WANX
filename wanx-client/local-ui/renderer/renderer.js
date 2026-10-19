@@ -964,9 +964,13 @@ function applicationsView() {
   const installed = new Set(applications.map((item) => item.applicationId));
   const pendingInstallations = applications.some((item) => item.installationState === "pending");
   const available = discoverableApplications().filter((item) => !installed.has(item.applicationId));
+  const delivery = currentState.defaultApplications;
+  const preparingDefaults = delivery?.status === "preparing";
+  const defaultsPending = delivery?.status === "pending";
   return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用")}<div class="page-content store-page">
     <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" aria-busy="${marketLoading}" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在检查…") : "检查更新"}</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    ${preparingDefaults || defaultsPending ? `<div class="notice" role="status">${preparingDefaults ? "正在准备随盒应用，已安装的应用可以继续使用。" : "部分随盒应用尚未准备完成，联网后会自动重试。你也可以在下方应用介绍中查看安装条件。"}</div>` : ""}
     ${storeFeatures()}
     <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${pendingInstallations ? "部分应用待完成安装" : applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>

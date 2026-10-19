@@ -199,16 +199,44 @@ test("corrupt delivery state fails closed and does not install or expose raw err
 
 const keys = generateKeyPairSync("ed25519");
 const trustedKeys = { delivery: keys.publicKey.export({ format: "pem", type: "spki" }) };
-async function artifact(root, version) {
+async function artifact(root, version, controlled = false) {
   const artifactId = randomUUID(), archivePath = path.join(root, `${artifactId}.wanxapp`);
-  const manifest = { applicationId: ids[4], version, name: "知君", protocolVersion: 1, runtime: "electron", entrypoint: "main.mjs" };
+  const manifest = { applicationId: ids[4], version, name: "知君", protocolVersion: controlled ? 3 : 1, runtime: "electron", entrypoint: "main.mjs",
+    ...(controlled ? { releaseAccess: "account", compatibility: {
+      backendProductId: "wanx", clientRange: ">=0.1.0 <1.0.0", hostProtocolRange: ">=1.0.0 <2.0.0",
+      backendContracts: [], resourceDependencies: [], localDataSchema: { readRange: ">=1.0.0 <2.0.0", writeVersion: "1.0.0" },
+    } } : {}),
+  };
   await writeApplicationZip(archivePath, [{ name: "wanx-app.json", body: JSON.stringify(manifest) }, { name: "main.mjs", body: "export default {};" }]);
   const bytes = await readFile(archivePath);
-  const descriptor = { schemaVersion: 1, artifactId, applicationId: ids[4], version, os: "universal", arch: "universal", packageType: "wanxapp", fileName: `${version}.wanxapp`, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length, minWanxVersion: "0.1.0", hostProtocol: 1, manifest };
+  const descriptor = { schemaVersion: controlled ? 3 : 1, artifactId, applicationId: ids[4], version, os: "universal", arch: "universal", packageType: "wanxapp", fileName: `${version}.wanxapp`, sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length, minWanxVersion: "0.1.0", hostProtocol: 1, manifest,
+    ...(controlled ? { compatibility: manifest.compatibility } : {}),
+  };
   const encoded = Buffer.from(JSON.stringify(descriptor));
   const envelope = { keyId: "delivery", descriptorBase64: encoded.toString("base64"), signatureBase64: sign(null, encoded, keys.privateKey).toString("base64") };
   return { archivePath, envelope, descriptor, bytes };
 }
+
+test("preparing an installed resource-free release rechecks real account authorization", async t => {
+  const root = await fixture(t), value = await artifact(root, "1.0.0", true);
+  let allowed = true, backendReady = true;
+  const checkPermit = () => { if (!allowed) throw fail("MARKET_RELEASE_ACCESS_DENIED"); };
+  const manager = await createApplicationManager({ applicationRoot: path.join(root, "apps"), trustedKeys,
+    getCompatibilityContext: () => ({ clientVersion: "0.2.0", hostProtocol: 1, backend: {
+      schemaVersion: 1, productId: "wanx", deviceId: "box-a", observedAt: new Date().toISOString(),
+      authorization: backendReady ? { status: "ready" } : { status: "blocked", code: "APP_ENTITLEMENT_REQUIRED" }, resources: [], bindings: [], contracts: [],
+    } }),
+    authorizeRelease: async () => { checkPermit(); return { assertLive: checkPermit, assertSession: checkPermit }; },
+  });
+  t.after(() => manager.close());
+  await manager.installVerifiedPackage(value);
+  assert.equal((await manager.prepareInstalledApplication(ids[4])).artifactId, value.descriptor.artifactId);
+  allowed = false;
+  await assert.rejects(manager.prepareInstalledApplication(ids[4]), { code: "MARKET_RELEASE_ACCESS_DENIED" });
+  assert.equal((await manager.listInstalled())[0].artifactId, value.descriptor.artifactId);
+  allowed = true; backendReady = false;
+  await assert.rejects(manager.prepareInstalledApplication(ids[4]), { code: "APP_ENTITLEMENT_REQUIRED" });
+});
 
 test("manager records removal before uninstall and automatic installation cannot replace an installed version", async t => {
   const root = await fixture(t), one = await artifact(root, "1.0.0"), two = await artifact(root, "1.1.0");
