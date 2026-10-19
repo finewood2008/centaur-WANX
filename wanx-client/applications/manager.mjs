@@ -102,7 +102,10 @@ export async function createApplicationManager({
     const supplied = await getCompatibilityContext?.(input) || {};
     return { ...supplied, localDataPresent: localDataPresent || supplied.localDataPresent === true };
   };
-  const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys, getCompatibilityContext: compatibilityContext, prepareApplication, authorizeRelease });
+  const installer = createApplicationInstaller({
+    rootDir: applicationRoot, trustedKeys, getCompatibilityContext: compatibilityContext, prepareApplication, authorizeRelease,
+    hasTrustedDataContinuity: async descriptor => sameWriter(await readDataAccess(descriptor.applicationId), writerFor(descriptor)),
+  });
   await installer.recover();
   const mutations = new Map();
   function assertOpen() {
