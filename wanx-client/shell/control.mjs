@@ -62,10 +62,10 @@ export function registerControlActions({
   const panelActions = new Set([
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
-    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance",
+    "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
   ]);
-  const reads = new Set(["support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -139,6 +139,12 @@ export function registerControlActions({
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
     return personalSpace.uploads(input.parent || "", input.paths);
+  });
+  register("panel-application-names", async () => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!market) return [];
+    const { items } = await market.list();
+    return items.map(({ applicationId, name }) => ({ applicationId, name }));
   });
   register("panel-balance", () => creditsRead(async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");

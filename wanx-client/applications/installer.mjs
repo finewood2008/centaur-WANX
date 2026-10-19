@@ -260,7 +260,7 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       }
     });
   }
-  async function installVerifiedPackage({ archivePath, envelope, assertSession = () => {} } = {}, { signal } = {}) {
+  async function installVerifiedPackage({ archivePath, envelope, assertSession = () => {}, onlyIfMissing = false } = {}, { signal } = {}) {
     const descriptor = verifyEnvelope(envelope, trustedKeys);
     if (descriptor.packageType !== "wanxapp") throw marketFailure("MARKET_INCOMPATIBLE");
     let access;
@@ -277,6 +277,13 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
     }
     return serialize(descriptor.applicationId, async () => {
       check();
+      // Delivery defaults must never replace a version installed by the user,
+      // including one committed while the package was downloading.
+      if (onlyIfMissing) {
+        const existing = await currentFor(descriptor.applicationId);
+        check();
+        if (existing) return existing;
+      }
       await confirmAccess();
       await assertApplicationCompatibility(descriptor.manifest, { getCompatibilityContext, descriptor, phase: "install" });
       check();

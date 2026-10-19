@@ -7,6 +7,7 @@ import { createApplicationSession } from "../app-host/session.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
+import { createDefaultApplicationStore } from "./delivery.mjs";
 
 export async function createApplicationManager({
   applicationRoot,
@@ -25,6 +26,7 @@ export async function createApplicationManager({
   authorizeRelease,
 } = {}) {
   applicationRoot = path.resolve(applicationRoot);
+  const defaultApplicationDeliveryStore = createDefaultApplicationStore(path.join(applicationRoot, ".delivery"));
   const dataAccessRoot = path.join(applicationRoot, ".data-access");
   const dataUnknown = () => Object.assign(new Error("APPLICATION_DATA_COMPATIBILITY_UNKNOWN"), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
   async function dataAccessDirectory(create = false) {
@@ -123,6 +125,10 @@ export async function createApplicationManager({
       check();
       await launcher.stop(id);
       check();
+      // Preserve explicit removal even if the process exits during uninstall.
+      // Default delivery must not reinstall an application the user removed.
+      if (operation === installer.uninstall) await defaultApplicationDeliveryStore.dismiss(id, check);
+      check();
       return operation(id, check);
     }).finally(() => mutations.delete(id));
     mutations.set(id, pending);
@@ -219,6 +225,11 @@ export async function createApplicationManager({
       return track(installer.selectCurrent(id, version, { signal: controller.signal }));
     },
     listInstalled: installer.list,
+    defaultApplicationDeliveryStore,
+    async prepareInstalledApplication(id, assertSession = () => {}) {
+      assertOpen();
+      return track(installer.prepareCurrent(id, { assertSession, signal: controller.signal }));
+    },
     async launch(id) {
       assertOpen();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));

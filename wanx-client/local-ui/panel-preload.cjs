@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld("wanxPanel", {
     ipcRenderer.on("wanx-client:panel-space-state", handler);
     return () => ipcRenderer.removeListener("wanx-client:panel-space-state", handler);
   },
+  getApplicationNames: () => ipcRenderer.invoke("wanx-client:panel-application-names"),
   getBalance: () => ipcRenderer.invoke("wanx-client:panel-balance"),
   action(name, input) {
     if (!actions.has(name)) return Promise.reject(new Error("PANEL_ACTION_NOT_ALLOWED"));
