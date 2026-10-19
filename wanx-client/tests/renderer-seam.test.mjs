@@ -462,6 +462,62 @@ test("market cancellation, uninstall and rollback require explicit confirmation"
   assert.match(h.app.innerHTML, /安装你的第一个应用/);
 });
 
+test("Admin catalog names replace installed names across cards, details and confirmations", async () => {
+  const installed = { ...application, applicationId: "centaurai.wanx.superadvisors", name: "超级参谋团", previous: { version: "0.4.2" } };
+  let name = "个人议事厅";
+  const h = await harness(state(), [installed], { list: async () => ({ items: [{ applicationId: installed.applicationId, name, version: "9.9.9" }] }) });
+  assert.match(h.app.innerHTML, /store-title-link[^>]*>个人议事厅<\/button>/);
+  assert.doesNotMatch(h.app.innerHTML, /超级参谋团/);
+  await h.click("store-details", { applicationId: installed.applicationId });
+  assert.match(h.app.innerHTML, /app-detail-title[^>]*>个人议事厅<\/h2>/);
+  assert.match(h.app.innerHTML, /当前版本<\/dt><dd>0\.4\.3/);
+  assert.match(h.app.innerHTML, /恢复上一版本/);
+  for (const [action, title] of [["market-uninstall", "卸载个人议事厅"], ["market-rollback", "恢复个人议事厅"]]) {
+    await h.click(action, { applicationId: installed.applicationId });
+    assert.ok(h.app.innerHTML.includes(title));
+    await h.click("market-cancel");
+  }
+  await h.click("applications-launch", { applicationId: installed.applicationId });
+  assert.match(h.app.innerHTML, /个人议事厅需要一台盒子提供服务/);
+  await h.click("pending-cancel");
+  name = "议事厅 & <新名>";
+  await h.click("market-refresh");
+  assert.match(h.app.innerHTML, /app-detail-title[^>]*>议事厅 &amp; &lt;新名&gt;<\/h2>/);
+  assert.doesNotMatch(h.app.innerHTML, /个人议事厅<\/h2>|<新名>/);
+  assert.equal(installed.name, "超级参谋团");
+});
+
+test("featured application labels use Admin names while retaining bundled artwork", async () => {
+  const name = "后台中的知君名称";
+  const h = await harness(state(), [], { list: async () => ({ items: [{ ...application, name }] }) });
+  assert.match(h.app.innerHTML, /carousel-slide" data-name="后台中的知君名称"/);
+  assert.match(h.app.innerHTML, /第 1 页推荐：后台中的知君名称与半人马环/);
+  assert.match(h.app.innerHTML, /zhijun-product-v1.png/);
+  await h.click("store-details", { applicationId: application.applicationId });
+  assert.match(h.app.innerHTML, /app-detail-title[^>]*>后台中的知君名称<\/h2>/);
+});
+
+test("Centaurloop uses its Admin application ID for installed artwork and featured names", async () => {
+  const installed = { ...application, applicationId: "centaurai.wanx.centaurloop", name: "半人马环" };
+  const h = await harness(state(), [installed], { list: async () => ({ items: [{ ...installed, name: "后台环名称" }] }) });
+  assert.match(h.app.innerHTML, /carousel-slide" data-name="后台环名称"/);
+  assert.match(h.app.innerHTML, /store-title-link[^>]*>后台环名称<\/button>/);
+  await h.click("store-details", { applicationId: installed.applicationId });
+  assert.match(h.app.innerHTML, /app-detail-title[^>]*>后台环名称<\/h2>/);
+  assert.match(h.app.innerHTML, /assets\/app-icons\/loop-v1.png/);
+  assert.match(h.app.innerHTML, /loop-product-v1.png/);
+});
+
+for (const mode of ["unlisted", "offline", "blank"]) test(`installed names remain available when Admin metadata is ${mode}`, async () => {
+  const installed = { ...application, name: "本机安装名称" };
+  const h = await harness(state(), [installed], { list: async () => {
+    if (mode === "offline") throw new Error("ACCOUNT_NETWORK_ERROR");
+    return { items: mode === "blank" ? [{ ...application, name: "   " }] : [] };
+  } });
+  assert.match(h.app.innerHTML, /store-title-link[^>]*>本机安装名称<\/button>/);
+  assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+});
+
 test("discovery follows the remote catalog when apps are added and removed", async () => {
   const remote = { applicationId: "publisher.new-app", name: "服务端新应用", description: "动态目录中的应用" };
   let items = [remote];
@@ -2395,7 +2451,7 @@ test("catalog product pages have bundled icons, product posters and a safe back 
   const catalogContext = { window: {} };
   vm.runInNewContext(await readFile(new URL("../local-ui/renderer/app-catalog.js", import.meta.url), "utf8"), catalogContext);
   const catalog = catalogContext.window.wanxAppCatalog;
-  for (const id of ["centaurai.wanx.semantica", "centaurai.wanx.zhijun", "centaurai.wanx.superadvisors", "centaurai.wanx.dialogue", "centaurloop", "centaurai.wanx.ai-browser", "centaurai.media-express"]) assert.ok(catalog[id]);
+  for (const id of ["centaurai.wanx.semantica", "centaurai.wanx.zhijun", "centaurai.wanx.superadvisors", "centaurai.wanx.dialogue", "centaurai.wanx.centaurloop", "centaurai.wanx.ai-browser", "centaurai.media-express"]) assert.ok(catalog[id]);
   assert.equal(catalog.constructor, undefined);
   const items = Object.entries(catalog).map(([applicationId, info]) => ({ applicationId, name: info.key, version: "1.0.0", description: "产品原始描述", previous: "0.9.0" }));
   const h = await harness(state(), items);
