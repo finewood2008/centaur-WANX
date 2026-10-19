@@ -96,7 +96,7 @@ export function createDefaultApplicationDelivery({
   market, applications, getScope, captureSession,
   store = applications?.defaultApplicationDeliveryStore, onChanged = () => {}, now = Date.now,
 } = {}) {
-  const tasks = new Map();
+  const tasks = new Map(), preparedThisConnection = new Map();
   let latest = null, closed = false, activeScope = null, queue = Promise.resolve();
   function publish(value) {
     latest = structuredClone(value);
@@ -107,6 +107,7 @@ export function createDefaultApplicationDelivery({
     for (const task of tasks.values()) task.controller.abort(failure("DEFAULT_APPLICATION_SESSION_CHANGED"));
     activeScope = null;
     latest = null;
+    preparedThisConnection.clear();
   }
   async function run(key, check) {
     check();
@@ -121,12 +122,19 @@ export function createDefaultApplicationDelivery({
         const local = (await applications.listInstalled()).find(value => value.applicationId === item.applicationId);
         check();
         const prior = previous?.items.find(value => value.applicationId === item.applicationId);
-        if (!local && (await store.isDismissed(item.applicationId) || ["installed", "existing", "dismissed"].includes(prior?.status))) {
+        const preparedHere = preparedThisConnection.get(item.applicationId);
+        if ((!local || local.installationState === "pending") && (await store.isDismissed(item.applicationId) ||
+            !local && ["installed", "existing", "dismissed"].includes(prior?.status))) {
           check();
           await store.dismiss(item.applicationId, check);
           Object.assign(item, { status: "dismissed", code: "DEFAULT_APPLICATION_USER_REMOVED" });
         } else if (local && local.installationState !== "pending") {
-          if (complete(prior) && sameVersion(prior, local)) Object.assign(item, prior);
+          if (local.selectionRequired) Object.assign(item, { status: "pending", code: "APPLICATION_VERSION_SELECTION_REQUIRED" });
+          // A disk receipt is historical evidence, never current box readiness.
+          // Recheck every new connection and any locally pending dependencies;
+          // only successful work from this same connection may be reused.
+          else if (complete(preparedHere) && sameVersion(preparedHere, local) &&
+              (!local.resourcePreparation || local.resourcePreparation.status === "ready")) Object.assign(item, preparedHere);
           else {
             const prepared = await applications.prepareInstalledApplication(item.applicationId, check);
             check();
@@ -144,21 +152,24 @@ export function createDefaultApplicationDelivery({
           } else {
             const installed = await market.install(item.applicationId, { assertSession: check, onlyIfMissing: true });
             check();
-            const pending = installed.installationState === "pending" || installed.resourcePreparation && installed.resourcePreparation.status !== "ready";
+            const pending = installed.selectionRequired || installed.installationState === "pending" || installed.resourcePreparation && installed.resourcePreparation.status !== "ready";
             Object.assign(item, { status: pending ? "pending" : "installed",
-              code: pending ? receiptCode(installed.resourcePreparation?.code, "APPLICATION_RESOURCES_PENDING") : "DEFAULT_APPLICATION_INSTALLED",
+              code: installed.selectionRequired ? "APPLICATION_VERSION_SELECTION_REQUIRED" : pending ? receiptCode(installed.resourcePreparation?.code, "APPLICATION_RESOURCES_PENDING") : "DEFAULT_APPLICATION_INSTALLED",
               version: installed.version, ...(installed.artifactId ? { artifactId: installed.artifactId } : {}) });
           }
         }
       } catch (error) {
         // A changed account/box cancels the whole pass, not just this application.
         check();
-        Object.assign(item, { status: "pending", code: receiptCode(error.code, "DEFAULT_APPLICATION_PREPARATION_FAILED") });
+        Object.assign(item, { status: error.code === "DEFAULT_APPLICATION_USER_REMOVED" ? "dismissed" : "pending",
+          code: receiptCode(error.code, "DEFAULT_APPLICATION_PREPARATION_FAILED") });
       }
       check();
       receipt.updatedAt = now();
       await store.save(key, receipt, check);
       check();
+      if (complete(item)) preparedThisConnection.set(item.applicationId, { ...item });
+      else preparedThisConnection.delete(item.applicationId);
       publish(receipt);
     }
     receipt.status = items.every(complete) ? "ready" : "pending";
@@ -174,7 +185,7 @@ export function createDefaultApplicationDelivery({
       const key = scopeKey(getScope());
       if (!key) { invalidate(); return Promise.resolve({ status: "waiting", code: "DEFAULT_APPLICATION_CONNECTION_REQUIRED" }); }
       if (activeScope !== key) { invalidate(); activeScope = key; }
-      if (tasks.has(key)) return tasks.get(key).promise;
+      if (tasks.has(key) && !tasks.get(key).controller.signal.aborted) return tasks.get(key).promise;
       let captured;
       try { captured = captureSession(); }
       catch { return Promise.resolve({ status: "waiting", code: "DEFAULT_APPLICATION_CONNECTION_REQUIRED" }); }
@@ -195,7 +206,7 @@ export function createDefaultApplicationDelivery({
       queue = promise;
       return promise;
     },
-    snapshot: () => latest && structuredClone(latest),
+    snapshot: () => latest && (!latest.scopeKey || latest.scopeKey === scopeKey(getScope())) ? structuredClone(latest) : null,
     invalidate,
     async close() { closed = true; invalidate(); await Promise.allSettled([...tasks.values()].map(task => task.promise)); },
   });

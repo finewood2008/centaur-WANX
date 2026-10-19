@@ -40,6 +40,8 @@ import { createLocalBoxes } from "../octop/local-boxes.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
 import { createApplicationMarket } from "../applications/market.mjs";
+import { createDefaultApplicationDelivery } from "../applications/delivery.mjs";
+import { createDefaultApplicationScheduler } from "../applications/delivery-scheduler.mjs";
 import { runManagedApplication } from "../applications/runtime.mjs";
 import { createMarketSessionGuard } from "./market-session.mjs";
 import { monitorNetworkChanges } from "./network-monitor.mjs";
@@ -314,6 +316,18 @@ if (process.argv.includes("--wanx-managed-app")) {
         getCompatibilityContext,
         authorizeRelease,
       });
+      const deliveryScope = () => {
+        const state = client.snapshot();
+        const accountId = account.snapshot().phase === "authenticated" ? account.getIdentity()?.accountId : null;
+        return accountId && state.phase === "ready" && state.connection?.deviceId
+          ? { accountId, deviceId: state.connection.deviceId } : null;
+      };
+      const defaultApplications = createDefaultApplicationDelivery({
+        market, applications, getScope: deliveryScope,
+        captureSession: () => marketSession.captureSession(),
+        onChanged: () => { void broadcast?.publish(); },
+      });
+      const deliveryScheduler = createDefaultApplicationScheduler({ delivery: defaultApplications, getScope: deliveryScope });
       const identity = await readClientIdentity({ app });
       const testRuntime = await createTestUpdateRuntime({ identity, app, session });
       let updateTrust = JSON.parse(await readFile(new URL("../updates/trust.json", import.meta.url), "utf8"));
@@ -356,6 +370,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           clientUpdates.invalidate(); boxUpdates.invalidate();
         }
         updateAccount = next;
+        deliveryScheduler.sync();
       });
       const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
       try { startup.initializeDefault(); } catch (error) { reportError(error); }
@@ -547,6 +562,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         desktop.sync(client.snapshot());
         openTerminalConsole();
         boxUpdates.sync();
+        deliveryScheduler.sync();
         void broadcast.publish();
       });
 
@@ -554,6 +570,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         app,
         async closeApplications() {
           uiState.invalidateOpen();
+          deliveryScheduler.close();
+          await defaultApplications.close();
           marketSession?.close();
           releaseAccess.close();
           await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
@@ -606,6 +624,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         onError: reportError,
       });
       if (!startup.wasOpenedAtLogin()) desktop.show();
+      deliveryScheduler.sync();
       void broadcast.publish();
       const initialization = timed("client.initialize", () => client.initialize()).then(openTerminalConsole);
       if (testRuntime) {
