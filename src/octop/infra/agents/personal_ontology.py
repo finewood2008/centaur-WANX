@@ -219,6 +219,35 @@ async def read_personal_ontology(
         doc.outdated = bool(doc.generated_at and doc.source_fingerprint != fingerprint)
     for claim in doc.claims:
         claim.evidence_valid = await asyncio.to_thread(_valid, memory, uid, claim)
+        bound = [
+            e for e in claim.evidence if e.source_type in {"owner_document", "decision_review"}
+        ]
+        if bound:
+            from octop.infra.agents.zhijun_decisions import review_evidence_valid
+            from octop.infra.agents.zhijun_owner_documents import validate_evidence
+
+            remainder = claim.model_copy(
+                update={"evidence": [e for e in claim.evidence if e not in bound]}
+            )
+            claim.evidence_valid = (
+                await asyncio.to_thread(_valid, memory, uid, remainder)
+                if remainder.evidence
+                else bool(
+                    claim.owner_edited
+                    or claim.declaration
+                    or (
+                        claim.basis == "owner_statement"
+                        and any(claim.statement in e.quote for e in bound)
+                    )
+                )
+            )
+            for evidence in bound:
+                evidence.available = (
+                    review_evidence_valid(doc, evidence)
+                    if evidence.source_type == "decision_review"
+                    else await validate_evidence(registry, uid, doc, evidence)
+                )
+                claim.evidence_valid = claim.evidence_valid and evidence.available
         for evidence in claim.evidence:
             if evidence.source_type == "memory" and evidence.event_id:
                 event = memory.get_raw(evidence.event_id) if memory else None
