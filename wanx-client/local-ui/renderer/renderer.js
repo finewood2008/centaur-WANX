@@ -229,6 +229,8 @@ const escapeHTML = (value) => String(value ?? "")
 
 function statusLabel(device) {
   const selected = (currentState.selectedDeviceId || currentState.activeDeviceId) === device.deviceId;
+  if (currentState.recovery?.deviceId === device.deviceId && currentState.recovery.status === "failed") return "连接已中断，自动重连 3 次未成功，请手动重连";
+  if (selected && currentState.recovery?.status === "retrying") return `正在自动重连（${currentState.recovery.attempt}/3）`;
   if (selected && currentState.connectionPhase === "recovering") return "正在恢复连接";
   if (selected && ["connecting", "resolving"].includes(currentState.connectionPhase)) return "正在连接";
   if (currentState.activeDeviceId === device.deviceId) return "当前连接";
@@ -269,6 +271,8 @@ function deviceCard(device) {
   const needsSetup = ["discovered", "unclaimed", "uninitialized"].includes(device.accessState);
   const action = disconnecting
     ? `<button class="button small activity-button" aria-busy="true" disabled>${activityLabel("正在断开…")}</button>`
+    : currentState.selectedDeviceId === device.deviceId && currentState.recovery?.status === "retrying"
+    ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>停止重连</button>`
     : connecting
     ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
     : selected
@@ -591,7 +595,7 @@ function boxesView() {
   const storage = ready ? metrics?.wanxStorage : null;
   const publicIP = ready ? metrics?.network?.publicIp : null;
   const network = networkStatus(), enabled = currentState.network?.enabled !== false;
-  const status = ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
+  const status = currentState.recovery?.status === "failed" ? "自动重连未成功，请手动重连" : currentState.recovery?.status === "retrying" ? `正在自动重连（${currentState.recovery.attempt}/3）` : ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content space-page-content box-page-content">
     <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}

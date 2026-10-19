@@ -251,6 +251,22 @@ async function harness(initial = state(), installed = [application], options = {
   };
 }
 
+test("box recovery shows attempts, supports cancellation and offers manual connection after exhaustion", async () => {
+  const initial = { ...state("ready", "ready", "box-102"), phase: "recovering",
+    recovery: { deviceId: "box-102", status: "retrying", attempt: 2, maxAttempts: 3 } };
+  const h = await harness(initial);
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /正在自动重连（2\/3）/);
+  assert.match(h.app.innerHTML, /data-action="disconnect"[^>]*>停止重连/);
+  await h.click("disconnect");
+  await h.click("market-confirm");
+  assert.equal((await h.window.wanxClient.getLocalState()).selectedDeviceId, null);
+  h.update({ ...initial, phase: "disconnected", connection: null,
+    recovery: { ...initial.recovery, status: "failed", attempt: 3 } });
+  assert.match(h.app.innerHTML, /自动重连 3 次未成功，请手动重连/);
+  assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
+});
+
 test("login opens the store while the network prepares, with registration available and no account identifier", async () => {
   const h = await harness({ account: { phase: "signed_out" } });
   assert.match(h.app.innerHTML, /登录万象平台/);
