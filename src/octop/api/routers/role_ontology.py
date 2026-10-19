@@ -17,6 +17,20 @@ from octop.infra.agents.role_ontology import (
     facts,
     read_role_ontology,
 )
+from octop.infra.agents.zhijun_changes import (
+    ChangeCommand,
+    ChangeResult,
+    ChangeView,
+    pending_changes,
+    resolve_change,
+)
+from octop.infra.agents.zhijun_interview import (
+    InterviewCommand,
+    InterviewView,
+    read_interview,
+    update_interview,
+)
+from octop.infra.agents.zhijun_profile import primary
 from octop.infra.errors import ErrorCode, OctopError
 
 router = APIRouter()
@@ -40,7 +54,7 @@ class Preferences(BaseModel):
 def registry_for(server: Any, user: Any, agent_id: str) -> Any:
     registry = server.app_runtime.agent_registry
     row = registry.get_row(agent_id)
-    if row is None or row.user_id != user.id or row.is_shared:
+    if row is None or row.user_id != user.id or not primary(row):
         raise OctopError.localized(ErrorCode.NOT_FOUND)
     assert_same_application(row, user)
     return registry
@@ -136,7 +150,10 @@ async def context(
 
     with agent_scope(registry, user.id, agent_id):
         doc = await read_role_ontology(registry, user.id)
-    data["pending"] = [c for c in doc.claims if pending(c)][:4]
+    changes = pending_changes(doc)
+    data["changes"] = changes
+    changing = {c.proposed.id for c in changes}
+    data["pending"] = [c for c in doc.claims if pending(c) and c.id not in changing][:4]
     data["flow"] = doc.flow
     # An old success receipt must not claim a withdrawn/edited item is still current.
     update = data.get("update") or {}
@@ -146,7 +163,7 @@ async def context(
     ):
         data["update"] = {
             "status": "changed",
-            "message": "这次保存的理解后来已修改或停用，以本体中的当前状态为准。",
+            "message": "这次保存的理解后来已修改或停用，以理解中的当前状态为准。",
         }
     return data
 
@@ -173,3 +190,56 @@ async def preferences(
         json.dumps({"excluded": body.excluded, "turn_id": ""}).encode(),
     )
     return {"ok": True}
+
+
+@router.get("/{agent_id}/ontology/interview", summary="Read resumable Zhijun interview")
+async def get_interview(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> InterviewView:
+    registry = registry_for(server, user, agent_id)
+    return await read_interview(
+        registry, server.app_runtime.gateway.thread_registry, user.id, agent_id
+    )
+
+
+@router.post(
+    "/{agent_id}/ontology/interview", summary="Start, pause or continue an owner-led interview"
+)
+async def interview_action(
+    agent_id: str,
+    body: InterviewCommand,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> InterviewView:
+    registry = registry_for(server, user, agent_id)
+    return await update_interview(
+        registry, server.app_runtime.gateway.thread_registry, user.id, agent_id, body
+    )
+
+
+@router.get(
+    "/{agent_id}/ontology/changes", summary="Read source-bound changes awaiting owner review"
+)
+async def get_changes(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> list[ChangeView]:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return pending_changes(await read_role_ontology(registry, user.id))
+
+
+@router.post(
+    "/{agent_id}/ontology/changes/{relation_id}",
+    summary="Confirm a change, scoped exception or mistaken interpretation",
+    response_model=ChangeResult,
+)
+async def change_action(
+    agent_id: str,
+    relation_id: str,
+    body: ChangeCommand,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await resolve_change(registry, user.id, relation_id, body)

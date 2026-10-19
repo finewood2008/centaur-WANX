@@ -566,3 +566,22 @@ verify the thread belongs to this account and role. An empty role reports
 preparation creates candidates only. Confirmed entries retain source dependency,
 withdrawal handling and version history. Existing Zhijun product-profile APIs
 remain available through the inherited coordinator.
+
+### Private Zhijun identity
+
+`PUT /api/agents/{agent_id}/zhijun-profile` accepts only `{"version":1}` and binds the authenticated owner's existing, non-shared WANX agent as their primary Zhijun. It does not create an expert or copy data. The owner may have one primary per WANX service; a second binding is refused. First binding reserves an idle runtime until strict reload completes and rolls back its config field on failure. Repeating the same binding is idempotent. Expert listings expose the Boolean `zhijun_primary`.
+
+Private ontology routes now require this explicit identity as well as existing owner/application checks. Ordinary WANX agents do not acquire the Zhijun ontology middleware or background preparation jobs. Native memory and generation parameters are unchanged. Legacy role data remains stored in its original workspace; the Zhijun gateway's migration preview performs only reads and provides no import or channel-switch endpoint.
+
+### Zhijun interview and change review
+
+All routes below require the owner of the private, trusted Zhijun primary agent. Other agents and other accounts return not found. Application sessions remain subject to their existing agent scope.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/api/agents/{agent_id}/ontology/interview` | Read durable progress and original thread availability; never creates a thread. |
+| POST | `/api/agents/{agent_id}/ontology/interview` | `action` start/resume/pause/next/finish, `expected_version`, `request_id`. Only start creates an ordinary owner thread; does not rebind any channel. Busy agents reject writes. |
+| GET | `/api/agents/{agent_id}/ontology/changes` | Read draft source-bound changes, including both displayed claim versions and evidence. |
+| POST | `/api/agents/{agent_id}/ontology/changes/{relation_id}` | `action` change/exception/reject, `expected_version` (relation), `source_version`, `target_version`, `request_id`, optional `note` (required for exception). Returns status ready or stale; never silently overwrites changed versions. |
+
+Request bodies reject unknown fields. Interview replies have an `InterviewView` schema; changes return `ChangeView[]`. Progress stores no answers. A change confirmation atomically checkpoints the two claims and records the relation decision in the existing ontology document; raw memory records remain unchanged. `GET .../ontology/context/{thread_id}` also returns `changes`, and those candidates are excluded from its ordinary pending confirmation list. Model-generated relation resolution fields are discarded; only an explicit owner action can set them.

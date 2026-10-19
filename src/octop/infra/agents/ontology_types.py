@@ -99,6 +99,11 @@ class OntologyRelation(BaseModel):
     source_version: str = ""
     target_version: str = ""
 
+    resolution: Literal["", "change", "exception", "reject"] = ""
+    resolution_note: str = ""
+    resolved_at: str = ""
+    resolved_by: int | None = None
+
 
 ContextKind = Literal["person", "project", "role", "goal", "situation", "fact", "episode"]
 
