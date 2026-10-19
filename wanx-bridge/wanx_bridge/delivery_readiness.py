@@ -48,12 +48,12 @@ class Observation:
     def ok(self) -> bool:
         return self.status == 200
 
-    def coded_not_found(self) -> bool:
+    def coded_not_found(self, *, codes: tuple[str, ...] = ("NOT_FOUND",)) -> bool:
         return (
             self.status == 404
             and isinstance(self.data, dict)
             and isinstance(self.data.get("error"), dict)
-            and self.data["error"].get("code") == "NOT_FOUND"
+            and self.data["error"].get("code") in codes
         )
 
 
@@ -376,7 +376,13 @@ def _evaluate(root: Path, mode: str, observed: dict[str, Observation]) -> dict[s
         ],
         "zhijun": [
             _check("ZHIJUN_TEMPLATE_MISSING", "zhijun-personal-companion" in templates),
-            _check("ONTOLOGY_API_UNAVAILABLE", observed["ontology"].coded_not_found()),
+            # Native application access may reject the absent probe Agent before
+            # the ontology handler runs. Both native 404 codes are valid here;
+            # authorization failures and generic missing routes remain blocked.
+            _check(
+                "ONTOLOGY_API_UNAVAILABLE",
+                observed["ontology"].coded_not_found(codes=("NOT_FOUND", "AGENT_NOT_FOUND")),
+            ),
             model_check,
             knowledge_runtime,
             knowledge_setting,

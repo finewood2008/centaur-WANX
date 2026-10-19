@@ -1,6 +1,6 @@
 // Sample connection/UI state after the asynchronous installed-app read. A newer
 // publish supersedes any in-flight read, so an old result cannot repaint either window.
-export function createUIBroadcast({ client, applications, uiState, startup, updates, windows, onError = () => {} }) {
+export function createUIBroadcast({ client, applications, uiState, startup, updates, defaultApplications, windows, onError = () => {} }) {
   let revision = 0, closed = false;
   async function getState() {
     let installed, current;
@@ -9,6 +9,7 @@ export function createUIBroadcast({ client, applications, uiState, startup, upda
       installed = await applications.listInstalled();
     } while (!closed && current !== revision);
     return { ...client.snapshot(), applications: installed, ui: uiState.snapshot(), desktopStartup: startup.get(),
+      ...(defaultApplications ? { defaultApplications: defaultApplications.snapshot() } : {}),
       ...(updates ? { upgrades: { client: updates.client.snapshot(), box: updates.box.snapshot() } } : {}) };
   }
   async function publish() {

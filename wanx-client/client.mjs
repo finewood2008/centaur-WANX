@@ -3,6 +3,14 @@ import { createDashboardGateway } from "./octop/gateway.mjs";
 import { probeEndpoint } from "./octop/probe.mjs";
 import { validateApplicationConnectionOptions } from "./applications/backend-scope.mjs";
 
+const HEALTH_INTERVAL_MS = 30_000;
+const MAX_RECOVERY_ATTEMPTS = 3;
+const AUTH_FAILURES = new Set([
+  "auth_required", "auth_failed", "auth_expired", "auth_unsupported",
+  "NETWORK_DEVICE_ACCESS_DENIED", "ACCOUNT_LOGIN_REQUIRED",
+  "BOX_PLATFORM_AUTH_FAILED", "LOCAL_BOX_AUTH_FAILED",
+]);
+
 /** Owns only this application's connections, never the shared NetBird daemon. */
 export function createClient({
   network = createNetwork(),
@@ -17,9 +25,12 @@ export function createClient({
   let epoch = 0;
   let closed = false;
   let pendingProbe = null;
+  let healthTimer, healthController, activeEndpoint, activeSessionFactory;
+  let recovery = null;
   const listeners = new Set();
   const closing = new Set();
   const connecting = new Set();
+  const healthChecks = new Set();
 
   function snapshot() {
     return structuredClone({
@@ -27,6 +38,7 @@ export function createClient({
       phase,
       connection,
       reason,
+      recovery,
     });
   }
   function emit() {
@@ -45,6 +57,12 @@ export function createClient({
   }
   async function disconnect(nextReason = null) {
     epoch += 1;
+    clearTimeout(healthTimer);
+    healthController?.abort();
+    healthController = null;
+    activeEndpoint = null;
+    activeSessionFactory = null;
+    if (nextReason !== "connection_retries_exhausted") recovery = null;
     pendingProbe?.abort();
     pendingProbe = null;
     const previous = gateway;
@@ -58,9 +76,103 @@ export function createClient({
     return snapshot();
   }
 
+  function scheduleHealthCheck(generation) {
+    if (closed || generation !== epoch || !connection) return;
+    clearTimeout(healthTimer);
+    healthTimer = setTimeout(() => {
+      const task = checkHealth(generation);
+      healthChecks.add(task);
+      task.then(() => healthChecks.delete(task), () => healthChecks.delete(task));
+    }, HEALTH_INTERVAL_MS);
+    healthTimer.unref?.();
+  }
+
+  async function checkHealth(generation) {
+    const live = () => !closed && generation === epoch && Boolean(connection);
+    if (!live()) return;
+    const controller = new AbortController();
+    healthController = controller;
+    const check = (endpoint = activeEndpoint) => probe(endpoint.url, {
+      agent: endpoint.agent, signal: controller.signal,
+    });
+    try {
+      if (!recovery) {
+        try {
+          await check();
+          if (!live()) return;
+          phase = "ready";
+          reason = null;
+          emit();
+          return;
+        } catch {
+          if (!live()) return;
+          recovery = { deviceId: connection.deviceId, attempt: 0, maxAttempts: MAX_RECOVERY_ATTEMPTS, status: "retrying" };
+        }
+      }
+      recovery.attempt++;
+      phase = "recovering";
+      reason = "network_unavailable";
+      emit();
+      try {
+        // Repair only this client's path. Keep the gateway and application leases
+        // alive; reconnecting via connectBox would unnecessarily require Admin SSO.
+        if (connection.mode === "netbird") await network.networkChanged();
+        if (!live()) return;
+        const endpoint = await network.resolveEndpoint(connection);
+        if (!live()) return;
+        await check(endpoint);
+        if (!live()) return;
+        if (endpoint.agent !== activeEndpoint.agent) {
+          // An engine restart destroys its old tunnel agent. Re-authorize through
+          // the normal session factory; never reuse credentials across accounts.
+          let session, replacement;
+          try {
+            session = await activeSessionFactory?.({ ...endpoint, signal: controller.signal });
+            if (!live()) { await session?.close(); return; }
+            replacement = await createGateway({
+              deviceId: connection.deviceId, targetURL: endpoint.url,
+              agent: endpoint.agent, session,
+            });
+            if (!live()) { await dispose(replacement); return; }
+          } catch (error) {
+            await session?.close();
+            throw error;
+          }
+          const previous = gateway;
+          gateway = replacement;
+          activeEndpoint = endpoint;
+          connection = { ...connection, gatewayURL: replacement.url };
+          await dispose(previous);
+          if (!live()) return;
+        }
+        recovery = null;
+        phase = "ready";
+        reason = null;
+        emit();
+      } catch (error) {
+        if (!live()) return;
+        if ([401, 403].includes(error.status) || AUTH_FAILURES.has(error.code || error.message)) {
+          await disconnect("connection_authorization_required");
+          return;
+        }
+        if (recovery.attempt >= MAX_RECOVERY_ATTEMPTS) {
+          recovery.status = "failed";
+          await disconnect("connection_retries_exhausted");
+        }
+      }
+    } finally {
+      if (healthController === controller) healthController = null;
+      scheduleHealthCheck(generation);
+    }
+  }
+
   const unsubscribe = network.subscribe((state) => {
     if (closed) return;
     if (connection?.mode === "netbird" || pendingMode === "netbird") {
+      if (AUTH_FAILURES.has(state.reason)) {
+        void disconnect("connection_authorization_required");
+        return;
+      }
       const lostPeer =
         connection &&
         state.phase === "ready" &&
@@ -72,7 +184,8 @@ export function createClient({
         );
       if (
         !state.enabled ||
-        ["unavailable", "auth_required"].includes(state.phase)
+        state.phase === "auth_required" ||
+        (state.phase === "unavailable" && !connection)
       ) {
         // Invalidate synchronously; a delayed connect must not resurrect this session.
         void disconnect(
@@ -81,7 +194,7 @@ export function createClient({
         return;
       }
       if (connection) {
-        phase = state.phase === "recovering" || lostPeer ? "recovering" : "ready";
+        phase = recovery || ["recovering", "unavailable"].includes(state.phase) || lostPeer ? "recovering" : "ready";
         reason = phase === "recovering" ? "network_unavailable" : null;
       }
     }
@@ -144,6 +257,8 @@ export function createClient({
         return snapshot();
       }
       gateway = created;
+      activeEndpoint = endpoint;
+      activeSessionFactory = createSession;
       connection = {
         deviceId: input.deviceId,
         name: input.name || input.deviceId,
@@ -154,6 +269,7 @@ export function createClient({
       pendingMode = null;
       phase = "ready";
       reason = null;
+      scheduleHealthCheck(attempt);
       emit();
       return snapshot();
     } catch (error) {
@@ -243,6 +359,7 @@ export function createClient({
       const stopping = disconnect();
       await network.close();
       await stopping;
+      await Promise.allSettled([...healthChecks]);
       await Promise.allSettled([...connecting]);
       await Promise.allSettled([...closing]);
       listeners.clear();

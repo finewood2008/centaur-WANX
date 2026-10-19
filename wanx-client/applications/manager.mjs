@@ -245,7 +245,37 @@ export async function createApplicationManager({
     defaultApplicationDeliveryStore,
     async prepareInstalledApplication(id, assertSession = () => {}) {
       assertOpen();
-      return track(installer.prepareCurrent(id, { assertSession, signal: controller.signal }));
+      return track((async () => {
+        const check = () => { controller.signal.throwIfAborted(); assertSession(); };
+        check();
+        const current = await installer.resolveCurrent(id);
+        check();
+        const descriptor = current.envelope ? verifyEnvelope(current.envelope, trustedKeys) : undefined;
+        const continuity = sameWriter(await readDataAccess(id), writerFor(descriptor));
+        check();
+        let permit;
+        // Resource-free account releases still require current authorization.
+        // prepareCurrent can return early when there are no resource bindings.
+        if (current.releaseAccess === "account") {
+          if (!descriptor || !authorizeRelease) throw Object.assign(new Error("MARKET_RELEASE_ACCESS_REQUIRED"), { code: "MARKET_RELEASE_ACCESS_REQUIRED" });
+          permit = await authorizeRelease(descriptor, { signal: controller.signal });
+          check();
+          if (!permit) throw Object.assign(new Error("MARKET_RELEASE_ACCESS_REQUIRED"), { code: "MARKET_RELEASE_ACCESS_REQUIRED" });
+          permit.assertLive();
+        }
+        await assertApplicationCompatibility(current, { getCompatibilityContext: compatibilityContext, descriptor,
+          phase: "import", trustedDataContinuity: continuity });
+        check();
+        const result = await installer.prepareCurrent(id, { assertSession, signal: controller.signal });
+        check();
+        if (!result.resourcePreparation || result.resourcePreparation.status === "ready") {
+          await assertApplicationCompatibility(result, { getCompatibilityContext: compatibilityContext, descriptor,
+            phase: "launch", trustedDataContinuity: continuity });
+        }
+        check();
+        permit?.assertLive();
+        return result;
+      })());
     },
     async launch(id) {
       assertOpen();

@@ -164,7 +164,7 @@ function harness(t, options = {}) {
       item.network = network;
       const transport = createClient({
         network,
-        probe: async () => {},
+        probe: options.probe || (async () => {}),
         createGateway: async ({ session }) => ({
           url: "http://127.0.0.1:19800",
           request: options.gatewayRequest,
@@ -206,6 +206,48 @@ function harness(t, options = {}) {
     },
   };
 }
+
+test("periodic box health does not depend on Admin availability while the existing lease is valid", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let probes = 0;
+  const h = harness(t, { renewIntervalMs: 10_000, probe: async () => { probes++; },
+    gatewayRequest: async () => ({ status: 200, body: Buffer.from('{"id":4}') }) });
+  await h.client.initialize();
+  await h.client.loginPassword({ phone: "owner" });
+  await h.client.connectBox("box-1");
+  const lease = await h.client.applicationConnection("test.app");
+  h.override(() => { throw fail("ACCOUNT_NETWORK_ERROR", 503); });
+  t.mock.timers.tick(30_000);
+  await tick();
+  assert.equal(probes, 2);
+  assert.equal(h.client.snapshot().phase, "ready");
+  assert.equal((await lease.request({ path: "/api/health" })).status, 200);
+  assert.equal(h.transports[0].gatewayClosed, false);
+  assert.equal(h.sessions.length, 1);
+});
+
+test("logout cancels pending periodic box health and a late failure cannot reconnect", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const wait = deferred();
+  let probes = 0, signal;
+  const h = harness(t, { probe: async (_url, options) => {
+    if (++probes === 2) { signal = options.signal; await wait.promise; throw fail("health_timeout"); }
+  } });
+  await h.client.initialize();
+  await h.client.loginPassword({ phone: "owner" });
+  await h.client.connectBox("box-1");
+  t.mock.timers.tick(30_000);
+  await tick();
+  await h.client.logout();
+  assert.equal(signal.aborted, true);
+  wait.resolve();
+  await tick();
+  t.mock.timers.tick(300_000);
+  await tick();
+  assert.equal(h.client.snapshot().connection, null);
+  assert.equal(h.sessions.length, 1);
+  assert.equal(probes, 2);
+});
 
 test("one product login automatically enrolls and opens only a server-authorized box with SSO", async (t) => {
   const h = harness(t);

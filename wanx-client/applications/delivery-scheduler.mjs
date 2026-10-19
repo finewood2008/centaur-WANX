@@ -29,7 +29,10 @@ export function createDefaultApplicationScheduler({
       if (closed || generation !== epoch) return result;
       pending = null;
       if (scope() !== current) { sync(); return result; }
-      if (result?.status === "pending") {
+      // Token refresh can invalidate a captured session without changing the
+      // account/box IDs. Retry that transient wait/cancellation only after the
+      // current generation and ready scope have both been confirmed above.
+      if (["pending", "waiting", "cancelled"].includes(result?.status)) {
         timer = setTimer(() => {
           timer = null;
           if (closed || generation !== epoch) return;

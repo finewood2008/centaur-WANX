@@ -426,7 +426,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         window.webContents.on("will-attach-webview", event => event.preventDefault());
       }
       broadcast = createUIBroadcast({
-        client, applications, uiState, startup, updates, windows: () => [control, panel], onError: reportError,
+        client, applications, uiState, startup, updates, defaultApplications, windows: () => [control, panel], onError: reportError,
       });
       let quitPrompt;
       const requestQuit = () => {
@@ -572,7 +572,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         app,
         async closeApplications() {
           uiState.invalidateOpen();
-          deliveryScheduler.close();
+          await deliveryScheduler.close();
           await defaultApplications.close();
           marketSession?.close();
           releaseAccess.close();
