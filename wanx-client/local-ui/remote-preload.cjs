@@ -186,7 +186,8 @@ contextBridge.exposeInMainWorld(
         if (!Array.isArray(files) || !files.length) throw new Error("SPACE_INVALID_DROP");
         const paths = files.map(file => webUtils.getPathForFile(file));
         if (paths.some(file => !file)) throw new Error("SPACE_INVALID_DROP");
-        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths });
+        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths, names: files.map(file => file.name) });
+        if (value?.uploadRejection) return { ok: false, ...value.uploadRejection };
         return { ok: true, value };
       } catch (error) {
         return { ok: false, code: errorCode(error) };

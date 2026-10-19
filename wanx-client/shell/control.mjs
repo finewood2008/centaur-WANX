@@ -1,6 +1,16 @@
 import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
 
+// Electron IPC errors omit custom fields. Return only this locally generated
+// validation notice; all other errors retain their existing sanitization.
+async function uploadResult(action) {
+  try { return await action(); }
+  catch (error) {
+    if (error.code !== "SPACE_UPLOAD_LIMIT") throw error;
+    return { uploadRejection: { code: error.code, message: error.message } };
+  }
+}
+
 function text(value, max, code) {
   if (typeof value !== "string" || !value.trim() || value.length > max)
     throw new Error(code);
@@ -92,9 +102,10 @@ export function registerControlActions({
       return spaceLinks.manage(action, input);
     });
   }
-  const requirePanelSpace = scope => {
+  const requirePanelSpace = (scope, offline = false) => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
-    requireConnectedBox(client.snapshot());
+    if (offline && client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!offline) requireConnectedBox(client.snapshot());
     if (!scope || scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
   };
   register("panel-space-snapshot", () => {
@@ -111,10 +122,10 @@ export function registerControlActions({
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
     await personalSpace.refresh();
     requirePanelSpace(input.scope);
-    await personalSpace.uploads("", input.paths, input.scope);
+    return uploadResult(() => personalSpace.uploads("", input.paths, input.scope, input.names));
   });
   register("panel-space-transfer", (input = {}) => {
-    requirePanelSpace(input.scope);
+    requirePanelSpace(input.scope, true);
     if (!["pause", "resume"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
     if (!personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload"))
       throw new Error("SPACE_NOT_FOUND");
@@ -125,7 +136,7 @@ export function registerControlActions({
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
       if (method === "snapshot" || method === "refresh") return personalSpace[method]();
       if (method === "downloads") return personalSpace.downloads(input.ids);
-      if (method === "uploads") return personalSpace.uploads(input.parent || "");
+      if (method === "uploads") return uploadResult(() => personalSpace.uploads(input.parent || ""));
       if (method === "download" || method === "preview") return personalSpace[method](input.id);
       if (method === "transfer") return personalSpace.transfer(input.action, input.id);
       if (method === "purge") {
@@ -139,7 +150,7 @@ export function registerControlActions({
   register("space-upload-dropped", (input = {}) => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
-    return personalSpace.uploads(input.parent || "", input.paths);
+    return uploadResult(() => personalSpace.uploads(input.parent || "", input.paths, undefined, input.names));
   });
   register("panel-application-names", async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");

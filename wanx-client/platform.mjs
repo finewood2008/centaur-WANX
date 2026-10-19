@@ -61,6 +61,7 @@ export function createPlatformClient({
     activeWork = null;
   let resumeHint = null;
   let retryActivation = false;
+  let reconnectTarget = null;
   let retryDelay = 5000;
   let resumeWrites = Promise.resolve();
   const persistResume = (value) => {
@@ -170,6 +171,7 @@ export function createPlatformClient({
   function cancel() {
     stopAuthorizationPolling({ reset: true });
     retryActivation = false;
+    reconnectTarget = null;
     retryDelay = 5000;
     epoch++;
     directoryRevision++;
@@ -232,7 +234,21 @@ export function createPlatformClient({
           identity ? { ...identity, networkSessionId: sessionId } : null,
         );
         transportKey = key;
-        unsubscribeTransport = transport.client.subscribe(() => emit());
+        const target = transport;
+        let previousConnection = null;
+        unsubscribeTransport = target.client.subscribe(() => {
+          const state = target.client.snapshot();
+          const network = target.network.snapshot();
+          if (activeLink === target && previousConnection?.mode === "netbird" &&
+              !state.connection && state.reason === "network_unavailable" &&
+              network.enabled !== false && network.phase !== "auth_required")
+            reconnectTarget = { deviceId: previousConnection.deviceId, selection: connectionEpoch };
+          previousConnection = state.connection;
+          if (reconnectTarget && network.phase === "ready" && usableLease() &&
+              platform.phase === "ready" && !activeWork)
+            void activate();
+          emit();
+        });
         return transport;
       });
     switching = operation;
@@ -654,6 +670,18 @@ export function createPlatformClient({
     retryDelay = 5000;
     schedule(generation);
     scheduleAuthorizationPolling(generation);
+    // Restore only the user's last interrupted selection, after fresh directory,
+    // network and box authorization. Never take over a subsequent user selection.
+    const resume = reconnectTarget;
+    if (resume && resume.selection === connectionEpoch && (!activeLink || activeLink === transport)) {
+      reconnectTarget = null;
+      const selection = connectionEpoch + 1;
+      try { await api.connectBox(resume.deviceId); }
+      catch (error) {
+        if (current(generation) && selection === connectionEpoch && transientError(error))
+          reconnectTarget = { ...resume, selection };
+      }
+    }
     return emit();
   }
   function activate() {
@@ -668,9 +696,13 @@ export function createPlatformClient({
       .catch(async (error) => {
         if (current(generation)) {
           const transient = transientError(error);
-          retryActivation = transient;
+          // Pending cleanup is not authorization to keep the old tunnel alive.
+          // Poll restore with backoff; only a confirmed revoked response may
+          // trigger replacement enrollment through the existing validation path.
+          const retryable = transient || error.code === "NETWORK_REVOCATION_PENDING";
+          retryActivation = retryable;
           const backoff = retryDelay;
-          if (transient) retryDelay = Math.min(retryDelay * 2, 60_000);
+          if (retryable) retryDelay = Math.min(retryDelay * 2, 60_000);
           if (
             transient &&
             platform.phase === "ready" &&
@@ -683,6 +715,10 @@ export function createPlatformClient({
             schedule(generation, backoff);
             return emit();
           }
+          const interrupted = activeLink === transport ? activeLink?.client.snapshot().connection : null;
+          if (retryable && interrupted?.deviceId)
+            reconnectTarget = { deviceId: interrupted.deviceId, selection: connectionEpoch };
+          if (!retryable) reconnectTarget = null;
           clearTimeout(leaseTimer);
           networkSession = null;
           devices = [];
@@ -690,7 +726,7 @@ export function createPlatformClient({
           if (!transient) void persistResume(null);
           await retireTransport();
           if (current(generation)) {
-            if (transient) schedule(generation, backoff);
+            if (retryable) schedule(generation, backoff);
             emit();
           }
         }
@@ -793,7 +829,7 @@ export function createPlatformClient({
     if (!current(generation)) throw fail("ACCOUNT_CANCELLED");
     return { ...transfer, refreshRequired };
   }
-  return {
+  const api = {
     snapshot,
     async applicationContext() {
       const state = snapshot();
@@ -954,6 +990,7 @@ export function createPlatformClient({
       return emit();
     },
     async connect(input) {
+      reconnectTarget = null;
       if (input?.mode !== "direct") throw fail("NETWORK_USE_AUTHORIZED_DEVICE");
       activeLocalDeviceId = null;
       const selection = ++connectionEpoch;
@@ -972,6 +1009,7 @@ export function createPlatformClient({
       return target.client.connect(input).then(() => snapshot());
     },
     async connectBox(deviceId) {
+      reconnectTarget = null;
       const identity = authenticated();
       const local = localDevices.find(device => device.deviceId === deviceId);
       if (local && localBoxes) {
@@ -1065,6 +1103,7 @@ export function createPlatformClient({
       return snapshot();
     },
     async disconnect() {
+      reconnectTarget = null;
       connectionEpoch++;
       selectionController?.abort();
       selectionController = null;
@@ -1102,4 +1141,5 @@ export function createPlatformClient({
       listeners.clear();
     },
   };
+  return api;
 }

@@ -62,7 +62,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
     ...(initialSpace ? {
       getSpace: async () => spaceValue, refreshSpace: async () => spaceValue,
       onSpace(fn) { spaceListener = fn; },
-      uploadDroppedFiles: async (files, scope) => { uploads.push({ files, scope }); return { ok: true }; },
+      uploadDroppedFiles: async (files, scope) => { uploads.push({ files, scope }); return responses.get("upload")?.(files, scope) || { ok: true }; },
       transfer: async (...args) => { calls.push(["transfer", ...args]); },
     } : {}),
     getBalance: async () => { calls.push(["panel-balance"]); return getBalance(); },
@@ -522,4 +522,15 @@ test("panel discards stale Admin names across account switches and signs out wit
   await h.focus();
   assert.equal(calls, 2);
   assert.doesNotMatch(h.html, /新账号名称/);
+});
+
+test("quick panel shows the whole-batch rejection, escapes filenames, and keeps its compact idle layout", async () => {
+  const h = await harness(connectedState(), async () => ({ available: 0 }), uploadState());
+  h.respond("upload", () => ({ ok: false, code: "SPACE_UPLOAD_LIMIT", message: "单文件最大 200 MB：<large>.bin。本批文件未加入上传队列。" }));
+  await h.drag("dragenter");
+  assert.match(h.overlay.innerHTML, /最多 20 个文件.*200 MB/);
+  await h.drag("drop", { files: [{ name: "<large>.bin" }, { name: "small.txt" }] });
+  assert.match(h.html, /200 MB：&lt;large&gt;.bin.*本批文件未加入上传队列/);
+  assert.doesNotMatch(h.html, /<large>|class="panel-transfers"/);
+  assert.equal(h.overlay.hidden, true);
 });

@@ -307,7 +307,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         if (missingNetworkRoute)
@@ -316,7 +316,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       checkGeneration();
       let metadata;

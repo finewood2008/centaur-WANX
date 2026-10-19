@@ -892,3 +892,20 @@ test("switching between two platform accounts restores only each account's local
   assert.equal(account.snapshot().profile.displayName, '账号甲');
   assert.equal(account.snapshot().profile.avatarDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
 });
+
+test('cloud HTML or malformed errors retain HTTP status without leaking response text', async () => {
+  const store=memoryStore(),setup=fixture({store});
+  await setup.account.loginSMS({phone:'13800138000',code:'123456'});
+  let status=503,body='<html>private upstream detail</html>';
+  const account=createAccount({store,fetch:async url=>{
+    if(url.endsWith('/auth/refresh')){const saved=await store.load();return reply({...saved.active.session,expiresIn:3600});}
+    return new Response(body,{status});
+  }});
+  await account.restore();
+  for(status of [429,502,503,504,401,403]) for(body of ['<html>private upstream detail</html>','null','[]']) {
+    await assert.rejects(account.request({path:'/app-api/network/restore'}),error=>{
+      assert.equal(error.status,status);assert.equal(error.code,status===401?'ACCOUNT_SESSION_EXPIRED':status===403?'ACCOUNT_ACCESS_DENIED':'ACCOUNT_REQUEST_FAILED');
+      assert.ok(!error.message.includes('private'));return true;
+    });
+  }
+});

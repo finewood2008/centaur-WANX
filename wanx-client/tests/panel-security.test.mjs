@@ -220,7 +220,7 @@ test("panel space upload fixes the root, rejects stale contexts, and exposes onl
   assert.equal(value.tasks.length, 1);
   assert.doesNotMatch(JSON.stringify(value), /localPath|private|digest|overview/);
   await h.invoke("panel-space-upload", { scope, paths: ["/private/one.txt", "/private/two.txt"], parent: "injected-folder" }, h.panel);
-  assert.deepEqual(calls.pop(), ["uploads", "", ["/private/one.txt", "/private/two.txt"], "scope-a"]);
+  assert.deepEqual(calls.pop(), ["uploads", "", ["/private/one.txt", "/private/two.txt"], "scope-a", undefined]);
   await h.invoke("panel-space-transfer", { scope, id: "a".repeat(32), action: "pause" }, h.panel);
   assert.deepEqual(calls.pop(), ["transfer", "pause", "a".repeat(32)]);
   for (const action of ["cancel", "purge", "download"]) assert.throws(() => h.invoke("panel-space-transfer", { scope, id: "a".repeat(32), action }, h.panel), /PANEL_ACTION_NOT_ALLOWED/);
@@ -313,4 +313,35 @@ test("panel preload exposes only the fixed application name reader", async () =>
   assert.deepEqual(calls, [["wanx-client:panel-application-names"]]);
   await assert.rejects(api.action("market-list"), /PANEL_ACTION_NOT_ALLOWED/);
   await assert.rejects(api.action("market-install"), /PANEL_ACTION_NOT_ALLOWED/);
+});
+
+test('offline quick panel may pause its own upload but cannot upload or touch another scope', async () => {
+  const calls = [], scope = 'offline-scope';
+  const h = harness({ client: { snapshot: () => ({ ...ready, phase: 'recovering', connection: null }) }, personalSpace: {
+    snapshot: () => ({ scope, tasks: [{id: 'a'.repeat(32), direction: 'upload'}] }),
+    transfer: (...args) => calls.push(args),
+  } });
+  await h.invoke('panel-space-transfer', {scope, id: 'a'.repeat(32), action: 'pause'}, h.panel);
+  assert.deepEqual(calls, [['pause', 'a'.repeat(32)]]);
+  await assert.rejects(h.invoke('panel-space-upload', {scope, paths: ['private.txt']}, h.panel));
+  assert.throws(() => h.invoke('panel-space-transfer', {scope: 'other', id: 'a'.repeat(32), action: 'resume'}, h.panel), /SPACE_CONTEXT_CHANGED/);
+});
+
+test("all three upload IPC entries return only the deliberate preflight notice and retain target scope", async () => {
+  const calls = [], notice = { code: "SPACE_UPLOAD_LIMIT", message: "一次最多上传 20 个文件；本批文件未加入上传队列。" };
+  const personalSpace = {
+    snapshot: () => ({ scope: "scope-a", tasks: [] }), refresh: async () => {},
+    uploads: async (...args) => { calls.push(args); throw Object.assign(new Error(notice.message), { code: notice.code, localPath: "/secret/path" }); },
+  };
+  const h = harness({ personalSpace });
+  for (const [method, input, window, expected] of [
+    ["space-uploads", { parent: "a".repeat(32) }, h.control, ["a".repeat(32)]],
+    ["space-upload-dropped", { parent: "b".repeat(32), paths: ["/tmp/file"] }, h.control, ["b".repeat(32), ["/tmp/file"], undefined, undefined]],
+    ["panel-space-upload", { parent: "ignored", scope: "scope-a", paths: ["/tmp/file"] }, h.panel, ["", ["/tmp/file"], "scope-a", undefined]],
+  ]) {
+    assert.deepEqual(await h.invoke(method, input, window), { uploadRejection: notice });
+    assert.deepEqual(calls.at(-1), expected);
+  }
+  personalSpace.uploads = async () => { throw Object.assign(new Error("SECURE_STORAGE_WRITE_FAILED"), { localPath: "/private" }); };
+  await assert.rejects(h.invoke("space-uploads", {}), /SECURE_STORAGE_WRITE_FAILED/);
 });

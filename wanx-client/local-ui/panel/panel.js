@@ -10,13 +10,17 @@
   let balance = null, balancePhase = "idle", balanceRequest = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const errorText = error => {
+    if (error?.code === "SPACE_UPLOAD_LIMIT" && typeof error.message === "string") return error.message;
     const code = String(error?.message || error || "");
     const errors = {
       SPACE_CONTEXT_CHANGED: "盒子或账号已变化，请重新拖入文件。",
       SPACE_UPGRADE_REQUIRED: "当前盒子尚不支持文件空间，请升级盒端服务。",
       SPACE_DROP_FILES_ONLY: "暂不支持文件夹，请拖入本地文件。",
+      SPACE_INVALID_NAME: "文件名包含不支持的字符、首尾空格或过长，请先在本机重命名；本批文件未上传。",
       SPACE_INVALID_DROP: "无法读取拖入的文件，请从访达重新拖入。",
       SPACE_DISK_FULL: "盒子存储空间不足，请清理后重试。",
+      SPACE_RETRY_EXHAUSTED: "自动重试未成功，进度已保留，连接稳定后点击继续。",
+      SPACE_UPLOAD_OFFSET_INVALID: "盒子返回的上传进度无效，请在空间中查看。",
       SPACE_CONNECTION_TIMEOUT: "上传连接超时，请稍后继续。",
       SPACE_LOCAL_FILE_CHANGED: "本地文件已变化，请重新上传。",
       SPACE_UNAVAILABLE: "文件空间暂不可用。",
@@ -95,13 +99,13 @@
   }
   const percent = task => task.phase === "complete" ? 100 : task.size ? Math.min(100, Math.floor(task.offset / task.size * 100)) : 0;
   function renderTransfers() {
-    if (!sameSpace()) return "";
+    if (!space.scope || !signedIn() || space.accountId !== state.account?.accountId || (state.connection?.deviceId && space.boxId !== state.connection.deviceId)) return "";
     const tasks = (space.tasks || []).filter(task => task.phase !== "canceled");
     const active = tasks.filter(task => task.phase !== "complete");
     const visible = active.slice(-3);
     if (!visible.length) return "";
-    const phases = { queued: "等待上传", checking: "正在校验", running: "正在上传", paused: "已暂停", complete: "上传完成" };
-    return `<section class="panel-transfers" aria-label="空间上传"><div class="transfer-heading"><strong>文件上传</strong><span>${active.length} 项待完成</span></div>${visible.map(task => `<div class="panel-transfer"><div class="transfer-label"><span title="${escape(task.name)}">${escape(task.name)}</span><small>${phases[task.phase] || "等待处理"} · ${percent(task)}%</small></div><div class="transfer-controls"><progress aria-label="${escape(task.name)}上传进度" max="100" ${task.phase === "checking" ? "" : `value="${percent(task)}"`}></progress>${["queued", "checking", "running", "paused"].includes(task.phase) ? `<button data-transfer="${escape(task.id)}" data-command="${task.phase === "paused" ? "resume" : "pause"}">${task.phase === "paused" ? "继续" : "暂停"}</button>` : ""}</div>${task.error ? `<p class="error">${escape(errorText(task.error))}</p>` : ""}</div>`).join("")}</section>`;
+    const phases = { waiting: "等待连接恢复", retrying: "正在自动重试", queued: "等待上传", checking: "正在校验", running: "正在上传", paused: "已暂停", complete: "上传完成" };
+    return `<section class="panel-transfers" aria-label="空间上传"><div class="transfer-heading"><strong>文件上传</strong><span>${active.length} 项待完成</span></div>${visible.map(task => `<div class="panel-transfer"><div class="transfer-label"><span title="${escape(task.name)}">${escape(task.name)}</span><small>${phases[task.phase] || "等待处理"} · ${percent(task)}%</small></div><div class="transfer-controls"><progress aria-label="${escape(task.name)}上传进度" max="100" ${task.phase === "checking" ? "" : `value="${percent(task)}"`}></progress>${["queued", "checking", "running", "waiting", "retrying", "paused"].includes(task.phase) ? `<button data-transfer="${escape(task.id)}" data-command="${task.phase === "paused" ? "resume" : "pause"}">${task.phase === "paused" ? "继续" : "暂停"}</button>` : ""}</div>${task.error && task.phase === "paused" ? `<p class="error">${escape(errorText(task.error))}</p>` : ""}</div>`).join("")}</section>`;
   }
   function renderSpace() {
     const problem = dropProblem();
@@ -116,7 +120,7 @@
     if (!dragDepth) return;
     const problem = dropProblem();
     overlay.classList.toggle("unavailable", Boolean(problem));
-    overlay.innerHTML = `<div class="drop-card"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M7 18H5a4 4 0 0 1-.5-8A7 7 0 0 1 18 8a5 5 0 0 1 1 10h-2M12 21V11m-4 4 4-4 4 4"/></svg><strong>${problem || "松开上传到文件空间"}</strong><span>${escape(state.connection?.name || "当前盒子")} · 全部文件根目录</span><small>${problem ? "连接就绪后重新拖入文件" : "支持多个文件 · 暂不支持文件夹"}</small></div>`;
+    overlay.innerHTML = `<div class="drop-card"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M7 18H5a4 4 0 0 1-.5-8A7 7 0 0 1 18 8a5 5 0 0 1 1 10h-2M12 21V11m-4 4 4-4 4 4"/></svg><strong>${problem || "松开上传到文件空间"}</strong><span>${escape(state.connection?.name || "当前盒子")} · 全部文件根目录</span><small>${problem ? "连接就绪后重新拖入文件" : "最多 20 个文件 · 单文件最大 200 MB · 暂不支持文件夹"}</small></div>`;
   }
   function clearDrag() {
     dragDepth = 0; dragScope = null; dragInvalid = false; paintOverlay();
@@ -231,7 +235,7 @@
     }
     const result = await api.uploadDroppedFiles(files, scope);
     if (generation !== sessionGeneration || scope !== space.scope) return;
-    notice = result.ok ? "" : errorText(result.code);
+    notice = result.ok ? "" : errorText(result.code === "SPACE_UPLOAD_LIMIT" ? result : result.code);
     render();
   });
   document.addEventListener("dragend", clearDrag);

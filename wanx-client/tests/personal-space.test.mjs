@@ -89,18 +89,14 @@ test("resuming requires the original local file and never silently uploads a cha
   await waitFor(() => f.service.snapshot().tasks[0].error === "SPACE_LOCAL_FILE_CHANGED");
   assert.equal(f.requests.some(r => r.path.endsWith("/complete")), false);
 });
-test("restart retains a paused transfer and resumes from the box's committed chunk only on request", async t => {
+test("restart automatically resumes an active transfer from the box committed offset", async t => {
   let release, held = false; const blocked = new Promise(r => { release = r; });
   const f = await fixture(t, { beforeRequest: async input => { if (input.method === "PUT" && !held) { held = true; await blocked; } } });
   await f.service.uploads("");
   await waitFor(() => held);
   const taskId = f.service.snapshot().tasks[0].id;
   const restarting = f.restart(); release(); await restarting;
-  const count = f.requests.length;
-  assert.equal(f.service.snapshot().tasks[0].phase, "paused");
-  await new Promise(r => setTimeout(r, 30));
-  assert.equal(f.requests.length, count);
-  await f.service.transfer("resume", taskId);
+  assert.equal(f.service.snapshot().tasks[0].id, taskId);
   await waitFor(() => f.service.snapshot().tasks[0]?.phase === "complete");
   assert.equal(f.requests.filter(r => r.method === "PUT").length, 9);
   assert.equal(f.service.snapshot().tasks[0].offset, f.payload.length);
