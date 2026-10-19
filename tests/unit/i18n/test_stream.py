@@ -162,7 +162,7 @@ def test_stream_error_message_octop_key() -> None:
 def test_format_stream_error_unknown_falls_back_to_localized() -> None:
     text = format_stream_error("disk full", "en")
     assert "disk full" not in text
-    assert "model call failed" in text
+    assert "execution failed" in text
 
 
 def test_format_stream_error_passes_through_send_file_failures() -> None:
@@ -173,8 +173,8 @@ def test_format_stream_error_passes_through_send_file_failures() -> None:
     assert format_stream_error(msg, "zh") == msg
     assert format_stream_error(FileNotFoundError(msg), "en") == msg
     assert "模型调用" not in format_stream_error(msg, "zh")
-    # Generic missing-file noise must still fall back to the model-failure copy.
-    assert "model call failed" in format_stream_error("FileNotFoundError: config.json", "en")
+    # Unknown errors must not be mislabeled as model failures.
+    assert "execution failed" in format_stream_error("FileNotFoundError: config.json", "en")
 
 
 def test_exception_display_message_empty_falls_back_to_type() -> None:
@@ -193,4 +193,14 @@ def test_exception_display_message_empty_falls_back_to_type() -> None:
 def test_format_stream_error_empty_exception_still_localized() -> None:
     text = format_stream_error(TimeoutError(), "zh")
     assert text
-    assert "模型调用" in text
+    assert "执行失败" in text
+
+
+def test_publisher_tool_exceptions_are_not_reported_as_model_failures() -> None:
+    for exc in (
+        FileNotFoundError(2, "No such file or directory", "ffprobe"),
+        PermissionError("DRAFT_NOT_FOUND: draft does not belong to this conversation"),
+    ):
+        message = format_stream_error(exc, "zh")
+        assert "模型调用" not in message
+        assert "执行失败" in message
