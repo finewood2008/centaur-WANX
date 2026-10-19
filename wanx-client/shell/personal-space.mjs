@@ -184,7 +184,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
           task.phase = "running";
           while (task.offset < task.size) {
             if (signal.aborted) throw fail("SPACE_PAUSED");
-            const buffer = Buffer.alloc(Math.min(task.chunkSize || CHUNK, task.size - task.offset));
+            const buffer = Buffer.alloc(Math.min(task.chunkSize || RECOVERY_CHUNK, RECOVERY_CHUNK, task.size - task.offset));
             const { bytesRead } = await handle.read(buffer, 0, buffer.length, task.offset);
             if (bytesRead !== buffer.length) throw fail("SPACE_LOCAL_FILE_CHANGED");
             const result = await transferRequest(`/uploads/${task.id}?offset=${task.offset}`, { method: "PUT", signal, body: buffer, headers: { "content-type": "application/octet-stream", "x-content-sha256": hash(buffer) } });

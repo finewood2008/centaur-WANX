@@ -141,10 +141,10 @@ test('stalled chunks reconcile the stable upload ID and recover with at most 1 M
   const f=await fixture(t,{after:input=>{if(input.method==='PUT'&&!fault){fault=true;throw Object.assign(Error('idle'),{code:'SPACE_CHUNK_STALLED',transportPhase:'awaiting_response',requestBytes:4194304,responseBytes:0,reusedSocket:true});}}});
   await writeFile(f.paths[0],Buffer.alloc(6*1024*1024,43));
   await f.service.uploads('',[f.paths[0]]);await f.complete();
-  const puts=f.calls.filter(c=>c.method==='PUT');assert.equal(puts[0].body.length,4*1024*1024);
+  const puts=f.calls.filter(c=>c.method==='PUT');assert.equal(puts[0].body.length,1024*1024);
   assert.ok(puts.slice(1).every(c=>c.body.length<=1024*1024));
   assert.ok(puts.every(c=>c.idleTimeoutMs===15000));
-  assert.equal(Number(new URL(puts[1].path,'http://local').searchParams.get('offset')),4*1024*1024);
+  assert.equal(Number(new URL(puts[1].path,'http://local').searchParams.get('offset')),1024*1024);
   assert.equal(f.remote.size,1);assert.equal([...f.remote.values()][0].publishes,1);
   assert.ok(f.events.some(e=>e.errorCode==='SPACE_CHUNK_STALLED'&&e.transportPhase==='awaiting_response'));
 });
@@ -157,7 +157,30 @@ test('actual offline transition reduces the first resumed upload block without r
   f.state({phase:'recovering',connection:null});release();await wait(()=>f.saved()[0]?.phase==='waiting');
   f.state({phase:'ready',connection:{deviceId:'79'}});await f.complete();
   const chunks=f.calls.filter(c=>c.method==='PUT');
-  assert.equal(chunks[2].body.length,1024*1024);
-  assert.ok(chunks[2].path.endsWith('offset=4194304'));
+  assert.equal(chunks[5].body.length,1024*1024);
+  assert.ok(chunks[5].path.endsWith('offset=4194304'));
+  assert.ok(chunks.every(c=>c.freshConnection===true));
   assert.equal(f.remote.size,1);assert.equal([...f.remote.values()][0].publishes,1);
+});
+
+test('persisted 4 MiB chunk preference is capped before the first restarted write', async t => {
+  let rejected=false;
+  const f=await fixture(t,{retryBaseMs:100,before:input=>{if(input.method==='PUT'&&!rejected){rejected=true;throw reset();}}});
+  await writeFile(f.paths[0],Buffer.alloc(6*1024*1024,51));
+  await f.service.uploads('',[f.paths[0]]);await wait(()=>f.service.snapshot().tasks[0]?.phase==='retrying');
+  const count=f.calls.length;
+  await f.restart(records=>records.map(record=>({...record,chunkSize:4*1024*1024})));
+  await f.complete();
+  const resumed=f.calls.slice(count).filter(c=>c.method==='PUT');
+  assert.ok(resumed.length>0);assert.ok(resumed.every(c=>c.body.length<=1024*1024));
+  assert.equal([...f.remote.values()][0].publishes,1);
+});
+
+test('a new 1 MiB plus one byte file has a one-byte final chunk and preserves its digest', async t => {
+  const f=await fixture(t);
+  const bytes=Buffer.alloc(1024*1024+1,19);await writeFile(f.paths[0],bytes);
+  await f.service.uploads('',[f.paths[0]]);await f.complete();
+  const chunks=f.calls.filter(c=>c.method==='PUT');assert.deepEqual(chunks.map(c=>c.body.length),[1024*1024,1]);
+  assert.deepEqual([...f.remote.values()][0].bytes,bytes);
+  assert.equal([...f.remote.values()][0].publishes,1);
 });

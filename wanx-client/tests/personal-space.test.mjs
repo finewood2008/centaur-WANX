@@ -22,7 +22,7 @@ async function fixture(t, overrides = {}) {
       let value = {};
       if (input.path.endsWith("/overview")) value = { protocolVersion: 1 };
       else if (input.path.endsWith("/uploads") && input.method === "POST") { const b = JSON.parse(input.body); remote ||= { ...b, offset: 0, state: "pending" }; value = remote; }
-      else if (input.method === "PUT") { assert.ok(input.body.length <= 4 * 1024 * 1024); assert.equal(input.headers["x-content-sha256"], hash(input.body)); uploaded.push(input.body); remote.offset += input.body.length; value = { offset: remote.offset }; }
+      else if (input.method === "PUT") { assert.ok(input.body.length <= 1024 * 1024); assert.equal(input.headers["x-content-sha256"], hash(input.body)); uploaded.push(input.body); remote.offset += input.body.length; value = { offset: remote.offset }; }
       else if (input.path.endsWith("/complete")) { assert.equal(JSON.parse(input.body).digest, hash(Buffer.concat(uploaded))); remote.state = "complete"; }
       else if (input.path.includes("/content")) { const offset = Number(new URL(input.path, "http://test").searchParams.get("offset")); const bytes = payload.subarray(offset, offset + 4 * 1024 * 1024); return { status: 200, headers: { "x-content-sha256": hash(bytes) }, body: bytes }; }
       else if (input.path.includes("/files/")) value = { id: "a".repeat(32), kind: "file", name: "remote.bin", size: payload.length, digest: hash(payload) };
@@ -40,7 +40,7 @@ test("large transfers remain chunked, private paths stay out of renderer, and do
   const f = await fixture(t);
   await f.service.uploads("");
   await waitFor(() => f.service.snapshot().tasks[0]?.phase === "complete");
-  assert.equal(f.requests.filter(r => r.method === "PUT").length, 9);
+  assert.equal(f.requests.filter(r => r.method === "PUT").length, 36);
   assert.equal(f.service.snapshot().tasks[0].localPath, undefined);
   await f.service.download("a".repeat(32));
   await waitFor(() => f.service.snapshot().tasks[1]?.phase === "complete");
@@ -67,7 +67,7 @@ test("dropped files use the same verified transfer queue without opening a picke
   const created = JSON.parse(f.requests.find(r => r.method === 'POST' && r.path.endsWith('/uploads')).body);
   assert.equal(created.parent, 'b'.repeat(32));
   assert.equal(created.size, f.payload.length);
-  assert.equal(f.requests.filter(r => r.method === 'PUT').length, 9);
+  assert.equal(f.requests.filter(r => r.method === 'PUT').length, 36);
   assert.equal(f.service.snapshot().tasks[0].localPath, undefined);
 });
 test("invalid drops and directories do not create remote uploads", async t => {
@@ -98,7 +98,7 @@ test("restart automatically resumes an active transfer from the box committed of
   const restarting = f.restart(); release(); await restarting;
   assert.equal(f.service.snapshot().tasks[0].id, taskId);
   await waitFor(() => f.service.snapshot().tasks[0]?.phase === "complete");
-  assert.equal(f.requests.filter(r => r.method === "PUT").length, 9);
+  assert.equal(f.requests.filter(r => r.method === "PUT").length, 36);
   assert.equal(f.service.snapshot().tasks[0].offset, f.payload.length);
 });
 test("canceling while the box changes never sends cancellation to the new box", async t => {
