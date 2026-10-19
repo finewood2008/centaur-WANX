@@ -33,7 +33,7 @@ async function temporary(t) {
 
 async function artifact(root, version, contract = compatibility, schemaVersion = 2, { entrypoint = "main.mjs", source = "export default {};\n" } = {}) {
   const manifest = { applicationId, name: "Review app", version, protocolVersion: schemaVersion, runtime: "electron", entrypoint,
-    ...(schemaVersion === 2 ? { compatibility: contract } : {}) };
+    ...(schemaVersion >= 2 ? { compatibility: contract } : {}) };
   const zip = new ZipFile(), chunks = [];
   zip.addBuffer(Buffer.from(JSON.stringify(manifest)), "wanx-app.json");
   zip.addBuffer(Buffer.from(source), entrypoint);
@@ -45,7 +45,7 @@ async function artifact(root, version, contract = compatibility, schemaVersion =
   const archive = Buffer.concat(chunks), artifactId = randomUUID();
   const descriptor = { schemaVersion, artifactId, applicationId, version, os: "universal", arch: "universal", packageType: "wanxapp",
     fileName: `review-${version}.wanxapp`, sha256: createHash("sha256").update(archive).digest("hex"), size: archive.length,
-    minWanxVersion: "0.1.0", hostProtocol: 1, manifest, ...(schemaVersion === 2 ? { compatibility: contract } : {}) };
+    minWanxVersion: "0.1.0", hostProtocol: 1, manifest, ...(schemaVersion >= 2 ? { compatibility: contract } : {}) };
   const bytes = Buffer.from(JSON.stringify(descriptor));
   const envelope = { keyId: "review", descriptorBase64: bytes.toString("base64"), signatureBase64: sign(null, bytes, keys.privateKey).toString("base64") };
   const archivePath = path.join(root, `${artifactId}.wanxapp`);
@@ -410,4 +410,60 @@ test("review: system-signature verification failures explain the installation bl
   assert.ok(start >= 0 && end > start);
   const display = new Function(`${source.slice(start, end)}; return updateGuidance;`)();
   assert.match(display("UPDATE_SIGNATURE_VERIFICATION_FAILED"), /无法核验安装包的系统签名.*维护人员/);
+});
+
+
+for (const protocol of [2, 3]) test(`review: the identical signed v${protocol} package can be reinstalled after uninstall without losing its profile`, async t => {
+  const root = await temporary(t);
+  const provider = protocol === 3 ? () => ({ ...context(),
+    applicationConnection: { context: () => ({ connection: "ready", boxId: "review-box" }) },
+  }) : await shellProvider({ snapshot: () => ({ phase: "ready", connection: { deviceId: "review-box" } }),
+    applicationRequest: async () => ({ status: 200, body: Buffer.from(JSON.stringify(backend())) }) });
+  const { requiredExperts, ...shared } = compatibility;
+  const contract = protocol === 3 ? { ...shared, resourceDependencies: [] } : compatibility;
+  const first = await artifact(root, "1.0.0", contract, protocol);
+  const runtime = path.join(root, "applications", ".runtime", applicationId);
+  const { result } = await manager(t, root, provider, { async onSpawn() {
+    await mkdir(runtime, { recursive: true });
+    await writeFile(path.join(runtime, "Preferences"), "retained user profile");
+  } });
+  await result.installVerifiedPackage(first);
+  await result.launch(applicationId);
+  await result.uninstall(applicationId);
+  await result.close();
+  const restarted = await manager(t, root, provider);
+  assert.deepEqual(await restarted.result.listInstalled(), []);
+  await restarted.result.installVerifiedPackage(first);
+  assert.equal((await restarted.result.listInstalled())[0].artifactId, first.descriptor.artifactId);
+  assert.equal((await restarted.result.launch(applicationId)).state, "running");
+  assert.equal(await readFile(path.join(runtime, "Preferences"), "utf8"), "retained user profile");
+});
+
+
+test("review: identical-package reinstall still rejects conflicting schema evidence", async t => {
+  const root = await temporary(t);
+  let schema;
+  const { result } = await manager(t, root, () => ({ ...context(), localDataSchemaVersion: schema }));
+  const first = await artifact(root, "1.0.0");
+  await result.installVerifiedPackage(first);
+  await result.launch(applicationId);
+  await result.uninstall(applicationId);
+  schema = "2.0.0";
+  await assert.rejects(result.installVerifiedPackage(first), { code: "APPLICATION_DATA_SCHEMA_INCOMPATIBLE" });
+  assert.deepEqual(await result.listInstalled(), []);
+});
+
+test("review: a different signed artifact with the same version cannot claim data continuity", async t => {
+  const root = await temporary(t);
+  const { result } = await manager(t, root, context);
+  const first = await artifact(root, "1.0.0");
+  await result.installVerifiedPackage(first);
+  await result.launch(applicationId);
+  await result.uninstall(applicationId);
+  await assert.rejects(result.installVerifiedPackage(await artifact(root, "1.0.0")), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
+  const descriptor = { ...first.descriptor, fileName: "resigned-different-descriptor.wanxapp" };
+  const bytes = Buffer.from(JSON.stringify(descriptor));
+  const envelope = { keyId: "review", descriptorBase64: bytes.toString("base64"), signatureBase64: sign(null, bytes, keys.privateKey).toString("base64") };
+  await assert.rejects(result.installVerifiedPackage({ ...first, envelope }), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
+  assert.deepEqual(await result.listInstalled(), []);
 });

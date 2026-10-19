@@ -6,6 +6,7 @@
   let dragDepth = 0, dragScope = null, dragInvalid = false, interacting = false, pendingRender = false;
   let state = {}, notice = "", selected = "", intentId = "";
   let accountIdentity = "", sessionGeneration = 0;
+  let applicationNames = new Map(), namesRequest = null;
   let balance = null, balancePhase = "idle", balanceRequest = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const errorText = error => {
@@ -49,11 +50,31 @@
     if (state.phase === "connecting") return "正在连接…";
     return "尚未连接";
   }
+  function displayApplication(app) {
+    const name = applicationNames.get(app.applicationId);
+    return typeof name === "string" && name.trim() ? { ...app, name } : app;
+  }
+  function refreshApplicationNames() {
+    if (!signedIn() || namesRequest) return;
+    const generation = sessionGeneration;
+    const request = Promise.resolve().then(() => api.getApplicationNames()).then(items => {
+      if (generation !== sessionGeneration) return;
+      applicationNames = new Map(items.map(item => [item.applicationId, item.name]));
+      render();
+    }).catch(() => {
+      // Keep the last directory on transient failures; initial reads use installed names.
+    }).finally(() => {
+      if (namesRequest === request) namesRequest = null;
+    });
+    namesRequest = request;
+    return request;
+  }
   function renderIntent() {
     const pending = state.ui?.pendingOpen;
     if (!pending) { intentId = ""; return ""; }
     if (pending.id !== intentId) { intentId = pending.id; selected = pending.deviceId || state.ui?.lastDeviceId || available()[0]?.deviceId || ""; }
-    const name = (state.applications || []).find(app => app.applicationId === pending.applicationId)?.name || "应用";
+    const app = (state.applications || []).find(app => app.applicationId === pending.applicationId);
+    const name = app ? displayApplication(app).name || "应用" : "应用";
     const processing = ["connecting", "opening"].includes(pending.phase);
     return `<section class="intent"><strong>${processing ? (pending.phase === "connecting" ? "正在连接盒子…" : "正在打开应用…") : "连接盒子并打开应用"}</strong><p>${escape(name)}${processing ? "将在就绪后打开" : "需要连接一个盒子"}</p>${pending.error ? `<p class="error">${errorText(pending.error)}</p>` : ""}${!processing && available().length ? `<select id="target-box" aria-label="选择盒子">${available().map(d => `<option value="${escape(d.deviceId)}" ${d.deviceId === selected ? "selected" : ""}>${escape(d.displayName || d.name || "万象盒子")}</option>`).join("")}</select>` : ""}<div class="actions"><button data-action="cancel">取消</button>${!processing ? (available().length ? '<button class="primary" data-action="confirm">连接并打开</button>' : '<button class="primary" data-page="boxes">发现或配置盒子</button>') : ""}</div></section>`;
   }
@@ -124,7 +145,7 @@
     if (dragDepth || interacting) { pendingRender = true; return; }
     pendingRender = false;
     const connection = state.connection || {};
-    const apps = state.applications || [];
+    const apps = (state.applications || []).map(displayApplication);
     root.innerHTML = `<header><div class="brand"><img src="../renderer/assets/centaurai-mark.png" alt="半人马"><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></div><button class="box-button" data-page="boxes" aria-label="打开盒子"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m12 3 9 5v8l-9 5-9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5"/></svg><span>盒子</span></button></header>
       <section class="summary" aria-label="万象概览"><div class="box-status" aria-label="当前盒子"><span class="card-label">当前盒子<span class="dot ${ready() ? "ready" : ""}" aria-hidden="true"></span></span><strong class="box-name" title="${escape(connection.name || "我的盒子")}">${escape(connection.name || "我的盒子")}</strong><span class="card-caption">${boxStatus()}</span></div>${renderBalance()}</section>
       <section class="my-apps" aria-label="我的应用"><div class="apps-heading"><h2>我的应用</h2><div class="apps-heading-actions">${signedIn() && apps.length ? `<span>${apps.length} 个应用</span>` : ""}<button class="apps-link" data-page="applications" aria-label="打开应用">应用<span aria-hidden="true">↗</span></button></div></div><div class="apps">${!signedIn() ? '<div class="empty">登录后，连接盒子并使用你的应用。<br><button class="primary" data-page="applications">登录万象</button></div>' : apps.length ? apps.map(app => { const op = state.ui?.applicationOperations?.[app.applicationId]; return `<div class="app-row">${window.wanxAppCatalog?.[app.applicationId] ? `<img class="app-icon generated-app-icon" src="../renderer/${window.wanxAppCatalog[app.applicationId].icon}" alt="" />` : `<span class="app-icon" aria-hidden="true">${escape(Array.from(app.name || "应用")[0])}</span>`}<div class="app-body"><div class="app-name">${escape(app.name || app.applicationId)}</div>${op ? `<div class="app-message ${op.phase === "failed" ? "error" : ""}">${op.phase === "failed" ? errorText(op.error) : phaseText[op.phase] || "正在处理…"}</div>` : ""}</div><button class="open" data-app="${escape(app.applicationId)}" aria-label="${op?.phase === "failed" ? "重试打开" : "打开"}${escape(app.name || "应用")}" ${op && op.phase !== "failed" ? "disabled" : ""}>${op?.phase === "failed" ? "重试" : "打开"}</button></div>`; }).join("") : '<p class="empty">还没有应用，去商店挑选一个吧。</p>'}</div></section>
@@ -236,6 +257,7 @@
     if (changed) {
       accountIdentity = identity;
       sessionGeneration++;
+      applicationNames = new Map(); namesRequest = null;
       selected = ""; intentId = ""; notice = "";
       balance = null; balancePhase = "idle"; balanceRequest = null;
       if (dragDepth) dragInvalid = true;
@@ -245,9 +267,9 @@
     state = value;
     paintOverlay(); render();
     if (changed) void refreshSpace();
-    if (changed && signedIn()) void refreshBalance();
+    if (changed && signedIn()) { void refreshBalance(); void refreshApplicationNames(); }
   }
-  window.addEventListener?.("focus", () => { void refreshSpace(); void refreshBalance(); });
+  window.addEventListener?.("focus", () => { void refreshSpace(); void refreshBalance(); void refreshApplicationNames(); });
   window.addEventListener?.("blur", () => { interacting = false; if (pendingRender && !dragDepth) render(); });
   window.addEventListener?.("pagehide", clearDrag);
   api.onSpace?.(acceptSpace);

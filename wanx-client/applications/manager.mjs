@@ -7,6 +7,7 @@ import { createApplicationSession } from "../app-host/session.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
+import { createDefaultApplicationStore } from "./delivery.mjs";
 
 export async function createApplicationManager({
   applicationRoot,
@@ -25,6 +26,7 @@ export async function createApplicationManager({
   authorizeRelease,
 } = {}) {
   applicationRoot = path.resolve(applicationRoot);
+  const defaultApplicationDeliveryStore = createDefaultApplicationStore(path.join(applicationRoot, ".delivery"));
   const dataAccessRoot = path.join(applicationRoot, ".data-access");
   const dataUnknown = () => Object.assign(new Error("APPLICATION_DATA_COMPATIBILITY_UNKNOWN"), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
   async function dataAccessDirectory(create = false) {
@@ -102,9 +104,13 @@ export async function createApplicationManager({
     const supplied = await getCompatibilityContext?.(input) || {};
     return { ...supplied, localDataPresent: localDataPresent || supplied.localDataPresent === true };
   };
-  const installer = createApplicationInstaller({ rootDir: applicationRoot, trustedKeys, getCompatibilityContext: compatibilityContext, prepareApplication, authorizeRelease });
+  const installer = createApplicationInstaller({
+    rootDir: applicationRoot, trustedKeys, getCompatibilityContext: compatibilityContext, prepareApplication, authorizeRelease,
+    hasTrustedDataContinuity: async descriptor => sameWriter(await readDataAccess(descriptor.applicationId), writerFor(descriptor)),
+  });
   await installer.recover();
   const mutations = new Map();
+  const dismissedDefaults = new Set();
   function assertOpen() {
     if (closed) throw Object.assign(new Error("APPLICATIONS_CLOSED"), { code: "APPLICATIONS_CLOSED" });
     if (maintenance) throw Object.assign(new Error("UPDATE_IN_PROGRESS"), { code: "UPDATE_IN_PROGRESS" });
@@ -119,9 +125,14 @@ export async function createApplicationManager({
     const check = () => { controller.signal.throwIfAborted(); assertSession(); };
     const pending = Promise.resolve().then(async () => {
       check();
+      if (operation === installer.uninstall) dismissedDefaults.add(id);
       if (operation === installer.rollback) await installer.assertRollbackCompatible(id);
       check();
       await launcher.stop(id);
+      check();
+      // Preserve explicit removal even if the process exits during uninstall.
+      // Default delivery must not reinstall an application the user removed.
+      if (operation === installer.uninstall) await defaultApplicationDeliveryStore.dismiss(id, check);
       check();
       return operation(id, check);
     }).finally(() => mutations.delete(id));
@@ -209,6 +220,18 @@ export async function createApplicationManager({
       assertOpen();
       const descriptor = verifyEnvelope(input.envelope, trustedKeys);
       if (mutations.has(descriptor.applicationId)) throw Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" });
+      if (input.onlyIfMissing) {
+        const id = descriptor.applicationId, originalCheck = input.assertSession;
+        if (await defaultApplicationDeliveryStore.isDismissed(id)) dismissedDefaults.add(id);
+        const assertSession = () => {
+          assertOpen();
+          originalCheck?.();
+          if (dismissedDefaults.has(id)) throw Object.assign(new Error("DEFAULT_APPLICATION_USER_REMOVED"), { code: "DEFAULT_APPLICATION_USER_REMOVED" });
+          if (mutations.has(id)) throw Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" });
+        };
+        assertSession();
+        input = { ...input, assertSession };
+      }
       // Preparing an update never interrupts the running version; launch owns switching.
       return track(installer.installVerifiedPackage(input, { signal: controller.signal }));
     },
@@ -219,6 +242,11 @@ export async function createApplicationManager({
       return track(installer.selectCurrent(id, version, { signal: controller.signal }));
     },
     listInstalled: installer.list,
+    defaultApplicationDeliveryStore,
+    async prepareInstalledApplication(id, assertSession = () => {}) {
+      assertOpen();
+      return track(installer.prepareCurrent(id, { assertSession, signal: controller.signal }));
+    },
     async launch(id) {
       assertOpen();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
