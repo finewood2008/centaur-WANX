@@ -286,3 +286,31 @@ test("link management is limited to the trusted main window", async () => {
   }
   assert.equal(actions.length, 19);
 });
+
+
+test("panel application names are a narrow authenticated read without publishing state", async () => {
+  let reads = 0, publishes = 0;
+  const h = harness({ market: { list: async (...args) => {
+    assert.deepEqual(args, []); reads++;
+    return { items: [{ applicationId: "example.app", name: "Admin name", version: "9.9.9", private: "hidden" }] };
+  } }, publishState: () => publishes++ });
+  assert.deepEqual(await h.invoke("panel-application-names", { accountId: "forged" }, h.panel), [{ applicationId: "example.app", name: "Admin name" }]);
+  assert.equal(reads, 1); assert.equal(publishes, 0);
+  assert.deepEqual(h.calls, []);
+  const signedOut = harness({ client: { snapshot: () => ({ account: { phase: "signed_out" } }) } });
+  await assert.rejects(signedOut.invoke("panel-application-names", undefined, signedOut.panel), /ACCOUNT_LOGIN_REQUIRED/);
+});
+
+test("panel preload exposes only the fixed application name reader", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const vm = await import("node:vm");
+  let api; const calls = [];
+  vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
+    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve([]); } },
+  }) });
+  assert.deepEqual(await api.getApplicationNames({ accountId: "forged" }), []);
+  assert.deepEqual(calls, [["wanx-client:panel-application-names"]]);
+  await assert.rejects(api.action("market-list"), /PANEL_ACTION_NOT_ALLOWED/);
+  await assert.rejects(api.action("market-install"), /PANEL_ACTION_NOT_ALLOWED/);
+});

@@ -36,7 +36,7 @@ const deferred = () => {
 
 // The real renderer consumes the raw main-process snapshot; this fake DOM only
 // models event delivery and the browser's selection of a <select> option.
-async function harness(initial = baseState(), getBalance = async () => ({ available: 0 }), initialSpace = null) {
+async function harness(initial = baseState(), getBalance = async () => ({ available: 0 }), initialSpace = null, getApplicationNames = async () => []) {
   let current = structuredClone(initial), markup = "", select = null, listener, spaceListener;
   let spaceValue = initialSpace, uploads = [];
   const classes = new Set(), overlayClasses = new Set();
@@ -58,6 +58,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
   };
   const api = {
     getState: async () => structuredClone(current),
+    getApplicationNames,
     ...(initialSpace ? {
       getSpace: async () => spaceValue, refreshSpace: async () => spaceValue,
       onSpace(fn) { spaceListener = fn; },
@@ -465,3 +466,60 @@ for (const available of [-1, 1.5, "100", Number.MAX_SAFE_INTEGER + 1]) {
     assert.match(h.html, /points-value">—/);
   });
 }
+
+
+test("panel uses Admin names for rows, open labels and pending intents, refreshing on focus", async () => {
+  const initial = pendingState();
+  initial.applications[0].name = "超级参谋团";
+  let names = [{ applicationId: application.applicationId, name: "个人议事厅" }];
+  const h = await harness(initial, undefined, null, async () => names);
+  assert.match(h.html, /class="app-name">个人议事厅</);
+  assert.match(h.html, /aria-label="打开个人议事厅"/);
+  assert.match(h.html, /个人议事厅需要连接一个盒子/);
+  assert.doesNotMatch(h.html, /超级参谋团/);
+  await h.click({ app: application.applicationId });
+  assert.deepEqual(h.actions().at(-1), ["applications-request-open", { applicationId: application.applicationId }]);
+  names = [{ applicationId: application.applicationId, name: "新 & <议事厅>" }];
+  await h.focus();
+  assert.match(h.html, /class="app-name">新 &amp; &lt;议事厅&gt;</);
+  assert.doesNotMatch(h.html, /<议事厅>/);
+  assert.equal(initial.applications[0].name, "超级参谋团");
+});
+
+test("panel keeps last Admin names offline and falls back for absent or blank names", async () => {
+  let result = [{ applicationId: application.applicationId, name: "后台名称" }];
+  const h = await harness(baseState(), undefined, null, async () => {
+    if (result instanceof Error) throw result;
+    return result;
+  });
+  assert.match(h.html, /class="app-name">后台名称</);
+  result = new Error("offline");
+  await h.focus();
+  assert.match(h.html, /class="app-name">后台名称</);
+  for (const names of [[], [{ applicationId: application.applicationId, name: "  " }]]) {
+    result = names;
+    await h.focus();
+    assert.match(h.html, /class="app-name">知君</);
+  }
+});
+
+test("panel discards stale Admin names across account switches and signs out without fetching", async () => {
+  const old = deferred(), next = deferred();
+  let calls = 0;
+  const h = await harness(baseState(), undefined, null, () => (++calls === 1 ? old.promise : next.promise));
+  await h.focus();
+  assert.equal(calls, 1, "deduplicate in-flight reads");
+  const other = baseState(); other.account.accountId = "account-2";
+  await h.update(other);
+  assert.equal(calls, 2);
+  next.resolve([{ applicationId: application.applicationId, name: "新账号名称" }]);
+  await settle();
+  old.resolve([{ applicationId: application.applicationId, name: "旧账号名称" }]);
+  await settle();
+  assert.match(h.html, /class="app-name">新账号名称</);
+  assert.doesNotMatch(h.html, /旧账号名称/);
+  await h.update({ ...other, account: { phase: "signed_out" } });
+  await h.focus();
+  assert.equal(calls, 2);
+  assert.doesNotMatch(h.html, /新账号名称/);
+});

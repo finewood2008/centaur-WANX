@@ -26,6 +26,7 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from .assets import DashboardAssets, installed_dashboard
+from .browser_expert import BrowserExpertPreparer
 from .config import BridgeAuthError
 from .managed_resource_guard import ManagedResourceGuard
 from .readiness import diagnose_application
@@ -216,6 +217,9 @@ def create_app(
     # This boundary stays active even when background resource synchronization
     # is disabled: previously installed controlled packages must remain private.
     managed_resources = ManagedResourceGuard(adapter)
+    browser_experts = BrowserExpertPreparer(
+        getattr(getattr(auth, "config", None), "state_dir", None)
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -389,6 +393,33 @@ def create_app(
             inspect_resources=inspect_resources,
         )
         await _call(auth.assert_live, session)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/platform/browser/expert/ensure")
+    async def ensure_browser_expert(request: Request) -> JSONResponse:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        body = await _body(request, limit=65536)
+
+        async def live() -> None:
+            await _call(auth.assert_live, session)
+
+        async def upstream_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+            await live()
+            req = client.build_request(
+                method,
+                origin + path,
+                headers={"Authorization": "Bearer " + _field(session, "upstream_token")},
+                timeout=30,
+                **kwargs,
+            )
+            req.headers.pop("cookie", None)
+            response = await client.send(req)
+            await live()
+            return response
+
+        result = await browser_experts.ensure(body, _field(session, "user"), upstream_request, live)
+        await live()
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.api_route(

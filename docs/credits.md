@@ -14,6 +14,8 @@ WANX 接入 Admin 的积分购买与余额 API，支持支付宝、微信 Native
 | [页面](../wanx-client/local-ui/renderer/wallet-view.mjs) | 余额、渠道与商品选择、付款码、订单状态及购买恢复 |
 | [渲染入口](../wanx-client/local-ui/renderer/wallet-entry.mjs) | 将二维码库和页面打包到本地资源，不把付款材料发送给外部二维码服务 |
 
+账号登录和积分购买共用 Consumer 服务，默认地址为 `https://boss.nexusaos.qitus.cn/prod-api`，切换环境使用 `WANX_CONSUMER_URL`。`WANX_CREDITS_URL` 和 `credits-service.json` 属于旧独立积分服务，不用于 Admin 钱包购买。支付商户私钥、API v3 Key 和渠道调用只在 Admin；客户端不需要公众号 AppSecret。
+
 不通过盒端 Octop API 确认付款或增减积分，也不依赖盒子在线。Consumer 鉴权与 Octop API 鉴权分别维护。
 
 ## 页面与恢复
