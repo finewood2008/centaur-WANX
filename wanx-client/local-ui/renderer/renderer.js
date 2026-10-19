@@ -5,7 +5,7 @@ let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
 const storeCarousel = window.createStoreCarousel();
-const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
+const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurai.wanx.centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
 const creditsView = window.createCreditsView({ request: async (action, input) => {
   const response = await window.wanxClient.action(action, input);
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
@@ -659,7 +659,7 @@ function pendingOpenView() {
   const devices = (currentState.devices || []).filter(deviceCanConnect);
   if (pendingSelection?.id !== pending.id) pendingSelection = { id: pending.id, deviceId: pending.deviceId || currentState.ui?.lastDeviceId || devices[0]?.deviceId };
   if (!devices.some((device) => device.deviceId === pendingSelection.deviceId)) pendingSelection.deviceId = devices[0]?.deviceId;
-  const application = currentState.applications?.find((item) => item.applicationId === pending.applicationId);
+  const application = storeApplication(pending.applicationId);
   const processing = ["connecting", "opening"].includes(pending.phase);
   const selectedReady = currentState.networkReady || devices.some(device => device.local && device.deviceId === pendingSelection.deviceId);
   const authorizing = !devices.length && currentState.devices?.some(device => device.accessState === "authorization_pending");
@@ -832,6 +832,7 @@ function applicationManagement(item, installed) {
   return `<div class="store-detail-body"><p class="store-full-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>${installed && item.version ? `<p class="muted">当前版本 v${escapeHTML(item.version)}</p>` : ""}<p class="market-status">${escapeHTML(availability)}</p>${candidateDetails(candidate)}${installed && !item.selectionRequired ? `<div class="market-actions">${previous ? `<button class="text-button" data-action="market-rollback" data-application-id="${id}" ${disabled}>恢复上一版本</button>` : ""}<button class="text-button danger-text" data-action="market-uninstall" data-application-id="${id}" ${disabled}>卸载</button></div>` : ""}${!candidate?.artifact && !candidate?.release?.notes && !installed ? '<p class="muted">暂无更多版本信息。</p>' : ""}</div>`;
 }
 function applicationCard(item, installed = true) {
+  item = withMarketName(item);
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
@@ -850,17 +851,25 @@ function discoverableApplications() {
   // Only the account's remote catalog determines which apps are discoverable.
   return [...new Map(marketItems.map(item => [item.applicationId, item])).values()];
 }
+function withMarketName(item) {
+  const name = marketItems.find(entry => entry.applicationId === item.applicationId)?.name;
+  // Admin owns display names; installed versions and signed manifests stay intact.
+  return typeof name === "string" && name.trim() ? { ...item, name } : item;
+}
 function storeApplication(id) {
   const item = currentState.applications?.find(item => item.applicationId === id)
     || discoverableApplications().find(item => item.applicationId === id);
-  if (item) return item;
+  if (item) return withMarketName(item);
   // Featured posters may open a bundled introduction without adding a market listing.
   const metadata = window.wanxAppCatalog?.[id];
   return metadata ? { applicationId: id, name: metadata.name,
     description: metadata.tagline || metadata.introduction, editorialOnly: true } : null;
 }
 function storeFeatures() {
-  const slides = featuredApplicationIds.map(id => ({ id, metadata: window.wanxAppCatalog?.[id] })).filter(item => item.metadata?.posters?.length);
+  const slides = featuredApplicationIds.map(id => {
+    const metadata = window.wanxAppCatalog?.[id];
+    return { id, metadata: metadata && withMarketName({ ...metadata, applicationId: id }) };
+  }).filter(item => item.metadata?.posters?.length);
   if (!slides.length) return "";
   // Keep markup stable: the carousel paints its own state without replacing focused controls.
   return `<section class="store-carousel" aria-label="应用精选" aria-roledescription="轮播" data-active="0">
@@ -1574,7 +1583,7 @@ app.addEventListener("click", async (event) => {
   if (["market-install", "market-uninstall", "market-rollback"].includes(action)) {
     const applicationId = target.dataset.applicationId;
     const installed = (currentState.applications || []).find((item) => item.applicationId === applicationId);
-    const item = installed || storeApplication(applicationId);
+    const item = storeApplication(applicationId);
     if (!item || operationBusy(applicationId)) return;
     const candidate = marketCandidates.get(applicationId);
     if (action === "market-install" && candidate?.status !== "available") return;
