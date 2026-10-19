@@ -17,6 +17,13 @@ from octop.infra.agents.role_ontology import (
     facts,
     read_role_ontology,
 )
+from octop.infra.agents.zhijun_batch_review import (
+    BatchResult,
+    BatchReview,
+    ReviewPage,
+    batch_review,
+    review_page,
+)
 from octop.infra.agents.zhijun_changes import (
     ChangeCommand,
     ChangeResult,
@@ -50,6 +57,37 @@ from octop.infra.agents.zhijun_profile import primary
 from octop.infra.errors import ErrorCode, OctopError
 
 router = APIRouter()
+
+
+@router.get(
+    "/{agent_id}/ontology/batch-review",
+    summary="Preview owner understandings for explicit batch review",
+    description="Private primary owner only. Read-only source and version snapshots; conflicts and invalid sources remain visible but cannot be selected.",
+)
+async def get_batch_review(
+    agent_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> ReviewPage:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await review_page(registry, user.id)
+
+
+@router.post(
+    "/{agent_id}/ontology/batch-review",
+    summary="Confirm or reject explicitly selected understandings",
+    description="At most 20 unique items. Each item revalidates its displayed version and sources under the ontology lock and has its own durable receipt. Returns individual outcomes; partial success is possible. Busy replies reject the request. No models, memory imports, field edits or automatic conflict resolution.",
+)
+async def post_batch_review(
+    agent_id: str,
+    body: BatchReview,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> BatchResult:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await batch_review(registry, user.id, body)
 
 
 @router.get(

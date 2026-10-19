@@ -130,10 +130,17 @@ async def command(
     body: RoleCommand,
     *,
     declaration: dict[str, str] | None = None,
+    review_token: str | None = None,
 ) -> dict[str, Any]:
     row = _owned(registry, uid)
     harness = registry.get_agent(row.agent_id)
-    fingerprint = _digest({"id": cid, **body.model_dump()})
+    fingerprint = _digest(
+        {
+            "id": cid,
+            **body.model_dump(),
+            **({"review_token": review_token} if review_token is not None else {}),
+        }
+    )
     dates(body)
     async with _lock(registry, row.agent_id):
         doc = await read_role_ontology(registry, uid)
@@ -142,9 +149,41 @@ async def command(
             if receipt["fingerprint"] != fingerprint:
                 raise OctopError(ErrorCode.SELF_MODEL_INVALID, "请求标识已被其他修改使用")
             committed = next((c for c in doc.claims if c.id == receipt["id"]), None)
-            if committed and receipt.get("version") != committed.version:
+            if review_token is not None and committed is None:
+                return {"status": "stale", "ontology": doc}
+            if committed and (
+                receipt.get("version") != committed.version
+                or (review_token is not None and body.action == "admit" and not admitted(committed))
+            ):
                 return {"status": "stale", "ontology": doc}
             return {"status": "ready", "ontology": doc, "changed_id": receipt["id"]}
+        if review_token is not None:
+            from octop.infra.agents.zhijun_batch_review import review_item
+
+            selected = next((c for c in doc.claims if c.id == cid), None)
+            if selected is None or body.action not in {"admit", "reject"}:
+                return {"status": "stale", "ontology": doc}
+            view = review_item(doc, selected)
+            if view.token != review_token or selected.version != body.expected_version:
+                return {"status": "stale", "ontology": doc}
+            if not view.eligible:
+                return {"status": "blocked", "ontology": doc}
+            # Bulk review confirms exactly the displayed record; it cannot edit fields.
+            body = body.model_copy(
+                update={
+                    key: getattr(selected, key)
+                    for key in (
+                        "statement",
+                        "conditions",
+                        "exceptions",
+                        "kind",
+                        "importance",
+                        "affinity",
+                        "valid_from",
+                        "valid_until",
+                    )
+                }
+            )
         if body.action.startswith("fact_"):
             atom = atom_payload(harness._memory_runtime.memory, cid)
             if not atom or atom.get("deprecated_at") or _digest(atom) != body.expected_version:
