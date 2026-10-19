@@ -173,19 +173,19 @@ test('review keeps paid and credited facts visible without a payable QR', async 
   assert.doesNotMatch(html, /data:image|provider-pay:private-payload/);
 });
 
-test('wallet limits credit warnings to our provider and never controls model execution', async () => {
+test('wallet displays authoritative balances without promising undesigned consumption rules', async () => {
   for (const [atoms, slot, expected] of [
-    ['0', 'none', /积分不足.*平台 Provider/],
-    ['-1000000', 'none', /充值后先抵扣欠款/],
-    ['1000000', 'held', /平台 Provider.*等待结果或核对/],
+    ['0', 'none', '0.00 点'],
+    ['-1000000', 'none', '-1.00 点'],
+    ['1000000', 'held', '1.00 点'],
   ]) {
     const { view, seen } = setup({ request: action => action === 'wallet.balance' ? envelope({
       ...balance, balance_credit_atoms: atoms, debt_credit_atoms: atoms.startsWith('-') ? '1000000' : '0', execution_slot_state: slot,
     }) : undefined });
     await view.refresh();
-    assert.match(view.render(), /仅平台 Provider 的模型调用消耗积分/);
-    assert.match(view.render(), /BYOK 和本地模型不使用此积分/);
-    assert.match(view.render(), expected);
+    assert.match(view.render(), /积分归当前万象账号所有，跨设备共享/);
+    assert.doesNotMatch(view.render(), /Provider|BYOK|欠款|消耗积分|模型服务/);
+    assert.equal(view.label(), expected);
     assert.ok(seen.every(([action]) => action.startsWith('wallet.')));
     await view.action('credits-refresh');
     assert.ok(seen.every(([action]) => action.startsWith('wallet.')));
@@ -385,4 +385,27 @@ test('restart releases only a definitively rejected product intent and recovers 
   await view.refresh();
   assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
   assert.equal(seen.filter(([action]) => action === 'wallet.orders').length, 1);
+});
+
+
+test('closing a recovered configurable-price order survives a lost response and restart', async () => {
+  const store = storage();
+  const recovered = { ...order, amount_fen: 1 };
+  const first = setup({ storage: store, request: async action => {
+    if (action === 'wallet.orders') return envelope({ items: [recovered], next_cursor: null });
+    if (action === 'wallet.closeOrder') throw new Error('NETWORK_ERROR');
+  } });
+  await first.view.refresh();
+  assert.ok(first.view.paymentImage());
+  await first.view.action('credits-close-order');
+  assert.equal(first.view.paymentImage(), null);
+  const closeRequest = first.seen.find(([action]) => action === 'wallet.closeOrder')[1];
+  const restarted = setup({ storage: store, request: async action => {
+    if (action === 'wallet.closeOrder') return envelope({ ...recovered,
+      display_state: 'close_pending', payment_state: 'close_pending', payment_action: null });
+  } });
+  await restarted.view.refresh();
+  assert.deepEqual(restarted.seen.find(([action]) => action === 'wallet.closeOrder')[1], closeRequest);
+  assert.equal(restarted.view.paymentImage(), null);
+  assert.equal(restarted.seen.some(([action]) => action === 'wallet.createOrder'), false);
 });

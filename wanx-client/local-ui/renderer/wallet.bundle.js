@@ -2189,7 +2189,7 @@
     function load() {
       try {
         const value = JSON.parse(storage.getItem(key()) || "null");
-        if (value && typeof value.purchase_intent_id === "string" && (typeof value.product_id === "string" && typeof value.product_version === "string" || [5e3, 1e4, 2e4].includes(value.amount_fen))) return value;
+        if (value && typeof value.purchase_intent_id === "string" && (typeof value.order_id === "string" && typeof value.close_intent_id === "string" || typeof value.product_id === "string" && typeof value.product_version === "string" || [5e3, 1e4, 2e4].includes(value.amount_fen))) return value;
       } catch {
       }
       return null;
@@ -2452,7 +2452,7 @@
       refresh,
       paymentImage,
       isOpen: () => dialogOpen,
-      label: () => balance ? `${creditAtoms(balance.balance_credit_atoms) < 0n ? "\u6B20\u6B3E " : ""}${amount(balance.balance_credit_atoms)} \u70B9` : loading ? "\u8BFB\u53D6\u4E2D\u2026" : "\u6682\u4E0D\u53EF\u7528",
+      label: () => balance ? `${amount(balance.balance_credit_atoms)} \u70B9` : loading ? "\u8BFB\u53D6\u4E2D\u2026" : "\u6682\u4E0D\u53EF\u7528",
       async action(action, dataset = {}) {
         if (action === "credits-open") {
           dialogOpen = true;
@@ -2476,14 +2476,13 @@
         if (action === "credits-close-order") return close();
       },
       render() {
-        const debt = balance && creditAtoms(balance.balance_credit_atoms) < 0n;
         return `<div class="page-content credits-page" ${dialogOpen ? "inert" : ""}>
-        <div class="page-heading"><div><h2>\u8D26\u53F7\u79EF\u5206</h2><p class="muted">\u7528\u4E8E\u5E73\u53F0\u6A21\u578B\u670D\u52A1\uFF0C\u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548\u3002</p></div></div>
+        <div class="page-heading"><div><h2>\u8D26\u53F7\u79EF\u5206</h2><p class="muted">\u67E5\u770B\u8D26\u53F7\u4F59\u989D\uFF0C\u8D2D\u4E70\u7684\u79EF\u5206\u957F\u671F\u6709\u6548\u3002</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? " \u5F53\u524D\u663E\u793A\u4E0A\u6B21\u8BFB\u53D6\u7684\u4F59\u989D\u3002" : ""}</div>` : ""}
-        <section class="credits-overview"><div><p class="eyebrow">${debt ? "\u8D26\u53F7\u6B20\u6B3E" : "\u79EF\u5206\u4F59\u989D"}</p><div class="credits-total">${balance ? esc(amount(debt ? balance.debt_credit_atoms : balance.balance_credit_atoms)) : "\u2014"}<span>\u70B9</span></div>
-        <p class="muted">${debt ? "\u5145\u503C\u540E\u5148\u62B5\u6263\u6B20\u6B3E\uFF1B\u4F59\u989D\u6062\u590D\u4E3A\u6B63\u624D\u53EF\u4F7F\u7528\u5E73\u53F0 Provider\u3002" : balance?.execution_slot_state === "held" ? "\u5E73\u53F0 Provider \u5F53\u524D\u8C03\u7528\u5C1A\u672A\u5B8C\u6210\uFF0C\u7B49\u5F85\u7ED3\u679C\u6216\u6838\u5BF9\u3002" : balance && creditAtoms(balance.balance_credit_atoms) === 0n ? "\u79EF\u5206\u4E0D\u8DB3\uFF0C\u5E73\u53F0 Provider \u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u5145\u503C\u540E\u518D\u53D1\u8D77\u8BF7\u6C42\u3002" : "\u79EF\u5206\u7531\u5F53\u524D\u8D26\u53F7\u4E0B\u7684\u76D2\u5B50\u5171\u4EAB\u3002"}</p></div>
+        <section class="credits-overview"><div><p class="eyebrow">\u79EF\u5206\u4F59\u989D</p><div class="credits-total">${balance ? esc(amount(balance.balance_credit_atoms)) : "\u2014"}<span>\u70B9</span></div>
+        <p class="muted">\u79EF\u5206\u5F52\u5F53\u524D\u4E07\u8C61\u8D26\u53F7\u6240\u6709\uFF0C\u8DE8\u8BBE\u5907\u5171\u4EAB\u3002</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">\u8D2D\u4E70\u79EF\u5206</button>${pendingOrder(order) || intent ? "<p>\u6709\u4E00\u7B14\u8D2D\u4E70\u6B63\u5728\u5904\u7406\u4E2D\uFF0C\u70B9\u51FB\u7EE7\u7EED\u67E5\u770B\u3002</p>" : ""}</div></section>
-        <p class="credits-hint">\u4EC5\u5E73\u53F0 Provider \u7684\u6A21\u578B\u8C03\u7528\u6D88\u8017\u79EF\u5206\uFF0CBYOK \u548C\u672C\u5730\u6A21\u578B\u4E0D\u4F7F\u7528\u6B64\u79EF\u5206\u3002</p>
+        <p class="credits-hint">\u4ED8\u6B3E\u540E\u8BF7\u7B49\u5F85\u79EF\u5206\u5230\u8D26\uFF0C\u53EF\u5728\u8D2D\u4E70\u5F39\u6846\u4E2D\u67E5\u770B\u5904\u7406\u72B6\u6001\u3002</p>
       </div>${dialog()}`;
       }
     };

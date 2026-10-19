@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -15,6 +16,7 @@ from langgraph.types import Command
 logger = logging.getLogger(__name__)
 
 _READ_FILE_TOOL = "read_file"
+_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpeg", ".mpg"})
 _BLOCKED_EXTENSIONS = frozenset(
     {
         ".pdf",
@@ -78,6 +80,13 @@ def read_file_block_reason(path: str) -> str | None:
     if not path:
         return None
     ext = _extension(path)
+    if ext in _VIDEO_EXTENSIONS:
+        return (
+            f"read_file blocked for binary video `{path}`. "
+            "Do not dump or base64-encode video into model context. "
+            "Use a configured video sampling/understanding tool (publisher_sample_video when available). "
+            "If no suitable tool or vision model is available, report that video analysis is unavailable."
+        )
     if ext == ".pdf":
         return (
             f"read_file blocked for binary PDF `{path}`. "
@@ -98,6 +107,45 @@ def read_file_block_reason(path: str) -> str | None:
 
 class BinaryReadGuardMiddleware(AgentMiddleware[Any, Any]):
     """Reject read_file on PDF/Office inbound attachments before bytes hit context."""
+
+    inherit_to_subagents = True
+
+    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        """Recover old checkpoints before summarization can see serialized video."""
+        updates = []
+        for message in state.get("messages", []):
+            if not isinstance(message, ToolMessage):
+                continue
+            content = message.content
+            if isinstance(content, str):
+                # read_file serializes unsupported media blocks as JSON text.
+                if '"base64"' not in content or '"video"' not in content:
+                    continue
+                try:
+                    content = json.loads(content)
+                except (ValueError, TypeError):
+                    continue
+            if not isinstance(content, list):
+                continue
+            replaced = False
+            safe: list[Any] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "video" and block.get("base64"):
+                    safe.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                "Binary video omitted from model context. The original workspace file is unchanged. "
+                                "Use a configured video sampling/understanding tool; never infer video content from base64."
+                            ),
+                        }
+                    )
+                    replaced = True
+                else:
+                    safe.append(block)
+            if replaced:
+                updates.append(message.model_copy(update={"content": safe}))
+        return {"messages": updates} if updates else None
 
     async def awrap_tool_call(
         self,

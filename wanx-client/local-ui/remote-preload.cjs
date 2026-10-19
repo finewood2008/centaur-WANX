@@ -95,6 +95,7 @@ const actions = {
     ipcRenderer.invoke("wanx-client:login-password", {
       phone: input?.username,
       password: input?.password,
+      remember: input?.remember,
     }),
   "auth.send-code": (input) =>
     ipcRenderer.invoke("wanx-client:send-registration-code", { phone: input?.username }),
@@ -108,6 +109,7 @@ const actions = {
   "auth.change-password": (input) =>
     ipcRenderer.invoke("wanx-client:change-password", { code: input?.code, password: input?.password }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
+  "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
@@ -180,6 +182,7 @@ contextBridge.exposeInMainWorld(
   "wanxClient",
   Object.freeze({
     getLocalState,
+    getRememberedLogin: () => ipcRenderer.invoke("wanx-client:remembered-login-get"),
     action,
     async uploadDroppedFiles(files, input = {}) {
       try {

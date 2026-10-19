@@ -45,6 +45,7 @@ dependencies = [
     "pypinyin>=0.53",
     "openpyxl>=3.1",
     "xlrd>=2.0.1",
+    "deepagents[video]==0.7.9",
 ]
 
 [project.optional-dependencies]

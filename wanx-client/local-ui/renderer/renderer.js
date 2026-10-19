@@ -396,6 +396,7 @@ function authView() {
           <label for="account-password">${reset ? "新密码" : "密码"}</label>
           <input id="account-password" name="password" type="password" required autocomplete="${newPassword ? "new-password" : "current-password"}" placeholder="${newPassword ? "设置 8–72 字节的新密码" : "输入密码"}" />
           ${newPassword ? passwordFields("account", reset ? "send-reset-code" : "send-registration-code", reset ? resetResendAt : resendAt) : ""}
+          ${!newPassword ? `<label class="remember-login"><input type="checkbox" name="remember" checked ${busy ? "disabled" : ""} />记住账号密码</label>` : ""}
           <div data-auth-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div>
           <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? authBusyLabel() : authSubmitLabel()}</button>
         </form>
@@ -1158,6 +1159,32 @@ window.addEventListener?.("pointercancel", finishInteraction);
 window.addEventListener?.("keyup", finishInteraction);
 window.addEventListener?.("blur", finishInteraction);
 
+async function fillRememberedLogin(form) {
+  if (!form?.elements) return;
+  form.dataset.rememberLoad = "pending";
+  const edited = () => { form.dataset.edited = "true"; };
+  form.addEventListener("input", edited, { once: true });
+  form.addEventListener("change", edited, { once: true });
+  try {
+    const saved = await window.wanxClient.getRememberedLogin();
+    if (app.querySelector('[data-form="auth"]') !== form) return;
+    if (busy) { delete form.dataset.rememberLoad; return; }
+    form.dataset.rememberLoad = "done";
+    if (form.dataset.edited) return;
+    form.elements.remember.checked = saved.remember;
+    if (saved.phone && saved.password) {
+      form.elements.username.value = saved.phone;
+      form.elements.password.value = saved.password;
+      authUsername = saved.phone;
+    }
+  } catch (error) {
+    form.dataset.rememberLoad = "done";
+    if (app.querySelector('[data-form="auth"]') !== form) return;
+    notice = operationErrorMessage(error);
+    render(currentState);
+  }
+}
+
 function render(state) {
   const auth = state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
   const previousAuth = app.querySelector?.('[data-form="auth"]');
@@ -1269,6 +1296,11 @@ function render(state) {
 }
 
 function syncFormState() {
+  if (authMode === "login") {
+    const form = app.querySelector?.('[data-form="auth"]');
+    if (form?.elements?.remember) form.elements.remember.disabled = busy;
+    if (!busy && !form?.dataset.rememberLoad) void fillRememberedLogin(form);
+  }
   updateResendButton();
   updatePasswordCodeButtons();
   const authNotice = app.querySelector?.('[data-form="auth"]')?.querySelector('[data-auth-notice]');
@@ -1771,7 +1803,11 @@ function selectWifi(key) {
   const hidden = form.querySelector('[name="hidden"]'); if (hidden) hidden.checked = false;
   updateWifiPicker();
 }
-app.addEventListener("change", (event) => {
+app.addEventListener("change", async (event) => {
+  if (event.target.name === "remember" && !event.target.checked && !busy) {
+    await run("auth.forget-login");
+    return;
+  }
   if (event.target.dataset.input === "wifi-network") selectWifi(event.target.value);
   if (event.target.name === "security") updateWifiPicker();
   if (event.target.dataset.input === "pending-device" && pendingSelection) { pendingSelection.deviceId = event.target.value; render(currentState); }
@@ -1871,7 +1907,7 @@ app.addEventListener("submit", async (event) => {
   else if (authMode !== "login" && validateNewPassword(data)) notice = validateNewPassword(data);
   else {
     const reset = authMode === "reset";
-    const result = await run(reset ? "auth.reset-password" : authMode === "register" ? "auth.register" : "auth.login", { username: authUsername, password: data.password, ...(authMode !== "login" ? { code: data.code } : {}) });
+    const result = await run(reset ? "auth.reset-password" : authMode === "register" ? "auth.register" : "auth.login", { username: authUsername, password: data.password, ...(authMode !== "login" ? { code: data.code } : { remember: data.remember === "on" }) });
     if (reset && result) { authMode = "login"; codeSent = true; notice = "密码重置成功，请使用新密码登录。"; render(currentState); }
     return;
   }

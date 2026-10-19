@@ -118,6 +118,7 @@ export function createAccount({
   let passwordUpdate = null;
   let vault = { version: 2, baseURL: base.href, accounts: {}, active: null };
   let loaded = false;
+  let loading = null;
   let state = {
     phase: "signed_out",
     accountId: null,
@@ -145,12 +146,13 @@ export function createAccount({
   const assert = (generation) => {
     if (closed || generation !== epoch) throw failure("ACCOUNT_CANCELLED");
   };
-  const persist = (value) => {
+  const persist = (value, patch = {}) => {
     const generation = epoch;
     const next = writes.then(async () => {
       if (generation !== epoch) return;
       const candidate = {
         ...vault,
+        ...patch,
         accounts: { ...vault.accounts },
         active: value?.session
           ? { phone: value.phone, session: value.session }
@@ -165,8 +167,10 @@ export function createAccount({
   };
   async function loadVault(generation) {
     if (loaded) return;
-    const saved = await store.load();
+    loading ??= store.load().finally(() => { loading = null; });
+    const saved = await loading;
     assert(generation);
+    if (loaded) return;
     if (saved) {
       if (
         saved.version !== 2 ||
@@ -569,7 +573,11 @@ export function createAccount({
         identity,
         session: sessionFrom(data, identity),
       };
-      await persist(next);
+      await persist(next, mode === "password" ? {
+        rememberedLogin: input.remember === true
+          ? { remember: true, phone: input.phone, password: input.password }
+          : { remember: false },
+      } : {});
       assert(generation);
       record = next;
       return publish({
@@ -619,15 +627,20 @@ export function createAccount({
     // Password reset revokes every account session. Drain this request before
     // issuing a new login, even if the user signs out while it is in flight.
     const update = (async () => {
+      await loadVault(generation);
       await wire({ method: "POST", path: "/app-api/auth/password/reset",
         body: { phone, code: input.code, password: input.password }, authenticated: false }, generation, null, true);
+      const rememberedPatch = vault.rememberedLogin?.phone === phone
+        ? { rememberedLogin: { remember: true } } : {};
       if (authenticated && !closed && generation === epoch) {
         cancel();
         record = null;
-        const cleared = persist(null);
+        const cleared = persist(null, rememberedPatch);
         publish({ phase: "signed_out", accountId: null, clientId: null, devices: [],
           reason: "password_reset", logoutPending: false });
         await cleared;
+      } else if (!closed && generation === epoch && rememberedPatch.rememberedLogin) {
+        await persist(record, rememberedPatch);
       }
       return { passwordReset: true };
     })();
@@ -721,6 +734,23 @@ export function createAccount({
           }
         : null,
     loginPassword: (input) => login(input, "password"),
+    async getRememberedLogin() {
+      const generation = epoch;
+      await writes;
+      await loadVault(generation);
+      assert(generation);
+      const saved = vault.rememberedLogin;
+      return saved?.remember === true
+        ? { remember: true, phone: saved.phone, password: saved.password }
+        : { remember: saved?.remember !== false };
+    },
+    async forgetRememberedLogin() {
+      const generation = epoch;
+      await writes;
+      await loadVault(generation);
+      assert(generation);
+      await persist(record, { rememberedLogin: { remember: false } });
+    },
     loginSMS: (input) => login(input, "sms"),
     register: (input) => login(input, "register"),
     sendResetCode: (input) => sendPasswordCode(input?.phone, false),

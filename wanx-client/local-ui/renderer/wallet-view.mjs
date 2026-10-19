@@ -44,7 +44,11 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   function load() {
     try {
       const value = JSON.parse(storage.getItem(key()) || 'null');
-      if (value && typeof value.purchase_intent_id === 'string' && ((typeof value.product_id === 'string' && typeof value.product_version === 'string') || [5000, 10000, 20000].includes(value.amount_fen))) return value;
+      if (value && typeof value.purchase_intent_id === 'string' && (
+        (typeof value.order_id === 'string' && typeof value.close_intent_id === 'string') ||
+        (typeof value.product_id === 'string' && typeof value.product_version === 'string') ||
+        [5000, 10000, 20000].includes(value.amount_fen)
+      )) return value;
     } catch { /* No new purchase is sent until a durable write succeeds. */ }
     return null;
   }
@@ -228,7 +232,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     refresh,
     paymentImage,
     isOpen: () => dialogOpen,
-    label: () => balance ? `${creditAtoms(balance.balance_credit_atoms) < 0n ? '欠款 ' : ''}${amount(balance.balance_credit_atoms)} 点` : loading ? '读取中…' : '暂不可用',
+    label: () => balance ? `${amount(balance.balance_credit_atoms)} 点` : loading ? '读取中…' : '暂不可用',
     async action(action, dataset = {}) {
       if (action === 'credits-open') { dialogOpen = true; notify(); return; }
       if (action === 'credits-dismiss') { dialogOpen = false; notify(); return; }
@@ -243,14 +247,13 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       if (action === 'credits-close-order') return close();
     },
     render() {
-      const debt = balance && creditAtoms(balance.balance_credit_atoms) < 0n;
       return `<div class="page-content credits-page" ${dialogOpen ? 'inert' : ''}>
-        <div class="page-heading"><div><h2>账号积分</h2><p class="muted">用于平台模型服务，充值积分长期有效。</p></div></div>
+        <div class="page-heading"><div><h2>账号积分</h2><p class="muted">查看账号余额，购买的积分长期有效。</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? ' 当前显示上次读取的余额。' : ''}</div>` : ''}
-        <section class="credits-overview"><div><p class="eyebrow">${debt ? '账号欠款' : '积分余额'}</p><div class="credits-total">${balance ? esc(amount(debt ? balance.debt_credit_atoms : balance.balance_credit_atoms)) : '—'}<span>点</span></div>
-        <p class="muted">${debt ? '充值后先抵扣欠款；余额恢复为正才可使用平台 Provider。' : balance?.execution_slot_state === 'held' ? '平台 Provider 当前调用尚未完成，等待结果或核对。' : balance && creditAtoms(balance.balance_credit_atoms) === 0n ? '积分不足，平台 Provider 暂不可用，请充值后再发起请求。' : '积分由当前账号下的盒子共享。'}</p></div>
+        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${balance ? esc(amount(balance.balance_credit_atoms)) : '—'}<span>点</span></div>
+        <p class="muted">积分归当前万象账号所有，跨设备共享。</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">购买积分</button>${pendingOrder(order) || intent ? '<p>有一笔购买正在处理中，点击继续查看。</p>' : ''}</div></section>
-        <p class="credits-hint">仅平台 Provider 的模型调用消耗积分，BYOK 和本地模型不使用此积分。</p>
+        <p class="credits-hint">付款后请等待积分到账，可在购买弹框中查看处理状态。</p>
       </div>${dialog()}`;
     },
   };
