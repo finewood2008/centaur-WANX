@@ -335,6 +335,7 @@ def use_v3(catalog, state):
     provider = state["value"]["providers"][0]
     provider.pop("allowedProducts")
     provider.update(
+        providerId="qeetoken",
         credentialId="wc_" + "a" * 48,
         credentialGeneration="1",
         credentialExpiresAt=stamp(state["now"] + 300),
@@ -342,6 +343,51 @@ def use_v3(catalog, state):
         billingMode="account_balance",
         allowedModels=[],
     )
+
+
+@pytest.mark.parametrize("ready", [True, False])
+async def test_v3_custom_providers_coexist_and_ack_disabled_rows(setup, ready):
+    catalog, state = setup
+    custom = copy.deepcopy(state["value"]["providers"][0])
+    custom["allowedModels"] = ["custom-model"]
+    use_v3(catalog, state)
+    if not ready:
+        state["value"]["modelAccessState"] = "provisioning"
+        state["value"]["providers"][0].update(
+            enabled=False,
+            protocol=None,
+            baseUrl=None,
+            apiKey=None,
+        )
+    state["value"]["providers"].append(custom)
+    loaded = await catalog.refresh()
+    assert loaded["providers"][-1]["allowedModels"] == ["custom-model"]
+    await catalog.acknowledge_applied()
+    assert len(state["ack"]["providers"]) == 2
+    custom.update(
+        configVersion="2",
+        enabled=False,
+        protocol=None,
+        baseUrl=None,
+        apiKey=None,
+        allowedProducts=[],
+        allowedModels=[],
+    )
+    assert len((await catalog.refresh())["providers"]) == int(ready)
+    await catalog.acknowledge_applied()
+    assert state["ack"]["providers"][-1] == {"providerId": "company", "configVersion": "2"}
+
+
+async def test_v3_accepts_qeetoken_plus_full_custom_capacity(setup):
+    catalog, state = setup
+    custom = copy.deepcopy(state["value"]["providers"][0])
+    use_v3(catalog, state)
+    state["value"]["providers"].extend(
+        {**custom, "providerId": f"custom-{index}"} for index in range(32)
+    )
+    assert len((await catalog.refresh())["providers"]) == 33
+    await catalog.acknowledge_applied()
+    assert len(state["ack"]["providers"]) == 33
 
 
 async def test_v3_ack_follows_application_and_renewal_keeps_config_version(setup):

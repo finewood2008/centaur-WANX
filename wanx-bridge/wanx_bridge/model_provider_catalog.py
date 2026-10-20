@@ -224,6 +224,7 @@ class ModelProviderCatalog:
         )
         self.lock = asyncio.Lock()
         self.snapshot: dict[str, Any] | None = None
+        self.applied_versions: list[dict[str, str]] = []
         self.deadline = 0.0
         self.history_identity: tuple[Any, ...] | None = None
         self.binding: dict[str, Any] | None = None
@@ -232,6 +233,7 @@ class ModelProviderCatalog:
 
     def clear(self) -> None:
         self.snapshot = None
+        self.applied_versions = []
         self.deadline = 0.0
 
     def active(self) -> dict[str, Any]:
@@ -335,11 +337,12 @@ class ModelProviderCatalog:
             issued <= now + 30 and 0 < expires - issued <= 300 and expires > now,
             "MODEL_PROVIDER_LEASE_EXPIRED",
         )
-        require(type(value["providers"]) is list and len(value["providers"]) <= 32)
+        limit = 33 if self.config.protocol_version == 3 else 32
+        require(type(value["providers"]) is list and len(value["providers"]) <= limit)
         current: dict[str, tuple[int, bytes]] = {}
         for item in value["providers"]:
             stable_item = item
-            if self.config.protocol_version == 3:
+            if self.config.protocol_version == 3 and type(item) is dict and "billingMode" in item:
                 extra = {
                     "credentialId",
                     "credentialGeneration",
@@ -353,9 +356,11 @@ class ModelProviderCatalog:
                 )
                 _provider(
                     {k: v for k, v in item.items() if k not in extra}
-                    | {"allowedProducts": ["wanxiang", "zhijun"]}
+                    | {"allowedProducts": ["wanxiang", "zhijun"] if item["enabled"] else []}
                 )
-                require(item["billingMode"] == "account_balance")
+                require(
+                    item["providerId"] == "qeetoken" and item["billingMode"] == "account_balance"
+                )
                 for field in ("credentialGeneration", "profileRevision"):
                     require(
                         type(item[field]) is str
@@ -371,6 +376,8 @@ class ModelProviderCatalog:
                 stable_item = {k: v for k, v in item.items() if k != "credentialExpiresAt"}
             else:
                 _provider(item)
+                if self.config.protocol_version == 3:
+                    require(item["providerId"] != "qeetoken")
             require(item["providerId"] not in current)
             current[item["providerId"]] = (
                 int(item["configVersion"]),
@@ -458,6 +465,19 @@ class ModelProviderCatalog:
                     # separate per-product grant (including old zhijun-only rows).
                     "providers": [p for p in value["providers"] if p["enabled"]],
                 }
+                self.applied_versions = [
+                    {
+                        k: p[k]
+                        for k in (
+                            "providerId",
+                            "configVersion",
+                            "credentialGeneration",
+                            "profileRevision",
+                        )
+                        if k in p
+                    }
+                    for p in value["providers"]
+                ]
                 self.deadline = deadline
                 self.last_error = None
                 return self.active()
@@ -477,15 +497,7 @@ class ModelProviderCatalog:
         if self.config.protocol_version != 3:
             return
         value = self.active()
-        if value["modelAccessState"] != "ready":
-            return
-        versions = [
-            {
-                k: p[k]
-                for k in ("providerId", "configVersion", "credentialGeneration", "profileRevision")
-            }
-            for p in value["providers"]
-        ]
+        versions = self.applied_versions
         body = {
             "schemaVersion": 3,
             "status": "applied",
