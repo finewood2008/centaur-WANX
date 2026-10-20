@@ -2588,3 +2588,13 @@ test("box overview shows WANX-wide usage and the box public IP, never private or
   h.update({ ...state("ready", "ready", "box-102"), phase: "recovering" });
   assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|≥ 1\.0 KB/);
 });
+
+test("pending network cleanup explains server recovery instead of blaming the local network", async () => {
+  const s = state("unavailable", "unavailable");
+  s.platform.reason = "NETWORK_REVOCATION_PENDING";
+  const h = await harness(s);
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /网络会话清理中/);
+  assert.match(h.app.innerHTML, /完成后将自动重连/);
+  assert.doesNotMatch(h.app.innerHTML, /请检查本机网络后重试连接/);
+});

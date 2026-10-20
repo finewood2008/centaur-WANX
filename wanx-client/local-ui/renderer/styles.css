@@ -891,3 +891,8 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wallet-purchase-dialog :focus-visible { outline:2px solid var(--fn-color-brand); outline-offset:3px; }
 .credits-recharge { flex-direction:column; align-items:flex-end; }
 @media(max-width:650px) { .wallet-modal { padding:12px; } .wallet-purchase-dialog { padding:20px; max-height:calc(100dvh - 24px); } .wallet-products { gap:8px; } .wallet-product-points { font-size:20px; } .credits-page .credits-overview { grid-template-columns:1fr; } .credits-recharge { align-items:flex-start; } }
+
+.space-thumbnail { display: block; width: 72px; height: 72px; object-fit: contain; border-radius: 5px; pointer-events: none; filter: drop-shadow(0 2px 3px #382b261a); }
+.space-preview-mode[aria-pressed="true"] { background: #eee4d6; color: #87513b; border-radius: 5px; }
+.space-file-name strong, .space-dialog h2 { white-space: pre-wrap; }
+.space-dialog h2 { overflow-wrap: anywhere; }

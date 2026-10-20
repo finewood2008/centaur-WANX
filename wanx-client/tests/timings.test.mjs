@@ -91,3 +91,16 @@ test("box exchange failures retain fixed diagnostic codes and HTTP status", asyn
   assert.ok(rows.every(row => row.step === "box.exchange" && row.httpStatus === 503));
   assert.doesNotMatch(contents, /SECRET|backend detail/);
 });
+
+test('transfer diagnostics retain correlation and retry evidence without paths or credentials', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wanx-transfer-log-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'connection.jsonl'), recorder = createTimingRecorder({ filePath });
+  recorder.transfer({ action: 'interrupted', taskId: 'a'.repeat(32), batchId: 'b'.repeat(32), phase: 'retrying', offset: 512, size: 1024, attempt: 2, errorCode: 'ECONNRESET', name: 'SECRET.txt', localPath: '/SECRET', token: 'SECRET' });
+  recorder.transfer({ action: 'request', stage: 'chunk', durationMs: 180, errorCode: 'SECRET', taskId: 'SECRET' });
+  recorder.transfer({ action: 'SECRET' }); await recorder.flush();
+  const contents = await readFile(filePath, 'utf8'); assert.doesNotMatch(contents, /SECRET/);
+  const rows = contents.trim().split('\n').map(JSON.parse);
+  assert.equal(rows.length, 2); assert.equal(rows[0].taskId, 'a'.repeat(32)); assert.equal(rows[0].errorCode, 'ECONNRESET');
+  assert.equal(rows[1].durationMs, 180); assert.equal(rows[1].errorCode, 'UNKNOWN_ERROR');
+});

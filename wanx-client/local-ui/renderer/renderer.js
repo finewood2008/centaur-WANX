@@ -293,6 +293,10 @@ function networkStatus() {
   if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
   if (currentState.network?.enabled === false) return { label: "网络已关闭", detail: "开启网络后即可连接盒子。" };
   if (currentState.networkReady) return { label: "网络已连接", detail: "可以连接盒子并使用应用。" };
+  if (currentState.platform?.reason === "NETWORK_REVOCATION_PENDING")
+    return { label: "网络会话清理中", detail: "服务器正在清理旧连接，完成后将自动重连；传输会保留进度等待恢复。" };
+  if (currentState.platform?.reason === "NETWORK_LEASE_EXPIRED")
+    return { label: "网络授权已到期", detail: "请重试连接，重新获取授权后继续传输。" };
   if (currentState.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(currentState.network?.phase))
     return { label: "网络暂不可用", detail: "请检查本机网络后重试连接。" };
   return { label: "网络连接中", detail: "正在准备与盒子的连接。" };

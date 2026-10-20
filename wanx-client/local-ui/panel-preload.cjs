@@ -13,7 +13,8 @@ contextBridge.exposeInMainWorld("wanxPanel", {
       if (!Array.isArray(files) || !files.length) throw new Error("SPACE_INVALID_DROP");
       const paths = files.map(file => webUtils.getPathForFile(file));
       if (paths.some(path => !path)) throw new Error("SPACE_INVALID_DROP");
-      await ipcRenderer.invoke("wanx-client:panel-space-upload", { paths, scope });
+      const value = await ipcRenderer.invoke("wanx-client:panel-space-upload", { paths, names: files.map(file => file.name), scope });
+      if (value?.uploadRejection) return { ok: false, ...value.uploadRejection };
       return { ok: true };
     } catch (error) {
       const code = String(error?.message || "").match(/\b(?:SPACE_[A-Z_]+|BOX_CONNECTION_REQUIRED|ACCOUNT_LOGIN_REQUIRED|NETWORK_NOT_READY|SECURE_STORAGE_[A-Z_]+)\b/)?.[0] || "SPACE_REQUEST_FAILED";
