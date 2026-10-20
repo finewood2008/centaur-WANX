@@ -325,3 +325,55 @@ def test_config_resource_defaults_explicit_override_and_disabled(monkeypatch, tm
     monkeypatch.setenv("WANX_MODEL_PROVIDERS_API_BASE", "http://localhost")
     with pytest.raises(BridgeAuthError, match="MODEL_PROVIDER_LOCAL_CONFIG_INVALID"):
         ModelProviderConfig.from_env()
+
+
+def use_v3(catalog, state):
+    from dataclasses import replace
+
+    catalog.config = replace(catalog.config, protocol_version=3)
+    state["value"].update(schemaVersion=3, modelAccessState="ready")
+    provider = state["value"]["providers"][0]
+    provider.pop("allowedProducts")
+    provider.update(
+        credentialId="wc_" + "a" * 48,
+        credentialGeneration="1",
+        credentialExpiresAt=stamp(state["now"] + 300),
+        profileRevision="1",
+        billingMode="account_balance",
+        allowedModels=[],
+    )
+
+
+async def test_v3_ack_follows_application_and_renewal_keeps_config_version(setup):
+    catalog, state = setup
+    use_v3(catalog, state)
+    await catalog.refresh()
+    assert len(state["requests"]) == 1 and "ack" not in state
+    assert state["requests"][0].headers["X-Nexus-Provisioning-Version"] == "3"
+    await catalog.acknowledge_applied()
+    assert state["ack"]["status"] == "applied"
+    assert state["ack"]["providers"][0]["credentialGeneration"] == "1"
+    state["now"] += 60
+    state["value"].update(issuedAt=stamp(state["now"]), expiresAt=stamp(state["now"] + 300))
+    state["value"]["providers"][0]["credentialExpiresAt"] = stamp(state["now"] + 300)
+    await catalog.refresh()
+    assert catalog.active()["providers"][0]["configVersion"] == "1"
+    await catalog.close()
+
+
+@pytest.mark.parametrize("change", ["expiry", "key", "admin_model_policy"])
+async def test_v3_rejects_unsafe_credentials(setup, change):
+    catalog, state = setup
+    use_v3(catalog, state)
+    await catalog.refresh()
+    item = state["value"]["providers"][0]
+    if change == "expiry":
+        item["credentialExpiresAt"] = stamp(state["now"] + 299)
+    elif change == "key":
+        item["apiKey"] = "different-key-without-version-change"
+    else:
+        item["allowedModels"] = ["admin-override"]
+    with pytest.raises(BridgeAuthError):
+        await catalog.refresh()
+    assert catalog.snapshot is None
+    await catalog.close()

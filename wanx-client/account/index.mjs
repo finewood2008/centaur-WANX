@@ -372,6 +372,8 @@ export function createAccount({
         const explicitSupportCode = supportRoute && ["OWNER_REQUIRED", "OWNER_CHANGED", "DEVICE_NOT_FOUND", "DEVICE_DISABLED",
           "SUPPORT_REQUEST_NOT_FOUND", "REQUEST_DIGEST_MISMATCH", "REQUEST_EXPIRED", "DECISION_CONFLICT", "SUPPORT_NOT_ACTIVE",
           "SUPPORT_AUTHORIZATION_BUSY"].includes(remoteCode);
+        const explicitConsoleClaimCode = path === "/app-api/device-console-claims/redeem" &&
+          typeof remoteCode === "string" && /^(CONSOLE_CLAIM_[A-Z0-9_]{1,64}|OWNER_ALREADY_CHANGED|IDEMPOTENCY_CONFLICT)$/.test(remoteCode);
         const explicitNetworkCode =
           typeof remoteCode === "string" &&
           /^NETWORK_[A-Z0-9_]{1,64}$/.test(remoteCode);
@@ -385,7 +387,8 @@ export function createAccount({
           "EVENT_SEQUENCE_INVALID", "RELEASE_UNAVAILABLE", "UPDATE_NOT_CONFIGURED",
         ].includes(remoteCode);
         const code =
-          explicitSupportCode ? remoteCode
+          explicitConsoleClaimCode ? remoteCode
+            : explicitSupportCode ? remoteCode
             : explicitUpgradeCode ? remoteCode
             : missingUpgradeRoute ? "UPDATE_SERVICE_NOT_DEPLOYED"
             : path === "/app-api/auth/sms/send" && payload.code === 602
@@ -770,6 +773,16 @@ export function createAccount({
         epoch,
       );
       return { expiresIn: Number(result?.expiresIn) || 300 };
+    },
+    async redeemConsoleClaim({ claimCode, clientAttemptId } = {}) {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (typeof claimCode !== "string" || !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(claimCode) ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientAttemptId || ""))
+        throw failure("ACCOUNT_INVALID_INPUT");
+      const data = await request({ method: "POST", path: "/app-api/device-console-claims/redeem",
+        body: { claimCode, clientAttemptId }, idempotencyKey: clientAttemptId });
+      if (!ownershipId(data?.deviceId) || data.ownership !== "claimed") throw failure("ACCOUNT_INVALID_RESPONSE");
+      return { deviceId: data.deviceId, ownership: data.ownership };
     },
     async listOwnershipTransfers() {
       const data = await request({ path: "/app-api/ownership/transfers" });

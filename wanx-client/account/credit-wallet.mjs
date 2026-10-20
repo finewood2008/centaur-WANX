@@ -13,7 +13,8 @@ const ERROR_STATUS = {
   IDEMPOTENCY_CONFLICT: 409, ORDER_IN_PROGRESS: 409, ORDER_ALREADY_PAID: 409, REVISION_CONFLICT: 409,
   CALL_STATE_CONFLICT: 409, USAGE_CONFLICT: 409, ACCOUNTING_RANGE_EXCEEDED: 409, CONFIGURATION_LOCKED: 409,
   CONFIGURATION_INVALID: 422, RATE_LIMITED: 429, CONTRACT_NOT_CONFIGURED: 503, SERVICE_UNAVAILABLE: 503,
-  INTERNAL_ERROR: 500,
+  INTERNAL_ERROR: 500, QEETOKEN_UNAVAILABLE: 503, QEETOKEN_SYNC_PENDING: 503,
+  QEETOKEN_MIGRATION_PENDING: 409, QEETOKEN_BILLING_REQUIRED: 409, QEETOKEN_FULFILLMENT_REQUIRED: 409,
 };
 
 export function decodeCreditEnvelope(payload, status) {
@@ -70,6 +71,7 @@ function resource(value) {
 }
 
 const filters = {
+  usage: ["before_sequence", "limit"],
   orders: ["active", "payment_state", "fulfillment_state", "review_state", "from", "to", "cursor", "limit"],
   entries: ["kind", "order_id", "call_id", "device_id", "model_ref", "from", "to", "through_ledger_sequence", "cursor", "limit"],
   calls: ["device_id", "model_ref", "turn_id", "from", "to", "call_state", "execution_state", "execution_slot_state", "cursor", "limit"],
@@ -92,6 +94,8 @@ export function createCreditWallet({ request }) {
   return Object.freeze({
     catalog: () => read("catalog"),
     balance: () => read("balance"),
+    wallet: () => read("wallet"),
+    usage: query => read("usage", query),
     orders: query => read("orders", query),
     entries: query => read("entries", query),
     calls: query => read("calls", query),

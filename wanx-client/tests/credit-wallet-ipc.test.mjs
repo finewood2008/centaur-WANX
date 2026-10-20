@@ -45,3 +45,21 @@ test("preload action retains wallet support ID and recovery order IDs", async ()
   assert.equal(result.request_id, "request-123");
   assert.equal(result.details.blocking_order_ids[0], "order-1");
 });
+
+test('QeeToken preload actions reach fixed wallet IPC channels', async () => {
+  let exposed; const calls = [];
+  vm.runInNewContext(await readFile(new URL('../local-ui/remote-preload.cjs', import.meta.url), 'utf8'), {
+    process: { platform: process.platform }, require: () => ({
+      contextBridge: { exposeInMainWorld: (name, api) => { if (name === 'wanxClient') exposed = api; } },
+      ipcRenderer: { on() {}, invoke: async (name, input) => {
+        if (name === 'wanx-client:get-state') return { account: { phase: 'authenticated' } };
+        calls.push([name, input]); return { ok: true, value: { schema_version: '1', request_id: 'qee', data: {} } };
+      } },
+    }),
+  });
+  assert.equal((await exposed.action('wallet.wallet')).ok, true);
+  assert.equal((await exposed.action('wallet.usage', { before_sequence: '2', limit: 20 })).ok, true);
+  assert.equal(calls[0][0], 'wanx-client:wallet-wallet');
+  assert.equal(calls[1][0], 'wanx-client:wallet-usage');
+  assert.equal(calls[1][1].before_sequence, '2');
+});

@@ -29,6 +29,8 @@ let ownershipTransfers = [];
 let ownershipRevision = 0;
 let transferRequest = null;
 let transferDeviceId = null;
+let consoleClaimAttempt = null;
+let consoleClaimNotice = null;
 let transferNotice = null;
 let transferResendAt = 0;
 let transferResendTimer;
@@ -282,7 +284,7 @@ function deviceCard(device) {
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
     <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
@@ -601,6 +603,9 @@ function boxesView() {
     ${maintenanceToolsView()}
     <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
     <section class="box-network" aria-label="连接设置"><div><h3>万象网络</h3><p class="muted ${busyFor("network.set-enabled") ? "activity-status" : ""}" role="status">${busyFor("network.set-enabled") ? activityLabel("正在切换网络…") : `${network.label} · ${network.detail}`}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" aria-busy="${busyFor("network.set-enabled")}" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
+    <section class="content-section" aria-label="使用认领码添加盒子"><h3>使用认领码添加盒子</h3><p class="muted">盒子已联网时，输入盒子控制台显示的认领码。未联网的盒子请先使用“发现新盒子”配网。</p>
+      <form data-form="console-claim"><label for="console-claim-code">盒子认领码</label><input id="console-claim-code" name="claimCode" required maxlength="20" autocomplete="off" placeholder="输入 10 或 20 位认领码" /><button class="button primary small" type="submit" ${busy ? "disabled" : ""}>${busyFor("devices.claim") ? "正在认领…" : "认领盒子"}</button></form>
+      ${consoleClaimNotice ? `<p role="status">${escapeHTML(consoleClaimNotice)}</p>` : ""}</section>
     ${ownershipView()}
     ${supportView.render()}
   </div></div>${confirmationView()}`;
@@ -609,7 +614,7 @@ function boxesView() {
 function ownershipView() {
   const device = currentState.devices?.find(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner"));
   const pending = ownershipTransfers.filter(item => item.state === "pending_target" && Date.parse(item.expiresAt) > Date.now());
-  return `<section hidden class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
+  return `<section class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
     <p class="muted">将盒子交给另一个万象账号。此操作保留盒内数据；需要清空交付时，请由管理员执行盒子清除。</p>
     ${transferNotice ? `<p role="status">${escapeHTML(transferNotice)}</p>` : ""}
     ${device ? `<form data-form="transfer" data-device-id="${escapeHTML(device.deviceId)}" class="auth-card transfer-form"><h3>转移 ${escapeHTML(device.name || device.displayName || device.deviceId)}</h3>
@@ -1212,7 +1217,8 @@ function render(state) {
   const scanAnimations = new Map(scanButton?.querySelector('.scan-spinner').getAnimations().map(animation => [animation.animationName, animation.currentTime]));
   const passwordForm = !auth && page === "settings" && passwordEditing ? app.querySelector?.('[data-form="password-change"]') : null;
   const profileForm = !auth && page === "profile" ? app.querySelector?.('[data-form="profile"]') : null;
-  const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm;
+  const claimForm = !auth && page === "boxes" && !transferForm ? app.querySelector?.('[data-form="console-claim"]') : null;
+  const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm || claimForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
   const walletFocus = walletDialog?.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
@@ -1261,7 +1267,7 @@ function render(state) {
     }
   }
   if (retainedForm) {
-    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : profileForm ? "profile" : "auth";
+    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : profileForm ? "profile" : claimForm ? "console-claim" : "auth";
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
@@ -1272,6 +1278,7 @@ function render(state) {
       submit.setAttribute("aria-busy", String(pending));
       if (authForm) submit.innerHTML = pending ? activityLabel(authBusyLabel()) : busy ? authBusyLabel() : authSubmitLabel();
       if (passwordForm) submit.innerHTML = pending ? activityLabel("正在修改…") : busy ? "处理中…" : "确认修改";
+      if (claimForm) submit.textContent = busyFor("devices.claim") ? "正在认领…" : "认领盒子";
       if (profileForm) submit.innerHTML = pending ? activityLabel("正在保存…") : "保存资料";
     }
     focused?.focus({ preventScroll: true });
@@ -1330,6 +1337,14 @@ function setupErrorMessage(error) {
     DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，请联系设备管理员完成初始化。",
     CLAIM_STATUS_CHECKING: "正在核对盒子归属…",
     CLAIM_STATUS_UNAVAILABLE: "暂时无法核对盒子归属，请检查网络后重新选择盒子；如仍失败，请管理员检查账号服务版本。",
+    OWNER_ALREADY_CHANGED: "盒子归属已变化，请刷新设备列表并核对当前拥有者。",
+    IDEMPOTENCY_CONFLICT: "认领码已用于其他认领请求，请刷新设备列表核对结果。",
+    CONSOLE_CLAIM_NOT_FOUND: "认领码无效，请核对盒子控制台显示的认领码。",
+    CONSOLE_CLAIM_EXPIRED: "认领码已过期，请从盒子控制台获取新的认领码。",
+    CONSOLE_CLAIM_INACTIVE: "认领码已失效，请从盒子控制台重新发起。",
+    CONSOLE_CLAIM_DISABLED: "平台暂未启用认领码功能，请联系管理员。",
+    CONSOLE_CLAIM_RATE_LIMITED: "认领尝试过于频繁，请稍后重试。",
+    CONSOLE_CLAIM_CONFLICT: "认领状态已变化，请刷新设备列表后重试。",
     DEVICE_ALREADY_OWNED: "这台盒子已属于当前账号，无需再次认领。返回盒子列表即可连接或修改 Wi-Fi。",
     DEVICE_OWNED_BY_OTHER: "这台盒子已属于其他账号，需要原主人完成转移后才能认领。",
     LEGACY_BINDING_REVIEW_REQUIRED: "这台盒子保留旧版账号绑定，请联系管理员迁移归属，或完成重置后重新交付。",
@@ -1500,7 +1515,7 @@ async function run(action, input = {}) {
       if (action === "auth.send-reset-code") resetResendAt = Date.now() + 60000;
       else changeResendAt = Date.now() + 60000;
     }
-    failure = action.startsWith("provisioning.") ? setupErrorMessage(error) : action.startsWith("updates.") ? updateGuidance(error.message) : operationErrorMessage(error);
+    failure = action.startsWith("provisioning.") || action === "devices.claim" ? setupErrorMessage(error) : action.startsWith("updates.") ? updateGuidance(error.message) : operationErrorMessage(error);
     if (!isAppOperation && actionAccount === marketAccount) notice = failure;
     return null;
   } finally {
@@ -1865,6 +1880,25 @@ app.addEventListener("submit", async (event) => {
     if (result) { notice = "资料已保存在这台电脑。"; codeSent = true; render(currentState); }
     return;
   }
+  if (event.target.dataset.form === "console-claim") {
+    consoleClaimNotice = null;
+    const data = Object.fromEntries(new FormData(event.target));
+    const claimCode = String(data.claimCode || "").trim().toUpperCase();
+    if (!/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(claimCode)) {
+      consoleClaimNotice = "请输入 10 或 20 位有效认领码。"; render(currentState); return;
+    }
+    if (consoleClaimAttempt?.claimCode !== claimCode)
+      consoleClaimAttempt = { claimCode, clientAttemptId: crypto.randomUUID() };
+    const generation = marketGeneration;
+    const result = await run("devices.claim", consoleClaimAttempt);
+    if (result && generation === marketGeneration) {
+      consoleClaimAttempt = null;
+      app.querySelector?.('[data-form="console-claim"]')?.reset();
+      consoleClaimNotice = "盒子已认领，模型凭据将自动下发；请保持盒子联网并刷新设备状态。";
+      render(currentState);
+    }
+    return;
+  }
   if (event.target.dataset.form === "transfer") {
     event.preventDefault();
     const generation = marketGeneration;
@@ -1956,6 +1990,7 @@ function acceptRemoteState(state) {
     transferRequest = null;
     ++ownershipRevision;
     if (setupRequest) { setupRequest = null; busy = false; }
+    consoleClaimAttempt = null; consoleClaimNotice = null;
     ownershipTransfers = []; transferDeviceId = null; transferNotice = null; transferResendAt = 0;
     selection.reset();
     marketItems = [];

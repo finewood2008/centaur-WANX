@@ -1,3 +1,4 @@
+import { formatCreditAtoms } from "../account/credit-wallet.mjs";
 import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
 
@@ -149,6 +150,13 @@ export function registerControlActions({
   });
   register("panel-balance", () => creditsRead(async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (creditWallet) {
+      const summary = (await creditWallet.balance()).data;
+      const wallet = summary.billing_backend === "qeetoken" ? (await creditWallet.wallet()).data : summary;
+      const formatted = wallet.balance_credit_atoms == null ? null : formatCreditAtoms(wallet.balance_credit_atoms);
+      return { available_text: formatted ? (formatted.direction === "debt" && formatted.text === "<0.01" ? "-<0.01" : formatted.text) : null,
+        sync_state: wallet.sync_state || "synced" };
+    }
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
     const balance = await credits.balance();
     return { available: balance.available };
@@ -159,7 +167,7 @@ export function registerControlActions({
       return credits[method](input);
     }));
   }
-  for (const method of ["catalog", "balance", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+  for (const method of ["catalog", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
     if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
     register(`wallet-${method}`, async input => {
       try {
@@ -250,6 +258,11 @@ export function registerControlActions({
         ids.some(id => typeof id !== "string" || !/^centauros-(?:[0-9a-f]{24}|[0-9a-f]{32})$/.test(id)) ||
         new Set(ids).size !== ids.length) throw new Error("ACCOUNT_INVALID_INPUT");
     return client.lookupDeviceDiscovery([...ids]);
+  });
+  register("console-claim", (input) => {
+    if (!input || Object.keys(input).some(key => !["claimCode", "clientAttemptId"].includes(key)))
+      throw new Error("ACCOUNT_INVALID_INPUT");
+    return client.redeemConsoleClaim({ claimCode: input.claimCode, clientAttemptId: input.clientAttemptId });
   });
   register("ownership-list", () => client.listOwnershipTransfers());
   for (const method of ["current", "decide", "revoke"]) register(`support-${method}`, input => {

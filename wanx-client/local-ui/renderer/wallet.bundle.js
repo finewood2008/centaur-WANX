@@ -2144,7 +2144,7 @@
     let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
     let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
     let error = "", intent = null, qrImage = null, recoveryReady = false;
-    let selectedChannel = "alipay";
+    let selectedChannel = "alipay", remote = null, usage = [], nextUsage = null, usageLoading = false;
     const channels = () => catalog?.payment_channels?.filter((name) => ["alipay", "wechat"].includes(name)) ?? ["alipay"];
     const key = () => `wanx.credit.purchase.v1:${account}`;
     const data = (response) => {
@@ -2166,6 +2166,9 @@
       const code = cause?.code || cause?.message;
       const messages = {
         CONTRACT_NOT_CONFIGURED: "\u79EF\u5206\u670D\u52A1\u6682\u672A\u5F00\u653E\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002",
+        QEETOKEN_UNAVAILABLE: "\u4F59\u989D\u670D\u52A1\u6682\u4E0D\u53EF\u7528\uFF0C\u6B63\u5728\u91CD\u8BD5\u540C\u6B65\u3002",
+        QEETOKEN_MIGRATION_PENDING: "\u65E7\u8C03\u7528\u6B63\u5728\u7ED3\u7B97\uFF0C\u5B8C\u6210\u540E\u5C06\u540C\u6B65\u8D26\u53F7\u4F59\u989D\u3002",
+        QEETOKEN_SYNC_PENDING: "\u6D88\u8D39\u6D41\u6C34\u6B63\u5728\u540C\u6B65\uFF0C\u8BF7\u7A0D\u5019\u3002",
         CREDITS_SERVICE_UNAVAILABLE: "\u79EF\u5206\u63A5\u53E3\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u68C0\u67E5\u670D\u52A1\u90E8\u7F72\u3002",
         REVISION_CONFLICT: "\u5546\u54C1\u5DF2\u8C03\u6574\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u65B0\u9009\u62E9\u3002",
         ORDER_IN_PROGRESS: "\u8D26\u53F7\u5DF2\u6709\u8D2D\u4E70\u6D41\u7A0B\uFF0C\u6B63\u5728\u6062\u590D\u539F\u8BA2\u5355\u3002",
@@ -2228,11 +2231,11 @@
     function poll() {
       if (timer !== null) cancel(timer);
       timer = null;
-      if (identity && (pendingOrder(order) || intent || error || balance?.execution_slot_state === "held")) {
+      if (identity) {
         timer = schedule(() => {
           timer = null;
           void refresh();
-        }, error ? 3e4 : 5e3);
+        }, error || !pendingOrder(order) && !intent && !remote ? 3e4 : 5e3);
         timer?.unref?.();
       }
     }
@@ -2283,7 +2286,21 @@
         creditAtoms(b.balance_credit_atoms);
         creditAtoms(b.debt_credit_atoms);
         if (!Number.isSafeInteger(b.ledger_sequence) || b.ledger_sequence < 0) throw new Error("CREDITS_INVALID_RESPONSE");
+        let q = null, u = null;
+        if (b.billing_backend === "qeetoken") {
+          [q, u] = await Promise.all([read("wallet"), read("usage", { limit: 20 })]);
+          if (g !== generation) return;
+          validateWallet(q);
+          validateUsage(u);
+        }
         catalog = c;
+        if (!remote || !q || BigInt(q.remote_sequence) >= BigInt(remote.remote_sequence)) {
+          remote = q;
+          if (u) {
+            usage = u.items;
+            nextUsage = u.next_before_sequence;
+          }
+        }
         if (!pendingOrder(order) && !intent && !channels().includes(selectedChannel)) selectedChannel = channels()[0];
         if (!balance || b.ledger_sequence >= balance.ledger_sequence) balance = b;
       } catch (cause) {
@@ -2295,6 +2312,59 @@
           poll();
         }
       }
+    }
+    function validateWallet(q) {
+      if (q.account_id !== account || q.currency_rule_id !== "usd-credit-1-v1" || q.currency !== "USD" || q.currency_scale !== 8 || q.credit_scale !== 6 || q.usd_per_credit !== "1" || !["pending", "stale", "synced"].includes(q.sync_state) || !Number.isSafeInteger(q.pending_executions) || q.pending_executions < 0 || typeof q.remote_sequence !== "string" || !/^(0|[1-9][0-9]*)$/.test(q.remote_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+      if (q.sync_state === "pending") {
+        if (q.balance_credit_atoms !== null || q.balance_usd_atoms !== null) throw new Error("CREDITS_INVALID_RESPONSE");
+      } else {
+        creditAtoms(q.balance_credit_atoms);
+        creditAtoms(q.balance_usd_atoms);
+        creditAtoms(q.spent_usd_atoms);
+        if (!Number.isFinite(Date.parse(q.synced_at))) throw new Error("CREDITS_INVALID_RESPONSE");
+      }
+    }
+    function validateUsage(value) {
+      if (!Array.isArray(value.items) || value.items.length > 100 || value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+      for (const item of value.items) {
+        creditAtoms(item.debit_usd_atoms);
+        creditAtoms(item.debit_credit_atoms);
+        if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+      }
+    }
+    const displayedBalance = () => remote ? remote.balance_credit_atoms : balance?.billing_backend === "qeetoken" ? null : balance?.balance_credit_atoms;
+    const usd = (value) => {
+      const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
+      return `${atoms < 0n ? "-" : ""}${magnitude / 100000000n}.${String(magnitude % 100000000n).padStart(8, "0")}`;
+    };
+    const date = (value) => new Intl.DateTimeFormat("zh-CN", { timeZone: catalog?.timezone || "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(value));
+    async function loadUsage() {
+      if (!identity || usageLoading || !nextUsage) return;
+      const g = generation, cursor = nextUsage;
+      usageLoading = true;
+      try {
+        const value = await read("usage", { before_sequence: cursor, limit: 20 });
+        if (g !== generation || cursor !== nextUsage) return;
+        validateUsage(value);
+        usage.push(...value.items);
+        nextUsage = value.next_before_sequence;
+      } catch (cause) {
+        if (g === generation) error = message(cause);
+      } finally {
+        if (g === generation) {
+          usageLoading = false;
+          notify();
+        }
+      }
+    }
+    function remoteView() {
+      if (!remote) return "";
+      const state = remote.sync_state === "pending" ? "\u4F59\u989D\u521D\u59CB\u5316\u4E2D" : remote.sync_state === "stale" || error ? "\u663E\u793A\u4E0A\u6B21\u540C\u6B65\u4F59\u989D" : "\u4F59\u989D\u5DF2\u540C\u6B65";
+      return `<section aria-label="\u4F59\u989D\u540C\u6B65\u72B6\u6001"><p>${esc(state)}${remote.synced_at ? ` \xB7 ${esc(date(remote.synced_at))}` : ""}</p>
+      <p class="muted">1 USD = 1 \u79EF\u5206${remote.balance_usd_atoms !== null ? ` \xB7 \u4F59\u989D $${esc(usd(remote.balance_usd_atoms))} \xB7 \u7D2F\u8BA1\u6D88\u8017 $${esc(usd(remote.spent_usd_atoms))}` : ""}</p>
+      ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} \u7B14\u8C03\u7528\u6B63\u5728\u7ED3\u7B97\u6216\u6838\u5BF9\uFF0C\u6700\u7EC8\u6D88\u8017\u4EE5\u7ED3\u7B97\u7ED3\u679C\u4E3A\u51C6\u3002</p>` : ""}</section>
+      <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u8F93\u5165 / \u8F93\u51FA tokens</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td title="\u8D26\u672C\u53D8\u52A8 ${esc(exactPoints(item.debit_credit_atoms))} \u79EF\u5206">${esc(usd(item.debit_usd_atoms))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
+      ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? "disabled" : ""}>\u67E5\u770B\u66F4\u591A</button>` : ""}</section>`;
     }
     const products = () => catalog?.products?.length ? catalog.products : catalog?.tiers || [];
     const productKey = (product) => product.product_id || String(product.amount_fen);
@@ -2440,7 +2510,10 @@
         identity = value;
         generation++;
         account = value ? JSON.parse(value)[0] : null;
-        catalog = balance = order = qrImage = selectedAmount = null;
+        catalog = balance = order = qrImage = selectedAmount = remote = null;
+        usage = [];
+        nextUsage = null;
+        usageLoading = false;
         dialogOpen = loading = writing = recoveryReady = false;
         error = "";
         timer = null;
@@ -2452,7 +2525,7 @@
       refresh,
       paymentImage,
       isOpen: () => dialogOpen,
-      label: () => balance ? `${amount(balance.balance_credit_atoms)} \u70B9` : loading ? "\u8BFB\u53D6\u4E2D\u2026" : "\u6682\u4E0D\u53EF\u7528",
+      label: () => displayedBalance() != null ? `${amount(displayedBalance())} \u70B9` : loading ? "\u8BFB\u53D6\u4E2D\u2026" : "\u6682\u4E0D\u53EF\u7528",
       async action(action, dataset = {}) {
         if (action === "credits-open") {
           dialogOpen = true;
@@ -2465,6 +2538,7 @@
           return;
         }
         if (action === "credits-refresh") return refresh();
+        if (action === "credits-usage-more") return loadUsage();
         if (action === "credits-channel") {
           if (!writing && !loading && !pendingOrder(order) && !intent && channels().includes(dataset.channel)) {
             selectedChannel = dataset.channel;
@@ -2479,9 +2553,10 @@
         return `<div class="page-content credits-page" ${dialogOpen ? "inert" : ""}>
         <div class="page-heading"><div><h2>\u8D26\u53F7\u79EF\u5206</h2><p class="muted">\u67E5\u770B\u8D26\u53F7\u4F59\u989D\uFF0C\u8D2D\u4E70\u7684\u79EF\u5206\u957F\u671F\u6709\u6548\u3002</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? " \u5F53\u524D\u663E\u793A\u4E0A\u6B21\u8BFB\u53D6\u7684\u4F59\u989D\u3002" : ""}</div>` : ""}
-        <section class="credits-overview"><div><p class="eyebrow">\u79EF\u5206\u4F59\u989D</p><div class="credits-total">${balance ? esc(amount(balance.balance_credit_atoms)) : "\u2014"}<span>\u70B9</span></div>
+        <section class="credits-overview"><div><p class="eyebrow">\u79EF\u5206\u4F59\u989D</p><div class="credits-total">${displayedBalance() != null ? esc(remote ? exactPoints(displayedBalance()) : amount(displayedBalance())) : "\u2014"}<span>\u70B9</span></div>
         <p class="muted">\u79EF\u5206\u5F52\u5F53\u524D\u4E07\u8C61\u8D26\u53F7\u6240\u6709\uFF0C\u8DE8\u8BBE\u5907\u5171\u4EAB\u3002</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">\u8D2D\u4E70\u79EF\u5206</button>${pendingOrder(order) || intent ? "<p>\u6709\u4E00\u7B14\u8D2D\u4E70\u6B63\u5728\u5904\u7406\u4E2D\uFF0C\u70B9\u51FB\u7EE7\u7EED\u67E5\u770B\u3002</p>" : ""}</div></section>
+        ${remoteView()}
         <p class="credits-hint">\u4ED8\u6B3E\u540E\u8BF7\u7B49\u5F85\u79EF\u5206\u5230\u8D26\uFF0C\u53EF\u5728\u8D2D\u4E70\u5F39\u6846\u4E2D\u67E5\u770B\u5904\u7406\u72B6\u6001\u3002</p>
       </div>${dialog()}`;
       }
