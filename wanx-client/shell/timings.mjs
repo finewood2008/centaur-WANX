@@ -5,6 +5,7 @@ import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 // Codes are an allowlist, not a pattern: even a plausible code may contain a secret.
 const errorCodes = new Set([
   ...BOX_SESSION_ERROR_CODES,
+  "PLATFORM_SESSION_EXPIRED", "SPACE_RETRY_EXHAUSTED", "ENOENT", "ENOSPC", "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "SPACE_TRANSFER_FAILED", "SPACE_CONNECTION_TIMEOUT", "SPACE_CHUNK_STALLED", "SPACE_LOCAL_FILE_CHANGED", "SPACE_UPLOAD_OFFSET", "SPACE_UPLOAD_OFFSET_INVALID", "SPACE_CONTEXT_CHANGED", "SPACE_NETWORK_WAIT", "SPACE_PAUSED", "SECURE_STORAGE_WRITE_FAILED",
   "ACCOUNT_ACCESS_DENIED", "ACCOUNT_CANCELLED", "ACCOUNT_INVALID_RESPONSE",
   "ACCOUNT_INVALID_STORED_SESSION", "ACCOUNT_LOGIN_REQUIRED", "ACCOUNT_NETWORK_ERROR",
   "ACCOUNT_REDIRECT_REJECTED", "ACCOUNT_REQUEST_FAILED", "ACCOUNT_SESSION_EXPIRED",
@@ -47,6 +48,18 @@ export function createTimingRecorder({
       .catch(() => {}); // Diagnostic I/O must never break a connection.
   }
   return {
+    transfer(value) {
+      if (!["enqueued", "connection", "reconciled", "confirmed", "completed", "interrupted", "resumed", "paused", "request"].includes(value.action)) return;
+      const details = {};
+      for (const key of ["taskId", "batchId"]) if (/^[a-f0-9]{32}$/.test(value[key] || "")) details[key] = value[key];
+      for (const key of ["offset", "size", "attempt", "httpStatus", "durationMs", "requestBytes", "responseBytes"]) if (Number.isSafeInteger(value[key]) && value[key] >= 0) details[key] = value[key];
+      if (["queued", "checking", "running", "waiting", "retrying", "paused", "complete", "canceled"].includes(value.phase)) details.phase = value.phase;
+      if (["commit", "chunk", "reconcile"].includes(value.stage)) details.stage = value.stage;
+      if (["connecting", "sending", "awaiting_response", "receiving"].includes(value.transportPhase)) details.transportPhase = value.transportPhase;
+      if (typeof value.reusedSocket === "boolean") details.reusedSocket = value.reusedSocket;
+      if (value.errorCode) details.errorCode = safeCode(value.errorCode);
+      record("space.transfer", value.action, undefined, details);
+    },
     state(component, value) {
       if (!["network", "platform"].includes(component)) return;
       const state = {

@@ -1,6 +1,7 @@
 !ifndef BUILD_UNINSTALLER
 
 !include LogicLib.nsh
+!include "${PROJECT_DIR}\shell\installer-ui.nsh"
 
 ; The zip app package is unpacked by nsisunz, which cannot create paths beyond
 ; MAX_PATH. Reject a long destination before unpacking the payload.
@@ -36,6 +37,8 @@
 
 !macro customPageAfterChangeDir
   Page custom WanxPreflightPage
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW WanxInstallShow
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE WanxInstallLeave
 !macroend
 
 Function WanxExtractAclTool
@@ -79,6 +82,9 @@ Function WanxPreflightPage
 FunctionEnd
 
 !macro customInstall
+  ${IfNot} ${Silent}
+    !insertmacro MUI_HEADER_TEXT "正在完成安装" "正在验证组件与安装目录，请稍候。"
+  ${EndIf}
   Call WanxExtractAclTool
   nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\wanx-windows-install-acl.ps1" -Mode ProtectTree -Path "$INSTDIR"'
   Pop $0

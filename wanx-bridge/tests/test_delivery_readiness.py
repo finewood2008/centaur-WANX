@@ -10,6 +10,8 @@ import pytest
 
 from wanx_bridge import delivery_readiness as delivery
 
+pytest_plugins = ["test_upstream"]
+
 
 @pytest.fixture
 def root(tmp_path):
@@ -111,7 +113,13 @@ class Upstream:
         }
         if key == "ontology" or path == "/api/brainstorm/profile":
             return httpx.Response(
-                404, json={"error": {"code": "NOT_FOUND", "message": "private detail"}}
+                404,
+                json={
+                    "error": {
+                        "code": "AGENT_NOT_FOUND" if key == "ontology" else "NOT_FOUND",
+                        "message": "private detail",
+                    }
+                },
             )
         assert path in data, path
         return httpx.Response(200, json=data[path])
@@ -179,6 +187,53 @@ async def test_generic_404_is_not_running_contract_evidence(root, path):
     upstream.overrides[path] = (404, {"detail": "Not Found"})
     report = await inspect(root, upstream)
     assert report["serviceReady"] is False
+
+
+@pytest.mark.parametrize("mode", ["factory", "upgrade"])
+@pytest.mark.parametrize("code", ["NOT_FOUND", "AGENT_NOT_FOUND"])
+async def test_ontology_missing_agent_uses_native_structured_404(root, mode, code):
+    upstream = Upstream()
+    # Native current_user application access rejects a nonexistent probe Agent
+    # before the private ontology handler can return its generic NOT_FOUND.
+    upstream.overrides["ontology"] = (
+        404,
+        {"error": {"code": code, "message": "private agent detail"}},
+    )
+    report = await inspect(root, upstream, mode=mode)
+    assert report["serviceReady"] is True
+    assert "ONTOLOGY_API_UNAVAILABLE" not in blocked_codes(report)
+    assert "private" not in json.dumps(report)
+    assert [p for m, p in upstream.calls if m != "GET"] == ["/api/auth/login"]
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (401, {"error": {"code": "AGENT_NOT_FOUND"}}),
+        (403, {"error": {"code": "AGENT_NOT_FOUND"}}),
+        (200, {"error": {"code": "AGENT_NOT_FOUND"}}),
+        (500, {"error": {"code": "AGENT_NOT_FOUND"}}),
+        (404, {"detail": "Not Found"}),
+        (404, {"error": "AGENT_NOT_FOUND"}),
+        (404, {"error": {"message": "AGENT_NOT_FOUND"}}),
+        (404, {"error": {"code": "FORBIDDEN"}}),
+        (404, {"error": {"code": "UNKNOWN_ROUTE"}}),
+    ],
+)
+async def test_ontology_rejects_non_native_missing_agent_results(root, status, body):
+    upstream = Upstream()
+    upstream.overrides["ontology"] = (status, body)
+    report = await inspect(root, upstream, mode="upgrade")
+    assert report["serviceReady"] is False
+    assert "ONTOLOGY_API_UNAVAILABLE" in blocked_codes(report)
+
+
+async def test_agent_not_found_does_not_mask_other_missing_contracts(root):
+    upstream = Upstream()
+    upstream.overrides["/api/brainstorm/profile"] = (404, {"error": {"code": "AGENT_NOT_FOUND"}})
+    report = await inspect(root, upstream, mode="upgrade")
+    assert report["serviceReady"] is False
+    assert "BRAINSTORM_API_UNAVAILABLE" in blocked_codes(report)
 
 
 @pytest.mark.parametrize(
@@ -335,3 +390,35 @@ def test_cli_configuration_pending_does_not_request_ota_rollback(root, monkeypat
     monkeypatch.setattr(delivery, "inspect_delivery", pending)
     assert delivery.main(["--root", str(root), "--base-url", "http://127.0.0.1"]) == 0
     assert json.loads(capsys.readouterr().out) == {"serviceReady": True, "ready": False}
+
+
+async def test_real_native_ontology_missing_agent_probe(real_octop):
+    upstream, _server, credentials = real_octop
+
+    class NativeReadOnlyTransport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.native = httpx.ASGITransport(app=upstream._octop_app)
+            self.ontology_responses = []
+
+        async def handle_async_request(self, request):
+            assert request.method == "GET" or (
+                request.method == "POST" and request.url.path == "/api/auth/login"
+            )
+            response = await self.native.handle_async_request(request)
+            await response.aread()
+            if request.url.path.startswith("/api/agents/delivery-probe-"):
+                self.ontology_responses.append(
+                    (response.status_code, response.json().get("error", {}).get("code"))
+                )
+            return response
+
+    transport = NativeReadOnlyTransport()
+    report = await delivery.inspect_delivery(
+        credentials.parent,
+        "http://127.0.0.1:18088",
+        mode="upgrade",
+        credentials_file=credentials,
+        transport=transport,
+    )
+    assert transport.ontology_responses == [(404, "AGENT_NOT_FOUND")]
+    assert "ONTOLOGY_API_UNAVAILABLE" not in blocked_codes(report)

@@ -23,7 +23,9 @@ class OntologyProposal(BaseModel):
 
 
 class OntologyEvidence(BaseModel):
-    source_type: Literal["memory", "knowledge", "owner_declaration"] = "memory"
+    source_type: Literal[
+        "memory", "knowledge", "owner_declaration", "owner_document", "decision_review"
+    ] = "memory"
     atom_id: str = ""
     event_id: str = ""
     quote: str
@@ -35,6 +37,7 @@ class OntologyEvidence(BaseModel):
     document_id: str = ""
     filename: str = ""
     source_version: str = ""
+    authorization_id: str = ""
     start: int = 0
     end: int = 0
     available: bool = True
@@ -98,6 +101,11 @@ class OntologyRelation(BaseModel):
     version: str = "legacy"
     source_version: str = ""
     target_version: str = ""
+
+    resolution: Literal["", "change", "exception", "reject"] = ""
+    resolution_note: str = ""
+    resolved_at: str = ""
+    resolved_by: int | None = None
 
 
 ContextKind = Literal["person", "project", "role", "goal", "situation", "fact", "episode"]
@@ -176,6 +184,61 @@ class RolePreparation(BaseModel):
     new_candidates: int = 0
 
 
+class OwnerDocument(BaseModel):
+    version: str = "empty"
+    kb_id: str
+    document_id: str
+    filename: str = ""
+    source_version: str = ""
+    authorship: Literal["written", "spoken"] = "written"
+    active: bool = False
+    authorization_id: str = ""
+    model_ref: str = ""
+    offset: int = 0
+    total_chars: int = 0
+    marked_at: str = ""
+    last_request: str = ""
+    last_fingerprint: str = ""
+
+
+class DecisionUnderstanding(BaseModel):
+    id: str
+    version: str
+    statement: str
+    conditions: str = ""
+    exceptions: str = ""
+
+
+class DecisionReflection(BaseModel):
+    id: str
+    at: str
+    outcome: str
+    reflection: str
+    understanding: str = ""
+    effect: Literal["none", "reinforce", "exception", "change"] = "none"
+    target_id: str = ""
+    target_version: str = ""
+    candidate_id: str = ""
+
+
+class CompanionDecision(BaseModel):
+    id: str
+    version: str
+    description: str
+    reasons: str = ""
+    concerns: str = ""
+    expectation: str = ""
+    revisit_date: str = ""
+    created_at: str
+    confirmed_by: int
+    state: Literal["open", "reviewed", "archived"] = "open"
+    thread_id: str = ""
+    source_hash: str = ""
+    understandings: list[DecisionUnderstanding] = Field(default_factory=list)
+    reviews: list[DecisionReflection] = Field(default_factory=list)
+    history: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class PersonalOntology(BaseModel):
     schema_version: int = 4
     revision: str = "empty"
@@ -194,6 +257,9 @@ class PersonalOntology(BaseModel):
     graph_retired: list[str] = Field(default_factory=list)
     graph_retired_sources: list[str] = Field(default_factory=list)
     core_operations: dict[str, dict[str, str]] = Field(default_factory=dict)
+    decisions: list[CompanionDecision] = Field(default_factory=list)
+    decision_operations: dict[str, dict[str, str]] = Field(default_factory=dict)
+    owner_documents: dict[str, OwnerDocument] = Field(default_factory=dict)
     fact_confirmations: dict[str, dict[str, Any]] = Field(default_factory=dict)
     preparation: RolePreparation = Field(default_factory=RolePreparation)
     flow: dict[str, Any] = Field(default_factory=dict)

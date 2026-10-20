@@ -123,6 +123,7 @@ class Overview(BaseModel):
     memory: Memory | None
     cpu: CPU | None
     container: bool
+    syncBytes: int = 0
     wanxStorage: WanxStorage | None = None
     network: BoxNetwork | None = None
 

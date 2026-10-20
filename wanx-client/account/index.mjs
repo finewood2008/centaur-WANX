@@ -94,6 +94,7 @@ export function createAccount({
   platform = process.platform,
   deviceModel = "万象连接",
   now = Date.now,
+  measure = (_step, operation) => operation(),
 } = {}) {
   let base;
   try {
@@ -311,7 +312,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         if (missingNetworkRoute)
@@ -320,7 +321,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       checkGeneration();
       let metadata;
@@ -534,20 +535,25 @@ export function createAccount({
     // Logout revokes every server session for this client. Never let its late
     // response invalidate a freshly issued session for the same identity.
     const beforeCleanup = epoch;
-    await logoutCleanup;
-    await passwordUpdate?.catch(() => {});
+    await measure("account.login.cleanup", async () => {
+      await logoutCleanup;
+      await passwordUpdate?.catch(() => {});
+    });
     assert(beforeCleanup);
     cancel();
     const generation = epoch;
     publish({ phase: "authenticating", reason: null });
     try {
-      await loadVault(generation);
-      const identity = vault.accounts[input.phone]?.identity || newIdentity();
-      if (!vault.accounts[input.phone]) {
-        await persist({ phone: input.phone, identity, session: null });
-        assert(generation);
-      }
-      const data = await wire(
+      const identity = await measure("account.login.local", async () => {
+        await loadVault(generation);
+        const value = vault.accounts[input.phone]?.identity || newIdentity();
+        if (!vault.accounts[input.phone]) {
+          await persist({ phone: input.phone, identity: value, session: null });
+          assert(generation);
+        }
+        return value;
+      });
+      const data = await measure("account.login.request", () => wire(
         {
           method: "POST",
           path: mode === "register" ? "/app-api/auth/password/register" : `/app-api/auth/${mode}/login`,
@@ -570,17 +576,17 @@ export function createAccount({
           },
         },
         generation,
-      );
+      ));
       const next = {
         phone: input.phone,
         identity,
         session: sessionFrom(data, identity),
       };
-      await persist(next, mode === "password" ? {
+      await measure("account.login.persist", () => persist(next, mode === "password" ? {
         rememberedLogin: input.remember === true
           ? { remember: true, phone: input.phone, password: input.password }
           : { remember: false },
-      } : {});
+      } : {}));
       assert(generation);
       record = next;
       return publish({
@@ -914,7 +920,7 @@ export function createAccount({
         throw error;
       }
     },
-    async logout({ revokeNetwork = false } = {}) {
+    async logout() {
       const previous = record;
       cancel();
       const generation = epoch;
@@ -924,17 +930,12 @@ export function createAccount({
       // the old credentials; new logins wait for it before issuing requests.
       const cleared = persist(null);
       if (previous?.session) {
-        const requests = [
-          ...(revokeNetwork ? [{ method: "DELETE", path: "/app-api/network/current" }] : []),
-          { method: "POST", path: "/app-api/auth/logout", body: { refreshToken: previous.session.refreshToken } },
-        ];
-        const cleanup = (async () => {
-          // Network revocation needs the old authentication to remain valid.
-          // Attempt logout even if network cleanup fails or times out.
-          for (const input of requests) {
-            await wire(input, generation, previous, true).catch(() => {});
-          }
-        })().then(() => {
+        // Auth logout advances the server client-session version, invalidating
+        // its network enrollment too. The server reconciler removes old peers;
+        // waiting for network/current here would block account login on P2P.
+        const cleanup = wire({ method: "POST", path: "/app-api/auth/logout",
+          body: { refreshToken: previous.session.refreshToken } }, generation, previous, true)
+          .catch(() => {}).then(() => {
           if (!closed && logoutCleanup === cleanup) publish({ logoutPending: false });
         });
         logoutCleanup = cleanup;

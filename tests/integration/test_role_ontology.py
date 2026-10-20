@@ -10,6 +10,9 @@ from tests.support.auth import bearer, create_agent, create_user
 async def test_empty_role_prepare_context_and_owner_boundaries(env_with_provider, monkeypatch):
     client, server, auth = env_with_provider
     aid = await create_agent(client, auth)
+    assert (await client.get(f"/api/agents/{aid}/ontology", headers=auth)).status_code == 404
+    bound = await client.put(f"/api/agents/{aid}/zhijun-profile", headers=auth, json={"version": 1})
+    assert bound.status_code == 200, bound.text
     registry = server.app_runtime.agent_registry
     harness = registry.get_agent(aid)
     harness._memory_runtime = SimpleNamespace(memory=None)

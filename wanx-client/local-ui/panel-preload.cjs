@@ -13,7 +13,8 @@ contextBridge.exposeInMainWorld("wanxPanel", {
       if (!Array.isArray(files) || !files.length) throw new Error("SPACE_INVALID_DROP");
       const paths = files.map(file => webUtils.getPathForFile(file));
       if (paths.some(path => !path)) throw new Error("SPACE_INVALID_DROP");
-      await ipcRenderer.invoke("wanx-client:panel-space-upload", { paths, scope });
+      const value = await ipcRenderer.invoke("wanx-client:panel-space-upload", { paths, names: files.map(file => file.name), scope });
+      if (value?.uploadRejection) return { ok: false, ...value.uploadRejection };
       return { ok: true };
     } catch (error) {
       const code = String(error?.message || "").match(/\b(?:SPACE_[A-Z_]+|BOX_CONNECTION_REQUIRED|ACCOUNT_LOGIN_REQUIRED|NETWORK_NOT_READY|SECURE_STORAGE_[A-Z_]+)\b/)?.[0] || "SPACE_REQUEST_FAILED";
@@ -36,5 +37,30 @@ contextBridge.exposeInMainWorld("wanxPanel", {
     const handler = (_event, state) => listener(state);
     ipcRenderer.on("wanx-client:state", handler);
     return () => ipcRenderer.removeListener("wanx-client:state", handler);
+  },
+});
+
+const noteMethods=new Set(['snapshot','note-refresh','note-save','note-paste','capture','preview','choose','transfer','note-command']);
+async function noteAction(name,input={}){
+  const method=name.replace(/^clipboard\./,'');
+  if(!name.startsWith('clipboard.')||!noteMethods.has(method))return {ok:false,code:'PANEL_ACTION_NOT_ALLOWED'};
+  try{return {ok:true,value:await ipcRenderer.invoke('wanx-client:panel-note',{...input,method})};}
+  catch(error){return {ok:false,code:String(error.message).match(/(?:CLIPBOARD|SPACE|BOX|ACCOUNT|SECURE_STORAGE|PANEL)_[A-Z_]+/)?.[0]||'CLIPBOARD_OPERATION_FAILED'};}
+}
+contextBridge.exposeInMainWorld('wanxClient',{
+  action:noteAction,
+  async clipboardFiles(files,input={}){
+    try{
+      if(!Array.isArray(files)||!files.length||files.length>20||files.some(f=>f.size>20*1024*1024))throw Error('CLIPBOARD_LIMIT');
+      const paths=files.map(f=>webUtils.getPathForFile(f));let payload;
+      if(paths.every(Boolean))payload={paths};
+      else if(files.length===1&&['image/png','image/jpeg','image/gif','image/webp'].includes(files[0].type))payload={image:Buffer.from(await files[0].arrayBuffer()).toString('base64'),name:files[0].name,mime:files[0].type};
+      else throw Error('CLIPBOARD_VIRTUAL_FILE');
+      return noteAction('clipboard.capture',{...payload,scope:input.scope});
+    }catch(error){return {ok:false,code:error.message};}
+  },
+  onClipboardState(listener){
+    const handler=(_event,state)=>listener(state);ipcRenderer.on('wanx-client:panel-note-state',handler);
+    return ()=>ipcRenderer.removeListener('wanx-client:panel-note-state',handler);
   },
 });

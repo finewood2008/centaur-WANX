@@ -4,19 +4,24 @@
   const overlay = document.getElementById("panel-drop");
   let space = { tasks: [] }, spaceRevision = 0, spaceRequest = null;
   let dragDepth = 0, dragScope = null, dragInvalid = false, interacting = false, pendingRender = false;
+  let noteView=false;
   let state = {}, notice = "", selected = "", intentId = "";
   let accountIdentity = "", sessionGeneration = 0;
   let applicationNames = new Map(), namesRequest = null;
   let balance = null, balancePhase = "idle", balanceRequest = null;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const errorText = error => {
+    if (error?.code === "SPACE_UPLOAD_LIMIT" && typeof error.message === "string") return error.message;
     const code = String(error?.message || error || "");
     const errors = {
       SPACE_CONTEXT_CHANGED: "盒子或账号已变化，请重新拖入文件。",
       SPACE_UPGRADE_REQUIRED: "当前盒子尚不支持文件空间，请升级盒端服务。",
       SPACE_DROP_FILES_ONLY: "暂不支持文件夹，请拖入本地文件。",
+      SPACE_INVALID_NAME: "文件名包含不支持的字符、首尾空格或过长，请先在本机重命名；本批文件未上传。",
       SPACE_INVALID_DROP: "无法读取拖入的文件，请从访达重新拖入。",
       SPACE_DISK_FULL: "盒子存储空间不足，请清理后重试。",
+      SPACE_RETRY_EXHAUSTED: "自动重试未成功，进度已保留，连接稳定后点击继续。",
+      SPACE_UPLOAD_OFFSET_INVALID: "盒子返回的上传进度无效，请在空间中查看。",
       SPACE_CONNECTION_TIMEOUT: "上传连接超时，请稍后继续。",
       SPACE_LOCAL_FILE_CHANGED: "本地文件已变化，请重新上传。",
       SPACE_UNAVAILABLE: "文件空间暂不可用。",
@@ -95,19 +100,19 @@
   }
   const percent = task => task.phase === "complete" ? 100 : task.size ? Math.min(100, Math.floor(task.offset / task.size * 100)) : 0;
   function renderTransfers() {
-    if (!sameSpace()) return "";
+    if (!space.scope || !signedIn() || space.accountId !== state.account?.accountId || (state.connection?.deviceId && space.boxId !== state.connection.deviceId)) return "";
     const tasks = (space.tasks || []).filter(task => task.phase !== "canceled");
     const active = tasks.filter(task => task.phase !== "complete");
     const visible = active.slice(-3);
     if (!visible.length) return "";
-    const phases = { queued: "等待上传", checking: "正在校验", running: "正在上传", paused: "已暂停", complete: "上传完成" };
-    return `<section class="panel-transfers" aria-label="空间上传"><div class="transfer-heading"><strong>文件上传</strong><span>${active.length} 项待完成</span></div>${visible.map(task => `<div class="panel-transfer"><div class="transfer-label"><span title="${escape(task.name)}">${escape(task.name)}</span><small>${phases[task.phase] || "等待处理"} · ${percent(task)}%</small></div><div class="transfer-controls"><progress aria-label="${escape(task.name)}上传进度" max="100" ${task.phase === "checking" ? "" : `value="${percent(task)}"`}></progress>${["queued", "checking", "running", "paused"].includes(task.phase) ? `<button data-transfer="${escape(task.id)}" data-command="${task.phase === "paused" ? "resume" : "pause"}">${task.phase === "paused" ? "继续" : "暂停"}</button>` : ""}</div>${task.error ? `<p class="error">${escape(errorText(task.error))}</p>` : ""}</div>`).join("")}</section>`;
+    const phases = { waiting: "等待连接恢复", retrying: "正在自动重试", queued: "等待上传", checking: "正在校验", running: "正在上传", paused: "已暂停", complete: "上传完成" };
+    return `<section class="panel-transfers" aria-label="空间上传"><div class="transfer-heading"><strong>文件上传</strong><span>${active.length} 项待完成</span></div>${visible.map(task => `<div class="panel-transfer"><div class="transfer-label"><span title="${escape(task.name)}">${escape(task.name)}</span><small>${phases[task.phase] || "等待处理"} · ${percent(task)}%</small></div><div class="transfer-controls"><progress aria-label="${escape(task.name)}上传进度" max="100" ${task.phase === "checking" ? "" : `value="${percent(task)}"`}></progress>${["queued", "checking", "running", "waiting", "retrying", "paused"].includes(task.phase) ? `<button data-transfer="${escape(task.id)}" data-command="${task.phase === "paused" ? "resume" : "pause"}">${task.phase === "paused" ? "继续" : "暂停"}</button>` : ""}</div>${task.error && task.phase === "paused" ? `<p class="error">${escape(errorText(task.error))}</p>` : ""}</div>`).join("")}</section>`;
   }
   function renderSpace() {
     const problem = dropProblem();
     const location = state.connection?.name || "尚未连接盒子";
     const status = !signedIn() ? "未登录" : !ready() ? "未连接" : !sameSpace() ? "准备中" : space.phase === "unsupported" ? "需升级" : space.storageError ? "暂不可用" : "已就绪";
-    return `<footer class="space-footer" aria-label="空间"><button class="space-entry" data-page="space" aria-label="打开文件空间"><span class="space-volume-icon" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18M7 17h.01M11 17h.01"/></svg></span><span class="space-copy"><span class="space-title">空间</span><span class="space-location" title="${escape(location)} · 全部文件">${escape(location)} · 全部文件</span></span><span class="space-availability"><span class="dot ${problem ? "" : "ready"}" aria-hidden="true"></span>${status}</span><span class="space-arrow" aria-hidden="true">↗</span></button><div class="space-drop-hint ${problem ? "unavailable" : ""}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 18H5a4 4 0 0 1-.5-8A7 7 0 0 1 18 8a5 5 0 0 1 1 10h-2M12 21V11m-4 4 4-4 4 4"/></svg><span>${problem ? escape(problem) : "拖入文件，保存到空间"}</span></div>${renderTransfers()}</footer>`;
+    return `<footer class="space-footer dual-footer" aria-label="空间与便签"><div class="panel-destinations"><button class="space-entry" data-page="space" aria-label="打开文件空间" title="拖入文件，保存到空间"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18"/></svg></span><span class="destination-copy"><strong>空间</strong><small title="${escape(location)} · 全部文件">${escape(location)}</small></span><span class="dot ${problem?'':'ready'}" title="${status}" aria-label="${status}"></span><svg class="destination-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-label="支持拖入文件"><path d="M5 16v4h14v-4M12 16V4m-5 5 5-5 5 5"/></svg></button><button class="note-entry" data-action="clipboard-toggle" aria-label="打开便签" title="文字与图片，自动保存"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/></svg></span><span class="destination-copy"><strong>便签</strong><small>文字 · 图片</small></span><span class="destination-arrow" aria-hidden="true">›</span></button></div>${renderTransfers()}</footer>`;
   }
   function paintOverlay() {
     if (!overlay) return;
@@ -116,7 +121,7 @@
     if (!dragDepth) return;
     const problem = dropProblem();
     overlay.classList.toggle("unavailable", Boolean(problem));
-    overlay.innerHTML = `<div class="drop-card"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M7 18H5a4 4 0 0 1-.5-8A7 7 0 0 1 18 8a5 5 0 0 1 1 10h-2M12 21V11m-4 4 4-4 4 4"/></svg><strong>${problem || "松开上传到文件空间"}</strong><span>${escape(state.connection?.name || "当前盒子")} · 全部文件根目录</span><small>${problem ? "连接就绪后重新拖入文件" : "支持多个文件 · 暂不支持文件夹"}</small></div>`;
+    overlay.innerHTML = `<div class="drop-card"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M7 18H5a4 4 0 0 1-.5-8A7 7 0 0 1 18 8a5 5 0 0 1 1 10h-2M12 21V11m-4 4 4-4 4 4"/></svg><strong>${problem || "松开上传到文件空间"}</strong><span>${escape(state.connection?.name || "当前盒子")} · 全部文件根目录</span><small>${problem ? "连接就绪后重新拖入文件" : "最多 20 个文件 · 单文件最大 200 MB · 暂不支持文件夹"}</small></div>`;
   }
   function clearDrag() {
     dragDepth = 0; dragScope = null; dragInvalid = false; paintOverlay();
@@ -208,14 +213,14 @@
   });
   const hasFiles = event => Array.from(event.dataTransfer?.types || []).includes("Files");
   surface.addEventListener("dragenter", event => {
-    if (!hasFiles(event)) return;
+    if (noteView || !hasFiles(event)) return;
     event.preventDefault();
     if (!dragDepth) { dragScope = space.scope; dragInvalid = false; }
     dragDepth++;
     if (dragDepth === 1) paintOverlay();
   });
   surface.addEventListener("dragover", event => {
-    if (!hasFiles(event)) return;
+    if (noteView || !hasFiles(event)) return;
     event.preventDefault(); event.dataTransfer.dropEffect = dropProblem() ? "none" : "copy";
   });
   surface.addEventListener("dragleave", event => {
@@ -223,7 +228,7 @@
     if (--dragDepth <= 0) clearDrag();
   });
   surface.addEventListener("drop", async event => {
-    if (!hasFiles(event)) return;
+    if (noteView || !hasFiles(event)) return;
     event.preventDefault();
     const problem = dropProblem(), scope = dragScope, generation = sessionGeneration;
     const files = Array.from(event.dataTransfer.files || []);
@@ -235,7 +240,7 @@
     }
     const result = await api.uploadDroppedFiles(files, scope);
     if (generation !== sessionGeneration || scope !== space.scope) return;
-    notice = result.ok ? "" : errorText(result.code);
+    notice = result.ok ? "" : errorText(result.code === "SPACE_UPLOAD_LIMIT" ? result : result.code);
     render();
   });
   document.addEventListener("dragend", clearDrag);
@@ -246,11 +251,15 @@
   });
   document.addEventListener("pointercancel", () => { interacting = false; if (pendingRender) render(); });
   document.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); clearDrag(); void act("desktop-hide"); } });
+  window.addEventListener?.('wanx-note-view',event=>{
+    const next=event.detail.opened;if(next===noteView)return;noteView=next;
+    document.body.classList.toggle('note-view',noteView);if(noteView)clearDrag();resize();
+  });
   let lastHeight = 0;
   function resize() {
     requestAnimationFrame(() => {
       if (dragDepth) return;
-      const height = Math.max(240, Math.min(560, surface.scrollHeight));
+      const height = noteView ? 560 : Math.max(240, Math.min(560, surface.scrollHeight));
       if (height !== lastHeight) { lastHeight = height; void api.action("desktop-resize", { height }).catch(() => {}); }
     });
   }
@@ -269,6 +278,8 @@
       balance = null; balancePhase = "idle"; balanceRequest = null;
     }
     state = value;
+    window.wanxClipboard?.hostState({...value,route:account.phase==='authenticated'?'space':'auth'});
+    window.wanxClipboard?.setActive(true);
     paintOverlay(); render();
     if (changed) void refreshSpace();
     if (changed && signedIn()) { void refreshBalance(); void refreshApplicationNames(); }

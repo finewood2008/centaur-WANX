@@ -23,7 +23,7 @@ async function harness(t, options = {}) {
       onLocalState() {},
       action: async (name, input) => { calls.push([name, input]); return options.action ? options.action(name, input) : { ok: true, value: { expiresIn: 300 }, state }; },
     } },
-    document: { addEventListener() {}, querySelector: selector => selector === "#app" ? app : inputs[selector] || null },
+    document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: selector => selector === "#app" ? app : inputs[selector] || null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
     Date, setTimeout, clearTimeout, setInterval() {}, TextEncoder,
   });

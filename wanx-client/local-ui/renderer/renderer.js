@@ -231,6 +231,8 @@ const escapeHTML = (value) => String(value ?? "")
 
 function statusLabel(device) {
   const selected = (currentState.selectedDeviceId || currentState.activeDeviceId) === device.deviceId;
+  if (currentState.recovery?.deviceId === device.deviceId && currentState.recovery.status === "failed") return "连接已中断，自动重连 3 次未成功，请手动重连";
+  if (selected && currentState.recovery?.status === "retrying") return `正在自动重连（${currentState.recovery.attempt}/3）`;
   if (selected && currentState.connectionPhase === "recovering") return "正在恢复连接";
   if (selected && ["connecting", "resolving"].includes(currentState.connectionPhase)) return "正在连接";
   if (currentState.activeDeviceId === device.deviceId) return "当前连接";
@@ -271,6 +273,8 @@ function deviceCard(device) {
   const needsSetup = ["discovered", "unclaimed", "uninitialized"].includes(device.accessState);
   const action = disconnecting
     ? `<button class="button small activity-button" aria-busy="true" disabled>${activityLabel("正在断开…")}</button>`
+    : currentState.selectedDeviceId === device.deviceId && currentState.recovery?.status === "retrying"
+    ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>停止重连</button>`
     : connecting
     ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
     : selected
@@ -291,6 +295,10 @@ function networkStatus() {
   if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
   if (currentState.network?.enabled === false) return { label: "网络已关闭", detail: "开启网络后即可连接盒子。" };
   if (currentState.networkReady) return { label: "网络已连接", detail: "可以连接盒子并使用应用。" };
+  if (currentState.platform?.reason === "NETWORK_REVOCATION_PENDING")
+    return { label: "网络会话清理中", detail: "服务器正在清理旧连接，完成后将自动重连；传输会保留进度等待恢复。" };
+  if (currentState.platform?.reason === "NETWORK_LEASE_EXPIRED")
+    return { label: "网络授权已到期", detail: "请重试连接，重新获取授权后继续传输。" };
   if (currentState.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(currentState.network?.phase))
     return { label: "网络暂不可用", detail: "请检查本机网络后重试连接。" };
   return { label: "网络连接中", detail: "正在准备与盒子的连接。" };
@@ -594,7 +602,7 @@ function boxesView() {
   const storage = ready ? metrics?.wanxStorage : null;
   const publicIP = ready ? metrics?.network?.publicIp : null;
   const network = networkStatus(), enabled = currentState.network?.enabled !== false;
-  const status = ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
+  const status = currentState.recovery?.status === "failed" ? "自动重连未成功，请手动重连" : currentState.recovery?.status === "retrying" ? `正在自动重连（${currentState.recovery.attempt}/3）` : ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content space-page-content box-page-content">
     <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
@@ -970,9 +978,13 @@ function applicationsView() {
   const installed = new Set(applications.map((item) => item.applicationId));
   const pendingInstallations = applications.some((item) => item.installationState === "pending");
   const available = discoverableApplications().filter((item) => !installed.has(item.applicationId));
+  const delivery = currentState.defaultApplications;
+  const preparingDefaults = delivery?.status === "preparing";
+  const defaultsPending = delivery?.status === "pending";
   return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用")}<div class="page-content store-page">
     <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" aria-busy="${marketLoading}" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在检查…") : "检查更新"}</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    ${preparingDefaults || defaultsPending ? `<div class="notice" role="status">${preparingDefaults ? "正在准备随盒应用，已安装的应用可以继续使用。" : "部分随盒应用尚未准备完成，联网后会自动重试。你也可以在下方应用介绍中查看安装条件。"}</div>` : ""}
     ${storeFeatures()}
     <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${pendingInstallations ? "部分应用待完成安装" : applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>
@@ -1142,7 +1154,11 @@ function provisioningView() {
 }
 
 function authBusyLabel() {
-  return currentState?.account?.logoutPending ? "正在完成退出…" : "处理中…";
+  return {
+    "auth.login": "正在登录…",
+    "auth.register": "正在创建账号…",
+    "auth.reset-password": "正在重置密码…",
+  }[busyRequest?.action] || "处理中…";
 }
 
 // State broadcasts must not detach the pressed control before Chromium emits click.

@@ -23,7 +23,7 @@ async function harness(initial = state(), onAction = async () => {}, timers = nu
       return { ok: true, value: action === "market.list" ? { items: [] } : undefined, state: structuredClone(current) };
     },
   } };
-  vm.runInNewContext(source, { window, document: { addEventListener() {}, querySelector: selector => selector === "#app" ? app : null }, Date, TextEncoder,
+  vm.runInNewContext(source, { window, document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: selector => selector === "#app" ? app : null }, Date, TextEncoder,
     setTimeout: timers ? (callback, delay) => { if (delay !== 5000) return setTimeout(callback, delay); const id = Symbol(); timers.set(id, callback); return id; } : setTimeout,
     clearTimeout: timers ? id => { if (typeof id === "symbol") timers.delete(id); else clearTimeout(id); } : clearTimeout,
     setInterval: () => null, clearInterval: () => {},

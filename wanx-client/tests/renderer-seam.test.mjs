@@ -220,7 +220,7 @@ async function harness(initial = state(), installed = [application], options = {
     window, setInterval() {},
     Date, crypto: globalThis.crypto,
     setTimeout, clearTimeout, TextEncoder, queueMicrotask,
-    document: { addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
+    document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -254,12 +254,33 @@ async function harness(initial = state(), installed = [application], options = {
   };
 }
 
+test("box recovery shows attempts, supports cancellation and offers manual connection after exhaustion", async () => {
+  const initial = { ...state("ready", "ready", "box-102"), phase: "recovering",
+    recovery: { deviceId: "box-102", status: "retrying", attempt: 2, maxAttempts: 3 } };
+  const h = await harness(initial);
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /正在自动重连（2\/3）/);
+  assert.match(h.app.innerHTML, /data-action="disconnect"[^>]*>停止重连/);
+  await h.click("disconnect");
+  await h.click("market-confirm");
+  assert.equal((await h.window.wanxClient.getLocalState()).selectedDeviceId, null);
+  h.update({ ...initial, phase: "disconnected", connection: null,
+    recovery: { ...initial.recovery, status: "failed", attempt: 3 } });
+  assert.match(h.app.innerHTML, /自动重连 3 次未成功，请手动重连/);
+  assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
+});
+
 test("login opens the store while the network prepares, with registration available and no account identifier", async () => {
-  const h = await harness({ account: { phase: "signed_out" } });
+  const login = pendingResponse();
+  const h = await harness({ account: { phase: "signed_out" } }, [application], { loginRequest: () => login.promise });
   assert.match(h.app.innerHTML, /登录万象平台/);
   assert.match(h.app.innerHTML, /data-action="auth-register"/);
   assert.doesNotMatch(h.app.innerHTML, /name="code"/);
-  await h.submit("auth", { username: "13800000000", password: "example-password" });
+  const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
+  await flushActions();
+  assert.match(h.form("auth").querySelector('button[type="submit"]').innerHTML, /正在登录…/);
+  assert.doesNotMatch(h.app.innerHTML, /正在完成退出…/);
+  login.resolve(); await loggingIn;
   assert.match(h.app.innerHTML, /我的应用/);
   assert.match(h.app.innerHTML, /网络连接中/);
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
@@ -2085,7 +2106,9 @@ test("logout unlocks the login form and its late completion cannot unlock a new 
   assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
   const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
   await flushActions();
-  assert.match(h.app.innerHTML, /正在完成退出…/);
+  assert.match(h.app.innerHTML, /正在登录…/);
+  assert.doesNotMatch(h.app.innerHTML, /正在完成退出…/);
+  assert.match(h.form("auth").querySelector('button[type="submit"]').innerHTML, /正在登录…/);
   logout.resolve(); await loggingOut;
   assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, true);
   login.resolve(); await loggingIn;
@@ -2619,4 +2642,14 @@ test("expired console claim reports actionable guidance without claiming success
   await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
   assert.match(h.app.innerHTML, /认领码已过期/);
   assert.doesNotMatch(h.app.innerHTML, /盒子已认领/);
+});
+
+test("pending network cleanup explains server recovery instead of blaming the local network", async () => {
+  const s = state("unavailable", "unavailable");
+  s.platform.reason = "NETWORK_REVOCATION_PENDING";
+  const h = await harness(s);
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /网络会话清理中/);
+  assert.match(h.app.innerHTML, /完成后将自动重连/);
+  assert.doesNotMatch(h.app.innerHTML, /请检查本机网络后重试连接/);
 });

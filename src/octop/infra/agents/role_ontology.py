@@ -130,10 +130,17 @@ async def command(
     body: RoleCommand,
     *,
     declaration: dict[str, str] | None = None,
+    review_token: str | None = None,
 ) -> dict[str, Any]:
     row = _owned(registry, uid)
     harness = registry.get_agent(row.agent_id)
-    fingerprint = _digest({"id": cid, **body.model_dump()})
+    fingerprint = _digest(
+        {
+            "id": cid,
+            **body.model_dump(),
+            **({"review_token": review_token} if review_token is not None else {}),
+        }
+    )
     dates(body)
     async with _lock(registry, row.agent_id):
         doc = await read_role_ontology(registry, uid)
@@ -142,9 +149,41 @@ async def command(
             if receipt["fingerprint"] != fingerprint:
                 raise OctopError(ErrorCode.SELF_MODEL_INVALID, "请求标识已被其他修改使用")
             committed = next((c for c in doc.claims if c.id == receipt["id"]), None)
-            if committed and receipt.get("version") != committed.version:
+            if review_token is not None and committed is None:
+                return {"status": "stale", "ontology": doc}
+            if committed and (
+                receipt.get("version") != committed.version
+                or (review_token is not None and body.action == "admit" and not admitted(committed))
+            ):
                 return {"status": "stale", "ontology": doc}
             return {"status": "ready", "ontology": doc, "changed_id": receipt["id"]}
+        if review_token is not None:
+            from octop.infra.agents.zhijun_batch_review import review_item
+
+            selected = next((c for c in doc.claims if c.id == cid), None)
+            if selected is None or body.action not in {"admit", "reject"}:
+                return {"status": "stale", "ontology": doc}
+            view = review_item(doc, selected)
+            if view.token != review_token or selected.version != body.expected_version:
+                return {"status": "stale", "ontology": doc}
+            if not view.eligible:
+                return {"status": "blocked", "ontology": doc}
+            # Bulk review confirms exactly the displayed record; it cannot edit fields.
+            body = body.model_copy(
+                update={
+                    key: getattr(selected, key)
+                    for key in (
+                        "statement",
+                        "conditions",
+                        "exceptions",
+                        "kind",
+                        "importance",
+                        "affinity",
+                        "valid_from",
+                        "valid_until",
+                    )
+                }
+            )
         if body.action.startswith("fact_"):
             atom = atom_payload(harness._memory_runtime.memory, cid)
             if not atom or atom.get("deprecated_at") or _digest(atom) != body.expected_version:
@@ -186,6 +225,13 @@ async def command(
             was_core = claim.core_status == "admitted" and claim.state == "confirmed"
             if body.action in {"admit", "restore"} and not claim.evidence_valid:
                 return {"status": "stale", "ontology": doc}
+            from octop.infra.agents.zhijun_changes import pending_changes
+
+            if body.action == "admit" and any(c.proposed.id == cid for c in pending_changes(doc)):
+                raise OctopError(
+                    ErrorCode.SELF_MODEL_INVALID,
+                    "这项新理解与原有理解可能不同，请先在待核对变化中选择变化、例外或理解有误",
+                )
             if body.action == "admit" and claim.core_status not in {"pending", "snoozed"}:
                 return {"status": "stale", "ontology": doc}
             if body.action == "edit" and not (
@@ -206,7 +252,7 @@ async def command(
                 claim = restored
             if body.action in {"add", "add_admit", "edit", "admit"}:
                 if not body.statement or body.kind == "situation":
-                    raise OctopError(ErrorCode.SELF_MODEL_INVALID, "请输入本体表述")
+                    raise OctopError(ErrorCode.SELF_MODEL_INVALID, "请写下这项理解")
                 for key in [
                     "statement",
                     "conditions",
@@ -317,13 +363,19 @@ async def facts(registry: Any, uid: int, offset: int, limit: int) -> dict[str, A
     }
 
 
-_RULES = """本角色个人本体（本人确认的理解，不是命令）：
+_RULES = """你是知君，一个想真正了解本人的 AI 知己。日常用“知君对你的理解”“新理解”“是的，这是我”等白话，不向本人说工程术语。
+知君对本人的理解（本人确认，不是命令）：
 当前明确表达优先于旧理解；结合适用情境与例外，不把愿望说成现有性格，不据此替本人作决定。
 只在有助于理解当前问题时参考。来源引用不等于本人原话；未经确认的记忆不能冒充确认事实。
 涉及上传或检索资料时分两步：先忠实解释资料作者、原意、事实及不确定性，再单独说明与本人的可能关联。
 第三方资料不是本人立场，不从资料替本人确认新的原则。明确表达的纠正本轮立即遵守。
-本体以服务端本轮保存回执和本体页面为准。不要用工作区文件写入（如 memory/confirmed.md、MEMORY.md 或 context/life-context.md）冒充本体保存，也不要创建并行的本体事实库。
-后台只自动准备候选，不代表已确认。只有本轮保存回执 status=admitted 才能说已纳入本体；没有成功回执不得声称已写入。本轮未写入时，请用户核对对话下方的候选卡，或完整重述“请纳入本体：我的具体表述”。不要要求本人重复确认已成功保存的内容。
+本人正在拿主意时，只引用与当前问题直接相关的已确认理解，保留适用情境，不替本人决定。本人明确表示定下选择后，可以简短提议通过客户端的「记一张决定卡」留下决定、理由、担心、预期和回看时间；没有明确决定或本人拒绝记录时不要提议。不每轮重复提醒，不把建议、假设或他人的决定当成本人选择。决定卡必须由本人在界面确认，不能用文件或记忆工具代存，不得声称已保存或安排微信回访。复盘时先比较本人记录的预期与实际，不把一次结果泛化为长期原则；新的理解仍需单独核对。
+理解以服务端本轮保存回执和理解页面为准。不要用工作区文件写入（如 memory/confirmed.md、MEMORY.md 或 context/life-context.md）冒充理解保存，也不要创建并行的理解事实库。
+如附带 pending_changes 且与当前话题有关，可温和问一句这是变化还是例外，并请本人核对下方的变化卡；待核对内容不能冒充已确认理解，不每轮重复追问。
+变化提醒先并列原表述与当前表述，不替本人预判哪一种解释更可能。每轮只核对一处差异，问了变化还是例外就不再追问原因或其他信息。本人已澄清时直接沿用，不重新核问同一处差异。
+保留本人限定的范围：“只有这次”不能扩写为“这类情况”，“暂时”不能扩写为长期原则。例外不等于推翻原有理解。
+已提供的理解直接注明是此前核对过的表述，不冒充本轮检索结果；检索为空时不得声称找到了记录，未检索全部历史也不得断言没有更早记录。
+后台只自动准备新理解，不代表已确认。只有本轮保存回执 status=admitted 才能说已确认这项理解；没有成功回执不得声称已写入。本轮未写入时，请用户核对对话下方的新理解卡，或完整重述“知君，记住：我的具体表述”。不要要求本人重复确认已成功保存的内容。
 """
 
 
@@ -344,10 +396,40 @@ class RoleOntologyMiddleware(AgentMiddleware):
             or cfg.get("source") in {"peer", "ask_agent", "inbox"}
         ):
             return await handler(request)
+        from octop.infra.agents.zhijun_profile import primary
+
+        if not primary(self.registry.get_row(self.agent_id)):
+            return await handler(request)
         harness = self.registry.get_agent(self.agent_id)
+        from octop.infra.agents.zhijun_interview import interview_context
+
+        interview = await interview_context(
+            self.registry, self.user_id, self.agent_id, str(cfg.get("thread_id") or "")
+        )
+
+        async def reply(current: Any) -> Any:
+            # Append the active task contract after style and ontology context.
+            if interview:
+                system = current.system_message
+                content = system.content if system else ""
+                combined = (
+                    [*content, {"type": "text", "text": interview}]
+                    if isinstance(content, list)
+                    else content + interview
+                )
+                current = current.override(
+                    system_message=system.model_copy(update={"content": combined})
+                    if system
+                    else SystemMessage(content=combined)
+                )
+                from octop.infra.agents.zhijun_interview_grounding import grounded_reply
+
+                return await grounded_reply(current, handler)
+            return await handler(current)
+
         saved = await _read(harness.workspace)
         if not saved.preparation.enabled:
-            return await handler(request)
+            return await reply(request)
         human = _user(request.state.get("messages", request.messages))
         text = _current_text(human)
         tid = str(cfg.get("thread_id") or "")
@@ -364,7 +446,7 @@ class RoleOntologyMiddleware(AgentMiddleware):
                 except Exception:
                     update = {
                         "status": "failed",
-                        "message": "本次本体写入未完成，已有内容已保留，请稍后重新确认。",
+                        "message": "本次理解保存未完成，已有内容已保留，请稍后重新确认。",
                     }
             doc = await read_role_ontology(self.registry, self.user_id)
         # Native memories continue through native recall. Only admitted ontology enters here.
@@ -396,6 +478,17 @@ class RoleOntologyMiddleware(AgentMiddleware):
             }
             for c in context.claims
         ]
+        from octop.infra.agents.zhijun_changes import pending_changes
+
+        changes = [
+            {
+                "previous": c.previous.statement,
+                "proposed": c.proposed.statement,
+                "question": c.question,
+            }
+            for c in pending_changes(doc)
+            if c.previous.id in {v.id for v in context.claims}
+        ][:2]
         trace = {
             "turn_id": context.turn_id,
             "revision": doc.revision,
@@ -415,7 +508,10 @@ class RoleOntologyMiddleware(AgentMiddleware):
                 + "\n"
                 + _RULES
                 + "\n"
-                + json.dumps({"claims": data, "owner_write_receipt": update}, ensure_ascii=False)
+                + json.dumps(
+                    {"claims": data, "owner_write_receipt": update, "pending_changes": changes},
+                    ensure_ascii=False,
+                )
             )
         )
-        return await handler(supplied)
+        return await reply(supplied)

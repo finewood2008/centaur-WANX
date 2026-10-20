@@ -43,7 +43,8 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
     assertScope(bound);
     const controller = new AbortController(); controllers.add(controller);
     try {
-      const response = await connection.request({
+      const send = prefix === "/api/clipboard/v1" ? input => connection.businessRequest("clipboard", input) : input => connection.request(input);
+      const response = await send({
         path: prefix + route, method, headers: { "content-type": "application/json", ...(token ? { "x-space-link": token } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(120000)]),
@@ -155,7 +156,7 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
         if (relative === ".." || relative.startsWith(".." + paths.sep) || paths.isAbsolute(relative)) parent = root;
         return {browse: true, ...listing, root, parent};
       }
-      if (["agent-config","spaces","requests","approve","reject","space-manage","connection-manage","grants","connection-audit","grant","grant-revoke","file-transfer","storage-set"].includes(action)) return agents.manage(action,input);
+      if (["agent-config","spaces","requests","approve","reject","space-manage","connection-manage","grants","connection-audit","sync-status","sync-policy","task-records","task-delete","grant","grant-revoke","file-transfer","storage-set"].includes(action)) return agents.manage(action,input);
       if (action === "config") return mcpConfig;
       if (action === "create") {
         const root = uuid(input.root);
