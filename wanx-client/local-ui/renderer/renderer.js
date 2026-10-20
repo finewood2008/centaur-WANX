@@ -42,6 +42,7 @@ let resetResendAt = 0;
 let changeResendAt = 0;
 let passwordResendTimer;
 let notice = null;
+let connectionFailure = null;
 const localOperations = new Map();
 let pendingSelection = null;
 const expandedDetails = new Set();
@@ -285,7 +286,7 @@ function deviceCard(device) {
           : `<span class="muted">${escapeHTML(statusLabel(device))}</span>`;
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
-    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
+    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}${connectionFailure?.deviceId === device.deviceId ? `<p class="inline-error" role="alert">${escapeHTML(connectionFailure.message)}</p>` : ""}</div>
     <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
@@ -1324,7 +1325,21 @@ function setupErrorMessage(error) {
   return messages[key] || `盒子接入未完成，请重试；如仍失败，请联系管理员。${diagnostic}`;
 }
 
-function operationErrorMessage(error) {
+function connectionErrorMessage(error) {
+  const code = String(error?.code || error?.message || "")
+    .replace(/^Error invoking remote method 'wanx-client:connect-box': (?:Error: )?/, "");
+  const messages = {
+    health_unavailable: "连接盒子失败：盒端服务暂不可达，请检查盒子网络和服务后重试。",
+    health_timeout: "连接盒子超时：盒端服务未及时响应，请稍后重试。",
+    health_invalid: "连接盒子失败：盒端服务健康检查未通过，请联系管理员检查服务版本与状态。",
+    netbird_peer_disconnected: "连接盒子失败：盒子当前离线，请确认盒子联网后重试。",
+    netbird_peer_unknown: "连接盒子失败：网络尚未发现此盒子，请刷新设备后重试。",
+  };
+  return Object.hasOwn(messages, code) ? `${messages[code]}（${code}）`
+    : operationErrorMessage(new Error(code), "连接盒子失败，请刷新设备后重试；如仍失败，请联系管理员检查盒子网络与服务。");
+}
+
+function operationErrorMessage(error, fallback) {
   const message = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const boxSessionMessages = {
     BOX_PLATFORM_AUTH_FAILED: "盒子登录验证失败，请重新连接；如仍失败，请联系管理员检查盒端登录服务。",
@@ -1418,7 +1433,7 @@ function operationErrorMessage(error) {
       APPLICATION_INSTALL_FAILED: "应用安装失败，请检查磁盘空间和目录权限后重试。",
     };
   const code = Object.keys(messages).find(value => message.includes(value));
-  return messages[code] || marketErrorMessage(error);
+  return messages[code] || fallback || marketErrorMessage(error);
 }
 
 async function run(action, input = {}) {
@@ -1428,6 +1443,7 @@ async function run(action, input = {}) {
   if (request) setupRequest = request;
   if (["provisioning.start", "provisioning.cancel", "auth.logout"].includes(action)) resetWifiPicker();
   notice = null;
+  if (action === "devices.connect") connectionFailure = null;
   codeSent = false;
   const actionAccount = marketAccount;
   const applicationId = input.applicationId;
@@ -1469,7 +1485,8 @@ async function run(action, input = {}) {
       if (action === "auth.send-reset-code") resetResendAt = Date.now() + 60000;
       else changeResendAt = Date.now() + 60000;
     }
-    failure = action.startsWith("provisioning.") ? setupErrorMessage(error) : action.startsWith("updates.") ? updateGuidance(error.message) : operationErrorMessage(error);
+    failure = action === "devices.connect" ? connectionErrorMessage(error) : action.startsWith("provisioning.") ? setupErrorMessage(error) : action.startsWith("updates.") ? updateGuidance(error.message) : operationErrorMessage(error);
+    if (action === "devices.connect" && actionAccount === marketAccount) connectionFailure = { deviceId: input.deviceId, message: failure };
     if (!isAppOperation && actionAccount === marketAccount) notice = failure;
     return null;
   } finally {
@@ -1881,6 +1898,7 @@ function acceptRemoteState(state) {
   const creditsChanged = creditsView.reset(creditsIdentity);
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
   const accountChanged = account !== marketAccount;
+  if (accountChanged || state.activeDeviceId === connectionFailure?.deviceId) connectionFailure = null;
   if (marketConfirmation?.updateReleaseId && (state.upgrades?.client?.phase !== "downloaded" || state.upgrades?.client?.candidate?.releaseId !== marketConfirmation.updateReleaseId)) marketConfirmation = null;
   if (marketConfirmation?.updateDeviceId && (accountChanged || state.activeDeviceId !== marketConfirmation.updateDeviceId || state.upgrades?.box?.deviceId !== marketConfirmation.updateDeviceId || marketConfirmation.updatePlanId && state.upgrades.box.plan?.planId !== marketConfirmation.updatePlanId)) marketConfirmation = null;
   if (marketConfirmation?.updateDeviceId && state.upgrades?.box?.canUpgrade !== true) marketConfirmation = null;

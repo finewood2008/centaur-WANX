@@ -1320,6 +1320,45 @@ test("connecting a box shows progress on its card and restores the action on fai
   assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
 });
 
+for (const failure of ["health_unavailable", "health_timeout", "health_invalid", "Error invoking remote method 'wanx-client:connect-box': Error: health_unavailable", "request failed https://private.example/health?token=secret-token"]) {
+  test(`box connection failure stays on its card and clears after retry: ${failure.split(" ")[0]}`, async () => {
+    let attempts = 0;
+    const h = await harness(state(), [application], {
+      connectRequest: async () => { if (++attempts === 1) throw new Error(failure); },
+    });
+    const card = (name) => {
+      const article = [...h.app.innerHTML.matchAll(/<article\b[^>]*>[\s\S]*?<\/article>/g)]
+        .map(([markup]) => markup).find(markup => markup.includes(`<h3>${name}</h3>`));
+      assert.ok(article, `missing device card: ${name}`);
+      return article;
+    };
+    h.navigate("boxes");
+    await h.click("connect", { deviceId: "box-102" });
+    const failedCard = card("CentuarAI-AMD-102");
+    const alert = failedCard.match(/<([a-z][\w-]*)\b[^>]*role="alert"[^>]*>([\s\S]*?)<\/\1>/);
+    assert.ok(alert, "connection failure should be visible inside the selected device card");
+    assert.match(alert[2], /连接/);
+    assert.doesNotMatch(alert[2], /应用市场|private\.example|secret-token/);
+    if (failure.endsWith("health_unavailable")) assert.match(alert[2], /health_unavailable/);
+    assert.doesNotMatch(card("CentuarAI-AMD-103"), /role="alert"/);
+    await h.click("connect", { deviceId: "box-102" });
+    assert.equal(attempts, 2);
+    assert.doesNotMatch(card("CentuarAI-AMD-102"), /role="alert"/);
+  });
+}
+
+test("logging out clears the box connection failure before the same account returns", async () => {
+  const h = await harness(state(), [application], { connectFailure: "health_unavailable" });
+  h.navigate("boxes");
+  await h.click("connect", { deviceId: "box-102" });
+  assert.match(h.app.innerHTML, /role="alert"/);
+  await h.click("logout");
+  h.update(state());
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /CentuarAI-AMD-102/);
+  assert.doesNotMatch(h.app.innerHTML, /role="alert"|health_unavailable/);
+});
+
 test("market installation shows progress on the clicked app until it completes", async () => {
   const install = pendingResponse();
   const h = await harness(state(), [], { install: () => install.promise });
