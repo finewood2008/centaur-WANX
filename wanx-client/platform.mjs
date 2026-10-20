@@ -555,6 +555,12 @@ export function createPlatformClient({
         ),
       );
     } catch (error) {
+      // A new account session can precede server-side cleanup of its old
+      // network enrollment. Retry only restoration; never enroll over it.
+      if (["NETWORK_SESSION_REVOKED", "NETWORK_REVOCATION_PENDING"].includes(error.code)) {
+        error.retryable = true;
+        throw error;
+      }
       if (error.code !== "NETWORK_ENROLLMENT_REQUIRED") throw error;
       enrollment = validateSession(
         await request(
@@ -1085,7 +1091,7 @@ export function createPlatformClient({
       // seconds; ensureTransport already drains it before creating a new one.
       void Promise.allSettled([retireTransport(), retireDirect()]);
       emit();
-      await account.logout({ revokeNetwork: true });
+      await account.logout();
       return emit();
     },
     async close() {
