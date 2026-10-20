@@ -10,6 +10,7 @@ const cleanName = value => String(value || 'Agent').trim().slice(0, 80) || 'Agen
 // A locally generated profile secret authenticates reconnects; clientInfo is display-only.
 export function createAgentSpaces({state, scope, assertScope, remote, persist, onChanged, mcpConfig, profileDirectory}) {
   state.agents ||= [];
+  for(const record of state.agents)if(record.delivery?.state==='saving')record.delivery={...record.delivery,state:'failed',code:'SPACE_SYNC_INTERRUPTED'};
   const publicRecord = record => ({id: record.id, profile: record.profile, name: record.name, status: record.status, connection: record.connection, space_id: record.space_id, created: record.created});
   const lookup = key => state.agents.find(a => same(a.key, key));
   async function enroll(input) {
@@ -39,9 +40,21 @@ export function createAgentSpaces({state, scope, assertScope, remote, persist, o
     assertScope(record.scope);
     if (input.action === 'connection-status') return {value: publicRecord(record)};
     if (record.status !== 'approved') throw fail(record.status === 'rejected' ? 'SPACE_AGENT_REJECTED' : 'SPACE_APPROVAL_REQUIRED', 403);
-    const response = await remote(record.scope, '/connection-access', {method:'POST',token:record.token,body:input});
-    if (!['access','describe','stat','list','read','write-status'].includes(input.action)) onChanged();
-    return response;
+    const tracks=['task-begin','task-checkpoint','task-finish','mkdir','move','trash','restore','restore-version','commit-write'].includes(input.action);
+    const delivery=tracks?{id:input.request_id || input.operation_id || input.upload_id || '',action:input.action,state:'saving',at:Date.now()}:null;
+    if(delivery){record.delivery=delivery;onChanged();}
+    try {
+      const clipboard = ['clipboard-list','clipboard-read'].includes(input.action);
+      const response = await remote(record.scope, clipboard ? '/agent-access' : '/connection-access', {
+        method:'POST',token:record.token,body:input,...(clipboard ? {prefix:'/api/clipboard/v1'} : {})});
+      if(input.action==='access')response.value={...response.value,clipboard:{permissions:'read',scope:'same-account-and-box',tools:['clipboard_list','clipboard_read'],service:'wanx-super-clipboard'}};
+      if(delivery){delivery.state='saved';delivery.at=Date.now();await persist();}
+      if (!['clipboard-list','clipboard-read','access','describe','stat','list','read','write-status','sync-status','task-records'].includes(input.action)) onChanged();
+      return response;
+    } catch(error) {
+      if(delivery){delivery.state='failed';delivery.at=Date.now();delivery.code=/^[A-Z0-9_]+$/.test(error.code || '')?error.code:'SPACE_REQUEST_FAILED';await persist();onChanged();}
+      throw error;
+    }
   }
   async function manage(action, input = {}) {
     const bound = scope(); assertScope(bound);
@@ -59,11 +72,25 @@ export function createAgentSpaces({state, scope, assertScope, remote, persist, o
       if (action === 'reject') { record.status='rejected'; await persist(); onChanged(); return publicRecord(record); }
       record.token ||= randomBytes(32).toString('base64url');
       await persist(); // Keep the owner-issued credential before the box commits approval.
-      const approved = (await remote(bound,'/connections',{method:'POST',body:{profile:record.profile,name:cleanName(input.name || record.name),space_id:input.space_id || '',credential:record.token}})).value;
+      const approved = (await remote(bound,'/connections',{method:'POST',body:{profile:record.profile,name:cleanName(input.name || record.name),space_id:input.space_id || '',credential:record.token,...(input.sync_policy ? {sync_policy:input.sync_policy} : {})}})).value;
       Object.assign(record,{status:'approved',connection:approved.id,space_id:approved.space_id,token:approved.token,name:cleanName(input.name || record.name)});
       await persist(); onChanged(); return publicRecord(record);
     }
     const id = value => { if (!/^[a-f0-9]{32}$/.test(value || '')) throw fail('SPACE_INVALID_ID',400); return value; };
+    if (action === 'sync-status') {
+      const value=(await remote(bound,`/connections/${id(input.id)}/sync`)).value;
+      const record=state.agents.find(a=>a.connection===input.id&&a.scope===bound);
+      return {...value,delivery:record?.delivery};
+    }
+    if (action === 'sync-policy') {
+      const result=(await remote(bound,`/connections/${id(input.id)}/sync`,{method:'POST',body:{options:input.options,expected:input.expected}})).value;
+      onChanged();return result;
+    }
+    if (action === 'task-records' || action === 'task-delete') {
+      const offset=Number.isSafeInteger(input.offset)&&input.offset>=0?input.offset:0;
+      const result=(await remote(bound,`/connections/${id(input.id)}/tasks/${id(input.task_id)}${action==='task-records'?`?offset=${offset}`:''}`,{method:action==='task-delete'?'DELETE':'GET'})).value;
+      if(action==='task-delete')onChanged();return result;
+    }
     if (action === 'storage-set') {
       if(input.id!=='personal')id(input.id);
       const result=(await remote(bound,`/spaces/${input.id}/storage`,{method:'POST',body:{path:String(input.path || '')}})).value;

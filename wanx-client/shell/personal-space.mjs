@@ -4,6 +4,16 @@ import path from "node:path";
 
 const PREFIX = "/api/personal-space";
 const CHUNK = 4 * 1024 * 1024;
+const RECOVERY_CHUNK = 1024 * 1024;
+// Match the client's existing binary MB display. Applies to new UI batches only.
+export const MAX_UPLOAD_FILES = 20;
+export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const uploadLimit = message => Object.assign(new Error(message), { code: "SPACE_UPLOAD_LIMIT" });
+const transientCodes = new Set(["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "CONNECT_TIMEOUT", "SESSION_CLOSED", "GATEWAY_CLOSED", "NETWORK_CHANGED", "NETWORK_NOT_READY", "BOX_CONNECTION_REQUIRED", "SPACE_CONNECTION_TIMEOUT", "SPACE_CHUNK_STALLED", "SPACE_NETWORK_WAIT", "SPACE_UPLOAD_OFFSET", "tunnel_timeout", "tunnel_rejected", "network_unavailable", "network_recovering", "netbird_peer_disconnected"]);
+const errorCode = cause => cause?.code || ((transientCodes.has(cause?.message) || permanentCodes.has(cause?.message)) ? cause.message : "SPACE_TRANSFER_FAILED");
+const permanentCodes = new Set(["ACCOUNT_ACCESS_DENIED", "ACCOUNT_LOGIN_REQUIRED", "ACCOUNT_SESSION_EXPIRED", "NETWORK_DEVICE_ACCESS_DENIED", "PLATFORM_SESSION_EXPIRED", "BOX_PLATFORM_AUTH_FAILED", "BOX_PLATFORM_SESSION_EXPIRED", "BOX_UPSTREAM_AUTH_FAILED", "SPACE_DISK_FULL", "SPACE_LOCAL_FILE_CHANGED", "SPACE_REMOTE_FILE_CHANGED", "SPACE_NOT_FOUND", "SPACE_LINK_SCOPE", "SPACE_AGENT_PAUSED", "SPACE_AGENT_DISCONNECTED"]);
+const transient = cause => !permanentCodes.has(errorCode(cause)) && ![401, 403].includes(cause?.status) && (transientCodes.has(errorCode(cause)) || [408, 429, 502, 503, 504].includes(cause?.status));
+const terminal = task => ["complete", "canceled"].includes(task.phase);
 const fail = code => Object.assign(new Error(code), { code });
 const id = value => { if (typeof value !== "string" || !/^[a-f0-9]{32}$/.test(value)) throw fail("SPACE_INVALID_ID"); return value; };
 const folder = value => value === "" ? "" : id(value);
@@ -14,56 +24,86 @@ const fileStat = file => stat(file).catch(error => { if (error.code === "ENOENT"
 
 // Lives in the main process. Local paths come from a native picker or preload's
 // File conversion; credentials, remote URLs and user ids never come from the renderer.
-export async function createPersonalSpace({ client, store, serviceURL, chooseUploads, chooseDownload, chooseDownloadDirectory, onChanged = () => {} }) {
+export async function createPersonalSpace({ client, store, serviceURL, chooseUploads, chooseDownload, chooseDownloadDirectory, onChanged = () => {}, onEvent = () => {}, retryBaseMs = 1000, maxRetries = 6, random = Math.random }) {
   let restored = [], storageError = null;
   try { restored = await store.load() || []; if (!Array.isArray(restored)) throw new Error("Invalid transfer records"); }
   catch { storageError = "SECURE_STORAGE_READ_FAILED"; restored = []; }
-  let tasks = restored.map(task => ({ ...task, phase: ["complete", "canceled"].includes(task.phase) ? task.phase : "paused" }));
+  let tasks = restored.map(task => ({ ...task, phase: terminal(task) ? task.phase : task.recoveryVersion === 1 && task.autoResume ? "waiting" : "paused" }));
   let closed = false, lease = null, leaseKey = null, generation = 0, connectionPromise = null;
   let overview = null, phase = "disconnected", error = null;
   const running = new Map();
-  let writes = Promise.resolve();
+  let writes = Promise.resolve(), wakeTimer = null, retryUntil = 0, degraded = false;
+  let boundAccount = null, boundBox = null, wasReady = false;
+  const event = (task, action, details = {}) => { try { onEvent({ taskId: task.id, batchId: task.batchId, action, phase: task.phase, offset: task.offset, size: task.size, attempt: task.attempt || 0, ...details }); } catch {} };
   const accountKey = () => { const s = client.snapshot(); return s.account?.phase === "authenticated" ? JSON.stringify([serviceURL, s.account.accountId]) : null; };
-  const scopeKey = () => { const s = client.snapshot(); return accountKey() && s.phase === "ready" && s.connection?.deviceId ? JSON.stringify([accountKey(), s.connection.deviceId]) : null; };
+  // A route going offline is not an account/box change. Retain its identity,
+  // but never dispatch while the live connection is not ready for that box.
+  const scopeKey = () => {
+    const account = accountKey(), state = client.snapshot();
+    if (!account) return null;
+    const box = state.connection?.deviceId || (account === boundAccount ? boundBox : null);
+    return box ? JSON.stringify([account, box]) : null;
+  };
+  const ready = () => client.snapshot().phase === "ready" && !!client.snapshot().connection?.deviceId;
   const notify = () => onChanged(snapshot());
-  const persist = () => { if (storageError) return Promise.reject(fail(storageError)); const copy = structuredClone(tasks); writes = writes.catch(() => {}).then(() => store.save(copy)); return writes; };
+  const persist = () => { if (storageError) return Promise.reject(fail(storageError)); const copy = structuredClone(tasks); writes = writes.catch(() => {}).then(() => store.save(copy)).catch(() => { storageError = "SECURE_STORAGE_WRITE_FAILED"; for (const task of tasks) if (!terminal(task)) { task.autoResume = false; task.phase = "paused"; task.pauseReason = "error"; task.error = storageError; } for (const job of running.values()) job.controller.abort(fail(storageError)); throw fail(storageError); }); return writes; };
   function snapshot() {
     const scope = scopeKey();
-    return { phase, error, storageError, overview, scope, accountId: client.snapshot().account?.accountId, boxId: client.snapshot().connection?.deviceId, tasks: tasks.filter(t => t.scope === scope).map(({ localPath, partialPath, localStamp, destinationStamp, digest, ...publicTask }) => publicTask) };
+    return { phase, error, storageError, overview, scope, accountId: client.snapshot().account?.accountId, boxId: client.snapshot().connection?.deviceId || boundBox, tasks: tasks.filter(t => t.scope === scope).map(({ localPath, partialPath, localStamp, destinationStamp, digest, ...publicTask }) => publicTask) };
+  }
+  function schedulePump(ms = 0) {
+    clearTimeout(wakeTimer);
+    if (closed) return;
+    wakeTimer = setTimeout(pump, Math.max(0, ms)); wakeTimer.unref?.();
   }
   function sync() {
-    const next = scopeKey();
-    if (next === leaseKey) return;
-    generation++; leaseKey = next; lease = null; connectionPromise = null; overview = null;
-    phase = next ? "idle" : "disconnected"; error = null;
-    for (const job of running.values()) job.controller.abort();
-    for (const task of tasks) if (task.phase === "queued") task.phase = "paused";
+    const next = scopeKey(), online = ready();
+    if (next === leaseKey && online === wasReady) return;
+    const changed = next !== leaseKey;
+    generation++; leaseKey = next; lease = null; connectionPromise = null; wasReady = online;
+    boundAccount = accountKey(); boundBox = next ? JSON.parse(next)[1] : null;
+    if (changed) { overview = null; retryUntil = 0; degraded = false; }
+    phase = online ? "idle" : "disconnected"; error = null;
+    for (const task of tasks) {
+      if (terminal(task) || task.phase === "paused") continue;
+      if (changed && task.scope !== next) {
+        task.autoResume = false; task.pauseReason = "context"; task.phase = "paused"; task.error = "SPACE_CONTEXT_CHANGED";
+      } else if (!online) {
+        task.phase = "waiting"; task.pauseReason = "network";
+        if (task.direction === "upload") task.chunkSize = Math.min(task.chunkSize || CHUNK, RECOVERY_CHUNK);
+      }
+      event(task, "connection");
+    }
+    for (const job of running.values()) job.controller.abort(fail(changed ? "SPACE_CONTEXT_CHANGED" : "SPACE_NETWORK_WAIT"));
     void persist().catch(() => {});
-    notify();
+    notify(); schedulePump();
   }
   const unsubscribe = client.subscribe(sync);
   sync();
   async function connect() {
     sync();
-    if (closed || !leaseKey) throw fail("BOX_CONNECTION_REQUIRED");
-    if (lease) { lease.context(); return lease; }
+    if (closed || !leaseKey || !ready()) throw fail("BOX_CONNECTION_REQUIRED");
+    if (lease) { try { lease.context(); return lease; } catch { lease = null; } }
     if (!connectionPromise) {
       const epoch = generation;
-      connectionPromise = client.applicationConnection().then(value => {
+      const pending = client.applicationConnection().then(value => {
         if (epoch !== generation || closed) throw fail("SPACE_CONTEXT_CHANGED");
         lease = value;
         return value;
-      }).finally(() => { if (epoch === generation) connectionPromise = null; });
+      }).finally(() => { if (connectionPromise === pending) connectionPromise = null; });
+      connectionPromise = pending;
     }
     return connectionPromise;
   }
-  async function request(connection, route, { method = "GET", body, signal, raw = false, headers = {} } = {}) {
+  async function request(connection, route, { method = "GET", body, signal, raw = false, headers = {}, prefix = PREFIX } = {}) {
     if (signal?.aborted) throw fail("SPACE_PAUSED");
     connection.context();
     const deadline = AbortSignal.timeout(route.endsWith("/complete") ? 120_000 : 60_000);
     let response;
     try {
-      response = await connection.request({ path: `${PREFIX}${route}`, method, signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      const send = prefix === "/api/clipboard/v1" ? input => connection.businessRequest("clipboard", input) : input => connection.request(input);
+      response = await send({ path: `${prefix}${route}`, method, signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+        ...(method === "PUT" && (route.startsWith("/uploads/") || prefix === "/api/clipboard/v1") ? { idleTimeoutMs: 15_000, freshConnection: true } : {}),
         headers: { ...(body && !Buffer.isBuffer(body) ? { "content-type": "application/json" } : {}), ...headers },
         body: body && !Buffer.isBuffer(body) ? JSON.stringify(body) : body });
     } catch (cause) {
@@ -77,7 +117,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     let value;
     if (!raw || response.status >= 400) { try { value = JSON.parse(bytes.toString("utf8")); } catch {} }
     if (response.status < 200 || response.status >= 300)
-      throw fail(value?.detail?.code || value?.error?.code || (response.status === 404 ? "SPACE_UPGRADE_REQUIRED" : "SPACE_REQUEST_FAILED"));
+      throw Object.assign(fail(value?.detail?.code || value?.error?.code || (response.status === 404 ? "SPACE_UPGRADE_REQUIRED" : "SPACE_REQUEST_FAILED")), { status: response.status, retryAfter: (() => { const v = response.headers?.["retry-after"]; const seconds = Number(v); return v ? Math.max(0, Number.isFinite(seconds) ? seconds * 1000 : Date.parse(v) - Date.now()) || 0 : 0; })() });
     return raw ? { bytes, headers: response.headers } : value;
   }
   async function refresh() {
@@ -123,31 +163,40 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
   async function run(task, controller) {
     const { signal } = controller;
     const connection = await connect();
+    const transferRequest = async (route, options) => {
+      const start = performance.now(); let failure;
+      try { return await request(connection, route, options); }
+      catch (cause) { failure = cause; throw cause; }
+      finally { event(task, "request", { stage: route.endsWith("/complete") ? "commit" : options?.method === "PUT" ? "chunk" : "reconcile", durationMs: Math.round(performance.now() - start), errorCode: failure ? errorCode(failure) : undefined, httpStatus: failure?.status,
+        transportPhase: failure?.transportPhase, requestBytes: failure?.requestBytes, responseBytes: failure?.responseBytes, reusedSocket: failure?.reusedSocket }); }
+    };
     if (task.scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
     if (task.direction === "upload") {
       if (stamp(await fileStat(task.localPath)) !== task.localStamp) throw fail("SPACE_LOCAL_FILE_CHANGED");
       task.phase = "checking"; notify();
-      const digest = await digestFile(task.localPath, signal);
-      if (task.digest && task.digest !== digest) throw fail("SPACE_LOCAL_FILE_CHANGED");
+      const digest = task.digest || await digestFile(task.localPath, signal);
       task.digest = digest;
-      const remote = await request(connection, "/uploads", { method: "POST", signal, body: { id: task.id, parent: task.parent, name: task.name, size: task.size } });
-      task.offset = remote.offset;
+      const remote = await transferRequest("/uploads", { method: "POST", signal, body: { id: task.id, parent: task.parent, name: task.name, size: task.size } });
+      if (!Number.isSafeInteger(remote.offset) || remote.offset < 0 || remote.offset > task.size) throw fail("SPACE_UPLOAD_OFFSET_INVALID");
+      task.offset = remote.offset; event(task, "reconciled");
       if (remote.state !== "complete") {
         const handle = await open(task.localPath, "r");
         try {
           task.phase = "running";
           while (task.offset < task.size) {
             if (signal.aborted) throw fail("SPACE_PAUSED");
-            const buffer = Buffer.alloc(Math.min(CHUNK, task.size - task.offset));
+            const buffer = Buffer.alloc(Math.min(task.chunkSize || RECOVERY_CHUNK, RECOVERY_CHUNK, task.size - task.offset));
             const { bytesRead } = await handle.read(buffer, 0, buffer.length, task.offset);
             if (bytesRead !== buffer.length) throw fail("SPACE_LOCAL_FILE_CHANGED");
-            const result = await request(connection, `/uploads/${task.id}?offset=${task.offset}`, { method: "PUT", signal, body: buffer, headers: { "content-type": "application/octet-stream", "x-content-sha256": hash(buffer) } });
-            task.offset = result.offset; await persist(); notify();
+            const result = await transferRequest(`/uploads/${task.id}?offset=${task.offset}`, { method: "PUT", signal, body: buffer, headers: { "content-type": "application/octet-stream", "x-content-sha256": hash(buffer) } });
+            if (result.offset !== task.offset + bytesRead) throw fail("SPACE_UPLOAD_OFFSET_INVALID");
+            task.offset = result.offset; task.attempt = 0;
+            event(task, "confirmed"); await persist(); notify();
           }
         } finally { await handle.close(); }
       }
       if (stamp(await fileStat(task.localPath)) !== task.localStamp) throw fail("SPACE_LOCAL_FILE_CHANGED");
-      await request(connection, `/uploads/${task.id}/complete`, { method: "POST", signal, body: { digest: task.digest } });
+      if (remote.state !== "complete") await transferRequest(`/uploads/${task.id}/complete`, { method: "POST", signal, body: { digest: task.digest } });
     } else {
       const entry = await metadata(connection, task.itemId);
       if (entry.digest !== task.digest || entry.size !== task.size) throw fail("SPACE_REMOTE_FILE_CHANGED");
@@ -160,7 +209,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
         await handle.truncate(task.offset);
         task.phase = "running";
         while (task.offset < task.size) {
-          const result = await request(connection, `/files/${task.itemId}/content?offset=${task.offset}&length=${CHUNK}`, { signal, raw: true });
+          const result = await transferRequest(`/files/${task.itemId}/content?offset=${task.offset}&length=${CHUNK}`, { signal, raw: true });
           if (!result.bytes.length || result.bytes.length > Math.min(CHUNK, task.size - task.offset) || hash(result.bytes) !== result.headers["x-content-sha256"]) throw fail("SPACE_CHUNK_INVALID");
           await handle.write(result.bytes, 0, result.bytes.length, task.offset);
           await handle.sync();
@@ -172,25 +221,52 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
       if (signal.aborted || task.scope !== scopeKey()) throw fail("SPACE_PAUSED");
       await rename(task.partialPath, task.localPath);
     }
-    task.phase = "complete"; task.error = null;
+    task.phase = "complete"; task.error = null; task.autoResume = false; task.pauseReason = null; task.attempt = 0; event(task, "completed");
   }
   function pump() {
-    if (closed) return;
+    clearTimeout(wakeTimer); wakeTimer = null;
+    if (closed || !ready() || !scopeKey() || storageError) return;
+    if (degraded && !tasks.some(t => t.scope === scopeKey() && ["retrying", "running", "checking"].includes(t.phase))) degraded = false;
+    if (Date.now() < retryUntil) { schedulePump(retryUntil - Date.now()); return; }
     for (const task of tasks) {
-      if (running.size >= 2) break;
-      if (task.phase !== "queued" || task.scope !== scopeKey() || running.has(task.id)) continue;
+      if (running.size >= (degraded ? 1 : 2)) break;
+      if (!["queued", "waiting", "retrying"].includes(task.phase) || task.scope !== scopeKey() || running.has(task.id)) continue;
+      task.phase = "queued"; task.pauseReason = null; task.retryAt = null;
       const controller = new AbortController();
       const promise = run(task, controller).catch(cause => {
-        task.phase = "paused"; task.error = controller.signal.aborted ? "SPACE_PAUSED" : cause.code || "SPACE_TRANSFER_FAILED";
+        const code = controller.signal.aborted ? errorCode(controller.signal.reason) : errorCode(cause);
+        lease = null; connectionPromise = null;
+        if (!task.autoResume || task.scope !== scopeKey()) {
+          task.phase = "paused"; task.error = task.pauseReason === "user" ? null : code;
+        } else if (closed || !ready() || code === "SPACE_NETWORK_WAIT") {
+          task.phase = "waiting"; task.pauseReason = closed ? "restart" : "network"; task.error = null;
+        } else if (transient(cause) && (task.attempt || 0) < maxRetries) {
+          task.attempt = (task.attempt || 0) + 1;
+          task.phase = "retrying"; task.pauseReason = "network"; task.error = code; degraded = true;
+          task.chunkSize = Math.max(256 * 1024, Math.min(RECOVERY_CHUNK, Math.floor((task.chunkSize || CHUNK) / 2)));
+          retryUntil = Math.max(retryUntil, Date.now() + Math.max(cause.retryAfter || 0, Math.min(30_000, retryBaseMs * 2 ** (task.attempt - 1)) * (0.5 + random())));
+          task.retryAt = retryUntil;
+        } else {
+          task.phase = "paused"; task.autoResume = false; task.pauseReason = "error"; task.error = transient(cause) ? "SPACE_RETRY_EXHAUSTED" : code;
+          if (transient(cause)) {
+            // Stop dispatching the rest of this box's batch after bounded failures.
+            // Existing user pauses retain their intent; explicit retry reopens it.
+            for (const pending of tasks) if (pending.scope === task.scope && pending.autoResume && !terminal(pending)) {
+              pending.phase = "paused"; pending.autoResume = false; pending.pauseReason = "error"; pending.error = "SPACE_RETRY_EXHAUSTED";
+              running.get(pending.id)?.controller.abort(fail("SPACE_RETRY_EXHAUSTED"));
+              event(pending, "interrupted", { errorCode: "SPACE_RETRY_EXHAUSTED" });
+            }
+          }
+        }
+        event(task, "interrupted", { errorCode: code, httpStatus: cause.status });
       }).finally(async () => {
-        running.delete(task.id);
-        await persist().catch(() => { task.error = "SECURE_STORAGE_WRITE_FAILED"; task.phase = "paused"; });
-        notify(); pump();
+        await persist().catch(() => { task.error = "SECURE_STORAGE_WRITE_FAILED"; task.phase = "paused"; task.autoResume = false; task.pauseReason = "error"; });
+        running.delete(task.id); notify(); pump();
       });
       running.set(task.id, { controller, promise });
     }
   }
-  async function uploads(parent, droppedPaths, expectedScope) {
+  async function uploads(parent, droppedPaths, expectedScope, droppedNames) {
     if (storageError) throw fail(storageError);
     folder(parent);
     await connect(); const scope = scopeKey(), epoch = generation;
@@ -198,19 +274,31 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const selected = droppedPaths === undefined ? await chooseUploads() : droppedPaths;
     if (!Array.isArray(selected) || selected.some(file => typeof file !== "string" || !path.isAbsolute(file))) throw fail("SPACE_INVALID_DROP");
     if (epoch !== generation || scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
-    const selectedTasks = [];
-    for (const localPath of selected) {
+    if (selected.length > MAX_UPLOAD_FILES) throw uploadLimit(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件，当前选择了 ${selected.length} 个；单文件最大 200 MB。本批文件未加入上传队列，请重新选择。`);
+    if (!selected.length) return;
+    if (droppedNames !== undefined && (!Array.isArray(droppedNames) || droppedNames.length !== selected.length)) throw fail("SPACE_INVALID_DROP");
+    const selectedTasks = [], oversized = [], batchId = randomUUID().replaceAll("-", "");
+    for (const [index, localPath] of selected.entries()) {
+      // A disk-backed drag can expose an OS temporary path. Preserve the File's
+      // visible name instead of turning that temporary basename into its title.
+      const fileName = name(droppedNames === undefined ? path.basename(localPath) : droppedNames[index]);
+      if (fileName !== fileName.trim() || /[\\/:*?"<>|\x00-\x1f]/.test(fileName) || fileName.endsWith(".") || Buffer.byteLength(fileName, "utf8") > 240) throw fail("SPACE_INVALID_NAME");
       const info = await stat(localPath);
       if (!info.isFile()) {
         if (droppedPaths !== undefined) throw fail("SPACE_DROP_FILES_ONLY");
         continue;
       }
-      selectedTasks.push({ id: randomUUID().replaceAll("-", ""), scope, direction: "upload", parent,
-        localPath, localStamp: stamp(info), name: path.basename(localPath), size: info.size, offset: 0, phase: "queued" });
+      if (info.size > MAX_UPLOAD_BYTES) { oversized.push(fileName); continue; }
+      if (tasks.some(t => !terminal(t) && t.scope === scope && t.direction === "upload" && t.parent === parent && t.localPath === localPath && t.name === fileName && t.localStamp === stamp(info))) continue;
+      if (selectedTasks.some(t => t.localPath === localPath && t.name === fileName)) continue;
+      selectedTasks.push({ batchId, recoveryVersion: 1, autoResume: true, id: randomUUID().replaceAll("-", ""), scope, direction: "upload", parent,
+        localPath, localStamp: stamp(info), name: fileName, size: info.size, offset: 0, phase: "queued" });
     }
     if (epoch !== generation || scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
-    tasks.push(...selectedTasks);
-    try { await persist(); } catch (cause) { for (const t of tasks) if (t.phase === "queued") t.phase = "paused"; throw cause; }
+    if (oversized.length) throw uploadLimit(`单文件最大 200 MB，以下 ${oversized.length} 个文件超过限制：${oversized.join("、")}。本批文件未加入上传队列，请重新选择。`);
+    const unique = selectedTasks.filter(task => !tasks.some(t => !terminal(t) && t.scope === scope && t.direction === "upload" && t.parent === parent && t.localPath === task.localPath && t.name === task.name && t.localStamp === task.localStamp));
+    tasks.push(...unique); for (const task of unique) event(task, "enqueued");
+    try { await persist(); } catch (cause) { for (const t of tasks) if (t.phase === "queued") { t.phase = "paused"; t.autoResume = false; t.pauseReason = "error"; } throw cause; }
     notify(); pump();
   }
   async function download(itemId) {
@@ -224,9 +312,9 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const taskId = randomUUID().replaceAll("-", "");
     const destinationStamp = stamp(await fileStat(localPath));
     if (epoch !== generation || scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
-    tasks.push({ id: taskId, scope, direction: "download", itemId, name: entry.name, size: entry.size, digest: entry.digest,
+    tasks.push({ recoveryVersion: 1, autoResume: true, id: taskId, scope, direction: "download", itemId, name: entry.name, size: entry.size, digest: entry.digest,
       localPath, destinationStamp, partialPath: path.join(path.dirname(localPath), `.wanx-${taskId}.part`), offset: 0, phase: "queued" });
-    try { await persist(); } catch (cause) { for (const t of tasks) if (t.phase === "queued") t.phase = "paused"; throw cause; }
+    try { await persist(); } catch (cause) { for (const t of tasks) if (t.phase === "queued") { t.phase = "paused"; t.autoResume = false; t.pauseReason = "error"; } throw cause; }
     notify(); pump();
   }
   async function downloads(itemIds) {
@@ -269,7 +357,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
         for (const child of listing.items) await collect(child, localPath);
       } else if (entry.kind === "file") {
         const taskId = randomUUID().replaceAll("-", "");
-        planned.push({ id: taskId, scope, direction: "download", itemId: entry.id, name: entry.name, size: entry.size, digest: entry.digest,
+        planned.push({ recoveryVersion: 1, autoResume: true, id: taskId, scope, direction: "download", itemId: entry.id, name: entry.name, size: entry.size, digest: entry.digest,
           localPath, destinationStamp: null, partialPath: path.join(base, `.wanx-${taskId}.part`), offset: 0, phase: "queued" });
       } else throw fail("SPACE_NOT_FILE");
     }
@@ -281,18 +369,29 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     return { count: planned.length };
   }
   async function transfer(action, taskId) {
+    if (["pause-all", "resume-all", "retry-failed"].includes(action)) {
+      sync(); const scope = scopeKey(), epoch = generation;
+      const selected = tasks.filter(t => t.scope === scope && !terminal(t) && (action === "pause-all" ? t.phase !== "paused" : t.phase === "paused" && (action !== "retry-failed" || t.pauseReason === "error"))).map(t => t.id);
+      if (action === "pause-all") for (const target of selected) { const task = tasks.find(t => t.id === target); task.autoResume = false; task.phase = "paused"; task.pauseReason = "user"; running.get(target)?.controller.abort(fail("SPACE_PAUSED")); }
+      for (const target of selected) {
+        if (scope !== scopeKey() || epoch !== generation) throw fail("SPACE_CONTEXT_CHANGED");
+        await transfer(action === "pause-all" ? "pause" : "resume", target);
+      }
+      return;
+    }
     const epoch = generation;
     const task = tasks.find(t => t.id === id(taskId) && t.scope === scopeKey());
     if (!task) throw fail("SPACE_NOT_FOUND");
     const job = running.get(task.id);
     if (action === "resume") {
       if (job || task.phase !== "paused") return;
-      task.phase = "queued"; task.error = null;
-      try { await persist(); } catch (cause) { task.phase = "paused"; notify(); throw cause; }
+      task.phase = "queued"; task.error = null; task.pauseReason = null; task.autoResume = true; task.recoveryVersion = 1; task.attempt = 0; retryUntil = 0; event(task, "resumed");
+      try { await persist(); } catch (cause) { task.phase = "paused"; task.autoResume = false; notify(); throw cause; }
       notify(); pump(); return;
     }
     if (!["pause", "cancel"].includes(action) || task.phase === "complete") return;
-    job?.controller.abort(); await job?.promise;
+    task.autoResume = false; task.pauseReason = "user"; task.phase = "paused"; event(task, "paused");
+    job?.controller.abort(fail("SPACE_PAUSED")); await job?.promise;
     task.phase = "paused";
     if (action === "cancel") {
       if (epoch !== generation || task.scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
@@ -304,7 +403,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
       else await unlink(task.partialPath).catch(e => { if (e.code !== "ENOENT") throw e; });
       task.phase = "canceled";
     }
-    await persist(); notify();
+    task.error = null; await persist(); notify();
   }
   async function preview(itemId) {
     const connection = await connect(), entry = await metadata(connection, itemId);
@@ -321,6 +420,15 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     if (hash(bytes) !== entry.digest) throw fail("SPACE_CHUNK_INVALID");
     return { name: entry.name, type, data: bytes.toString("base64") };
   }
-  return { snapshot, refresh, operation, uploads, download, downloads, transfer, preview,
-    async close() { closed = true; generation++; unsubscribe(); for (const job of running.values()) job.controller.abort(); await Promise.allSettled([...running.values()].map(j => j.promise)); for (const t of tasks) if (t.phase === "queued") t.phase = "paused"; if (!storageError) await persist(); } };
+  async function clipboardRequest(route, options, bound) {
+    if (bound !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
+    const connection = await connect();
+    let result;
+    try { result = await request(connection, route, { ...options, prefix: "/api/clipboard/v1" }); }
+    catch (error) { if (error.code === "SPACE_UPGRADE_REQUIRED") throw fail("CLIPBOARD_SERVICE_UNAVAILABLE"); throw error; }
+    if (bound !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
+    return result;
+  }
+  return { snapshot, refresh, operation, uploads, download, downloads, transfer, preview, clipboardRequest,
+    async close() { closed = true; clearTimeout(wakeTimer); generation++; unsubscribe(); for (const job of running.values()) job.controller.abort(); await Promise.allSettled([...running.values()].map(j => j.promise)); for (const t of tasks) if (t.phase === "queued") { t.phase = t.autoResume ? "waiting" : "paused"; t.pauseReason = "restart"; } if (!storageError) await persist(); } };
 }

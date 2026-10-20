@@ -11,12 +11,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .links import SpaceLinks
 from .service import SpaceError, validate_name
 from .storage import bind_object, cleanup, directory_for, info, relocate, set_storage
+from .sync import SYNC_ACTIONS, SpaceSync, policy_value
 
 
-class Workspaces(SpaceLinks):
+class Workspaces(SpaceSync):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         with self._db() as db:
@@ -50,6 +50,11 @@ class Workspaces(SpaceLinks):
                     "SELECT COALESCE(SUM(offset),0) FROM uploads WHERE space_id=? AND state='pending'",
                     (row["id"],),
                 ).fetchone()[0]
+                item["sync_bytes"] = db.execute(
+                    "SELECT COALESCE(SUM(size),0) FROM space_sync_records WHERE space_id=?",
+                    (row["id"],),
+                ).fetchone()[0]
+                item["bytes"] += item["sync_bytes"]
                 item["connections"] = [
                     dict(c)
                     for c in db.execute(
@@ -64,9 +69,16 @@ class Workspaces(SpaceLinks):
         return set_storage(self, space_id, path)
 
     def approve(
-        self, profile: str, name: str, space_id: str = "", credential: str = ""
+        self,
+        profile: str,
+        name: str,
+        space_id: str = "",
+        credential: str = "",
+        sync_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         name = validate_name(name)
+        if sync_policy is not None:
+            sync_policy = policy_value(sync_policy)
         if not profile or len(profile) > 100:
             raise SpaceError("SPACE_INVALID_PROFILE")
         with self._db() as db:
@@ -121,6 +133,10 @@ class Workspaces(SpaceLinks):
                     time.time(),
                 ),
             )
+            if sync_policy is not None:
+                self.set_sync_policy(
+                    connection, sync_policy, self.sync_policy(connection)["revision"]
+                )
             return {"id": connection, "space_id": space_id, "root": space["root"], "token": token}
 
     def connection_action(self, connection: str, action: str) -> dict[str, Any]:
@@ -258,7 +274,26 @@ class Workspaces(SpaceLinks):
                     "space": dict(space),
                     "grants": [g for g in self.grants(connection["id"]) if not g["revoked"]],
                     "permissions": "read-write",
+                    "sync": self.sync_policy(connection["id"]),
                 }
+            if action in SYNC_ACTIONS:
+                if grant_id:
+                    raise SpaceError("SPACE_LINK_SCOPE", 403)
+                result = self._sync_execute(db, connection, action, **args)
+                db.execute(
+                    "UPDATE space_connections SET last_used=? WHERE id=?",
+                    (time.time(), connection["id"]),
+                )
+                if action not in {"sync-status", "task-records"}:
+                    self._record(
+                        db,
+                        connection["id"] + ":own",
+                        action,
+                        result["task_id"],
+                        connection["name"],
+                        "ok",
+                    )
+                return result
             if grant_id:
                 grant = db.execute(
                     "SELECT * FROM space_grants WHERE id=? AND connection=? AND revoked IS NULL",
@@ -290,10 +325,20 @@ class Workspaces(SpaceLinks):
                 "data": b"",
             }
             defaults.update({k: v for k, v in args.items() if k in defaults})
+            args["grant_id"] = grant_id
+            task = self._check_sync_file(db, connection, action, args)
+            cached = self._sync_file_replay(db, connection, task, action, args)
+            if cached is not None:
+                # A saved response never extends a grant after a resource moves away.
+                self._within(db, root, target, trash=action in {"trash", "restore"})
+                if cached.get("id"):
+                    self._within(db, root, cached["id"], trash=action in {"trash", "restore"})
+                return cached
             try:
                 # A savepoint keeps failure auditing without publishing a partial mutation.
                 db.execute("SAVEPOINT agent_operation")
                 result = self._execute(db, operation, root, action, target, **defaults)
+                self._record_sync_file(db, connection, task, action, args, result)
                 db.execute("RELEASE agent_operation")
             except SpaceError:
                 db.execute("ROLLBACK TO agent_operation")

@@ -95,6 +95,10 @@ def _allowed(path: str, method: str) -> bool:
     # normalizes them. Never forward public /docs or /.well-known provider routes.
     if "\\" in path or "//" in path or any(p in {".", ".."} for p in path.split("/")):
         return False
+    if method == "WEBSOCKET" and (
+        path == "/api/clipboard/v1" or path.startswith("/api/clipboard/v1/")
+    ):
+        return False
     if path in {"/docs", "/redoc", "/openapi.json"} or path.startswith(
         ("/.well-known", "/oidc", "/internal")
     ):
@@ -188,6 +192,7 @@ def create_app(
     adapter: Any,
     *,
     upstream_url: str = "http://127.0.0.1:18088",
+    clipboard_url: str | None = "http://127.0.0.1:8092",
     http_transport: Any = None,
     lease_check_interval: float = 0.25,
     dashboard_dir: Path | None = None,
@@ -205,6 +210,18 @@ def create_app(
         or parsed.fragment
     ):
         raise ValueError("upstream_url must be a loopback HTTP origin")
+    if clipboard_url is not None:
+        business = urlsplit(clipboard_url)
+        if (
+            business.scheme not in {"http", "https"}
+            or business.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or business.username
+            or business.password
+            or business.path not in {"", "/"}
+            or business.query
+            or business.fragment
+        ):
+            raise ValueError("clipboard_url must be a loopback HTTP origin")
     assets = DashboardAssets(dashboard_dir or installed_dashboard())
     origin = upstream_url.rstrip("/")
     metadata = bridge_build_metadata() if build_metadata is None else dict(build_metadata)
@@ -433,6 +450,16 @@ def create_app(
         marker = _credentials(request.headers, request.query_params, required=protected)
         session = await _call(auth.authorize, marker) if marker else None
         token = _field(session, "upstream_token") if session else None
+        is_clipboard = path == "/api/clipboard/v1" or path.startswith("/api/clipboard/v1/")
+        service_origin = origin
+        forward_token = token
+        if is_clipboard:
+            if not clipboard_url:
+                raise _error("CLIPBOARD_SERVICE_UNAVAILABLE", 503)
+            if _field(session, "user").get("application_id", "wanx") != "wanx":
+                raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
+            service_origin = clipboard_url.rstrip("/")
+            forward_token = marker
         if path.startswith("/assets/"):
             asset_response = await assets.response(request, path)
             if asset_response is not None:
@@ -459,10 +486,16 @@ def create_app(
             await managed_resources.inspect_request(request.method, path, request_body)
             if session:
                 await _call(auth.assert_live, session)
+            headers = _headers(request.headers, forward_token)
+            if is_clipboard:
+                # This is an authenticated server-to-server hop, not a browser
+                # origin. The service calls this bridge's existing user/Space
+                # routes with the same lease, so each storage hop rechecks it.
+                headers = [(k, v) for k, v in headers if k.lower() != "origin"]
             req = client.build_request(
                 request.method,
-                _target(origin, path, request.query_params, token),
-                headers=_headers(request.headers, token),
+                _target(service_origin, path, request.query_params, forward_token),
+                headers=headers,
                 content=content,
             )
             # AsyncClient keeps a shared response cookie jar. Never let a prior
@@ -474,7 +507,7 @@ def create_app(
                 if guard in done:
                     await guard
             upstream = await pending
-            headers = _response_headers(upstream, origin)
+            headers = _response_headers(upstream, service_origin)
             if upstream.status_code == 200 and managed_resources.needs_response(
                 request.method, path
             ):

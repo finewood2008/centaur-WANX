@@ -522,3 +522,47 @@ test("name editor retains its node through broadcasts and does not submit during
   assert.equal(calls.find(([action])=>action==="space.mkdir")[1].name, "项目资料");
   assert.equal(h.space.retainEditor(), false);
 });
+
+test('waiting/retrying queue remains visible offline and batch controls send explicit actions', async () => {
+  const calls = [];
+  const h = harness(async (action, input) => { calls.push([action, input]); return ok(action === 'space.refresh' ? { phase: 'ready', tasks: [] } : listed('file.txt')); });
+  h.space.hostState(connected('box')); h.space.activate(true); await tick();
+  const task = { id: 'a'.repeat(32), direction: 'upload', name: 'sample.txt', size: 512, offset: 0, phase: 'waiting' };
+  h.space.hostState({ ...connected('box'), canLaunchApplications: false, activeDeviceId: null, connectionPhase: 'recovering' });
+  h.emit({ accountId: 'owner', boxId: 'box', phase: 'disconnected', tasks: [task] });
+  assert.match(h.space.view(), /等待连接恢复/);
+  assert.doesNotMatch(h.space.view(), /传输 · 进行中/);
+  await h.click('transfer', '', { command: 'pause-all' });
+  assert.ok(calls.some(([action, input]) => action === 'space.transfer' && input.action === 'pause-all'));
+  h.space.hostState({ ...connected('box'), route: 'auth', account: null, canLaunchApplications: false });
+  assert.doesNotMatch(h.space.view(), /sample.txt/);
+});
+
+for (const entry of ["picker", "drop"]) test(`main ${entry} shows a detailed preflight rejection without adding transfer rows`, async () => {
+  const rejection = { code: "SPACE_UPLOAD_LIMIT", message: "单文件最大 200 MB：<large>.bin。本批文件未加入上传队列。" };
+  const h = harness(async action => ok(action === "space.uploads" ? { uploadRejection: rejection } : action === "space.refresh" ? { phase: "ready", tasks: [] } : listed("existing.txt")),
+    async () => ({ ok: false, ...rejection }));
+  h.space.hostState(connected("box")); h.space.activate(true); await tick();
+  if (entry === "picker") await h.click("upload");
+  else await h.event("drop", { preventDefault() {}, dataTransfer: { types: ["Files"], files: [{ name: "<large>.bin" }] } });
+  assert.match(h.space.view(), /200 MB：&lt;large&gt;.bin.*本批文件未加入上传队列/);
+  assert.doesNotMatch(h.space.view(), /<large>|class="space-transfer "/);
+});
+
+test('closing a loading preview prevents late content reopening the dialog', async () => {
+ let release;
+ const h=harness(async action=> action==='space.preview'?new Promise(r=>release=r):ok(action==='space.refresh'?{phase:'ready',tasks:[]}:listed('中文  图片😀.png')));
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();
+ const opening=h.click('preview','a'.repeat(32));await tick();assert.match(h.space.view(),/正在加载预览/);
+ await h.click('dialog-close');release(ok({type:'image/png',data:'aGk='}));await opening;
+ assert.doesNotMatch(h.space.view(),/role="dialog"/);
+});
+
+test('unsupported preview offers download of the same original resource and mode toggles',async()=>{
+ const downloads=[];
+ const h=harness(async(action,input)=>{if(action==='space.preview')return{ok:false,code:'SPACE_PREVIEW_UNSUPPORTED'};if(action==='space.download'){downloads.push(input.id);return ok();}return ok(action==='space.refresh'?{phase:'ready',tasks:[]}:listed('原文件.docx'));});
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();
+ await h.click('preview-mode');assert.match(h.space.view(),/aria-pressed="true"/);
+ await h.click('preview','a'.repeat(32));assert.match(h.space.view(),/下载原文件/);
+ await h.click('preview-download');assert.deepEqual(downloads,['a'.repeat(32)]);
+});

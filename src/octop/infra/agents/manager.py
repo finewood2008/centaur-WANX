@@ -681,6 +681,8 @@ class AgentManager:
                 }
             # ``system_files_path`` is an internal layout control and must not
             # be user-configurable. New agents always use the default prefix.
+            # Primary identity is assigned only by the owner-checked binding service.
+            config.pop("zhijun_profile", None)
             config.pop("system_files_path", None)
             config["system_files_path"] = DEFAULT_SYSTEM_FILES_PATH
             if spec.is_shared and spec.kind == "team":
@@ -841,6 +843,9 @@ class AgentManager:
         ``system_files_path`` stays exactly as stored: a legacy agent without it keeps the root
         layout, so a value a client invents is dropped.
 
+        ``zhijun_profile`` is service-owned and cannot be created, replaced or removed
+        through generic configuration updates.
+
         ``pin_workspace_dir`` additionally pins ``workspace_dir`` to the stored value. User-facing
         updates need it — rewriting the directory silently relocates the agent's workspace, so a
         scoped or container agent would resolve to the classic layout and lose sight of its
@@ -854,6 +859,10 @@ class AgentManager:
             out["system_files_path"] = current_raw["system_files_path"]
         else:
             out.pop("system_files_path", None)
+        if "zhijun_profile" in current_raw:
+            out["zhijun_profile"] = current_raw["zhijun_profile"]
+        else:
+            out.pop("zhijun_profile", None)
         if pin_workspace_dir and "workspace_dir" in current_raw:
             out["workspace_dir"] = current_raw["workspace_dir"]
         return out
@@ -3604,15 +3613,6 @@ class AgentManager:
                     lambda: self.get_agent(row.agent_id)._memory_runtime.service,
                 ),
             ]
-        if (
-            not zhijun
-            and application_id(row) == "wanx"
-            and row.user_id is not None
-            and not row.is_shared
-        ):
-            from octop.infra.agents.role_ontology import RoleOntologyMiddleware
-
-            agent_middleware.append(RoleOntologyMiddleware(self, row.agent_id, row.user_id))
         if application_id(row) not in {"wanx", "zhijun"}:
             from octop.infra.agents.middleware.zhijun import ZhijunMemoryBoundary
 
@@ -3756,6 +3756,14 @@ class AgentManager:
                     InteractionPreferences.model_validate(cfg["interaction_preferences"])
                 )
             )
+
+        # Task-specific grounding must follow general expression preferences.
+        from octop.infra.agents.zhijun_profile import primary as zhijun_primary
+
+        if not zhijun and row.user_id is not None and zhijun_primary(row):
+            from octop.infra.agents.role_ontology import RoleOntologyMiddleware
+
+            agent_middleware.append(RoleOntologyMiddleware(self, row.agent_id, row.user_id))
 
         harness_cfg = HarnessAgentConfig(
             name=_memory_namespace(row.agent_id),

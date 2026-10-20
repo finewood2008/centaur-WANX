@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import afterPack, { probeNativeEngine, readPackagedNativeBinaries, verifyPackagedNativeBinaries } from "../tools/package-client-native.mjs";
+import afterPack, { probeNativeEngine, readPackagedNativeBinaries, verifyPackagedNativeBinaries, verifyClipboardNative } from "../tools/package-client-native.mjs";
 
 async function fixture(t, platform = process.platform === "win32" ? "win32" : "darwin", arch = "arm64") {
   const root = await mkdtemp(path.join(os.tmpdir(), "wanx-native-package-"));
@@ -49,6 +49,15 @@ test("an omitted or misplaced helper fails packaging even when a source-layout c
     await rm(file);
     await assert.rejects(verifyPackagedNativeBinaries(input), /CLIENT_NATIVE_BINARY_MISSING/);
   }
+});
+
+test('Mac clipboard helper must be executable, present and match the compiled source', {skip:process.platform==='win32'}, async t=>{
+ const input=await fixture(t,'darwin','arm64'),name='wanx-clipboard-darwin-arm64';
+ await assert.rejects(verifyClipboardNative(input),/CLIENT_CLIPBOARD_HELPER_MISSING/);
+ const source=path.join(input.sourceDirectory,name),target=path.join(input.resourcesPath,'network',name);
+ await writeFile(source,'synthetic helper',{mode:0o755});await copyFile(source,target);
+ await verifyClipboardNative(input);
+ await writeFile(target,'stale');await assert.rejects(verifyClipboardNative(input),/CLIENT_CLIPBOARD_HELPER_MISMATCH/);
 });
 
 test("stale or truncated native files cannot pass with a successful source build", async t => {

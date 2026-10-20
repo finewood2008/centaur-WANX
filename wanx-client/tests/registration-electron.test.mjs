@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import electron from "electron";
 
 // Opt in on a desktop session; platform responses and the profile stay isolated.
-test("real Electron completes the registration UI through preload, IPC and Consumer account", {
+test("real Electron registers, logs in and remembers credentials through preload, IPC and Consumer account", {
   skip: process.env.WANX_TEST_ELECTRON !== "1", timeout: 30000,
 }, async t => {
   const profile = await mkdtemp(join(tmpdir(), "wanx-register-"));

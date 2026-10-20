@@ -82,6 +82,7 @@ async function harness(initial = state(), installed = [application], options = {
           scrollIntoView: (options) => calls.push(["scroll-form", name, options.block]),
           replaceWith: (retained) => forms.set(name, retained),
         };
+        form.reset = () => { form.values = {}; };
         if (name === "wifi") {
           wifiNodes.set('button[type="submit"]', submit);
           for (const fieldName of ["ssid", "password", "security", "hidden"]) {
@@ -129,6 +130,7 @@ async function harness(initial = state(), installed = [application], options = {
         devices: deviceIds.map(deviceId => ({ deviceId, deviceName: null, claimStatus: "unknown" })),
       };
     },
+    redeemConsoleClaim: async input => { calls.push(["console-claimed", input]); return options.claim ? options.claim(input) : { deviceId: supportDeviceId, ownership: "claimed" }; },
     listOwnershipTransfers: async () => options.transfers ? options.transfers() : [],
     sendTransferCode: async () => ({ expiresIn: 300 }),
     createOwnershipTransfer: async input => { calls.push(["ownership-created", input]); return { ...input, state: "pending_target" }; },
@@ -166,6 +168,7 @@ async function harness(initial = state(), installed = [application], options = {
       rollback: async () => { records = [{ ...application, version: "0.4.2" }]; },
     },
     credits: options.credits,
+    creditWallet: options.creditWallet,
     accountProfile: options.accountProfile,
     support: options.support,
     applications, uiState, getState: snapshot, publishState: publish,
@@ -215,9 +218,9 @@ async function harness(initial = state(), installed = [application], options = {
   }
   vm.runInNewContext(source, {
     window, setInterval() {},
-    Date,
+    Date, crypto: globalThis.crypto,
     setTimeout, clearTimeout, TextEncoder, queueMicrotask,
-    document: { addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
+    document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -2377,17 +2380,26 @@ test("expired setup sessions offer a new scan without requiring a deployment win
 });
 
 
-test("credits entry opens a read-only account ledger with real IPC data", async () => {
-  const h = await harness(state(), [application], { credits: {
-    balance: async () => ({ available: 1250, held: 40, paid_available: 1000, gift_available: 250 }),
-    transactions: async () => ({ items: [], after: 0, hasMore: false }),
+test("wallet entry reads the versioned account ledger through real IPC without a box", async () => {
+  const envelope = data => ({ schema_version: "1", request_id: "wallet-seam", data });
+  const h = await harness(state(), [application], { creditWallet: {
+    balance: async () => envelope({ balance_credit_atoms: "1250000000", debt_credit_atoms: "0", ledger_sequence: 1, execution_slot_state: "none" }),
+    catalog: async () => envelope({ recharge_enabled: false, timezone: "Asia/Shanghai", tiers: [] }),
+    orders: async () => envelope({ items: [], next_cursor: null }),
+    entries: async () => envelope({ items: [], next_cursor: null, through_ledger_sequence: 1 }),
+    calls: async () => envelope({ items: [], next_cursor: null }),
+    summary: async () => envelope({ gross_consumed_credit_atoms: "0", correction_credit_atoms: "0", net_consumed_credit_atoms: "0", pending_call_count: 0, ledger_sequence: 1 }),
   } });
-  assert.match(h.app.innerHTML, /1,250 点/);
+  assert.match(h.app.innerHTML, /1,250\.00 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.app.innerHTML, /积分/);
-  assert.match(h.app.innerHTML, /disabled>充值 · 暂未开放/);
-  assert.match(h.app.innerHTML, /还没有积分记录/);
+  assert.match(h.app.innerHTML, /账号积分/);
+  assert.match(h.app.innerHTML, /data-action="credits-open"/);
+  assert.doesNotMatch(h.app.innerHTML, /积分流水|调用记录|充值订单|role="dialog"/);
+  await h.click("credits-open");
+  assert.match(h.app.innerHTML, /role="dialog"/);
+  assert.match(h.app.innerHTML, /购买暂不可用/);
+  assert.doesNotMatch(h.app.innerHTML, /赠送积分|预计消耗|预留额度/);
 });
 
 test("box maintenance opens the current box terminal and desktop through trusted IPC", async () => {
@@ -2623,4 +2635,60 @@ test("box overview shows WANX-wide usage and the box public IP, never private or
   assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|容器 IP/);
   h.update({ ...state("ready", "ready", "box-102"), phase: "recovering" });
   assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|≥ 1\.0 KB/);
+});
+
+test("box ownership controls and console claim are reachable without a live connection", async () => {
+  const h = await harness(supportState(), []);
+  await h.click("show-boxes");
+  assert.doesNotMatch(actionButton(h, "transfer-open"), /\bhidden\b/);
+  assert.doesNotMatch(h.app.innerHTML.match(/<section[^>]*ownership-section[^>]*>/)?.[0], /\bhidden\b/);
+  assert.match(h.app.innerHTML, /data-form="console-claim"/);
+  const css = await readFile(new URL("../local-ui/renderer/styles.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /(?:transfer-open|ownership-section)[^{]*\{[^}]*display:\s*none/);
+});
+
+test("console claim retains input on directory updates and reuses intent after a lost response", async () => {
+  let fail = true;
+  const h = await harness(supportState(), [], { claim: async () => {
+    if (fail) throw new Error('ACCOUNT_NETWORK_ERROR');
+    return { deviceId: supportDeviceId, ownership: 'claimed' };
+  } });
+  await h.click('show-boxes');
+  const form = h.app.querySelector('[data-form="console-claim"]');
+  form.values.claimCode = 'abcdefg234';
+  h.update({ ...supportState(), platform: { phase: 'enrolling' } });
+  assert.equal(h.app.querySelector('[data-form="console-claim"]'), form);
+  assert.equal(form.values.claimCode, 'abcdefg234');
+  await h.submit('console-claim', { claimCode: 'abcdefg234' });
+  const first = h.calls.find(([action]) => action === 'console-claimed')[1];
+  assert.equal(first.claimCode, 'ABCDEFG234');
+  assert.match(first.clientAttemptId, /^[\da-f-]{36}$/);
+  fail = false;
+  await h.submit('console-claim', { claimCode: 'abcdefg234' });
+  assert.deepEqual(h.calls.filter(([action]) => action === 'console-claimed').at(-1)[1], first);
+  assert.match(h.app.innerHTML, /盒子已认领/);
+  assert.deepEqual(form.values, {});
+  h.update({ ...supportState(), account: { phase: 'authenticated', accountId: 'different-account' } });
+  await h.click('show-boxes');
+  assert.doesNotMatch(h.app.innerHTML, /盒子已认领/);
+  await h.submit('console-claim', { claimCode: 'abcdefg234' });
+  assert.notEqual(h.calls.filter(([action]) => action === 'console-claimed').at(-1)[1].clientAttemptId, first.clientAttemptId);
+});
+
+test("expired console claim reports actionable guidance without claiming success", async () => {
+  const h = await harness(supportState(), [], { claim: async () => { throw new Error('CONSOLE_CLAIM_EXPIRED'); } });
+  await h.click('show-boxes');
+  await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
+  assert.match(h.app.innerHTML, /认领码已过期/);
+  assert.doesNotMatch(h.app.innerHTML, /盒子已认领/);
+});
+
+test("pending network cleanup explains server recovery instead of blaming the local network", async () => {
+  const s = state("unavailable", "unavailable");
+  s.platform.reason = "NETWORK_REVOCATION_PENDING";
+  const h = await harness(s);
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /网络会话清理中/);
+  assert.match(h.app.innerHTML, /完成后将自动重连/);
+  assert.doesNotMatch(h.app.innerHTML, /请检查本机网络后重试连接/);
 });

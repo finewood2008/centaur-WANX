@@ -11,6 +11,15 @@ async function creditsRead(method, input) {
   return value;
 }
 
+async function walletRequest(method, input) {
+  const result = await ipcRenderer.invoke(`wanx-client:wallet-${method}`, input);
+  if (result?.ok !== true) {
+    const error = result?.error || { code: "CREDITS_INVALID_RESPONSE" };
+    throw Object.assign(new Error(error.code), error);
+  }
+  return result.value;
+}
+
 function projectState(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const account = source.account || { phase: "signed_out" };
@@ -65,6 +74,18 @@ async function rawState() {
 }
 
 const actions = {
+  "wallet.catalog": () => walletRequest("catalog"),
+  "wallet.balance": () => walletRequest("balance"),
+  "wallet.wallet": () => walletRequest("wallet"),
+  "wallet.usage": input => walletRequest("usage", input),
+  "wallet.orders": input => walletRequest("orders", input),
+  "wallet.order": input => walletRequest("order", input),
+  "wallet.entries": input => walletRequest("entries", input),
+  "wallet.calls": input => walletRequest("calls", input),
+  "wallet.call": input => walletRequest("call", input),
+  "wallet.summary": input => walletRequest("summary", input),
+  "wallet.createOrder": input => walletRequest("createOrder", input),
+  "wallet.closeOrder": input => walletRequest("closeOrder", input),
   "profile.save": input => ipcRenderer.invoke("wanx-client:profile-save", { displayName: input?.displayName }),
   "profile.avatar": () => ipcRenderer.invoke("wanx-client:profile-avatar"),
   "profile.avatar-remove": () => ipcRenderer.invoke("wanx-client:profile-avatar-remove"),
@@ -76,6 +97,7 @@ const actions = {
     ipcRenderer.invoke("wanx-client:login-password", {
       phone: input?.username,
       password: input?.password,
+      remember: input?.remember,
     }),
   "auth.send-code": (input) =>
     ipcRenderer.invoke("wanx-client:send-registration-code", { phone: input?.username }),
@@ -89,8 +111,10 @@ const actions = {
   "auth.change-password": (input) =>
     ipcRenderer.invoke("wanx-client:change-password", { code: input?.code, password: input?.password }),
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
+  "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
+  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
   "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {
@@ -136,8 +160,11 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
+for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
+
+for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])
+  actions[`clipboard.${method}`] = input => ipcRenderer.invoke(`wanx-client:clipboard-${method}`, input);
 
 async function action(name, input = {}) {
   const handler = actions[name];
@@ -147,7 +174,11 @@ async function action(name, input = {}) {
     const value = await handler(input);
     return { ok: true, value, state: await getLocalState() };
   } catch (error) {
-    return { ok: false, code: errorCode(error), state: await getLocalState() };
+    const rawCode = errorCode(error);
+    const clipboardCode = rawCode.match(/(?:^|Error: )((?:CLIPBOARD|SPACE|BOX|ACCOUNT|SECURE_STORAGE)_[A-Z0-9_]+)$/)?.[1];
+    return { ok: false, code: name.startsWith("clipboard.") ? clipboardCode || "CLIPBOARD_OPERATION_FAILED" : rawCode, state: await getLocalState(),
+      ...(name.startsWith("wallet.") ? { request_id: error.request_id || null, details: error.details || {},
+        retryable: error.retryable === true, status: error.status || null } : {}) };
   }
 }
 
@@ -159,17 +190,35 @@ contextBridge.exposeInMainWorld(
   "wanxClient",
   Object.freeze({
     getLocalState,
+    getRememberedLogin: () => ipcRenderer.invoke("wanx-client:remembered-login-get"),
     action,
     async uploadDroppedFiles(files, input = {}) {
       try {
         if (!Array.isArray(files) || !files.length) throw new Error("SPACE_INVALID_DROP");
         const paths = files.map(file => webUtils.getPathForFile(file));
         if (paths.some(file => !file)) throw new Error("SPACE_INVALID_DROP");
-        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths });
+        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths, names: files.map(file => file.name) });
+        if (value?.uploadRejection) return { ok: false, ...value.uploadRejection };
         return { ok: true, value };
       } catch (error) {
         return { ok: false, code: errorCode(error) };
       }
+    },
+    async clipboardFiles(files, input={}) {
+      try {
+        if(!Array.isArray(files)||!files.length||files.length>20)throw new Error("CLIPBOARD_LIMIT");
+        if(files.some(file=>file.size>20*1024*1024))throw new Error("CLIPBOARD_LIMIT");
+        const paths=files.map(file=>webUtils.getPathForFile(file));
+        let payload;
+        if(paths.every(Boolean))payload={paths};
+        else if(files.length===1&&["image/png","image/jpeg","image/gif","image/webp"].includes(files[0].type))payload={image:Buffer.from(await files[0].arrayBuffer()).toString("base64"),name:files[0].name,mime:files[0].type};
+        else throw new Error("CLIPBOARD_VIRTUAL_FILE");
+        return await action("clipboard.capture",{...payload,scope:input.scope});
+      }catch(error){return {ok:false,code:errorCode(error)};}
+    },
+    onClipboardState(listener) {
+      const receive=(_event,state)=>listener(state);ipcRenderer.on("wanx-client:clipboard-state",receive);
+      return ()=>ipcRenderer.removeListener("wanx-client:clipboard-state",receive);
     },
     checkHealth: async () => ({
       ok: false,

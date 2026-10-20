@@ -24,10 +24,10 @@ try {
         if (sendError) return new Response(JSON.stringify(sendError === 'SMS_DAILY_LIMIT' ? { code: 602 } : { code: 400, data: { errorCode: sendError }, msg: 'private server detail' }));
         return reply({ expiresIn: 300, debugCode: 'must-not-reach-renderer' });
       }
-      if (url.endsWith('/password/register')) {
+      if (url.endsWith('/password/register') || url.endsWith('/password/login')) {
         assert.equal(body.phone, '13800138000');
         assert.equal(body.password, ' test-password ');
-        assert.equal(body.code, '000001');
+        if (url.endsWith('/password/register')) assert.equal(body.code, '000001');
         assert.match(body.clientPublicKey, /PUBLIC KEY/);
         assert.equal(body.confirmPassword, undefined);
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -35,6 +35,7 @@ try {
         return reply({ accountId: 'test-account', clientId: body.clientId, accessToken: 'test-access', refreshToken: 'test-refresh', expiresIn: 3600 });
       }
       if (url.endsWith('/devices')) return reply([]);
+      if (url.endsWith('/logout')) return reply({});
       throw Error(`Unexpected test request: ${new URL(url).pathname}`);
     },
   });
@@ -155,8 +156,65 @@ try {
   })()`);
   assert.equal(account.snapshot().phase, 'authenticated');
   assert.equal(saved.active.session.accountId, 'test-account');
+  await js(`(async () => {
+    click('profile-menu');
+    await until(() => !document.querySelector('[data-action="logout"]').disabled);
+    click('logout');
+    await until(() => !!field('password') && idle());
+    click('auth-login');
+    await until(() => !!field('remember'));
+    check(field('remember').checked, 'remember should default on');
+    fill('username', '13800138000'); fill('password', ' test-password ');
+    submit(); await until(() => !field('password'));
+  })()`);
+  assert.equal(saved.rememberedLogin.password, ' test-password ');
+  const reloaded = new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+  await js(`(async () => {
+    click('profile-menu');
+    await until(() => !document.querySelector('[data-action="logout"]').disabled);
+    click('logout');
+    await until(() => field('password')?.value === ' test-password ');
+    check(field('username').value === '13800138000', 'phone was not restored');
+    check(!document.querySelector('#app').innerHTML.includes('test-password'), 'remembered password leaked into HTML');
+    location.reload();
+  })()`);
+  await reloaded;
+  await js(`(async () => {
+    const wait = async predicate => {
+      for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
+      throw Error('remembered login was not restored after reload');
+    };
+    const field = name => document.querySelector('[name="' + name + '"]');
+    await wait(() => field('password')?.value === ' test-password ');
+    field('remember').click();
+    await wait(() => !field('remember').disabled);
+    if (field('remember').checked) throw Error('forget did not uncheck remember');
+  })()`);
+  assert.deepEqual(saved.rememberedLogin, { remember: false });
+  assert.equal(saved.active, null);
+  // A delayed credential read must not replace input the user has already edited.
+  const getRememberedLogin = account.getRememberedLogin;
+  let releaseCredentials;
+  account.getRememberedLogin = () => new Promise(resolve => { releaseCredentials = resolve; });
+  const reloadFinished = new Promise(resolve => window.webContents.once('did-finish-load', resolve));
+  window.reload();
+  await reloadFinished;
+  await js(`(async () => {
+    for (let i = 0; i < 100 && !document.querySelector('[name="password"]'); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    const username = document.querySelector('[name="username"]');
+    username.value = '13900139000';
+    username.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('[name="password"]').value = 'newly-typed-password';
+  })()`);
+  releaseCredentials({ remember: true, phone: '13800138000', password: ' test-password ' });
+  await js(`(async () => {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    if (document.querySelector('[name="username"]').value !== '13900139000' ||
+        document.querySelector('[name="password"]').value !== 'newly-typed-password') throw Error('late autofill replaced edited credentials');
+  })()`);
+  account.getRememberedLogin = getRememberedLogin;
   assert.deepEqual(rendererErrors, []);
-  console.log('REGISTRATION_ELECTRON_PASS: validation, IPC, SMS errors, countdown, duplicate clicks, focus, polling, registration errors, session persistence and application home');
+  console.log('REGISTRATION_ELECTRON_PASS: registration, login, remembered credentials, logout, reload, forgetting credentials, IPC, validation, countdown and focus');
 } catch (error) {
   console.error(error);
   process.exitCode = 1;

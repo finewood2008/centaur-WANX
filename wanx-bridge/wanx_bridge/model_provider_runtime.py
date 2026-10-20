@@ -83,7 +83,8 @@ class PublicPinnedTransport(httpx.AsyncBaseTransport):
 
 
 def _fingerprint(snapshot: dict[str, Any], provider: dict[str, Any]) -> str:
-    value = [{key: snapshot[key] for key in sorted(BINDING)}, provider]
+    stable_provider = {k: v for k, v in provider.items() if k != "credentialExpiresAt"}
+    value = [{key: snapshot[key] for key in sorted(BINDING)}, stable_provider]
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -242,7 +243,11 @@ class ModelProviderRuntime:
                     continue
                 fingerprint = _fingerprint(snapshot, provider)
                 entry = self.entries.get(ident)
-                if entry is None or entry["fingerprint"] != fingerprint:
+                if (
+                    entry is None
+                    or entry["fingerprint"] != fingerprint
+                    or snapshot.get("schemaVersion") == 3
+                ):
                     self.entries.pop(ident, None)
                     try:
                         models = await self._discover(provider)
@@ -264,7 +269,9 @@ class ModelProviderRuntime:
                         continue
                     entry = {
                         "fingerprint": fingerprint,
-                        "key": secrets.token_urlsafe(32),
+                        "key": entry["key"]
+                        if entry and entry["fingerprint"] == fingerprint
+                        else secrets.token_urlsafe(32),
                         "models": models,
                     }
                 wanted = {
@@ -349,6 +356,13 @@ class ModelProviderRuntime:
                         "/api/providers/active-model",
                         {"provider_name": candidate[0], "model": candidate[1]},
                     )
+            if provider_error is None and snapshot and snapshot.get("schemaVersion") == 3:
+                try:
+                    await self.catalog.acknowledge_applied()
+                except BridgeAuthError:
+                    self.entries.clear()
+                    self.catalog.clear()
+                    raise
             self.last_error = refresh_error.code if refresh_error else None
             if provider_error is not None:
                 self.last_error = provider_error.code

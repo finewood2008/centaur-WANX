@@ -62,7 +62,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
     ...(initialSpace ? {
       getSpace: async () => spaceValue, refreshSpace: async () => spaceValue,
       onSpace(fn) { spaceListener = fn; },
-      uploadDroppedFiles: async (files, scope) => { uploads.push({ files, scope }); return { ok: true }; },
+      uploadDroppedFiles: async (files, scope) => { uploads.push({ files, scope }); return responses.get("upload")?.(files, scope) || { ok: true }; },
       transfer: async (...args) => { calls.push(["transfer", ...args]); },
     } : {}),
     getBalance: async () => { calls.push(["panel-balance"]); return getBalance(); },
@@ -75,6 +75,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
   vm.runInNewContext(source, {
     window: { wanxPanel: api, addEventListener: (name, fn) => focusEvents.set(name, fn) },
     document: {
+      body:{classList:{toggle(){}}},
       getElementById(id) { return id === "panel" ? root : id === "panel-drop" && initialSpace ? overlay : null; },
       addEventListener(name, fn) { documentEvents.set(name, fn); },
     },
@@ -91,6 +92,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
     get html() { return markup; },
     actions() { return calls.filter(([name]) => !["desktop-resize", "panel-balance"].includes(name)); },
     respond(name, fn) { responses.set(name, fn); },
+    async noteView(opened) { focusEvents.get("wanx-note-view")?.({detail:{opened}}); await settle(); },
     async focus() { focusEvents.get("focus")?.(); await settle(); },
     async update(value) { current = structuredClone(value); listener(current); await settle(); },
     async click(dataset, { disabled = false } = {}) {
@@ -413,7 +415,9 @@ test("completed history disappears while the app heading entry and dedicated spa
   assert.match(footer, /class="space-entry" data-page="space"/);
   assert.match(footer, /本机万象 · 全部文件/);
   assert.match(footer, /已就绪/);
-  assert.match(footer, /class="space-drop-hint "><svg/);
+  assert.match(footer, /class="note-entry" data-action="clipboard-toggle"/);
+  assert.match(footer, /打开便签/);
+  assert.doesNotMatch(footer, /class="space-drop-hint/);
   assert.match(footer, /拖入文件，保存到空间/);
   assert.doesNotMatch(footer, /data-page="applications"/);
   await h.click({ page: "applications" });
@@ -522,4 +526,26 @@ test("panel discards stale Admin names across account switches and signs out wit
   await h.focus();
   assert.equal(calls, 2);
   assert.doesNotMatch(h.html, /新账号名称/);
+});
+
+test("quick panel shows the whole-batch rejection, escapes filenames, and keeps its compact idle layout", async () => {
+  const h = await harness(connectedState(), async () => ({ available: 0 }), uploadState());
+  h.respond("upload", () => ({ ok: false, code: "SPACE_UPLOAD_LIMIT", message: "单文件最大 200 MB：<large>.bin。本批文件未加入上传队列。" }));
+  await h.drag("dragenter");
+  assert.match(h.overlay.innerHTML, /最多 20 个文件.*200 MB/);
+  await h.drag("drop", { files: [{ name: "<large>.bin" }, { name: "small.txt" }] });
+  assert.match(h.html, /200 MB：&lt;large&gt;.bin.*本批文件未加入上传队列/);
+  assert.doesNotMatch(h.html, /<large>|class="panel-transfers"/);
+  assert.equal(h.overlay.hidden, true);
+});
+
+test('note page keeps its edit height and does not route pasted images to ordinary space uploads',async()=>{
+ const h=await harness(connectedState(),async()=>({available:0}),uploadState());
+ await h.noteView(true);
+ assert.deepEqual(h.calls.filter(([n])=>n==='desktop-resize').at(-1),['desktop-resize',{height:560}]);
+ const event=await h.drag('dragenter',{files:[{name:'image.png'}]});assert.equal(event.prevented,undefined);
+ await h.drag('drop',{files:[{name:'image.png'}]});assert.equal(h.uploads.length,0);
+ await h.space({...uploadState(),tasks:[]});
+ assert.equal(h.calls.filter(([n])=>n==='desktop-resize').at(-1)[1].height,560);
+ await h.noteView(false);assert.equal(h.calls.filter(([n])=>n==='desktop-resize').at(-1)[1].height,264);
 });

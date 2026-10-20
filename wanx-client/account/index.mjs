@@ -1,4 +1,5 @@
 import { publicProfile, validateProfilePatch } from "./profile.mjs";
+import { decodeCreditEnvelope } from "./credit-wallet.mjs";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 
 export const DEFAULT_CONSUMER_URL = "https://boss.nexusaos.qitus.cn/prod-api";
@@ -118,6 +119,7 @@ export function createAccount({
   let passwordUpdate = null;
   let vault = { version: 2, baseURL: base.href, accounts: {}, active: null };
   let loaded = false;
+  let loading = null;
   let state = {
     phase: "signed_out",
     accountId: null,
@@ -145,12 +147,13 @@ export function createAccount({
   const assert = (generation) => {
     if (closed || generation !== epoch) throw failure("ACCOUNT_CANCELLED");
   };
-  const persist = (value) => {
+  const persist = (value, patch = {}) => {
     const generation = epoch;
     const next = writes.then(async () => {
       if (generation !== epoch) return;
       const candidate = {
         ...vault,
+        ...patch,
         accounts: { ...vault.accounts },
         active: value?.session
           ? { phone: value.phone, session: value.session }
@@ -165,8 +168,10 @@ export function createAccount({
   };
   async function loadVault(generation) {
     if (loaded) return;
-    const saved = await store.load();
+    loading ??= store.load().finally(() => { loading = null; });
+    const saved = await loading;
     assert(generation);
+    if (loaded) return;
     if (saved) {
       if (
         saved.version !== 2 ||
@@ -217,6 +222,7 @@ export function createAccount({
   ) {
     const checkGeneration = () => { if (!detached) assert(generation); };
     const url = route(path);
+    const creditRoute = path.startsWith("/app-api/v1/credits/");
     checkGeneration();
     const text = body === undefined ? "" : JSON.stringify(body);
     const controller = new AbortController();
@@ -233,7 +239,7 @@ export function createAccount({
     if (idempotencyKey !== undefined) {
       if (
         typeof idempotencyKey !== "string" ||
-        !/^[\w-]{1,128}$/.test(idempotencyKey)
+        !(creditRoute ? /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/ : /^[\w-]{1,128}$/).test(idempotencyKey)
       )
         throw failure("ACCOUNT_INVALID_INPUT");
       headers["Idempotency-Key"] = idempotencyKey;
@@ -298,13 +304,15 @@ export function createAccount({
       try {
         payload = JSON.parse(responseText);
       } catch {
+        if (creditRoute && response.status === 404)
+          throw failure("CREDITS_SERVICE_UNAVAILABLE", 404);
         if (missingNetworkRoute)
           throw failure("NETWORK_SERVICE_NOT_DEPLOYED", 404);
         if (missingMarketRoute)
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         if (missingNetworkRoute)
@@ -313,10 +321,14 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       checkGeneration();
       let metadata;
+      if (creditRoute && response.status === 404 &&
+          Object.keys(payload).length === 1 && payload.detail === "Not Found")
+        throw failure("CREDITS_SERVICE_UNAVAILABLE", 404);
+      if (creditRoute) return decodeCreditEnvelope(payload, response.status);
       if (responseMetadata) {
         if (response.status === 401 || payload.code === 401)
           throw failure("ACCOUNT_SESSION_EXPIRED", 401);
@@ -361,6 +373,8 @@ export function createAccount({
         const explicitSupportCode = supportRoute && ["OWNER_REQUIRED", "OWNER_CHANGED", "DEVICE_NOT_FOUND", "DEVICE_DISABLED",
           "SUPPORT_REQUEST_NOT_FOUND", "REQUEST_DIGEST_MISMATCH", "REQUEST_EXPIRED", "DECISION_CONFLICT", "SUPPORT_NOT_ACTIVE",
           "SUPPORT_AUTHORIZATION_BUSY"].includes(remoteCode);
+        const explicitConsoleClaimCode = path === "/app-api/device-console-claims/redeem" &&
+          typeof remoteCode === "string" && /^(CONSOLE_CLAIM_[A-Z0-9_]{1,64}|OWNER_ALREADY_CHANGED|IDEMPOTENCY_CONFLICT)$/.test(remoteCode);
         const explicitNetworkCode =
           typeof remoteCode === "string" &&
           /^NETWORK_[A-Z0-9_]{1,64}$/.test(remoteCode);
@@ -374,7 +388,8 @@ export function createAccount({
           "EVENT_SEQUENCE_INVALID", "RELEASE_UNAVAILABLE", "UPDATE_NOT_CONFIGURED",
         ].includes(remoteCode);
         const code =
-          explicitSupportCode ? remoteCode
+          explicitConsoleClaimCode ? remoteCode
+            : explicitSupportCode ? remoteCode
             : explicitUpgradeCode ? remoteCode
             : missingUpgradeRoute ? "UPDATE_SERVICE_NOT_DEPLOYED"
             : path === "/app-api/auth/sms/send" && payload.code === 602
@@ -567,7 +582,11 @@ export function createAccount({
         identity,
         session: sessionFrom(data, identity),
       };
-      await measure("account.login.persist", () => persist(next));
+      await measure("account.login.persist", () => persist(next, mode === "password" ? {
+        rememberedLogin: input.remember === true
+          ? { remember: true, phone: input.phone, password: input.password }
+          : { remember: false },
+      } : {}));
       assert(generation);
       record = next;
       return publish({
@@ -617,15 +636,20 @@ export function createAccount({
     // Password reset revokes every account session. Drain this request before
     // issuing a new login, even if the user signs out while it is in flight.
     const update = (async () => {
+      await loadVault(generation);
       await wire({ method: "POST", path: "/app-api/auth/password/reset",
         body: { phone, code: input.code, password: input.password }, authenticated: false }, generation, null, true);
+      const rememberedPatch = vault.rememberedLogin?.phone === phone
+        ? { rememberedLogin: { remember: true } } : {};
       if (authenticated && !closed && generation === epoch) {
         cancel();
         record = null;
-        const cleared = persist(null);
+        const cleared = persist(null, rememberedPatch);
         publish({ phase: "signed_out", accountId: null, clientId: null, devices: [],
           reason: "password_reset", logoutPending: false });
         await cleared;
+      } else if (!closed && generation === epoch && rememberedPatch.rememberedLogin) {
+        await persist(record, rememberedPatch);
       }
       return { passwordReset: true };
     })();
@@ -719,6 +743,23 @@ export function createAccount({
           }
         : null,
     loginPassword: (input) => login(input, "password"),
+    async getRememberedLogin() {
+      const generation = epoch;
+      await writes;
+      await loadVault(generation);
+      assert(generation);
+      const saved = vault.rememberedLogin;
+      return saved?.remember === true
+        ? { remember: true, phone: saved.phone, password: saved.password }
+        : { remember: saved?.remember !== false };
+    },
+    async forgetRememberedLogin() {
+      const generation = epoch;
+      await writes;
+      await loadVault(generation);
+      assert(generation);
+      await persist(record, { rememberedLogin: { remember: false } });
+    },
     loginSMS: (input) => login(input, "sms"),
     register: (input) => login(input, "register"),
     sendResetCode: (input) => sendPasswordCode(input?.phone, false),
@@ -738,6 +779,16 @@ export function createAccount({
         epoch,
       );
       return { expiresIn: Number(result?.expiresIn) || 300 };
+    },
+    async redeemConsoleClaim({ claimCode, clientAttemptId } = {}) {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (typeof claimCode !== "string" || !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(claimCode) ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientAttemptId || ""))
+        throw failure("ACCOUNT_INVALID_INPUT");
+      const data = await request({ method: "POST", path: "/app-api/device-console-claims/redeem",
+        body: { claimCode, clientAttemptId }, idempotencyKey: clientAttemptId });
+      if (!ownershipId(data?.deviceId) || data.ownership !== "claimed") throw failure("ACCOUNT_INVALID_RESPONSE");
+      return { deviceId: data.deviceId, ownership: data.ownership };
     },
     async listOwnershipTransfers() {
       const data = await request({ path: "/app-api/ownership/transfers" });

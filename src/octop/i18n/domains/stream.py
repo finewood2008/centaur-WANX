@@ -16,6 +16,7 @@ RECURSION_LIMIT = f"{_PREFIX}stream_errors.recursion_limit"
 TIMEOUT_NETWORK = f"{_PREFIX}stream_errors.timeout_network"
 PROVIDER_UNAVAILABLE = f"{_PREFIX}stream_errors.provider_unavailable"
 MODEL_CALL_FAILED = f"{_PREFIX}stream_errors.model_call_failed"
+EXECUTION_FAILED = f"{_PREFIX}stream_errors.execution_failed"
 PATH_OUTSIDE_ROOT = f"{_PREFIX}stream_errors.path_outside_root"
 
 __all__ = [
@@ -205,4 +206,4 @@ def format_stream_error(exc: BaseException | str, locale: str | Locale = "en") -
         return tr(classified.removeprefix(_PREFIX), locale)
     if _looks_like_send_file_tool_error(message):
         return message
-    return tr(MODEL_CALL_FAILED.removeprefix(_PREFIX), locale)
+    return tr(EXECUTION_FAILED.removeprefix(_PREFIX), locale)

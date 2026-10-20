@@ -17,9 +17,112 @@ from octop.infra.agents.role_ontology import (
     facts,
     read_role_ontology,
 )
+from octop.infra.agents.zhijun_batch_review import (
+    BatchResult,
+    BatchReview,
+    ReviewPage,
+    batch_review,
+    review_page,
+)
+from octop.infra.agents.zhijun_changes import (
+    ChangeCommand,
+    ChangeResult,
+    ChangeView,
+    pending_changes,
+    resolve_change,
+)
+from octop.infra.agents.zhijun_decisions import (
+    DecisionCommand,
+    DecisionDraft,
+    DecisionList,
+    DecisionResult,
+    ProposeDecision,
+    decision_command,
+    decisions,
+    propose_decision,
+)
+from octop.infra.agents.zhijun_interview import (
+    InterviewCommand,
+    InterviewView,
+    read_interview,
+    update_interview,
+)
+from octop.infra.agents.zhijun_owner_documents import (
+    MaterialCommand,
+    MaterialView,
+    material_command,
+    read_material,
+)
+from octop.infra.agents.zhijun_profile import primary
 from octop.infra.errors import ErrorCode, OctopError
 
 router = APIRouter()
+
+
+@router.get(
+    "/{agent_id}/ontology/batch-review",
+    summary="Preview owner understandings for explicit batch review",
+    description="Private primary owner only. Read-only source and version snapshots; conflicts and invalid sources remain visible but cannot be selected.",
+)
+async def get_batch_review(
+    agent_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> ReviewPage:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await review_page(registry, user.id)
+
+
+@router.post(
+    "/{agent_id}/ontology/batch-review",
+    summary="Confirm or reject explicitly selected understandings",
+    description="At most 20 unique items. Each item revalidates its displayed version and sources under the ontology lock and has its own durable receipt. Returns individual outcomes; partial success is possible. Busy replies reject the request. No models, memory imports, field edits or automatic conflict resolution.",
+)
+async def post_batch_review(
+    agent_id: str,
+    body: BatchReview,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> BatchResult:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await batch_review(registry, user.id, body)
+
+
+@router.get(
+    "/{agent_id}/ontology/owner-documents/{kb_id}/{document_id}",
+    summary="Preview private owner material and version-bound consent",
+    description="Owner and primary Zhijun only. Returns the first 12000 characters and the current model. Reading does not mark authorship or invoke a model.",
+)
+async def get_owner_material(
+    agent_id: str,
+    kb_id: str,
+    document_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> MaterialView:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await read_material(registry, user.id, kb_id, document_id)
+
+
+@router.post(
+    "/{agent_id}/ontology/owner-documents/{kb_id}/{document_id}",
+    summary="Mark, revoke or process a page of owner-authored material",
+    description="Explicit version and model consent required. Generate processes at most 12000 characters using the configured model, saving pending proposals and progress together. Does not confirm understanding or modify documents, chats or native memory. Revocation retains history and disables dependent evidence.",
+)
+async def update_owner_material(
+    agent_id: str,
+    kb_id: str,
+    document_id: str,
+    body: MaterialCommand,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> MaterialView:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await material_command(registry, user.id, kb_id, document_id, body)
 
 
 class Generate(BaseModel):
@@ -40,7 +143,7 @@ class Preferences(BaseModel):
 def registry_for(server: Any, user: Any, agent_id: str) -> Any:
     registry = server.app_runtime.agent_registry
     row = registry.get_row(agent_id)
-    if row is None or row.user_id != user.id or row.is_shared:
+    if row is None or row.user_id != user.id or not primary(row):
         raise OctopError.localized(ErrorCode.NOT_FOUND)
     assert_same_application(row, user)
     return registry
@@ -136,7 +239,10 @@ async def context(
 
     with agent_scope(registry, user.id, agent_id):
         doc = await read_role_ontology(registry, user.id)
-    data["pending"] = [c for c in doc.claims if pending(c)][:4]
+    changes = pending_changes(doc)
+    data["changes"] = changes
+    changing = {c.proposed.id for c in changes}
+    data["pending"] = [c for c in doc.claims if pending(c) and c.id not in changing][:4]
     data["flow"] = doc.flow
     # An old success receipt must not claim a withdrawn/edited item is still current.
     update = data.get("update") or {}
@@ -146,7 +252,7 @@ async def context(
     ):
         data["update"] = {
             "status": "changed",
-            "message": "这次保存的理解后来已修改或停用，以本体中的当前状态为准。",
+            "message": "这次保存的理解后来已修改或停用，以理解中的当前状态为准。",
         }
     return data
 
@@ -173,3 +279,115 @@ async def preferences(
         json.dumps({"excluded": body.excluded, "turn_id": ""}).encode(),
     )
     return {"ok": True}
+
+
+@router.get("/{agent_id}/ontology/interview", summary="Read resumable Zhijun interview")
+async def get_interview(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> InterviewView:
+    registry = registry_for(server, user, agent_id)
+    return await read_interview(
+        registry, server.app_runtime.gateway.thread_registry, user.id, agent_id
+    )
+
+
+@router.post(
+    "/{agent_id}/ontology/interview", summary="Start, pause or continue an owner-led interview"
+)
+async def interview_action(
+    agent_id: str,
+    body: InterviewCommand,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> InterviewView:
+    registry = registry_for(server, user, agent_id)
+    return await update_interview(
+        registry, server.app_runtime.gateway.thread_registry, user.id, agent_id, body
+    )
+
+
+@router.get(
+    "/{agent_id}/ontology/changes", summary="Read source-bound changes awaiting owner review"
+)
+async def get_changes(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> list[ChangeView]:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return pending_changes(await read_role_ontology(registry, user.id))
+
+
+@router.post(
+    "/{agent_id}/ontology/changes/{relation_id}",
+    summary="Confirm a change, scoped exception or mistaken interpretation",
+    response_model=ChangeResult,
+)
+async def change_action(
+    agent_id: str,
+    relation_id: str,
+    body: ChangeCommand,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await resolve_change(registry, user.id, relation_id, body)
+
+
+@router.get(
+    "/{agent_id}/ontology/decisions",
+    summary="List owner-confirmed decisions and due reviews",
+    description="Private primary owner only. Read-only; due dates use the server timezone. Does not send notifications or load legacy decision books.",
+)
+async def get_decisions(
+    agent_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> DecisionList:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await decisions(registry, user.id)
+
+
+@router.post(
+    "/{agent_id}/ontology/decisions/propose",
+    summary="Preview a grounded decision draft from the current conversation",
+    description="Reads at most 30 recent messages and sends at most 12000 characters of complete owner turns to the current model. Only exact owner-text excerpts are accepted. No draft, decision or memory is persisted; owner confirmation is a separate action.",
+)
+async def propose_decision_card(
+    agent_id: str,
+    body: ProposeDecision,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> DecisionDraft:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await propose_decision(
+            registry,
+            server.app_runtime.gateway,
+            getattr(server.app_runtime, "history_archive", None),
+            user.id,
+            body,
+        )
+
+
+@router.post(
+    "/{agent_id}/ontology/decisions/{decision_id}",
+    summary="Confirm a decision or append an owner review",
+    description="Versioned and idempotent owner operation. Keeps the original decision, prior reviews and linked-understanding snapshots. Review-derived understandings are pending and require separate confirmation. Does not send WeChat messages or edit original conversations/native memory.",
+)
+async def update_decision_card(
+    agent_id: str,
+    decision_id: str,
+    body: DecisionCommand,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> DecisionResult:
+    registry = registry_for(server, user, agent_id)
+    with agent_scope(registry, user.id, agent_id):
+        return await decision_command(
+            registry,
+            server.app_runtime.gateway,
+            getattr(server.app_runtime, "history_archive", None),
+            user.id,
+            decision_id,
+            body,
+        )

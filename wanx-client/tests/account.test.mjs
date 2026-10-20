@@ -72,6 +72,72 @@ function fixture(extra = {}) {
   return { account, calls, store, refreshCount: () => refreshCount };
 }
 
+test("remembered login survives logout and restart without leaking into snapshots or refresh requests", async () => {
+  const { account, store, calls } = fixture();
+  assert.deepEqual(await account.getRememberedLogin(), { remember: true });
+  const input = { phone: "13800138000", password: " 密码 password ", remember: true };
+  await account.loginPassword(input);
+  assert.deepEqual(await account.getRememberedLogin(), input);
+  assert.equal(calls[0].body.remember, undefined);
+  assert.doesNotMatch(JSON.stringify(account.snapshot()), /password|13800138000/);
+  await account.refresh();
+  assert.deepEqual(await account.getRememberedLogin(), input);
+  await account.logout();
+  await account.close();
+  const restarted = fixture({ store });
+  await restarted.account.restore();
+  assert.equal(restarted.account.snapshot().phase, "signed_out");
+  assert.deepEqual(await restarted.account.getRememberedLogin(), input);
+  await restarted.account.forgetRememberedLogin();
+  assert.deepEqual(await restarted.account.getRememberedLogin(), { remember: false });
+  assert.doesNotMatch(JSON.stringify(await store.load()), /密码/);
+  await restarted.account.close();
+  assert.deepEqual(await fixture({ store }).account.getRememberedLogin(), { remember: false });
+});
+
+test("failed password login preserves saved credentials; unchecked successful login removes them", async () => {
+  const { account, store } = fixture();
+  const input = { phone: "13800138000", password: "correct-password", remember: true };
+  await account.loginPassword(input);
+  await account.logout();
+  const failing = createAccount({ store, fetch: async () => reply({}, 401) });
+  await assert.rejects(failing.loginPassword({ ...input, password: "wrong-password" }));
+  assert.deepEqual(await failing.getRememberedLogin(), input);
+  await failing.close();
+  await account.loginPassword({ phone: "13900139000", password: "other-password", remember: false });
+  assert.deepEqual(await account.getRememberedLogin(), { remember: false });
+  assert.doesNotMatch(JSON.stringify(await store.load()), /correct-password|other-password/);
+  await account.close();
+});
+
+test("successful password changes and recovery forget the saved old password", async () => {
+  for (const authenticated of [true, false]) {
+    const { account, store } = fixture();
+    await account.loginPassword({ phone: "13800138000", password: "old-password", remember: true });
+    if (!authenticated) await account.logout();
+    const input = { phone: "13800138000", code: "000001", password: "new-password" };
+    await (authenticated ? account.changePassword(input) : account.resetPassword(input));
+    assert.equal(account.snapshot().phase, "signed_out");
+    assert.equal((await account.getRememberedLogin()).password, undefined);
+    assert.doesNotMatch(JSON.stringify(await store.load()), /old-password|new-password/);
+    await account.close();
+  }
+});
+
+test("credential storage failure does not report successful authentication", async () => {
+  const store = memoryStore();
+  const save = store.save;
+  store.save = async value => {
+    if (value.rememberedLogin?.password) throw new Error("SECURE_STORAGE_WRITE_FAILED");
+    return save(value);
+  };
+  const { account } = fixture({ store });
+  await assert.rejects(account.loginPassword({ phone: "13800138000", password: "password", remember: true }), /SECURE_STORAGE_WRITE_FAILED/);
+  assert.equal(account.snapshot().phase, "signed_out");
+  assert.equal((await store.load()).active, null);
+  await account.close();
+});
+
 test("discovery resolves an exact registry ID to the admin inventory device name", async () => {
   const h = fixture();
   await h.account.loginPassword({ phone: "13800138000", password: "password" });
@@ -395,10 +461,11 @@ test("encrypted store persists only ciphertext, rejects plaintext backend, clear
     await store.save({
       privateKey: "private-key-secret",
       refreshToken: "refresh-secret",
+      rememberedLogin: { remember: true, phone: "13800138000", password: "password-secret" },
     });
     assert.doesNotMatch(
       (await readFile(filePath)).toString(),
-      /private-key-secret|refresh-secret/,
+      /private-key-secret|refresh-secret|13800138000|password-secret/,
     );
     assert.equal((await store.load()).refreshToken, "refresh-secret");
     await store.clear();
@@ -887,4 +954,21 @@ test("switching between two platform accounts restores only each account's local
   await login('13800138000');
   assert.equal(account.snapshot().profile.displayName, '账号甲');
   assert.equal(account.snapshot().profile.avatarDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+});
+
+test('cloud HTML or malformed errors retain HTTP status without leaking response text', async () => {
+  const store=memoryStore(),setup=fixture({store});
+  await setup.account.loginSMS({phone:'13800138000',code:'123456'});
+  let status=503,body='<html>private upstream detail</html>';
+  const account=createAccount({store,fetch:async url=>{
+    if(url.endsWith('/auth/refresh')){const saved=await store.load();return reply({...saved.active.session,expiresIn:3600});}
+    return new Response(body,{status});
+  }});
+  await account.restore();
+  for(status of [429,502,503,504,401,403]) for(body of ['<html>private upstream detail</html>','null','[]']) {
+    await assert.rejects(account.request({path:'/app-api/network/restore'}),error=>{
+      assert.equal(error.status,status);assert.equal(error.code,status===401?'ACCOUNT_SESSION_EXPIRED':status===403?'ACCOUNT_ACCESS_DENIED':'ACCOUNT_REQUEST_FAILED');
+      assert.ok(!error.message.includes('private'));return true;
+    });
+  }
 });

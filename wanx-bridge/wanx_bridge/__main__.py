@@ -331,7 +331,14 @@ async def run(stop: asyncio.Event | None = None) -> None:
         if models is not None:
             model_task = asyncio.create_task(models.poll())
         public = _new_server(
-            create_app(auth, adapter, upstream_url=runtime.upstream_url, resources=resources),
+            create_app(
+                auth,
+                adapter,
+                upstream_url=runtime.upstream_url,
+                resources=resources,
+                clipboard_url=os.getenv("WANX_BRIDGE_CLIPBOARD_URL", "http://127.0.0.1:8092")
+                or None,
+            ),
             runtime.bind_host,
             runtime.bind_port,
         )

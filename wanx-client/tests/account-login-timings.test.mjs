@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createAccount } from "../account/index.mjs";
 import { createTimingRecorder } from "../shell/timings.mjs";
 
-const credentials = { phone: "13800138000", password: "private-login-password" };
+const credentials = { phone: "13800138000", password: "private-login-password", remember: true };
 const steps = ["cleanup", "local", "request", "persist"].map((step) => `account.login.${step}`);
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const reply = (data) => new Response(JSON.stringify({ code: 200, data }));
@@ -115,6 +115,7 @@ for (const [pauseAt, stage] of [
       assert.deepEqual(events.map((event) => event.durationMs), steps.map((step) => step === `account.login.${stage}` ? 250 : 0));
       assert.ok(events.every((event) => event.outcome === "completed"));
       assert.equal(h.account.snapshot().phase, "authenticated");
+      assert.deepEqual(await h.account.getRememberedLogin(), credentials);
     } finally {
       h.gate.resolve();
       await loggingIn.catch(() => {});
