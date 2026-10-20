@@ -44,6 +44,7 @@ private final class DiscoveredBox {
     var lastOutput: Data?
     var disconnecting = false
     var reading = false
+    var attempts = 0
     var timeout: DispatchWorkItem?
     var timeoutGeneration = 0
 
@@ -74,7 +75,7 @@ private final class BoxDiscovery: NSObject, CBCentralManagerDelegate, CBPeripher
         }
         signal(SIGPIPE, SIG_IGN)
         central = CBCentralManager(delegate: self, queue: .main)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 11.5) { self.finish() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 29.5) { self.finish() }
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -129,6 +130,9 @@ private final class BoxDiscovery: NSObject, CBCentralManagerDelegate, CBPeripher
         while active.count < 3, !pending.isEmpty {
             let id = pending.removeFirst()
             guard let box = boxes[id] else { continue }
+            box.attempts += 1
+            box.disconnecting = false
+            box.reading = false
             active.insert(id)
             box.peripheral.delegate = self
             armTimeout(box, seconds: 5)
@@ -223,6 +227,12 @@ private final class BoxDiscovery: NSObject, CBCentralManagerDelegate, CBPeripher
         boxes[peripheral.identifier]?.timeout?.cancel()
         boxes[peripheral.identifier]?.timeout = nil
         peripheral.delegate = nil
+        // Transient connection failures must not leave a visible box unnamed
+        // for the whole scan. Give unseen boxes their first attempt before retrying.
+        if !finished, let box = boxes[peripheral.identifier],
+           box.identity == nil, box.attempts < 2 {
+            pending.append(peripheral.identifier)
+        }
         connectNext()
     }
 
@@ -272,7 +282,7 @@ private final class BoxDiscovery: NSObject, CBCentralManagerDelegate, CBPeripher
             central.cancelPeripheralConnection(box.peripheral)
         }
         // Briefly drain cancellation requests; the helper still exits before
-        // the SDK's 12-second scan deadline.
+        // the SDK's 30-second scan deadline.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exit(0) }
     }
 }

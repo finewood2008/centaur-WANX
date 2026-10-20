@@ -282,7 +282,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
 });
 
 contextBridge.exposeInMainWorld("wanxSetupTransport", {
-  scanTimeoutMs: process.platform === "win32" ? 60000 : 12000,
+  scanTimeoutMs: process.platform === "win32" ? 60000 : 30000,
   subscribe: (listener) => {
     const handler = (_event, request) => listener(request);
     ipcRenderer.on("wanx:setup:transport", handler);

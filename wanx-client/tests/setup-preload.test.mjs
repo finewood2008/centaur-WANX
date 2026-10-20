@@ -21,7 +21,7 @@ function harness(rawState = {}, platform = 'darwin') {
 test('active preload connects discovery, GATT transport and setup actions', async () => {
   const { exposed, calls } = harness();
   assert.equal(typeof exposed.wanxSetupTransport?.subscribe, 'function');
-  assert.equal(exposed.wanxSetupTransport.scanTimeoutMs, 12000);
+  assert.equal(exposed.wanxSetupTransport.scanTimeoutMs, 30000);
   assert.equal(harness({}, 'win32').exposed.wanxSetupTransport.scanTimeoutMs, 60000);
   assert.equal(typeof exposed.wanxDiscovery?.select, 'function');
   assert.equal(typeof exposed.wanxSetup?.begin, 'function');

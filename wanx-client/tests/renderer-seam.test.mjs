@@ -199,7 +199,7 @@ async function harness(initial = state(), installed = [application], options = {
   if (discoveryTest) {
     const clock = { monotonicMs: () => Date.now() };
     discoveryTest.after(installElectronBluetoothPicker({ webContents: contents, ipcMain, documentUrl: controlURL, clock,
-      scanTimeoutMs: options.platform === "win32" ? 60000 : 12000,
+      scanTimeoutMs: window.wanxSetupTransport.scanTimeoutMs,
       advertisementNames: { subscribe: (listener) => { advertisementListener = listener; return () => { advertisementListener = undefined; }; } } }));
     const bluetooth = {
       getAvailability: async () => options.bluetoothStatus !== "unavailable",
@@ -208,7 +208,7 @@ async function harness(initial = state(), installed = [application], options = {
         queueMicrotask(() => contents.emit("select-bluetooth-device", { preventDefault() {} }, nearby, chooser));
       }),
     };
-    // Run the shipped transport too, including its independent 12-second deadline.
+    // Run the shipped transport too, using the actual preload's scan deadline.
     vm.runInNewContext(transportBundle, {
       window, navigator: { bluetooth }, crypto: globalThis.crypto,
       performance: { now: clock.monotonicMs }, setTimeout, clearTimeout,
@@ -713,7 +713,7 @@ test("box scanning disables repeat clicks, then allows a new scan after timeout"
   assert.equal(h.chooser(), chooser, "repeat clicks must not restart Bluetooth discovery");
   h.update(state());
   assert.match(scanButton(), /disabled/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   assert.match(scanButton(), /重新扫描/);
   assert.doesNotMatch(scanButton(), /disabled/);
@@ -731,7 +731,7 @@ test("discovered boxes remain selectable after the scan times out", async (t) =>
   await new Promise((resolve) => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
   assert.match(h.app.innerHTML, /Test box/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /Test box/, "timeout must not discard discovered boxes");
   await h.click("select-candidate", { candidateId });
@@ -789,7 +789,7 @@ test("expired results are removed and require a new scan", async (t) => {
   await h.click("provisioning");
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   t.mock.timers.tick(120000);
   assert.doesNotMatch(h.app.innerHTML, /Test box/);
@@ -804,12 +804,12 @@ test("a missing retained target never selects a different box with the same name
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   h.nearby([{ deviceId: "provider-2", deviceName: "Test box" }]);
   await h.click("select-candidate", { candidateId });
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
   assert.match(h.app.innerHTML, /未能连接所选盒子/);
@@ -826,17 +826,17 @@ test("failed reselection keeps the first result expiry in the rendered flow", as
   await h.click("provisioning"); await h.click("start-provisioning");
   await new Promise(resolve => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   t.mock.timers.tick(60000);
   h.nearby([]);
   await h.click("select-candidate", { candidateId });
   await new Promise(resolve => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未能连接所选盒子/);
   assert.match(h.app.innerHTML, /Test box/);
-  t.mock.timers.tick(48000);
+  t.mock.timers.tick(120000 - 60000 - h.window.wanxSetupTransport.scanTimeoutMs);
   assert.match(h.app.innerHTML, /扫描结果已过期/);
   assert.doesNotMatch(h.app.innerHTML, /Test box/);
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
@@ -848,7 +848,7 @@ test("result expiry cancels in-progress reselection without starting setup", asy
   await h.click("provisioning"); await h.click("start-provisioning");
   await new Promise(resolve => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   t.mock.timers.tick(119999);
   h.nearby([]);
@@ -876,7 +876,7 @@ for (const leave of ["back-devices", "logout"]) {
     else await h.click(leave);
     lateChooser("provider-1");
     await new Promise((resolve) => setImmediate(resolve));
-    t.mock.timers.tick(132000);
+    t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs + 120000);
     assert.doesNotMatch(h.app.innerHTML, /Test box|扫描结果已过期/);
     assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
     assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:forget"));
@@ -890,7 +890,7 @@ test("an empty scan allows retry after reporting no nearby box", async (t) => {
   await h.click("provisioning");
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未发现可用盒子/);
   assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
@@ -1254,6 +1254,37 @@ test("unclaimed inventory names are visible and discovery queries stay batched a
   assert.equal(requests().length, 2, "re-renders and unchanged identity notifications must not poll metadata");
 });
 
+test("macOS resolves an unclaimed box whose retried identity arrives after 12 seconds", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = "centauros-727f68e96c972c5bcf000fe1";
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async ids => ({ devices: ids.map(deviceId => ({
+      deviceId, deviceName: "CentaurAI-AMD-102", claimStatus: "unclaimed",
+    })) }),
+  });
+  await startDiscovery(h);
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-000FE1" });
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(h.app.innerHTML, /正在读取盒子名称/);
+  t.mock.timers.tick(14000);
+  await settleDiscovery();
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-000FE1",
+    displayIdentity: { deviceId: id, displayName: "CentaurAI Box" } });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  assert.doesNotMatch(h.app.innerHTML, /未获取到盒子名称|未读取到名称|认领状态待确认/);
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
+  assert.equal(h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1], candidateId);
+  assert.deepEqual(h.calls.find(([name]) => name === "lookup-device-discovery")[1], [id]);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
+  t.mock.timers.tick(16000);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /扫描已结束/);
+  assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
+});
+
 for (const outcome of ["unknown", "missing", "404"]) test(`discovery ${outcome} retains the local name and never infers unclaimed`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const id = discoveryId(5);
@@ -1413,7 +1444,7 @@ test("each new scan refreshes inventory names and claim state", async t => {
   await settleDiscovery();
   assert.match(h.app.innerHTML, /第一次扫描名称/);
   assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await settleDiscovery();
   await h.click("start-provisioning");
   await settleDiscovery();
@@ -1439,7 +1470,7 @@ test("late inventory metadata enriches retained scan results without selecting o
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
   assert.match(h.app.innerHTML, /未获取到盒子名称/);
   assert.match(h.app.innerHTML, /认领状态待确认/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await settleDiscovery();
   assert.match(h.app.innerHTML, /扫描已结束，本轮结果保留 2 分钟/);
   t.mock.timers.tick(1000);
@@ -1602,7 +1633,7 @@ for (const retained of [false, true]) {
     const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
     assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
     if (retained) {
-      t.mock.timers.tick(12000);
+      t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
       await new Promise((resolve) => setImmediate(resolve));
       assert.match(h.app.innerHTML, /扫描已结束/);
       assert.doesNotMatch(h.app.innerHTML, /class="scan-spinner"/);
@@ -1629,7 +1660,7 @@ test("discovery escapes public names and broadcast hints and stops claiming to r
   assert.doesNotMatch(h.app.innerHTML, /<script>bad|<img src=x/);
   h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-2222", displayIdentity: null });
   assert.match(h.app.innerHTML, /正在读取盒子名称/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未读取到名称 · 蓝牙配网/);
   assert.doesNotMatch(h.app.innerHTML, /正在读取盒子名称/);
@@ -2338,7 +2369,7 @@ test("retained owner Wi-Fi selection keeps wifi mode and ignores repeat clicks",
   discoveryIdentity(h, deviceId);
   await settleDiscovery();
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await settleDiscovery();
   assert.match(h.app.innerHTML, /扫描已结束/);
   await h.click("select-candidate-wifi", { candidateId });
