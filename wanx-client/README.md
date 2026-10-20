@@ -126,6 +126,8 @@ macOS 扫描期间通过 CoreBluetooth、Windows x64 通过 WinRT 只读公开 D
 
 ## 构建与分发
 
+Windows 安装器使用统一品牌界面，提供欢迎页功能轮播、实际安装进度和完成页；标准、正式签名及内部打包入口共用素材与脚本。维护与验收步骤见 [Windows 安装体验](../docs/wanx-windows-installer.md)。
+
 应用市场的包格式、版本比较、签名与后台发布流程见 [WANX 应用市场开发与发布](../docs/wanx-application-market.md)。
 
 应用提交方还必须随安装包交付图标、Logo、真实产品截图、1–3 张产品介绍海报及资料索引；具体规格与人工审核标准见 [应用上架素材规范](../docs/wanx-marketplace-submission-assets.md)。当前六款内置介绍页使用产品海报，不再展示本机采集的界面截图。

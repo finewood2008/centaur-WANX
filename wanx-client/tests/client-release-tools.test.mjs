@@ -81,6 +81,8 @@ test("formal Windows build pins certificate, publisher, current-user NSIS scope 
   assert.equal(config.win.verifyUpdateCodeSignature, true);
   assert.deepEqual(config.win.signtoolOptions.publisherName, ["Example Publisher"]);
   assert.equal(config.nsis.perMachine, false); assert.equal(config.nsis.allowElevation, false);
+  for (const field of ["include", "installerHeader", "installerSidebar", "uninstallerSidebar"])
+    assert.ok(config.nsis[field], `formal builds must retain the branded installer ${field}`);
   assert.equal(config.extraMetadata.wanxBuild.distributionClass, "formal");
   assert.equal(config.extraMetadata.wanxBuild.installationScope, "per-user");
   assert.ok(config.files.includes("updates/**"));
