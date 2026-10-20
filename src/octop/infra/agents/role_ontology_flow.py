@@ -7,7 +7,6 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from octop.infra.agents.application import application_id
 from octop.infra.agents.ontology_admission import admitted, pending
 from octop.infra.agents.ontology_runtime import OntologyCoordinator
 from octop.infra.agents.ontology_types import Kind, PersonalOntology
@@ -21,6 +20,7 @@ from octop.infra.agents.personal_ontology import (
     _save,
     generate_personal_ontology,
 )
+from octop.infra.agents.zhijun_profile import primary
 
 
 def fact_reason(
@@ -31,9 +31,9 @@ def fact_reason(
     text = _personal_text(event, uid)
     quote = atom.get("verbatim_quote") or ""
     if not text:
-        return "不是可核对的本人原话（可能来自 AI 回复或其他来源），不用于生成本体。"
+        return "不是可核对的本人原话（可能来自 AI 回复或其他来源），不用于形成理解。"
     if not quote or quote not in text or len(quote) > 800:
-        return "无法在本人原话中核对这条引用，暂不用于本体。"
+        return "无法在本人原话中核对这条引用，暂不用于理解。"
     if atom["id"] in doc.fact_confirmations and not doc.fact_confirmations[atom["id"]].get(
         "atom_hash"
     ):
@@ -41,12 +41,12 @@ def fact_reason(
     if atom["id"] not in eligible:
         return "来源重复、已停用或属于引导表述，保留在记忆中，不重复归纳。"
     if any(admitted(c) and any(e.atom_id == atom["id"] for e in c.evidence) for c in doc.claims):
-        return "已作为你确认的本体依据。"
+        return "已作为你确认的理解依据。"
     if any(pending(c) and any(e.atom_id == atom["id"] for e in c.evidence) for c in doc.claims):
-        return "已整理为候选，等你确认理解及其依据。"
+        return "已整理为新理解，等你确认理解及其依据。"
     if doc.preparation.outcome in {"no_new_candidates", "candidates_ready"}:
         return "本轮未形成新的长期理解；作为背景记忆保留，避免重复或过度推断。"
-    return "可用于自动整理；明确自述可单条成为候选，推断需多组独立经历。"
+    return "可用于自动整理；明确自述可单条成为新理解，推断需多组独立经历。"
 
 
 async def flow_status(registry: Any, uid: int, doc: PersonalOntology) -> dict[str, Any]:
@@ -58,16 +58,16 @@ async def flow_status(registry: Any, uid: int, doc: PersonalOntology) -> dict[st
     count = sum(pending(c) for c in doc.claims)
     outcome = doc.preparation.outcome
     reasons = {
-        "idle": "开启后会自动从当前角色的记忆准备候选，只在你确认后纳入本体。",
+        "idle": "开启后会自动从知君的记忆整理新理解，由你核对并确认。",
         "queued": "已安排整理，新的理解会出现在待确认中。",
-        "running": "正在核对来源、整理候选，不会替你确认。",
-        "memory_paused": "当前角色已关闭记忆，自动整理暂停；重新开启记忆后会继续。",
+        "running": "正在核对来源、整理新理解，不会替你确认。",
+        "memory_paused": "知君已关闭记忆，自动整理暂停；重新开启记忆后会继续。",
         "no_sources": "还没有可核对的本人原话；AI 回复、附件引文和已撤回来源不会作为本人证据。",
-        "no_new_candidates": "本轮没有新增候选：可能是背景事实、与已有理解重复，或尚不足以归纳长期倾向。",
-        "candidates_ready": "候选已准备好。核对表述和依据后，一次确认即可纳入本体。",
+        "no_new_candidates": "本轮没有新的理解：可能是背景事实、与已有理解重复，或尚不足以归纳长期倾向。",
+        "candidates_ready": "新理解已准备好，请核对表述和依据，再决定是否确认。",
         "model_timeout": "模型整理超时，已有内容未改变；可继续聊天，稍后自动重试，也可手动重试。",
         "model_unavailable": "模型暂时未完成整理，已有内容已保留，可重试。",
-        "invalid_response": "模型返回的理解或引用未通过校验，未写入候选，可重试。",
+        "invalid_response": "模型返回的理解或引用未通过校验，未写入新理解，可重试。",
         "stale": "整理期间内容有变化，将基于新版本重新整理。",
     }
     return {
@@ -89,6 +89,8 @@ async def request_preparation(registry: Any, uid: int, aid: str, *, retry: bool 
     from octop.infra.agents.role_ontology import agent_scope
 
     with agent_scope(registry, uid, aid):
+        if not primary(registry.get_row(aid)):
+            return
         workspace = registry.get_agent(aid).workspace
         async with _lock(registry, aid):
             doc = await _read(workspace)
@@ -108,6 +110,8 @@ async def prepare_role(registry: Any, uid: int, aid: str, *, retry: bool = False
     from octop.infra.agents.role_ontology import agent_scope
 
     with agent_scope(registry, uid, aid):
+        if not primary(registry.get_row(aid)):
+            return
         harness = registry.get_agent(aid)
         doc = await _read(harness.workspace)
         if not doc.preparation.enabled or registry.is_agent_active(aid):
@@ -192,6 +196,7 @@ def explicit_declaration(text: str) -> str | None:
         text,
     ):
         return None
+    text = re.sub(r"^知君[，,：:\s]+", "", text.strip())
     patterns = [
         r"(?:请)?(?:把|将)?(?:这条|这点|这项|这句话|以下内容)?(?:可以)?(?:纳入|加入|放进|记入|进入|进)本体[：:,，\s]*(.+)",
         r"(.+?)[，,。；;\s]*(?:请)?(?:把|将)?(?:这条|这点|这项|这句话)?(?:可以)?(?:纳入|加入|放进|记入|进入|进)本体[。！!\s]*",
@@ -209,6 +214,13 @@ def explicit_declaration(text: str) -> str | None:
             and re.search(r"我|本人", statement)
             and not re.search(r"本体|记住|确认一下|是否|能否", statement)
         ):
+            transient = re.search(
+                r"今天|此刻|刚刚|这会儿|现在很|今晚|昨天|我(?:很|有点|觉得)?(?:难受|失落|疲惫|累|烦|难过|焦虑|开心)",
+                statement,
+            )
+            enduring = re.search(r"原则|底线|一直|长期|经常|希望你|不要对我", statement)
+            if transient and not enduring:
+                return None
             return statement
     return None
 
@@ -225,14 +237,16 @@ async def capture_declaration(
         raise OctopError.localized(ErrorCode.NOT_FOUND)
     statement = explicit_declaration(text)
     if not statement:
-        if re.search(r"本体|请记住", text):
+        if re.search(r"本体|记住", text):
             return {
                 "status": "needs_review",
-                "message": "尚未写入本体：请明确写出要保留的表述，或确认下方某项候选。",
+                "message": "我会先听你说。若要确认一项长期理解，请完整说出表述，或核对下方的新理解；短期感受不会自动成为长期理解。",
             }
         return None
     kind: Kind
-    if re.search(r"核心|在乎|重视|优先", statement):
+    if re.search(r"希望你|请你|听我说|听我讲", statement):
+        kind = "response"
+    elif re.search(r"核心|在乎|重视|优先", statement):
         kind = "value"
     elif re.search(r"我是|我的身份|我的定位", statement):
         kind = "identity"
@@ -285,12 +299,7 @@ class RoleOntologyCoordinator(OntologyCoordinator):
     async def tick(self) -> None:
         await super().tick()
         for row in self.registry.list_rows():
-            if (
-                application_id(row) != "wanx"
-                or row.user_id is None
-                or not row.enabled
-                or row.is_shared
-            ):
+            if not primary(row) or not row.enabled:
                 continue
             job = self.jobs.get(row.agent_id)
             if job is None or job.done():

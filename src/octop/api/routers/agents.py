@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict
 
 from octop.api.common.agent import assert_agent_access_row, assert_agent_owner, user_owns_agent
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
@@ -37,6 +38,7 @@ from octop.infra.agents.settings.runtime_limits import (
     AGENT_RUNTIME_CONFIG_KEYS,
     agent_runtime_values,
 )
+from octop.infra.agents.zhijun_profile import primary as zhijun_primary
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import user_has_permission
 
@@ -196,6 +198,7 @@ def _row_dict(
         "welcome_message": welcome_from_row(row),
         "is_shared": bool(int(getattr(row, "is_shared", 0) or 0)),
         "is_owner": row.user_id is not None and row.user_id == viewer_user_id,
+        "zhijun_primary": zhijun_primary(row),
         "owner_username": owner_username,
         "kind": getattr(row, "kind", None) or "expert",
         **agent_runtime_values(cfg),
@@ -657,3 +660,24 @@ async def reset_interaction_preferences(
     _private_interaction_agent(server, agent_id, user)
     await server.app_runtime.agent_registry.update_interaction_preferences(agent_id, None)
     return InteractionPreferencesResponse(preferences=None)
+
+
+class ZhijunProfileBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: Literal[1]
+
+
+@router.put("/{agent_id}/zhijun-profile", summary="Bind the owner's single private Zhijun")
+async def bind_zhijun_profile(
+    agent_id: str,
+    body: ZhijunProfileBinding,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    from octop.infra.agents.zhijun_profile import bind
+
+    row = _private_interaction_agent(server, agent_id, user)
+    from octop.infra.agents.application import assert_same_application
+
+    assert_same_application(row, user)
+    return await bind(server.app_runtime.agent_registry, user.id, agent_id)

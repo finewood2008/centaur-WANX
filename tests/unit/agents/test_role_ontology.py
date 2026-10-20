@@ -25,7 +25,13 @@ class Workspace:
 class Registry:
     def __init__(self):
         self.rows = {
-            k: NS(agent_id=k, user_id=1, is_shared=False, application_id="wanx")
+            k: NS(
+                agent_id=k,
+                user_id=1,
+                is_shared=False,
+                application_id="wanx",
+                config_json='{"zhijun_profile":{"version":1,"primary":true}}',
+            )
             for k in ["personal", "work"]
         }
         self.agents = {
