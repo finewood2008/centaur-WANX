@@ -1,0 +1,53 @@
+{
+  "capturedOn": "2026-10-20",
+  "captureMethod": "cua native app screenshot",
+  "platform": "macOS",
+  "bundleId": "ai.centuarai.wanx.client",
+  "version": "0.1.4",
+  "synthetic": false,
+  "transformations": "Crop title bar and viewport edges, then aspect-preserving scale and BMP format conversion; no product UI or data repainting.",
+  "screenshots": [
+    {
+      "file": "apps.png",
+      "sha256": "5ba5d793a7f0ee89b67389e15ba6f7ca0b4aac0d2f421164a3a5ab367fe5fcfa",
+      "sourceSha256": "a4143f3c6474ef4109c71892c24f3ea0f440c5da37478751e09e01f33d58e00c",
+      "crop": [
+        0,
+        58,
+        1692,
+        1280
+      ],
+      "width": 1692,
+      "height": 1222,
+      "view": "真实应用页，精选海报与已安装应用列表"
+    },
+    {
+      "file": "space.png",
+      "sha256": "9a6bbdbdf2760a321e3b62abd2b9dccf241dbb59d9bda379add79b0b91c6607a",
+      "sourceSha256": "7bcdee7e06b2231f6fa34c5ae63aff872a876fe1dbedc93670715af368dfda54",
+      "crop": [
+        0,
+        58,
+        1692,
+        850
+      ],
+      "width": 1692,
+      "height": 792,
+      "view": "真实空间页，打开半人马AI学院现有资料文件夹"
+    },
+    {
+      "file": "box.png",
+      "sha256": "a6866b36dd63a2ffe9f1d93e1bf9d483b4236fa11892fcce8352b4727cdffc36",
+      "sourceSha256": "ecdfb6ade221ce46716cfc475626db911709fb2b71285bf6e762cc6fa602eb6b",
+      "crop": [
+        0,
+        58,
+        1692,
+        1080
+      ],
+      "width": 1692,
+      "height": 1022,
+      "view": "真实盒子页，滚动至存储、运维工具及关联设备，公网 IP 不在视口中"
+    }
+  ]
+}

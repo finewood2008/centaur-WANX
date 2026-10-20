@@ -130,7 +130,14 @@
       ]
     },
     "nsis": {
+      "include": "shell/installer.nsh",
+      "installerHeader": "resources/installer/header.bmp",
+      "installerSidebar": "resources/installer/sidebar.bmp",
+      "uninstallerSidebar": "resources/installer/sidebar.bmp",
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "installerLanguages": ["zh_CN"],
       "allowToChangeInstallationDirectory": true
     }
   },
