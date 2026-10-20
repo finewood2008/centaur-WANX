@@ -9,6 +9,7 @@ import { installBluetoothSettings } from './bluetooth-settings.mjs';
 export async function createSetupRuntime({
   control, controlURL, ipcMain, account, client, safeStorage, userData, consumerBaseUrl,
   advertisementNames,
+  onDiagnostic = () => {},
   makeHost = createProvisioningHost, makeStore = createClaimResumeStore,
   installPicker = installElectronBluetoothPicker,
   onError = () => {},
@@ -27,6 +28,7 @@ export async function createSetupRuntime({
       // Public-name probes use their own native GATT connection. Selection
       // closes the chooser first; wait for the probe process to release it.
       beforeConnect: () => advertisementNames?.stopAndWait?.(),
+      onDiagnostic,
       ...JSON.parse(await readFile(new URL('./provisioning-trust.json', import.meta.url), 'utf8')),
     });
     disposeBluetoothSettings = installBluetoothSettings({

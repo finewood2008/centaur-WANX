@@ -48,6 +48,7 @@ export interface SetupTransportBridge {
     ok: boolean;
     value?: unknown;
     code?: string;
+    diagnostic?: { stage?: string; errorName?: string };
   }): void;
   status(connectionId: string, frame: number[]): void;
 }
