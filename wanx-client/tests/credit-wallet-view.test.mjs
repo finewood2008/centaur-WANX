@@ -409,3 +409,48 @@ test('closing a recovered configurable-price order survives a lost response and 
   assert.equal(restarted.view.paymentImage(), null);
   assert.equal(restarted.seen.some(([action]) => action === 'wallet.createOrder'), false);
 });
+
+const remoteWallet = { account_id: 'alice', billing_backend: 'qeetoken', currency_rule_id: 'usd-credit-1-v1',
+  usd_per_credit: '1', credit_scale: 6, currency: 'USD', currency_scale: 8,
+  balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60',
+  remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-18T02:00:00Z', pending_executions: 1 };
+
+test('QeeToken wallet displays exact balance, tiny consumption and server timezone with escaped metadata', async () => {
+  const { view } = setup({ request: async action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope(remoteWallet);
+    if (action === 'wallet.usage') return envelope({ items: [{ event_id: 'event', account_sequence: '2', debit_usd_atoms: '60', debit_credit_atoms: '1',
+      occurred_at: '2026-10-18T02:00:00Z', device_id: '<script>box</script>', model: 'model-x', input_tokens: 7, output_tokens: 2 }], next_before_sequence: null });
+  } });
+  await view.refresh();
+  const html = view.render();
+  assert.match(html, /class="credits-total">1,999\.999999<span>/);
+  assert.match(html, /1 USD = 1 积分/); assert.match(html, /1999\.99999940/); assert.match(html, /0\.00000060/);
+  assert.match(html, /10:00:00/); assert.match(html, /1 笔调用正在结算/);
+  assert.match(html, /&lt;script&gt;box/); assert.doesNotMatch(html, /<script>/);
+});
+
+test('QeeToken initialization remains unknown and a stale wallet is labelled explicitly', async () => {
+  let pending = true;
+  const { view } = setup({ request: async action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope(pending ? { ...remoteWallet, balance_credit_atoms: null, balance_usd_atoms: null, spent_usd_atoms: null, sync_state: 'pending', synced_at: null } : { ...remoteWallet, sync_state: 'stale' });
+    if (action === 'wallet.usage') return envelope({ items: [], next_before_sequence: null });
+  } });
+  await view.refresh(); assert.match(view.render(), /余额初始化中/); assert.doesNotMatch(view.label(), /0\.00/);
+  pending = false; await view.refresh(); assert.match(view.render(), /显示上次同步余额/);
+});
+
+test('account switch discards in-flight QeeToken wallet and consumption', async () => {
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const { view, seen } = setup({ request: async action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') { await waiting; return envelope(remoteWallet); }
+    if (action === 'wallet.usage') return envelope({ items: [], next_before_sequence: null });
+  } });
+  const refresh = view.refresh();
+  while (!seen.some(([action]) => action === 'wallet.wallet')) await new Promise(resolve => setImmediate(resolve));
+  view.reset(JSON.stringify(['bob', 'client-2'])); release(); await refresh;
+  assert.doesNotMatch(view.render(), /1999\.99999940|余额已同步/);
+});

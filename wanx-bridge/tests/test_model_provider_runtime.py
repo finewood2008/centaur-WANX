@@ -510,3 +510,59 @@ async def test_observed_authority_change_disables_old_catalog_without_owner_onli
         assert rt.last_error == "MODEL_PROVIDER_AUTHORIZATION_CHANGED"
     finally:
         await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_v3_ack_only_after_install_and_failure_stops_forwarding():
+    rt, catalog, admin = runtime()
+    catalog.value["schemaVersion"] = 3
+    acknowledgements = []
+
+    async def applied():
+        assert admin.rows and admin.rows[0]["enabled"]
+        assert admin.active["model"] == "chat-model"
+        assert rt.entries
+        acknowledgements.append(True)
+        if len(acknowledgements) == 2:
+            raise BridgeAuthError("CONFIG_BINDING_CHANGED", 409)
+
+    catalog.acknowledge_applied = applied
+    catalog.clear = lambda: setattr(catalog, "expired", True)
+    try:
+        await rt.reconcile()
+        assert acknowledgements == [True]
+        with pytest.raises(BridgeAuthError):
+            await rt.reconcile()
+        assert not rt.entries and catalog.expired
+    finally:
+        await rt.close()
+
+
+async def test_v3_models_are_refreshed_from_qeetoken_without_admin_policy_or_key_rotation():
+    models = ["native-a"]
+    requests = []
+
+    def upstream(request):
+        requests.append(request)
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": [{"id": name} for name in models]})
+
+    rt, catalog, admin = runtime(upstream)
+    catalog.value["schemaVersion"] = 3
+    catalog.value["providers"][0]["allowedModels"] = []
+
+    async def applied():
+        pass
+
+    catalog.acknowledge_applied = applied
+    try:
+        await rt.reconcile()
+        assert [m["id"] for m in admin.rows[0]["models"]] == ["native-a"]
+        proxy_key = admin.rows[0]["api_key"]
+        models[:] = ["native-b"]
+        await rt.reconcile()
+        assert [m["id"] for m in admin.rows[0]["models"]] == ["native-b"]
+        assert admin.rows[0]["api_key"] == proxy_key
+        assert len(requests) == 2
+    finally:
+        await rt.close()

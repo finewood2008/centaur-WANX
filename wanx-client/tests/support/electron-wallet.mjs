@@ -30,6 +30,9 @@ try {
         if (action === 'wallet.order') data = activeOrder;
         if (action === 'wallet.catalog') data = { recharge_enabled: true, payment_channels: ['alipay', 'wechat'], timezone: 'Asia/Shanghai', tiers: [], products: [1, 100, 200].map(amount => ({ product_id: 'product-' + amount, version: 'v1', name: '充值商品 ' + amount, enabled: true, amount_fen: amount, grant_credit_atoms: String(amount * 200000) })) };
         if (action === 'wallet.balance') data = { balance_credit_atoms: activeOrder?.display_state === 'credited' ? activeOrder.grant_credit_atoms : '0', debt_credit_atoms: '0', ledger_sequence: activeOrder?.display_state === 'credited' ? 1 : 0, execution_slot_state: 'none', pending_call_count: 0 };
+        if (action === 'wallet.balance' && window.qeeMode) data.billing_backend = 'qeetoken';
+        if (action === 'wallet.wallet') data = { account_id: snapshot.account.accountId, billing_backend: 'qeetoken', currency_rule_id: 'usd-credit-1-v1', usd_per_credit: '1', credit_scale: 6, currency: 'USD', currency_scale: 8, balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60', remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-19T12:00:00Z', pending_executions: 1 };
+        if (action === 'wallet.usage') data = { items: [{ event_id: 'e1', account_sequence: '2', debit_usd_atoms: '60', debit_credit_atoms: '1', occurred_at: '2026-10-19T12:00:00Z', device_id: '客厅盒子', model: 'test-model', input_tokens: 7, output_tokens: 2 }], next_before_sequence: null };
         if (action === 'wallet.createOrder') {
           check(input.product_version === 'v1' && !('amount_fen' in input), 'purchase must use server-owned product price');
           const amountFen = Number(input.product_id.replace('product-', ''));
@@ -131,9 +134,26 @@ try {
     publish(snapshot);
     check(!dialog() && !document.querySelector('.wallet-qr'), 'account change retained old purchase');
   })()`);
+  await js(`(async () => {
+    await new Promise(resolve => realTimeout(resolve, 50));
+    window.qeeMode = true; if (button('show-credits')) button('show-credits').click(); walletPoll();
+    await until(() => document.body.textContent.includes('1 USD = 1 积分'));
+    check(document.body.textContent.includes('0.00000060') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
+    check(document.body.textContent.includes('20:00:00'), 'server timezone not applied');
+    check(document.querySelector('.wallet-usage table tbody tr'), 'usage row missing');
+  })()`);
+  if (process.env.WALLET_SCREENSHOT_DIR) {
+    await js('new Promise(resolve => realTimeout(resolve, 100))');
+    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'qeetoken-wallet.png'), (await window.webContents.capturePage()).toPNG());
+    window.setSize(390, 780);
+    await js('new Promise(resolve => realTimeout(resolve, 50))');
+    await js(`check(document.querySelector('.wallet-usage-scroll').getBoundingClientRect().right <= innerWidth, 'usage table overflows screen')`);
+    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'qeetoken-wallet-narrow.png'), (await window.webContents.capturePage()).toPNG());
+  }
   console.log('WALLET_ELECTRON_PASS');
 } catch (error) {
   console.error(error);
+  if (window) console.error(await window.webContents.executeJavaScript('JSON.stringify({body:document.body.textContent, requests:window.requests?.slice(-12)})'));
   process.exitCode = 1;
 } finally {
   window?.destroy();

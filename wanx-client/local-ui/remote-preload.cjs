@@ -76,6 +76,8 @@ async function rawState() {
 const actions = {
   "wallet.catalog": () => walletRequest("catalog"),
   "wallet.balance": () => walletRequest("balance"),
+  "wallet.wallet": () => walletRequest("wallet"),
+  "wallet.usage": input => walletRequest("usage", input),
   "wallet.orders": input => walletRequest("orders", input),
   "wallet.order": input => walletRequest("order", input),
   "wallet.entries": input => walletRequest("entries", input),
@@ -112,6 +114,7 @@ const actions = {
   "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
+  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
   "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {

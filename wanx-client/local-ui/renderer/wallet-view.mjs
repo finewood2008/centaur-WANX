@@ -9,7 +9,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
   let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
   let error = '', intent = null, qrImage = null, recoveryReady = false;
-  let selectedChannel = 'alipay';
+  let selectedChannel = 'alipay', remote = null, usage = [], nextUsage = null, usageLoading = false;
   const channels = () => catalog?.payment_channels?.filter(name => ['alipay', 'wechat'].includes(name)) ?? ['alipay'];
   const key = () => `wanx.credit.purchase.v1:${account}`;
   const data = response => {
@@ -27,6 +27,9 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   function message(cause, fallback = '暂时无法连接积分服务，请稍后重试。') {
     const code = cause?.code || cause?.message;
     const messages = { CONTRACT_NOT_CONFIGURED: '积分服务暂未开放，请稍后再试。',
+      QEETOKEN_UNAVAILABLE: '余额服务暂不可用，正在重试同步。',
+      QEETOKEN_MIGRATION_PENDING: '旧调用正在结算，完成后将同步账号余额。',
+      QEETOKEN_SYNC_PENDING: '消费流水正在同步，请稍候。',
       CREDITS_SERVICE_UNAVAILABLE: '积分接口暂不可用，请联系管理员检查服务部署。',
       REVISION_CONFLICT: '商品已调整，请刷新后重新选择。',
       ORDER_IN_PROGRESS: '账号已有购买流程，正在恢复原订单。', ORDER_ALREADY_PAID: '订单已支付，请等待到账。',
@@ -80,8 +83,8 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   function poll() {
     if (timer !== null) cancel(timer);
     timer = null;
-    if (identity && (pendingOrder(order) || intent || error || balance?.execution_slot_state === 'held')) {
-      timer = schedule(() => { timer = null; void refresh(); }, error ? 30000 : 5000);
+    if (identity) {
+      timer = schedule(() => { timer = null; void refresh(); }, error || (!pendingOrder(order) && !intent && !remote) ? 30000 : 5000);
       timer?.unref?.();
     }
   }
@@ -119,11 +122,64 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       if (g !== generation) return;
       creditAtoms(b.balance_credit_atoms); creditAtoms(b.debt_credit_atoms);
       if (!Number.isSafeInteger(b.ledger_sequence) || b.ledger_sequence < 0) throw new Error('CREDITS_INVALID_RESPONSE');
+      let q = null, u = null;
+      if (b.billing_backend === 'qeetoken') {
+        [q, u] = await Promise.all([read('wallet'), read('usage', { limit: 20 })]);
+        if (g !== generation) return;
+        validateWallet(q); validateUsage(u);
+      }
       catalog = c;
+      if (!remote || !q || BigInt(q.remote_sequence) >= BigInt(remote.remote_sequence)) {
+        remote = q;
+        if (u) { usage = u.items; nextUsage = u.next_before_sequence; }
+      }
       if (!pendingOrder(order) && !intent && !channels().includes(selectedChannel)) selectedChannel = channels()[0];
       if (!balance || b.ledger_sequence >= balance.ledger_sequence) balance = b;
     } catch (cause) { if (g === generation) error = message(cause); }
     finally { if (g === generation) { loading = false; notify(); poll(); } }
+  }
+  function validateWallet(q) {
+    if (q.account_id !== account || q.currency_rule_id !== 'usd-credit-1-v1' || q.currency !== 'USD' || q.currency_scale !== 8 || q.credit_scale !== 6 || q.usd_per_credit !== '1' ||
+        !['pending', 'stale', 'synced'].includes(q.sync_state) || !Number.isSafeInteger(q.pending_executions) || q.pending_executions < 0 ||
+        typeof q.remote_sequence !== 'string' || !/^(0|[1-9][0-9]*)$/.test(q.remote_sequence)) throw new Error('CREDITS_INVALID_RESPONSE');
+    if (q.sync_state === 'pending') {
+      if (q.balance_credit_atoms !== null || q.balance_usd_atoms !== null) throw new Error('CREDITS_INVALID_RESPONSE');
+    } else {
+      creditAtoms(q.balance_credit_atoms); creditAtoms(q.balance_usd_atoms); creditAtoms(q.spent_usd_atoms);
+      if (!Number.isFinite(Date.parse(q.synced_at))) throw new Error('CREDITS_INVALID_RESPONSE');
+    }
+  }
+  function validateUsage(value) {
+    if (!Array.isArray(value.items) || value.items.length > 100 || (value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence))) throw new Error('CREDITS_INVALID_RESPONSE');
+    for (const item of value.items) {
+      creditAtoms(item.debit_usd_atoms); creditAtoms(item.debit_credit_atoms);
+      if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence)) throw new Error('CREDITS_INVALID_RESPONSE');
+    }
+  }
+  const displayedBalance = () => remote ? remote.balance_credit_atoms : balance?.billing_backend === 'qeetoken' ? null : balance?.balance_credit_atoms;
+  const usd = value => {
+    const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
+    return `${atoms < 0n ? '-' : ''}${magnitude / 100000000n}.${String(magnitude % 100000000n).padStart(8, '0')}`;
+  };
+  const date = value => new Intl.DateTimeFormat('zh-CN', { timeZone: catalog?.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value));
+  async function loadUsage() {
+    if (!identity || usageLoading || !nextUsage) return;
+    const g = generation, cursor = nextUsage; usageLoading = true;
+    try {
+      const value = await read('usage', { before_sequence: cursor, limit: 20 });
+      if (g !== generation || cursor !== nextUsage) return;
+      validateUsage(value); usage.push(...value.items); nextUsage = value.next_before_sequence;
+    } catch (cause) { if (g === generation) error = message(cause); }
+    finally { if (g === generation) { usageLoading = false; notify(); } }
+  }
+  function remoteView() {
+    if (!remote) return '';
+    const state = remote.sync_state === 'pending' ? '余额初始化中' : remote.sync_state === 'stale' || error ? '显示上次同步余额' : '余额已同步';
+    return `<section aria-label="余额同步状态"><p>${esc(state)}${remote.synced_at ? ` · ${esc(date(remote.synced_at))}` : ''}</p>
+      <p class="muted">1 USD = 1 积分${remote.balance_usd_atoms !== null ? ` · 余额 $${esc(usd(remote.balance_usd_atoms))} · 累计消耗 $${esc(usd(remote.spent_usd_atoms))}` : ''}</p>
+      ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} 笔调用正在结算或核对，最终消耗以结算结果为准。</p>` : ''}</section>
+      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>输入 / 输出 tokens</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td title="账本变动 ${esc(exactPoints(item.debit_credit_atoms))} 积分">${esc(usd(item.debit_usd_atoms))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
+      ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? 'disabled' : ''}>查看更多</button>` : ''}</section>`;
   }
   const products = () => catalog?.products?.length ? catalog.products : (catalog?.tiers || []);
   const productKey = product => product.product_id || String(product.amount_fen);
@@ -222,7 +278,8 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       if (qrTimer !== null) cancel(qrTimer);
       qrTimer = null;
       identity = value; generation++; account = value ? JSON.parse(value)[0] : null;
-      catalog = balance = order = qrImage = selectedAmount = null;
+      catalog = balance = order = qrImage = selectedAmount = remote = null;
+      usage = []; nextUsage = null; usageLoading = false;
       dialogOpen = loading = writing = recoveryReady = false; error = ''; timer = null;
       selectedChannel = 'alipay';
       intent = account ? load() : null;
@@ -232,11 +289,12 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     refresh,
     paymentImage,
     isOpen: () => dialogOpen,
-    label: () => balance ? `${amount(balance.balance_credit_atoms)} 点` : loading ? '读取中…' : '暂不可用',
+    label: () => displayedBalance() != null ? `${amount(displayedBalance())} 点` : loading ? '读取中…' : '暂不可用',
     async action(action, dataset = {}) {
       if (action === 'credits-open') { dialogOpen = true; notify(); return; }
       if (action === 'credits-dismiss') { dialogOpen = false; notify(); return; }
       if (action === 'credits-refresh') return refresh();
+      if (action === 'credits-usage-more') return loadUsage();
       if (action === 'credits-channel') {
         if (!writing && !loading && !pendingOrder(order) && !intent && channels().includes(dataset.channel)) {
           selectedChannel = dataset.channel; notify();
@@ -250,9 +308,10 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       return `<div class="page-content credits-page" ${dialogOpen ? 'inert' : ''}>
         <div class="page-heading"><div><h2>账号积分</h2><p class="muted">查看账号余额，购买的积分长期有效。</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? ' 当前显示上次读取的余额。' : ''}</div>` : ''}
-        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${balance ? esc(amount(balance.balance_credit_atoms)) : '—'}<span>点</span></div>
+        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${displayedBalance() != null ? esc(remote ? exactPoints(displayedBalance()) : amount(displayedBalance())) : '—'}<span>点</span></div>
         <p class="muted">积分归当前万象账号所有，跨设备共享。</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">购买积分</button>${pendingOrder(order) || intent ? '<p>有一笔购买正在处理中，点击继续查看。</p>' : ''}</div></section>
+        ${remoteView()}
         <p class="credits-hint">付款后请等待积分到账，可在购买弹框中查看处理状态。</p>
       </div>${dialog()}`;
     },

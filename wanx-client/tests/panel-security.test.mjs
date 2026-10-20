@@ -79,7 +79,7 @@ for (const surface of ["control", "panel"]) {
 test("panel cannot invoke account, market mutation, version selection, or management-only operations", () => {
   const h = harness();
   for (const name of [
-    "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open", "maintenance-open",
+    "console-claim", "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open", "maintenance-open",
     "applications-install", "applications-launch", "applications-select-current", "applications-stop",
     "market-list", "market-candidate", "market-install", "market-uninstall", "market-rollback",
     "desktop-startup-get", "desktop-startup-set", "desktop-quit",
@@ -313,6 +313,17 @@ test("panel preload exposes only the fixed application name reader", async () =>
   assert.deepEqual(calls, [["wanx-client:panel-application-names"]]);
   await assert.rejects(api.action("market-list"), /PANEL_ACTION_NOT_ALLOWED/);
   await assert.rejects(api.action("market-install"), /PANEL_ACTION_NOT_ALLOWED/);
+});
+
+test('panel reads QeeToken projection without exposing wallet history or falling back to shadow credits', async () => {
+  const h = harness({ credits: { balance: async () => { throw Error('shadow must not be read'); } },
+    creditWallet: {
+      balance: async () => ({ data: { billing_backend: 'qeetoken' } }),
+      wallet: async () => ({ data: { balance_credit_atoms: '-1', sync_state: 'stale', pending_executions: 2, account_id: 'alice' } }),
+    },
+  });
+  assert.deepEqual(await h.invoke('panel-balance', undefined, h.panel), { available_text: '-<0.01', sync_state: 'stale' });
+  assert.throws(() => h.invoke('wallet-usage', {}, h.panel), /无权/);
 });
 
 test('offline quick panel may pause its own upload but cannot upload or touch another scope', async () => {
