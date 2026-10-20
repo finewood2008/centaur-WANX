@@ -60,3 +60,24 @@ test('product purchase sends only the selected ID and version; amount and credit
   }
   assert.equal(sent.length, 1);
 });
+
+test('custom recharge uses a versioned integer amount and cannot mix pricing modes', async () => {
+  const sent = [];
+  const wallet = createCreditWallet({ request: async value => { sent.push(value); return {}; } });
+  const purchase = { purchase_intent_id: 'custom-buy', custom_amount_fen: 1234,
+    custom_recharge_version: 'cny-100-v1', payment_channel: 'wechat' };
+  await wallet.createOrder(purchase);
+  assert.deepEqual(sent[0], { method: 'POST', path: '/app-api/v1/credits/orders',
+    idempotencyKey: purchase.purchase_intent_id, body: { schema_version: '1', ...purchase } });
+  for (const extra of [
+    { amount_fen: 10000 }, { product_id: 'product', product_version: 'v1' },
+    { product_version: 'v1' }, { grant_credit_atoms: '1234000000' },
+    { custom_recharge_version: undefined },
+    ...[0, -1, 1.5, '1234', 10000000001, Number.MAX_SAFE_INTEGER].map(custom_amount_fen => ({ custom_amount_fen })),
+  ]) {
+    await assert.rejects(wallet.createOrder({ ...purchase, ...extra }), { code: 'CREDITS_INVALID_INPUT' });
+  }
+  await assert.rejects(wallet.createOrder({ purchase_intent_id: 'old', amount_fen: 10000,
+    custom_recharge_version: 'cny-100-v1' }), { code: 'CREDITS_INVALID_INPUT' });
+  assert.equal(sent.length, 1);
+});

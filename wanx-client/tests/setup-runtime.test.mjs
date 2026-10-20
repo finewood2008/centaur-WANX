@@ -74,6 +74,7 @@ test('trusted setup IPC completes identity, Wi-Fi and ownership then refreshes o
   assert.ok(h.handlers.has('wanx:discovery:bluetooth-state'));
   assert.equal(h.pickerInput.documentUrl, h.event.senderFrame.url);
   assert.equal(h.pickerInput.advertisementNames, h.advertisementNames);
+  assert.equal(h.pickerInput.scanTimeoutMs, process.platform === 'win32' ? 60000 : 30000);
   assert.ok(h.sent.some(([name]) => name === 'wanx:setup:ready'));
   assert.equal((await h.invoke('begin', candidate)).value.state, 'previewReady');
   assert.equal((await h.invoke('confirmPhysical')).value.state, 'awaitingWifi');

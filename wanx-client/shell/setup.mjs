@@ -37,7 +37,7 @@ export async function createSetupRuntime({
     disposePicker = installPicker({
       webContents: control.webContents, ipcMain, documentUrl: controlURL,
       advertisementNames,
-      scanTimeoutMs: process.platform === 'win32' ? 60000 : 12000,
+      scanTimeoutMs: process.platform === 'win32' ? 60000 : 30000,
       clock: { monotonicMs: () => performance.now() },
     });
     unsubscribeHost = host.subscribe((state) => {
