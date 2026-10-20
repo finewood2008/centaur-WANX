@@ -722,7 +722,7 @@ test("network 404 distinguishes an undeployed API from a missing enrollment", as
 });
 
 
-test("logout clears local credentials immediately and drains old revocations before a new login", async t => {
+test("logout clears local credentials immediately and drains auth revocation before a new login", async t => {
   const store = memoryStore();
   const calls = [], releases = new Map();
   let loginCount = 0;
@@ -741,12 +741,13 @@ test("logout clears local credentials immediately and drains old revocations bef
     await account.close();
   });
   await account.loginPassword({ phone: "13800138000", password: "password-test" });
-  await account.logout({ revokeNetwork: true });
+  await account.logout();
   assert.equal(account.snapshot().phase, "signed_out");
   assert.equal(account.snapshot().logoutPending, true);
   assert.equal(account.getIdentity(), null);
   assert.equal((await store.load()).active, null);
-  assert.deepEqual(calls.slice(1).map(call => call.options.method), ["DELETE"]);
+  assert.deepEqual(calls.slice(1).map(call => call.options.method), ["POST"]);
+  assert.equal(calls[1].url.endsWith("/auth/logout"), true);
   assert.equal(calls[1].options.headers.Authorization, "Bearer access-1");
   assert.ok(calls[1].options.headers["X-Nexus-Signature"]);
   await account.logout(); // A repeated logout must not abort the captured cleanup.
@@ -754,12 +755,7 @@ test("logout clears local credentials immediately and drains old revocations bef
   const login = account.loginPassword({ phone: "13800138000", password: "password-test" });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(loginCount, 1, "a late server logout can revoke a newly created session");
-  releases.get("/prod-api/app-api/network/current")(reply({}, 503));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(loginCount, 1, "authentication revocation must finish before issuing a new session");
-  assert.equal(calls[2].options.headers.Authorization, "Bearer access-1");
-  assert.ok(calls[2].options.headers["X-Nexus-Signature"]);
-  assert.equal(calls[2].body.refreshToken, "refresh-1");
+  assert.equal(calls[1].body.refreshToken, "refresh-1");
   releases.get("/prod-api/app-api/auth/logout")(reply({}));
   await login;
   assert.equal(account.snapshot().logoutPending, false);

@@ -283,7 +283,7 @@ test("one product login automatically enrolls and opens only a server-authorized
   assert.equal(h.sessions[0].closed, true);
   assert.equal(h.transports[0].closed, true);
   assert.deepEqual(h.calls.at(-1), {
-    path: "logout", options: { revokeNetwork: true },
+    path: "logout", options: undefined,
   });
 });
 
@@ -454,6 +454,41 @@ test("confirmed revoked restore creates exactly one replacement enrollment", asy
   assert.equal(h.transports.length, 1);
   assert.notEqual(h.transports[0].identity.networkSessionId, "old-session");
 });
+
+for (const pending of ["NETWORK_SESSION_REVOKED", "NETWORK_REVOCATION_PENDING"]) {
+  test(`login remains available while ${pending} clears before network restoration`, { timeout: 1000 }, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const h = harness(t);
+    let cleaning = true;
+    h.override(input => {
+      if (input.path !== "/app-api/network/restore" || !cleaning) return;
+      if (pending === "NETWORK_SESSION_REVOKED") throw fail(pending, 401);
+      return { enrollmentId: "old-session", networkSessionId: "old-session",
+        phase: "revocation_pending", managementUrl: "https://p2p.qeeshu.com" };
+    });
+    await h.client.initialize();
+    await h.client.loginPassword({ phone: "13800000001" }, { waitForDevices: false });
+    await tick();
+    assert.equal(h.client.snapshot().account.phase, "authenticated");
+    assert.equal(h.client.snapshot().platform.reason, pending);
+    assert.equal(h.transports.length, 0);
+    assert.equal(h.calls.some(input => input.path === "/app-api/network/enrollments"), false);
+    assert.equal(h.calls.some(input => input.method === "DELETE"), false);
+    const ready = new Promise(resolve => {
+      const unsubscribe = h.client.subscribe(state => {
+        if (state.platform.phase === "ready") { unsubscribe(); resolve(); }
+      });
+    });
+    cleaning = false;
+    t.mock.timers.tick(5000);
+    await tick();
+    assert.equal(h.calls.filter(input => input.path === "/app-api/network/restore").length, 2);
+    await ready;
+    assert.equal(h.client.snapshot().platform.phase, "ready", "network retries after old-session cleanup without another login");
+    assert.equal(h.transports.length, 1);
+    assert.equal(h.calls.filter(input => input.path === "/app-api/network/enrollments").length, 1);
+  });
+}
 
 test("pending revocation restore preserves the directory without starting or replacing a network", async (t) => {
   const h = harness(t);

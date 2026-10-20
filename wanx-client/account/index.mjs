@@ -901,7 +901,7 @@ export function createAccount({
         throw error;
       }
     },
-    async logout({ revokeNetwork = false } = {}) {
+    async logout() {
       const previous = record;
       cancel();
       const generation = epoch;
@@ -911,17 +911,12 @@ export function createAccount({
       // the old credentials; new logins wait for it before issuing requests.
       const cleared = persist(null);
       if (previous?.session) {
-        const requests = [
-          ...(revokeNetwork ? [{ method: "DELETE", path: "/app-api/network/current" }] : []),
-          { method: "POST", path: "/app-api/auth/logout", body: { refreshToken: previous.session.refreshToken } },
-        ];
-        const cleanup = (async () => {
-          // Network revocation needs the old authentication to remain valid.
-          // Attempt logout even if network cleanup fails or times out.
-          for (const input of requests) {
-            await wire(input, generation, previous, true).catch(() => {});
-          }
-        })().then(() => {
+        // Auth logout advances the server client-session version, invalidating
+        // its network enrollment too. The server reconciler removes old peers;
+        // waiting for network/current here would block account login on P2P.
+        const cleanup = wire({ method: "POST", path: "/app-api/auth/logout",
+          body: { refreshToken: previous.session.refreshToken } }, generation, previous, true)
+          .catch(() => {}).then(() => {
           if (!closed && logoutCleanup === cleanup) publish({ logoutPending: false });
         });
         logoutCleanup = cleanup;
