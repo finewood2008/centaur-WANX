@@ -38,6 +38,15 @@ export async function verifyPackagedNativeBinaries({ sourceDirectory, ...target 
   return binaries;
 }
 
+export async function verifyClipboardNative({resourcesPath, sourceDirectory, arch}) {
+  const name=`wanx-clipboard-darwin-${arch}`;
+  const file=path.join(resourcesPath,'network',name);
+  const info=await lstat(file).catch(()=>{throw new Error(`CLIENT_CLIPBOARD_HELPER_MISSING:${name}`);});
+  if(!info.isFile()||!info.size||!(info.mode&0o100))throw new Error(`CLIENT_CLIPBOARD_HELPER_INVALID:${name}`);
+  const [source,actual]=await Promise.all([readFile(path.join(sourceDirectory,name)),readFile(file)]);
+  if(!source.equals(actual))throw new Error(`CLIENT_CLIPBOARD_HELPER_MISMATCH:${name}`);
+}
+
 // Status does not enroll, read an account, start a tunnel or contact a box.
 export async function probeNativeEngine(binaryPath) {
   const engine = createSidecar({ binaryPath });
@@ -57,6 +66,7 @@ export default async function afterPack(context) {
   const resourcesPath = path.join(bundle, platform === "darwin" ? "Contents/Resources" : "resources");
   const binaries = await verifyPackagedNativeBinaries({ resourcesPath, platform, arch,
     sourceDirectory: path.join(context.packager.projectDir, "native/bin") });
+  if(platform==='darwin')await verifyClipboardNative({resourcesPath,arch,sourceDirectory:path.join(context.packager.projectDir,'native/bin')});
   const canRun = platform === process.platform && arch === process.arch;
   if (canRun)
     await probeNativeEngine(path.join(resourcesPath, "network", binaries.engine.file));

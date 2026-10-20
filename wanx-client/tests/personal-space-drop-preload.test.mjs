@@ -65,3 +65,16 @@ for (const [preload, apiName] of [['remote-preload.cjs', 'wanxClient'], ['panel-
     assert.doesNotMatch(JSON.stringify(result), /private|source/);
   });
 }
+
+
+test('clipboard IPC errors retain only known codes after Electron wraps the exception', async () => {
+  let api; let failure = "Error invoking remote method 'wanx-client:clipboard-copy': Error: CLIPBOARD_NATIVE_FAILED";
+  vm.runInNewContext(source, {process:{platform:'win32'}, require:()=>({
+    contextBridge:{exposeInMainWorld:(name,value)=>{if(name==='wanxClient')api=value;}},
+    ipcRenderer:{on(){},invoke:async name=>{if(name==='wanx-client:clipboard-copy')throw Error(failure);return {};}},
+    webUtils:{}
+  })});
+  assert.equal((await api.action('clipboard.copy',{id:'a'.repeat(32)})).code,'CLIPBOARD_NATIVE_FAILED');
+  failure='Error: path C:/private/source.txt';
+  assert.equal((await api.action('clipboard.copy',{})).code,'CLIPBOARD_OPERATION_FAILED');
+});

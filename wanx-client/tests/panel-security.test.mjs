@@ -194,7 +194,7 @@ test("panel preload exposes a fixed balance reader, retaining the generic-action
   const vm = await import("node:vm");
   let api; const calls = [];
   vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
-    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    contextBridge: { exposeInMainWorld: (name, value) => { if(name==="wanxPanel")api = value; } },
     ipcRenderer: { invoke: name => { calls.push(name); return Promise.resolve({ available: 55 }); } },
   }) });
   assert.deepEqual(await api.getBalance({ accountId: "forged" }), { available: 55 });
@@ -268,7 +268,7 @@ test("panel preload exposes a fixed balance reader, retaining the generic-action
   const vm = await import("node:vm");
   let api; const calls = [];
   vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
-    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    contextBridge: { exposeInMainWorld: (name, value) => { if(name==="wanxPanel")api = value; } },
     ipcRenderer: { invoke: name => { calls.push(name); return Promise.resolve({ available: 55 }); } },
   }) });
   assert.deepEqual(await api.getBalance({ accountId: "forged" }), { available: 55 });
@@ -306,7 +306,7 @@ test("panel preload exposes only the fixed application name reader", async () =>
   const vm = await import("node:vm");
   let api; const calls = [];
   vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
-    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    contextBridge: { exposeInMainWorld: (name, value) => { if(name==="wanxPanel")api = value; } },
     ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve([]); } },
   }) });
   assert.deepEqual(await api.getApplicationNames({ accountId: "forged" }), []);
@@ -344,4 +344,44 @@ test("all three upload IPC entries return only the deliberate preflight notice a
   }
   personalSpace.uploads = async () => { throw Object.assign(new Error("SECURE_STORAGE_WRITE_FAILED"), { localPath: "/private" }); };
   await assert.rejects(h.invoke("space-uploads", {}), /SECURE_STORAGE_WRITE_FAILED/);
+});
+
+// Clipboard access is main-window-only and cannot target a stale account/box scope.
+test('clipboard IPC is denied to the panel and rejects stale targets before reading the OS clipboard',async()=>{
+ const called=[];let bound='scope-a';const h=harness({superClipboard:{snapshot:()=>({scope:bound}),operation:async(method,input)=>{called.push([method,input]);return {};}}});
+ for(const method of ['snapshot','refresh','capture','paste','choose','transfer','copy','preview','download','manage','export','note-save','note-refresh','note-command','note-paste'])assert.throws(()=>h.invoke('clipboard-'+method,{scope:bound},h.panel),denied);
+ await assert.rejects(h.invoke('clipboard-paste',{scope:'old'}),/SPACE_CONTEXT_CHANGED/);assert.equal(called.length,0);
+ await h.invoke('clipboard-paste',{scope:bound});assert.deepEqual(called,[['paste',{}]]);
+});
+
+test('panel note bridge exposes only the shared note and denies broader clipboard operations',async()=>{
+ const called=[],bound='scope-a',image='a'.repeat(32);
+ const snapshot={scope:bound,online:true,boxId:'box-a',note:{blocks:[{type:'image',item:image}]},tasks:[],items:[{private:'legacy'}],cache:[{path:'/private'}]};
+ const h=harness({superClipboard:{snapshot:()=>snapshot,operation:async(method,args)=>{called.push([method,args]);return method==='preview'?{item:{id:image,name:'图片.png',mime:'image/png',path:'/private'},data:'png'}:snapshot;}}});
+ const panel=await h.invoke('panel-note',{method:'snapshot'},h.panel);
+ assert.equal(panel.items,undefined);assert.equal(panel.cache,undefined);assert.deepEqual(panel.note,snapshot.note);
+ for(const method of ['copy','download','manage','export','paste','refresh','readFile'])await assert.rejects(h.invoke('panel-note',{method,scope:bound},h.panel),/PANEL_ACTION_NOT_ALLOWED/);
+ for(const method of ['note-save','note-paste','choose','capture','preview','transfer','note-command'])
+  await assert.rejects(h.invoke('panel-note',{method,scope:'old'},h.panel),/SPACE_CONTEXT_CHANGED/);
+ await assert.rejects(h.invoke('panel-note',{method:'preview',id:'b'.repeat(32),scope:bound},h.panel),/CLIPBOARD_NOT_FOUND/);
+ const preview=await h.invoke('panel-note',{method:'preview',id:image,scope:bound},h.panel);
+ assert.equal(preview.item.path,undefined);assert.equal(preview.data,'png');
+ await h.invoke('panel-note',{method:'choose',scope:bound},h.panel);
+ assert.deepEqual(called.at(-1),['choose',{panel:true}]);
+ await assert.rejects(h.invoke('panel-note',{method:'transfer',action:'cancel',scope:bound},h.panel),/PANEL_ACTION_NOT_ALLOWED/);
+ await assert.rejects(h.invoke('panel-note',{method:'note-command',action:'purge',scope:bound},h.panel),/PANEL_ACTION_NOT_ALLOWED/);
+});
+
+test('panel note preload cannot send other actions and copied blobs remain bounded',async()=>{
+ const vm=await import('node:vm');const api={},calls=[];
+ vm.runInNewContext(await (await import('node:fs/promises')).readFile(new URL('../local-ui/panel-preload.cjs',import.meta.url),'utf8'),{
+  Buffer,require:()=>({contextBridge:{exposeInMainWorld:(name,value)=>api[name]=value},webUtils:{getPathForFile:f=>f.path||''},ipcRenderer:{invoke:async(name,input)=>{calls.push([name,input]);return {scope:'now'};}}})
+ });
+ assert.equal((await api.wanxClient.action('clipboard.download',{id:'x'})).code,'PANEL_ACTION_NOT_ALLOWED');
+ assert.equal((await api.wanxClient.action('profile.save',{})).code,'PANEL_ACTION_NOT_ALLOWED');assert.equal(calls.length,0);
+ await api.wanxClient.action('clipboard.note-save',{scope:'now',blocks:[]});
+ assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),['wanx-client:panel-note',{scope:'now',blocks:[],method:'note-save'}]);
+ assert.equal((await api.wanxClient.clipboardFiles(Array(21).fill({size:1}),{scope:'now'})).code,'CLIPBOARD_LIMIT');
+ assert.equal((await api.wanxClient.clipboardFiles([{size:20*1024*1024+1}],{scope:'now'})).code,'CLIPBOARD_LIMIT');
+ assert.equal(calls.length,1);
 });

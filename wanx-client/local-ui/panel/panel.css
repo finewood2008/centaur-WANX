@@ -104,3 +104,17 @@ h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: .3px; color: 
 .transfer-controls progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
 .transfer-controls button { padding: 3px 7px; font-size: 11px; color: var(--accent); }
 .panel-transfer p { margin: 4px 0; font-size: 10px; }
+
+/* Two quiet destinations keep the footer compact. */
+.dual-footer { padding-top: 9px; margin-top: 8px; }
+.panel-destinations { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; }
+.panel-destinations > button { display:flex;align-items:center;gap:8px;min-width:0;min-height:49px;width:100%;padding:7px 8px;text-align:left;border:1px solid #e8dfd3;border-radius:10px;background:#f7f3ed; }
+.panel-destinations > button:hover { background:#f0e8dd;border-color:#dcc8b4; }
+.destination-icon { display:grid;place-items:center;flex-shrink:0;width:28px;height:30px;border-radius:8px;background:#eee5d7;color:#a27c56; }
+.destination-icon svg { width:19px;height:19px; }
+.destination-copy { display:grid;gap:3px;flex:1;min-width:0; }
+.destination-copy strong { font-size:12px;font-weight:600;color:#786655; }
+.destination-copy small { font-size:10px;color:#a19282;overflow:hidden;white-space:nowrap;text-overflow:ellipsis; }
+.destination-upload { width:13px;height:13px;flex-shrink:0;color:#aa8868; }
+.destination-arrow { color:#a38a72;font-size:18px;line-height:1; }
+.panel-destinations .dot { width:5px;height:5px; }

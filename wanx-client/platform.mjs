@@ -701,11 +701,12 @@ export function createPlatformClient({
     const work = activateImpl(generation, controller.signal)
       .catch(async (error) => {
         if (current(generation)) {
-          const transient = transientError(error);
+          const pendingCleanup = ["NETWORK_SESSION_REVOKED", "NETWORK_REVOCATION_PENDING"].includes(error.code);
+          const transient = !pendingCleanup && transientError(error);
           // Pending cleanup is not authorization to keep the old tunnel alive.
           // Poll restore with backoff; only a confirmed revoked response may
           // trigger replacement enrollment through the existing validation path.
-          const retryable = transient || error.code === "NETWORK_REVOCATION_PENDING";
+          const retryable = transient || pendingCleanup;
           retryActivation = retryable;
           const backoff = retryDelay;
           if (retryable) retryDelay = Math.min(retryDelay * 2, 60_000);
@@ -903,6 +904,7 @@ export function createPlatformClient({
       return {
         context: () => ({ ...context, connection: assertLive() }),
         request: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.request(value); }); },
+        businessRequest: (service, input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.businessRequest(service, value); }); },
         openStream: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.openStream(value); }); },
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       };

@@ -4,6 +4,7 @@
   const overlay = document.getElementById("panel-drop");
   let space = { tasks: [] }, spaceRevision = 0, spaceRequest = null;
   let dragDepth = 0, dragScope = null, dragInvalid = false, interacting = false, pendingRender = false;
+  let noteView=false;
   let state = {}, notice = "", selected = "", intentId = "";
   let accountIdentity = "", sessionGeneration = 0;
   let applicationNames = new Map(), namesRequest = null;
@@ -111,7 +112,7 @@
     const problem = dropProblem();
     const location = state.connection?.name || "尚未连接盒子";
     const status = !signedIn() ? "未登录" : !ready() ? "未连接" : !sameSpace() ? "准备中" : space.phase === "unsupported" ? "需升级" : space.storageError ? "暂不可用" : "已就绪";
-    return `<footer class="space-footer" aria-label="空间"><button class="space-entry" data-page="space" aria-label="打开文件空间"><span class="space-volume-icon" aria-hidden="true"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18M7 17h.01M11 17h.01"/></svg></span><span class="space-copy"><span class="space-title">空间</span><span class="space-location" title="${escape(location)} · 全部文件">${escape(location)} · 全部文件</span></span><span class="space-availability"><span class="dot ${problem ? "" : "ready"}" aria-hidden="true"></span>${status}</span><span class="space-arrow" aria-hidden="true">↗</span></button><div class="space-drop-hint ${problem ? "unavailable" : ""}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 18H5a4 4 0 0 1-.5-8A7 7 0 0 1 18 8a5 5 0 0 1 1 10h-2M12 21V11m-4 4 4-4 4 4"/></svg><span>${problem ? escape(problem) : "拖入文件，保存到空间"}</span></div>${renderTransfers()}</footer>`;
+    return `<footer class="space-footer dual-footer" aria-label="空间与便签"><div class="panel-destinations"><button class="space-entry" data-page="space" aria-label="打开文件空间" title="拖入文件，保存到空间"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18"/></svg></span><span class="destination-copy"><strong>空间</strong><small title="${escape(location)} · 全部文件">${escape(location)}</small></span><span class="dot ${problem?'':'ready'}" title="${status}" aria-label="${status}"></span><svg class="destination-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-label="支持拖入文件"><path d="M5 16v4h14v-4M12 16V4m-5 5 5-5 5 5"/></svg></button><button class="note-entry" data-action="clipboard-toggle" aria-label="打开便签" title="文字与图片，自动保存"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/></svg></span><span class="destination-copy"><strong>便签</strong><small>文字 · 图片</small></span><span class="destination-arrow" aria-hidden="true">›</span></button></div>${renderTransfers()}</footer>`;
   }
   function paintOverlay() {
     if (!overlay) return;
@@ -208,14 +209,14 @@
   });
   const hasFiles = event => Array.from(event.dataTransfer?.types || []).includes("Files");
   surface.addEventListener("dragenter", event => {
-    if (!hasFiles(event)) return;
+    if (noteView || !hasFiles(event)) return;
     event.preventDefault();
     if (!dragDepth) { dragScope = space.scope; dragInvalid = false; }
     dragDepth++;
     if (dragDepth === 1) paintOverlay();
   });
   surface.addEventListener("dragover", event => {
-    if (!hasFiles(event)) return;
+    if (noteView || !hasFiles(event)) return;
     event.preventDefault(); event.dataTransfer.dropEffect = dropProblem() ? "none" : "copy";
   });
   surface.addEventListener("dragleave", event => {
@@ -223,7 +224,7 @@
     if (--dragDepth <= 0) clearDrag();
   });
   surface.addEventListener("drop", async event => {
-    if (!hasFiles(event)) return;
+    if (noteView || !hasFiles(event)) return;
     event.preventDefault();
     const problem = dropProblem(), scope = dragScope, generation = sessionGeneration;
     const files = Array.from(event.dataTransfer.files || []);
@@ -246,11 +247,15 @@
   });
   document.addEventListener("pointercancel", () => { interacting = false; if (pendingRender) render(); });
   document.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); clearDrag(); void act("desktop-hide"); } });
+  window.addEventListener?.('wanx-note-view',event=>{
+    const next=event.detail.opened;if(next===noteView)return;noteView=next;
+    document.body.classList.toggle('note-view',noteView);if(noteView)clearDrag();resize();
+  });
   let lastHeight = 0;
   function resize() {
     requestAnimationFrame(() => {
       if (dragDepth) return;
-      const height = Math.max(240, Math.min(560, surface.scrollHeight));
+      const height = noteView ? 560 : Math.max(240, Math.min(560, surface.scrollHeight));
       if (height !== lastHeight) { lastHeight = height; void api.action("desktop-resize", { height }).catch(() => {}); }
     });
   }
@@ -269,6 +274,8 @@
       balance = null; balancePhase = "idle"; balanceRequest = null;
     }
     state = value;
+    window.wanxClipboard?.hostState({...value,route:account.phase==='authenticated'?'space':'auth'});
+    window.wanxClipboard?.setActive(true);
     paintOverlay(); render();
     if (changed) void refreshSpace();
     if (changed && signedIn()) { void refreshBalance(); void refreshApplicationNames(); }

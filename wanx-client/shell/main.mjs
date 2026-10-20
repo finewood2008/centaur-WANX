@@ -1,3 +1,4 @@
+import {panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { readAvatar } from "./avatar.mjs";
 import { createCreditsReader } from "../account/credits.mjs";
@@ -10,6 +11,7 @@ import {
   BrowserWindow,
   ipcMain,
   safeStorage,
+  clipboard,
   powerMonitor,
   session,
   shell,
@@ -53,6 +55,8 @@ import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
 import { createStartupSettings } from "./startup.mjs";
 import { createSpaceLinkBridge } from "./space-links.mjs";
+import {createSuperClipboard} from "./super-clipboard.mjs";
+import {createSystemClipboard} from "./system-clipboard.mjs";
 import { createPersonalSpace } from "./personal-space.mjs";
 import { createAdvertisementNames } from "./discovery-names.mjs";
 import { protectPrivateDirectory } from "./private-storage.mjs";
@@ -83,6 +87,7 @@ let unsubscribe;
 let setupRuntime;
 let applications;
 let personalSpace;
+let superClipboard;
 let spaceLinks;
 let marketSession;
 let dashboards;
@@ -272,8 +277,8 @@ if (process.argv.includes("--wanx-managed-app")) {
               createGateway: (options) =>
                 createDashboardGateway({
                   ...options,
-                  staticCache,
-                  cacheScope: identity
+                  staticCache: options.businessService ? undefined : staticCache,
+                  cacheScope: identity && !options.businessService
                     ? { accountId: identity.accountId, boxId: options.deviceId }
                     : undefined,
                 }),
@@ -482,6 +487,21 @@ if (process.argv.includes("--wanx-managed-app")) {
           if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-space-state", panelSpaceState(state));
         },
       });
+      const clipboardDirectory = path.join(userData, "super-clipboard");
+      try {
+      superClipboard = await createSuperClipboard({
+        client, personalSpace, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        store: createSecureAccountStore({filePath:path.join(userData,"super-clipboard.enc"),safeStorage}),
+        directory: clipboardDirectory, deviceName: os.hostname(),
+        systemClipboard: createSystemClipboard({clipboard,nativeImage,app,directory:path.join(clipboardDirectory,"native")}),
+        chooseFiles: async (input={}) => { const result=await dialog.showOpenDialog(input.panel&&panel&&!panel.isDestroyed()?panel:control,{title:"插入图片到便签",message:"每次最多20张图片，单张最大20 MB",filters:[{name:"图片",extensions:["png","jpg","jpeg","gif","webp"]}],properties:["openFile","multiSelections"]});return result.canceled?[]:result.filePaths; },
+        chooseDownload: async name => {const result=await dialog.showSaveDialog(control,{title:"下载便签内容",defaultPath:name});return result.canceled?null:result.filePath;},
+        onChanged: state => {if(!control.isDestroyed())control.webContents.send("wanx-client:clipboard-state",state);if(panel&&!panel.isDestroyed())panel.webContents.send("wanx-client:panel-note-state",panelNoteState(state));},
+      });
+      } catch (error) {
+        const code = error.code || "CLIPBOARD_CACHE_DAMAGED";
+        superClipboard = {snapshot:()=>({scope:null,items:[],tasks:[],error:code}),operation:async method=>{if(method==="snapshot")return {scope:null,items:[],tasks:[],error:code};throw Object.assign(new Error(code),{code});},close:async()=>{}};
+      }
       try {
         spaceLinks = await createSpaceLinkBridge({
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
@@ -510,6 +530,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       registerControlActions({
         spaceLinks,
         personalSpace,
+        superClipboard,
         confirmSpacePurge: async () => (await dialog.showMessageBox(control, {
           type: "warning", message: "彻底删除这个文件或文件夹？", detail: "删除后无法恢复。文件夹中的内容也会一并删除。",
           buttons: ["取消", "彻底删除"], defaultId: 0, cancelId: 0,
@@ -577,6 +598,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           await defaultApplications.close();
           marketSession?.close();
           releaseAccess.close();
+          await superClipboard?.close();
           await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
         },
         async closeHost() {
