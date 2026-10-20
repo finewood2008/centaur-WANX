@@ -129,6 +129,7 @@ const actions = {
   "devices.connect": (input) =>
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
+  "devices.retry": () => ipcRenderer.invoke("wanx-client:retry-connection"),
   "maintenance.open": (input) => ipcRenderer.invoke("wanx-client:maintenance-open", { tool: input?.tool, deviceId: input?.deviceId }),
   "network.set-enabled": (input) =>
     ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),

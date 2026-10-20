@@ -4,18 +4,20 @@ import { probeEndpoint } from "./octop/probe.mjs";
 import { validateApplicationConnectionOptions } from "./applications/backend-scope.mjs";
 
 const HEALTH_INTERVAL_MS = 30_000;
-const MAX_RECOVERY_ATTEMPTS = 3;
+const RECOVERY_DELAYS_MS = [1000, 2000, 5000, 10_000, 30_000, 60_000];
 const AUTH_FAILURES = new Set([
   "auth_required", "auth_failed", "auth_expired", "auth_unsupported",
   "NETWORK_DEVICE_ACCESS_DENIED", "ACCOUNT_LOGIN_REQUIRED",
   "BOX_PLATFORM_AUTH_FAILED", "LOCAL_BOX_AUTH_FAILED",
 ]);
+const TRANSPORT_FAILURES = new Set(["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "CONNECT_TIMEOUT", "health_timeout", "health_unavailable", "network_unavailable", "network_recovering", "tunnel_timeout", "tunnel_rejected", "netbird_peer_disconnected"]);
 
 /** Owns only this application's connections, never the shared NetBird daemon. */
 export function createClient({
   network = createNetwork(),
   createGateway = createDashboardGateway,
   probe = probeEndpoint,
+  onRecovery = () => {},
 } = {}) {
   let phase = "disconnected";
   let connection = null;
@@ -47,6 +49,23 @@ export function createClient({
     const state = snapshot();
     for (const listener of listeners) listener(state);
   }
+  function requestRecovery() {
+    if (closed || !connection) return snapshot();
+    recovery ||= { deviceId: connection.deviceId, attempt: 0, status: "retrying", startedAt: Date.now() };
+    phase = "recovering";
+    reason = "network_unavailable";
+    emit();
+    scheduleHealthCheck(epoch, 0);
+    return snapshot();
+  }
+  async function recoverOnFailure(operation) {
+    const generation = epoch;
+    try { return await operation(); }
+    catch (error) {
+      if (generation === epoch && TRANSPORT_FAILURES.has(error.code || error.message)) requestRecovery();
+      throw error; // Never replay business writes, model calls, or stream messages.
+    }
+  }
   function dispose(value) {
     if (!value) return Promise.resolve();
     const promise = Promise.resolve(value.close());
@@ -64,7 +83,7 @@ export function createClient({
     healthController = null;
     activeEndpoint = null;
     activeSessionFactory = null;
-    if (nextReason !== "connection_retries_exhausted") recovery = null;
+    recovery = null;
     pendingProbe?.abort();
     pendingProbe = null;
     const previous = gateway;
@@ -81,20 +100,20 @@ export function createClient({
     return snapshot();
   }
 
-  function scheduleHealthCheck(generation) {
+  function scheduleHealthCheck(generation, delayMs = recovery ? RECOVERY_DELAYS_MS[Math.min(Math.max(0, recovery.attempt - 1), RECOVERY_DELAYS_MS.length - 1)] : HEALTH_INTERVAL_MS) {
     if (closed || generation !== epoch || !connection) return;
     clearTimeout(healthTimer);
     healthTimer = setTimeout(() => {
       const task = checkHealth(generation);
       healthChecks.add(task);
       task.then(() => healthChecks.delete(task), () => healthChecks.delete(task));
-    }, HEALTH_INTERVAL_MS);
+    }, delayMs);
     healthTimer.unref?.();
   }
 
   async function checkHealth(generation) {
     const live = () => !closed && generation === epoch && Boolean(connection);
-    if (!live()) return;
+    if (!live() || healthController) return;
     const controller = new AbortController();
     healthController = controller;
     const check = (endpoint = activeEndpoint) => probe(endpoint.url, {
@@ -109,32 +128,49 @@ export function createClient({
           reason = null;
           emit();
           return;
-        } catch {
+        } catch (error) {
           if (!live()) return;
-          recovery = { deviceId: connection.deviceId, attempt: 0, maxAttempts: MAX_RECOVERY_ATTEMPTS, status: "retrying" };
+          recovery = { deviceId: connection.deviceId, attempt: 0, status: "retrying", startedAt: Date.now() };
+          onRecovery({ action: "detected", errorCode: error.code || error.message });
         }
       }
       recovery.attempt++;
+      recovery.nextRetryAt = null;
       phase = "recovering";
       reason = "network_unavailable";
       emit();
+      onRecovery({ action: "attempt", attempt: recovery.attempt });
       try {
         // Repair only this client's path. Keep the gateway and application leases
         // alive; reconnecting via connectBox would unnecessarily require Admin SSO.
-        if (connection.mode === "netbird") await network.networkChanged();
+        let endpoint;
+        try {
+          endpoint = await network.resolveEndpoint(connection);
+          if (!live()) return;
+          await check(endpoint);
+        } catch (error) {
+          if (!live()) return;
+          // A restarted engine needs time to receive its peer map. Repeated
+          // recover commands here reset that handshake and prolong the outage.
+          if (connection.mode !== "netbird" || ["netbird_peer_unknown", "netbird_peer_disconnected"].includes(error.code || error.message)) throw error;
+          await network.networkChanged();
+          if (!live()) return;
+          endpoint = await network.resolveEndpoint(connection);
+          if (!live()) return;
+          await check(endpoint);
+        }
         if (!live()) return;
-        const endpoint = await network.resolveEndpoint(connection);
-        if (!live()) return;
-        await check(endpoint);
-        if (!live()) return;
-        if (endpoint.agent !== activeEndpoint.agent) {
+        if (endpoint.agent !== activeEndpoint.agent || boxSession?.getToken && !boxSession.getToken()) {
           // An engine restart destroys its old tunnel agent. Re-authorize through
           // the normal session factory; never reuse credentials across accounts.
           let session, replacement;
           try {
             session = await activeSessionFactory?.({ ...endpoint, signal: controller.signal });
             if (!live()) { await session?.close(); return; }
-            replacement = await createGateway({
+            if (gateway.replaceTransport) {
+              gateway.replaceTransport({ agent: endpoint.agent, session });
+              replacement = gateway;
+            } else replacement = await createGateway({
               deviceId: connection.deviceId, targetURL: endpoint.url,
               agent: endpoint.agent, session,
             });
@@ -150,9 +186,10 @@ export function createClient({
           boxSession = session;
           activeEndpoint = endpoint;
           connection = { ...connection, gatewayURL: replacement.url };
-          await Promise.all([dispose(previous), ...businesses.map(p => p.then(dispose, () => {}))]);
+          await Promise.all([previous !== replacement ? dispose(previous) : null, ...businesses.map(p => p.then(dispose, () => {}))]);
           if (!live()) return;
         }
+        onRecovery({ action: "restored", attempt: recovery.attempt, durationMs: Date.now() - recovery.startedAt });
         recovery = null;
         phase = "ready";
         reason = null;
@@ -163,10 +200,10 @@ export function createClient({
           await disconnect("connection_authorization_required");
           return;
         }
-        if (recovery.attempt >= MAX_RECOVERY_ATTEMPTS) {
-          recovery.status = "failed";
-          await disconnect("connection_retries_exhausted");
-        }
+        const delayMs = RECOVERY_DELAYS_MS[Math.min(recovery.attempt - 1, RECOVERY_DELAYS_MS.length - 1)];
+        recovery.nextRetryAt = Date.now() + delayMs;
+        onRecovery({ action: "waiting", attempt: recovery.attempt, delayMs, errorCode: error.code || error.message });
+        emit();
       }
     } finally {
       if (healthController === controller) healthController = null;
@@ -202,7 +239,12 @@ export function createClient({
         return;
       }
       if (connection) {
-        phase = recovery || ["recovering", "unavailable"].includes(state.phase) || lostPeer ? "recovering" : "ready";
+        const disrupted = ["recovering", "unavailable"].includes(state.phase) || lostPeer;
+        if (disrupted && !recovery) {
+          requestRecovery();
+          return;
+        }
+        phase = recovery || disrupted ? "recovering" : "ready";
         reason = phase === "recovering" ? "network_unavailable" : null;
       }
     }
@@ -298,11 +340,11 @@ export function createClient({
     snapshot,
     async request(input) {
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
-      return gateway.request(input);
+      return recoverOnFailure(() => gateway.request(input));
     },
     async openWebSocket(input) {
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
-      return gateway.openWebSocket(input);
+      return recoverOnFailure(() => gateway.openWebSocket(input));
     },
     applicationConnection(applicationId, options) {
       const selectedProduct = validateApplicationConnectionOptions(options)?.backendProductId;
@@ -311,7 +353,7 @@ export function createClient({
       const applicationScope = selectedProduct === "wanx" ? undefined : selectedProduct || (applicationId === "centaurai.wanx.superadvisors" ? "super-advisory" : undefined);
       const assertLive = () => { if (closed || gateway !== lease) throw new Error("SESSION_CLOSED"); };
       return {
-        request: (input) => { assertLive(); return lease.request({ ...input, applicationScope, applicationExchange: false }); },
+        request: (input) => { assertLive(); return recoverOnFailure(() => lease.request({ ...input, applicationScope, applicationExchange: false })); },
         async businessRequest(service, input) {
           assertLive();
           // Fixed first-party service on this exact peer. Callers cannot choose
@@ -348,7 +390,7 @@ export function createClient({
           assertLive();
           return result;
         },
-        openStream: (input) => { assertLive(); return lease.openWebSocket({ ...input, applicationScope }); },
+        openStream: (input) => { assertLive(); return recoverOnFailure(() => lease.openWebSocket({ ...input, applicationScope })); },
       };
     },
     subscribe(listener) {
@@ -373,7 +415,17 @@ export function createClient({
     async networkChanged() {
       if (closed) return snapshot();
       await network.networkChanged();
+      if (connection && !healthController) await checkHealth(epoch);
       return snapshot();
+    },
+    async retryConnection() {
+      if (closed || !connection) return snapshot();
+      clearTimeout(healthTimer);
+      await checkHealth(epoch);
+      return snapshot();
+    },
+    recoverSession() {
+      return requestRecovery();
     },
     async loginNetwork() {
       if (closed) throw new Error("client_closed");

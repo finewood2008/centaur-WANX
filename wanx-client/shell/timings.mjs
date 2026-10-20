@@ -17,6 +17,7 @@ const errorCodes = new Set([
   "engine_protocol_error", "auth_required", "auth_unsupported", "auth_failed",
   "auth_expired", "start_failed", "invalid_status", "network_unavailable",
   "network_disabled", "netbird_peer_disconnected", "netbird_peer_unknown",
+  "health_timeout", "health_unavailable", "health_invalid", "tunnel_timeout", "tunnel_rejected",
 ]);
 const phases = new Set(["idle", "disabled", "checking", "enrolling", "authorizing", "ready", "recovering", "unavailable", "auth_required"]);
 const safeCode = code => errorCodes.has(code) ? code : "UNKNOWN_ERROR";
@@ -48,6 +49,14 @@ export function createTimingRecorder({
       .catch(() => {}); // Diagnostic I/O must never break a connection.
   }
   return {
+    recovery(value) {
+      if (!["detected", "attempt", "waiting", "restored"].includes(value.action)) return;
+      const details = {};
+      for (const key of ["attempt", "delayMs", "durationMs"])
+        if (Number.isSafeInteger(value[key]) && value[key] >= 0) details[key] = value[key];
+      if (value.errorCode) details.errorCode = safeCode(value.errorCode);
+      record("box.recovery", value.action, undefined, details);
+    },
     transfer(value) {
       if (!["enqueued", "connection", "reconciled", "confirmed", "completed", "interrupted", "resumed", "paused", "request"].includes(value.action)) return;
       const details = {};

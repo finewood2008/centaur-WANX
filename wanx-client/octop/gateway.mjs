@@ -636,6 +636,24 @@ export async function createDashboardGateway({
   const gateway = {
     url: localURL.origin + (bootstrapPath ?? ""),
     origin: localURL.origin,
+    // Same immutable box origin and authentication scope. Main has obtained a
+    // fresh grant; keep the loopback URL/opaque marker and existing app leases.
+    replaceTransport(next) {
+      if (closed) throw new Error("GATEWAY_CLOSED");
+      const nextPath = next.session?.applicationExchangePath === "/api/auth/application/exchange"
+        ? "/api/auth/application/exchange" : "/api/auth/platform/application";
+      if (Boolean(next.session) !== Boolean(session) || nextPath !== applicationExchangePath ||
+          next.session && !next.session.getToken()) throw new Error("PLATFORM_SESSION_EXPIRED");
+      unsubscribeExpiry?.();
+      const previous = session;
+      agent = next.agent;
+      session = next.session;
+      applicationTokens.clear();
+      for (const upstream of requests) upstream.destroy();
+      for (const socket of sockets) socket.terminate();
+      unsubscribeExpiry = session?.onExpired?.(onSessionExpired);
+      if (previous !== session) previous?.close();
+    },
     async request({ path, method = "GET", headers = {}, body, signal, stream = false, applicationScope, applicationExchange = false, idleTimeoutMs = 0, freshConnection = false } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
@@ -798,8 +816,15 @@ export async function createDashboardGateway({
       return closing;
     },
   };
-  const unsubscribeExpiry = session?.onExpired?.(() => {
-    void gateway.close();
-  });
+  function onSessionExpired(reason) {
+    if (reason === "expired") {
+      // Expired tokens authorize nothing. Keep only the local origin while main
+      // obtains a fresh session; interrupted operations are never replayed.
+      applicationTokens.clear();
+      for (const upstream of requests) upstream.destroy();
+      for (const socket of sockets) socket.terminate();
+    } else void gateway.close();
+  }
+  let unsubscribeExpiry = session?.onExpired?.(onSessionExpired);
   return gateway;
 }

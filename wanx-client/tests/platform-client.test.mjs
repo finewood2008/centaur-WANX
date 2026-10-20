@@ -1364,6 +1364,7 @@ test('application connection seam: recovery preserves the lease, logout revokes 
   assert.equal(lease.context().connection,'recovering');
   assert.throws(()=>lease.request({path:'/api/action'}),{code:'NETWORK_NOT_READY'});
   connected=true;await h.transports[0].network.refresh();
+  await h.client.retryConnection();
   assert.equal(lease.context().connection,'ready');
   const loggingOut=h.client.logout();
   assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
@@ -1952,4 +1953,36 @@ test("a native engine outage reconnects the user's box after the engine returns"
   assert.equal(h.client.snapshot().connection.deviceId, "box-1");
   assert.equal(h.sessions[0].closed, true, "a destroyed tunnel agent must retire its old session");
   assert.equal(h.sessions.length, 2, "fresh box authentication, never reuse the closed gateway");
+});
+
+test('natural box-token expiry automatically obtains a fresh authorized session', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  const h=harness(t);await h.client.loginPassword({phone:'account-1'});await h.client.connectBox('box-1');
+  h.sessions[0].getToken=()=>'';
+  h.sessions[0].input.onExpired('expired');
+  assert.equal(h.client.snapshot().phase,'recovering');
+  assert.equal(h.client.snapshot().connection.deviceId,'box-1');
+  t.mock.timers.tick(0);await tick();
+  assert.equal(h.client.snapshot().phase,'ready');assert.equal(h.sessions.length,2);
+});
+
+for(const action of ['disconnect','logout','disable']) test(`natural token recovery cannot resume after ${action}`,async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const h=harness(t);
+  await h.client.loginPassword({phone:'account-1'});await h.client.connectBox('box-1');
+  h.sessions[0].getToken=()=>'';h.sessions[0].input.onExpired('expired');
+  if(action==='disable')await h.client.setNetworkEnabled(false);else await h.client[action]();
+  t.mock.timers.tick(600000);await tick();assert.equal(h.sessions.length,1);assert.equal(h.client.snapshot().connection,null);
+});
+
+test('selected box survives a hard network lease deadline only after fresh authorization',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date']});const h=harness(t);
+  h.override(input=>input.path.startsWith('/app-api/network/enrollments/')?{
+    enrollmentId:'enrollment-1',networkSessionId:'enrollment-1',phase:'ready',
+    managementUrl:'https://p2p.qeeshu.com',leaseExpiresAt:Date.now()/1000+2}:undefined);
+  await h.client.loginPassword({phone:'account-1'});await h.client.connectBox('box-1');
+  h.override(input=>{if(input.path.endsWith('/restore'))throw fail('ACCOUNT_NETWORK_ERROR');});
+  t.mock.timers.tick(1000);await tick();t.mock.timers.tick(1000);await tick();
+  assert.equal(h.client.snapshot().connection,null);assert.equal(h.sessions[0].closed,true);
+  h.override(undefined);t.mock.timers.tick(5000);await tick();await tick();
+  assert.equal(h.client.snapshot().connection.deviceId,'box-1');assert.equal(h.sessions.length,2);
 });

@@ -323,6 +323,7 @@ export function registerControlActions({
     });
   });
   register("disconnect", () => { uiState?.invalidateOpen(); return client.disconnect(); });
+  register("retry-connection", () => client.retryConnection());
   register("dashboard-open", () => { throw new Error("DASHBOARD_TERMINAL_ONLY"); });
   register("maintenance-open", (input) => {
     if (!["terminal", "desktop"].includes(input?.tool)) throw new Error("INVALID_MAINTENANCE_TOOL");

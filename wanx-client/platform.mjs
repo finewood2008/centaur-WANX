@@ -293,11 +293,19 @@ export function createPlatformClient({
     leaseTimer = setTimeout(
       () => {
         if (!current(generation)) return;
+        const interrupted = activeLink === transport ? transport?.client.snapshot().connection : null;
         cancel();
         networkSession = null;
         devices = [];
         platform = { phase: "unavailable", reason: "NETWORK_LEASE_EXPIRED" };
         void retireTransport().catch(() => {});
+        // Remember only user intent, never expired credentials/endpoints. A fresh
+        // cloud directory and lease must pass activateImpl before reconnecting.
+        if (interrupted?.deviceId && enabled && account.snapshot().phase === "authenticated") {
+          reconnectTarget = { deviceId: interrupted.deviceId, selection: connectionEpoch };
+          retryActivation = true;
+          schedule(epoch, 5000);
+        }
         emit();
       },
       Math.max(1, networkSession.leaseExpiresAt * 1000 - Date.now()),
@@ -961,7 +969,7 @@ export function createPlatformClient({
       if (!current(generation) || !enabled) return snapshot();
       if (transport && usableLease()) {
         await measure("network.recover", () =>
-          transport.network.networkChanged?.(),
+          transport.client.networkChanged(),
         );
         if (current(generation)) emit();
       } else if (retryActivation) {
@@ -969,6 +977,7 @@ export function createPlatformClient({
         // Auth rejection, a hard lease expiry, and logout cannot enter this path.
         await activate();
       }
+      if (directTransport && activeLink === directTransport) await directTransport.client.networkChanged();
       return snapshot();
     },
     async setNetworkEnabled(value) {
@@ -1103,9 +1112,12 @@ export function createPlatformClient({
               networkSessionId: sessionId,
               signal,
               measure,
-              onExpired: () => {
-                if (transport === target && selection === connectionEpoch)
-                  void target.client.disconnect();
+              onExpired: (reason) => {
+                if (transport === target && selection === connectionEpoch) {
+                  if (reason === "expired" && usableLease() && account.snapshot().phase === "authenticated")
+                    target.client.recoverSession();
+                  else void target.client.disconnect();
+                }
               },
             }),
         },
@@ -1118,6 +1130,11 @@ export function createPlatformClient({
       selectionController?.abort();
       selectionController = null;
       await activeLink?.client.disconnect();
+      return emit();
+    },
+    async retryConnection() {
+      if (closed || !account.getIdentity()) return snapshot();
+      await activeLink?.client.retryConnection();
       return emit();
     },
     async logout() {

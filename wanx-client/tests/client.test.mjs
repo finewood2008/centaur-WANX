@@ -114,39 +114,32 @@ test("checks the selected box every 30 seconds through its original agent withou
   assert.equal(f.created[0].closed, false);
 });
 
-test("three failed automatic recoveries stop until the user reconnects", async t => {
+test("automatic recovery backs off beyond three failures and restores the same selected box", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let down = false, recoveries = 0, probes = 0;
-  const f = fixture({
-    probe: async () => { probes++; if (down) throw new Error("health_timeout"); },
-    recover: async () => { recoveries++; },
-  });
+  let down = false, recoveries = 0;
+  const f = fixture({ probe: async () => { if (down) throw new Error("health_timeout"); },
+    recover: async () => { recoveries++; } });
   t.after(() => f.client.close());
   await f.client.setNetworkEnabled(true);
   await f.client.connect(overlay);
   down = true;
   await advance(t);
-  assert.equal(recoveries, 1);
-  assert.equal(f.client.snapshot().phase, "recovering");
-  assert.equal(f.client.snapshot().recovery.attempt, 1);
-  f.emit({ phase: "ready" });
-  assert.equal(f.client.snapshot().phase, "recovering", "control status cannot hide failed HTTP health");
-  await advance(t);
-  assert.equal(recoveries, 2);
-  await advance(t);
-  assert.equal(recoveries, 3);
-  assert.equal(f.client.snapshot().phase, "disconnected");
-  assert.equal(f.client.snapshot().reason, "connection_retries_exhausted");
-  assert.equal(f.created[0].closed, true);
-  const previousProbes = probes;
-  await advance(t, 300_000);
-  assert.equal(probes, previousProbes);
-  assert.equal(recoveries, 3);
+  for (const delay of [1000, 2000, 5000, 10000, 30000, 60000, 60000]) {
+    const previous = recoveries;
+    await advance(t, delay - 1);
+    assert.equal(recoveries, previous);
+    await advance(t, 1);
+    assert.equal(recoveries, previous + 1);
+    assert.equal(f.client.snapshot().phase, "recovering");
+    assert.equal(f.client.snapshot().connection.deviceId, overlay.deviceId);
+    assert.equal(f.created[0].closed, false);
+  }
+  assert.ok(recoveries > 3);
   down = false;
-  await f.client.connect(overlay);
+  await f.client.retryConnection();
   assert.equal(f.client.snapshot().phase, "ready");
-  await advance(t);
-  assert.equal(probes, previousProbes + 2);
+  assert.equal(f.client.snapshot().recovery, null);
+  assert.equal(f.created.length, 1);
 });
 
 test("successful recovery preserves the application lease and resets the next outage budget", async t => {
@@ -376,7 +369,7 @@ test("a newer box choice supersedes an earlier resolution and closes old gateway
   await client.close();
 });
 
-test("transient peer/control-plane loss preserves gateway until the health recovery budget is exhausted", async () => {
+test("peer status recovery waits for data-path verification and preserves the gateway", async () => {
   const { client, created, emit } = fixture();
   await client.setNetworkEnabled(true);
   await client.connect(overlay);
@@ -386,6 +379,8 @@ test("transient peer/control-plane loss preserves gateway until the health recov
   emit({ phase: "recovering" });
   assert.equal(created[0].closed, false);
   emit({ phase: "ready", peers: [{ ip: "100.90.1.2", connected: true }] });
+  assert.equal(client.snapshot().phase, "recovering");
+  await client.retryConnection();
   assert.equal(client.snapshot().phase, "ready");
   assert.equal(created.length, 1, "recovery must not recreate login or gateway");
   emit({ phase: "unavailable" });
@@ -496,3 +491,54 @@ for (const end of ["disabled", "auth_required"]) {
     await client.close();
   });
 }
+
+test("business failure starts recovery without replaying the user's request", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let writes = 0;
+  const f = fixture({createGateway: async () => ({url:'http://127.0.0.1:19800',
+    request: async () => {writes++; throw Object.assign(new Error('reset'),{code:'ECONNRESET'});}, close() {}})});
+  t.after(()=>f.client.close());
+  await f.client.connect(direct);
+  await assert.rejects(f.client.request({method:'POST',path:'/api/chat',body:'one message'}),{code:'ECONNRESET'});
+  assert.equal(f.client.snapshot().phase,'recovering');
+  await advance(t,0);
+  assert.equal(f.client.snapshot().phase,'ready');
+  assert.equal(writes,1);
+});
+
+test("engine recovery can replace only the transport while retaining app leases", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const oldAgent={},newAgent={}; let agent=oldAgent,down=false,replaced=0,closed=false;
+  const f=fixture({resolveEndpoint:input=>({url:input.url,agent}),
+    probe:async(_url,input)=>{if(down&&input.agent===oldAgent)throw new Error('health_timeout');},
+    recover:async()=>{agent=newAgent;},
+    createGateway:async()=>({url:'http://127.0.0.1:19800',request:async()=> 'alive',
+      replaceTransport(input){assert.equal(input.agent,newAgent);replaced++;},close(){closed=true;}})});
+  t.after(()=>f.client.close());
+  await f.client.setNetworkEnabled(true); await f.client.connect(overlay);
+  const lease=f.client.applicationConnection('test.app'); down=true;
+  await advance(t);
+  assert.equal(f.client.snapshot().phase,'ready'); assert.equal(replaced,1);assert.equal(closed,false);
+  assert.equal(await lease.request({path:'/api/health'}),'alive');
+});
+
+test("stopping a prolonged recovery prevents retry and network events from restoring it", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] }); let down=false,probes=0;
+  const f=fixture({probe:async()=>{probes++;if(down)throw new Error('health_timeout');}});
+  t.after(()=>f.client.close()); await f.client.connect(direct);down=true;
+  await advance(t); await advance(t,1000); await advance(t,2000);await advance(t,5000);
+  await f.client.disconnect();const before=probes;down=false;
+  await advance(t,600000);await f.client.networkChanged();await f.client.retryConnection();
+  assert.equal(probes,before);assert.equal(f.client.snapshot().connection,null);
+});
+
+test('peer-map synchronization retries without repeatedly restarting the engine',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});let ready=true,restarts=0;
+  const f=fixture({resolveEndpoint:input=>{if(!ready)throw Object.assign(new Error('unknown'),{code:'netbird_peer_unknown'});return {url:input.url};},recover:async()=>{restarts++;}});
+  t.after(()=>f.client.close());await f.client.setNetworkEnabled(true);await f.client.connect(overlay);
+  ready=false;f.emit({phase:'unavailable'});await advance(t,0);
+  await advance(t,1000);await advance(t,2000);await advance(t,5000);
+  assert.equal(restarts,0);assert.equal(f.client.snapshot().phase,'recovering');
+  ready=true;f.emit({phase:'ready',peers:[{ip:'100.90.1.2',connected:true}]});
+  await f.client.retryConnection();assert.equal(f.client.snapshot().phase,'ready');assert.equal(restarts,0);
+});

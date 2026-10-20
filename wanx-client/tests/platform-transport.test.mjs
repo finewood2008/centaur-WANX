@@ -435,7 +435,7 @@ test("denied grant expires immediately; cancellation never exchanges a delayed c
   assert.equal(state.exchanges, 1);
 });
 
-test("expired lease tears down already-open WebSockets and the local gateway", async (t) => {
+test("expired lease closes WebSockets and denies upstream access while retaining its local origin", async (t) => {
   const { options, state } = await fixture(t, { lease: 0.2 });
   const session = await createPlatformSession(options);
   const gateway = await createDashboardGateway({
@@ -454,7 +454,8 @@ test("expired lease tears down already-open WebSockets and the local gateway", a
   state.fail = true;
   await closed;
   assert.equal(state.expired, 1);
-  await assert.rejects(fetch(gateway.origin + "/api/health"));
+  assert.equal((await fetch(gateway.origin + "/api/health")).status, 401);
+  await assert.rejects(gateway.request({path:"/api/auth/me"}), /PLATFORM_SESSION_EXPIRED/);
 });
 
 test("platform WebSocket rejects missing or forged marker before contacting box", async (t) => {

@@ -275,6 +275,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             network,
             client: createClient({
               network,
+              onRecovery: value => timings.recovery(value),
               createGateway: (options) =>
                 createDashboardGateway({
                   ...options,

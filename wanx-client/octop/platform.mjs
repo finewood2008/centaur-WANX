@@ -72,13 +72,13 @@ export async function createPlatformSession({
     for (const request of requests) request.destroy();
   }
 
-  function expire() {
+  function expire(reason = "expired") {
     if (closed) return;
     close();
     try {
-      onExpired();
+      onExpired(reason);
     } finally {
-      for (const listener of expiryListeners) listener();
+      for (const listener of expiryListeners) listener(reason);
       expiryListeners.clear();
     }
   }
@@ -196,7 +196,7 @@ export async function createPlatformSession({
       } catch (error) {
         if (closed) return;
         if ([401, 403].includes(error.status) || Date.now() >= expiresAt)
-          expire();
+          expire([401, 403].includes(error.status) ? "denied" : "expired");
         else
           schedule(Math.min(5000, Math.max(1, (expiresAt - Date.now()) / 2)));
       }

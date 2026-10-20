@@ -252,19 +252,16 @@ async function harness(initial = state(), installed = [application], options = {
   };
 }
 
-test("box recovery shows attempts, supports cancellation and offers manual connection after exhaustion", async () => {
+test("box recovery shows persistent attempts with immediate retry and stop controls", async () => {
   const initial = { ...state("ready", "ready", "box-102"), phase: "recovering",
-    recovery: { deviceId: "box-102", status: "retrying", attempt: 2, maxAttempts: 3 } };
+    recovery: { deviceId: "box-102", status: "retrying", attempt: 8, nextRetryAt: Date.now()+60000 } };
   const h = await harness(initial);
   h.navigate("boxes");
-  assert.match(h.app.innerHTML, /正在自动重连（2\/3）/);
-  assert.match(h.app.innerHTML, /data-action="disconnect"[^>]*>停止重连/);
-  await h.click("disconnect");
-  await h.click("market-confirm");
+  assert.match(h.app.innerHTML, /正在重连 · 第 8 次尝试/);
+  assert.match(h.app.innerHTML, /data-action="retry-connection"[^>]*>立即重试/);
+  assert.match(h.app.innerHTML, /data-action="stop-reconnect"[^>]*>停止重连/);
+  await h.click("stop-reconnect");
   assert.equal((await h.window.wanxClient.getLocalState()).selectedDeviceId, null);
-  h.update({ ...initial, phase: "disconnected", connection: null,
-    recovery: { ...initial.recovery, status: "failed", attempt: 3 } });
-  assert.match(h.app.innerHTML, /自动重连 3 次未成功，请手动重连/);
   assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
 });
 

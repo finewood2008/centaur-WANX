@@ -104,3 +104,12 @@ test('transfer diagnostics retain correlation and retry evidence without paths o
   assert.equal(rows.length, 2); assert.equal(rows[0].taskId, 'a'.repeat(32)); assert.equal(rows[0].errorCode, 'ECONNRESET');
   assert.equal(rows[1].durationMs, 180); assert.equal(rows[1].errorCode, 'UNKNOWN_ERROR');
 });
+
+test('recovery diagnostics contain bounded counters without credentials or filenames',async t=>{
+  const dir=await mkdtemp(path.join(os.tmpdir(),'wanx-recovery-log-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const filePath=path.join(dir,'connection.jsonl'),recorder=createTimingRecorder({filePath});
+  recorder.recovery({action:'attempt',attempt:8,token:'SECRET',deviceId:'SECRET'});
+  recorder.recovery({action:'restored',attempt:8,durationMs:65000,path:'SECRET'});
+  await recorder.flush();const contents=await readFile(filePath,'utf8');assert.doesNotMatch(contents,/SECRET/);
+  assert.deepEqual(contents.trim().split('\n').map(JSON.parse).map(r=>[r.step,r.outcome,r.attempt]),[['box.recovery','attempt',8],['box.recovery','restored',8]]);
+});

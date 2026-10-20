@@ -291,3 +291,25 @@ test('bulk chunks use independent connections through the authorized dialer with
   await request();await request(true);await request(true);await request();
   assert.equal(dials,3);assert.equal(ports[0],ports[3]);assert.notEqual(ports[1],ports[0]);assert.notEqual(ports[2],ports[1]);
 });
+
+test('same-box transport replacement preserves origin, rejects expired credentials and never replays writes', async t => {
+  const received=[];
+  const server=http.createServer((req,res)=>{received.push(req.headers.authorization);res.end('ok');});
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  const listeners=new Set();let token='first-token',firstClosed=false;
+  const gateway=await createDashboardGateway({targetURL:`http://127.0.0.1:${server.address().port}`,
+    session:{getToken:()=>token,close(){firstClosed=true;},onExpired(fn){listeners.add(fn);return()=>listeners.delete(fn);}}});
+  t.after(async()=>{await gateway.close();await new Promise(r=>server.close(r));});
+  const origin=gateway.origin;
+  assert.equal((await gateway.request({path:'/api/first',method:'POST',body:'once'})).status,200);
+  token=''; for(const listener of listeners)listener('expired');
+  await assert.rejects(gateway.request({path:'/api/private'}));
+  assert.equal(received.length,1);
+  assert.throws(()=>gateway.replaceTransport({session:{getToken:()=>''}}),/PLATFORM_SESSION_EXPIRED/);
+  gateway.replaceTransport({session:{getToken:()=> 'second-token',close(){}}});
+  assert.equal(gateway.origin,origin);assert.equal(firstClosed,true);
+  assert.equal((await gateway.request({path:'/api/second'})).status,200);
+  assert.deepEqual(received,['Bearer first-token','Bearer second-token']);
+  for(const listener of listeners)listener('denied');
+  assert.equal((await gateway.request({path:'/api/still-open'})).status,200,'retired session cannot close new transport');
+});

@@ -229,8 +229,7 @@ const escapeHTML = (value) => String(value ?? "")
 
 function statusLabel(device) {
   const selected = (currentState.selectedDeviceId || currentState.activeDeviceId) === device.deviceId;
-  if (currentState.recovery?.deviceId === device.deviceId && currentState.recovery.status === "failed") return "连接已中断，自动重连 3 次未成功，请手动重连";
-  if (selected && currentState.recovery?.status === "retrying") return `正在自动重连（${currentState.recovery.attempt}/3）`;
+  if (selected && currentState.recovery?.status === "retrying") return recoveryLabel();
   if (selected && currentState.connectionPhase === "recovering") return "正在恢复连接";
   if (selected && ["connecting", "resolving"].includes(currentState.connectionPhase)) return "正在连接";
   if (currentState.activeDeviceId === device.deviceId) return "当前连接";
@@ -249,6 +248,12 @@ function statusLabel(device) {
   if (device.canOpen === true || device.accessState === "ready") return "可连接";
   if (device.accessState === "discovered" || device.lifecycle === "discovered") return "待配置";
   return "暂不可连接";
+}
+
+function recoveryLabel() {
+  const recovery = currentState.recovery;
+  const wait = recovery?.nextRetryAt ? Math.max(1, Math.ceil((recovery.nextRetryAt - Date.now()) / 1000)) : null;
+  return `正在重连 · 第 ${recovery?.attempt || 1} 次尝试${wait ? ` · ${wait} 秒后重试` : ""}`;
 }
 
 function deviceCanConnect(device) {
@@ -272,7 +277,7 @@ function deviceCard(device) {
   const action = disconnecting
     ? `<button class="button small activity-button" aria-busy="true" disabled>${activityLabel("正在断开…")}</button>`
     : currentState.selectedDeviceId === device.deviceId && currentState.recovery?.status === "retrying"
-    ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>停止重连</button>`
+    ? `<div class="settings-actions"><button class="button small" data-action="retry-connection" ${busy ? "disabled" : ""}>立即重试</button><button class="button small" data-action="stop-reconnect" ${busy ? "disabled" : ""}>停止重连</button></div>`
     : connecting
     ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
     : selected
@@ -303,7 +308,7 @@ function networkStatus() {
 }
 
 function activeDeviceName() {
-  return currentState.devices?.find((device) => device.deviceId === currentState.activeDeviceId)?.name || currentState.connection?.name || "万象盒子";
+  return currentState.devices?.find((device) => device.deviceId === (currentState.activeDeviceId || currentState.selectedDeviceId))?.name || currentState.connection?.name || "万象盒子";
 }
 
 function profileAvatar(large = false) {
@@ -600,11 +605,11 @@ function boxesView() {
   const storage = ready ? metrics?.wanxStorage : null;
   const publicIP = ready ? metrics?.network?.publicIp : null;
   const network = networkStatus(), enabled = currentState.network?.enabled !== false;
-  const status = currentState.recovery?.status === "failed" ? "自动重连未成功，请手动重连" : currentState.recovery?.status === "retrying" ? `正在自动重连（${currentState.recovery.attempt}/3）` : ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
+  const status = currentState.recovery?.status === "retrying" ? recoveryLabel() : ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content space-page-content box-page-content">
     <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="box-overview" aria-label="当前盒子"><div class="box-overview-heading"><div class="box-identity"><img src="./assets/centaurai-mark.png" alt=""/><div><span class="box-eyebrow">当前使用的盒子</span><h3 class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</h3><p>${ready ? currentState.connection?.mode === "local" ? "本机万象 · 文件与服务运行在这台电脑上" : "万象网络 · 已建立盒子连接" : network.detail}</p><div class="box-addresses" aria-label="盒子 IP" title="由当前盒子查询的公网出口地址"><span>盒子 IP</span>${publicIP ? `<code>${escapeHTML(publicIP)}</code>` : `<span>${ready ? "暂未获取盒子 IP" : "连接后显示"}</span>`}</div></div></div><span class="box-status ${ready ? "ready" : ""}"><i class="status-dot ${ready ? "ready" : ""}"></i>${status}</span></div>
+    <section class="box-overview" aria-label="当前盒子"><div class="box-overview-heading"><div class="box-identity"><img src="./assets/centaurai-mark.png" alt=""/><div><span class="box-eyebrow">当前使用的盒子</span><h3 class="current-device">${currentState.selectedDeviceId || currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</h3><p>${ready ? currentState.connection?.mode === "local" ? "本机万象 · 文件与服务运行在这台电脑上" : "万象网络 · 已建立盒子连接" : network.detail}</p><div class="box-addresses" aria-label="盒子 IP" title="由当前盒子查询的公网出口地址"><span>盒子 IP</span>${publicIP ? `<code>${escapeHTML(publicIP)}</code>` : `<span>${ready ? "暂未获取盒子 IP" : "连接后显示"}</span>`}</div></div></div><span class="box-status ${ready ? "ready" : ""}"><i class="status-dot ${ready ? "ready" : ""}"></i>${status}</span></div>
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
     <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
@@ -1791,6 +1796,8 @@ app.addEventListener("click", async (event) => {
     } else await run("devices.connect", { deviceId: device.deviceId });
     return;
   }
+  if (action === "retry-connection") { await run("devices.retry"); return; }
+  if (action === "stop-reconnect") { await run("devices.disconnect"); return; }
   if (action === "disconnect") {
     marketConfirmation = { action: "devices.disconnect", input: {}, title: "断开当前盒子", detail: "当前应用与盒子的连接将失效。重新连接后，请再次打开应用。", verb: "断开" };
     render(currentState); return;
