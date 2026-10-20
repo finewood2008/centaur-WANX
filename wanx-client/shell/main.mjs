@@ -625,6 +625,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       let setupStartFailed = false;
       setupRuntime = await createSetupRuntime({
         control, controlURL, ipcMain, account, client, safeStorage, userData,
+        onDiagnostic: event => timings.provisioning(event),
         advertisementNames: createAdvertisementNames({
           lookupName: (deviceId) => account.lookupDeviceName(deviceId),
           cacheScope: () => account.getIdentity()?.accountId || null,

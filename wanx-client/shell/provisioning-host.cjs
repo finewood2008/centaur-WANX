@@ -142,6 +142,7 @@ async function createProvisioningHost({
   ownerWifiCoordinatorFactory,
   cryptoFactory,
   beforeConnect = async () => {},
+  onDiagnostic = () => {},
   clock = {
     monotonicMs: () => performance.now(),
     nowUtc: () => new Date().toISOString(),
@@ -204,24 +205,45 @@ async function createProvisioningHost({
     }
   };
   const rpc = (operation, args, signal) => {
+    const started = clock.monotonicMs(), attempt = context?.connectionAttempt;
+    const requestId = randomUUID();
+    const report = (error, source, detail) => {
+      const diagnostic = {
+        operation, requestId, attempt, source,
+        outcome: error ? "failed" : "completed",
+        durationMs: Math.max(0, Math.round(clock.monotonicMs() - started)),
+        ...(operation === "request" ? { messageType: args[2]?.responseMessageType } : {}),
+        ...(error ? { errorCode: codeOf(error) } : {}),
+      };
+      if (["connect", "service", "characteristic", "notifications"].includes(detail?.stage))
+        diagnostic.stage = detail.stage;
+      if (["NetworkError", "NotFoundError", "NotSupportedError", "InvalidStateError", "SecurityError",
+        "AbortError", "TimeoutError", "UnknownError", "LocalProvisioningFailure"].includes(detail?.errorName))
+        diagnostic.errorName = detail.errorName;
+      try { onDiagnostic(diagnostic); } catch { /* Diagnostics cannot affect pairing. */ }
+    };
+    const rejectEarly = (error) => {
+      report(error, "lifecycle");
+      return Promise.reject(error);
+    };
     if (
       disposed ||
       !rendererActive ||
       webContents.isDestroyed?.() ||
       webContents.mainFrame?.url !== documentUrl
     )
-      return Promise.reject(localFailure("LOCAL_TRANSPORT_DISCONNECTED"));
+      return rejectEarly(localFailure("LOCAL_TRANSPORT_DISCONNECTED"));
     if (signal?.aborted)
-      return Promise.reject(new DOMException("Aborted", "AbortError"));
+      return rejectEarly(new DOMException("Aborted", "AbortError"));
     if (pending.size >= 16)
-      return Promise.reject(failure("RESOURCE_EXHAUSTED"));
+      return rejectEarly(failure("RESOURCE_EXHAUSTED"));
     bounded(args);
-    const requestId = randomUUID();
     return new Promise((resolve, reject) => {
-      const finish = (error, value) => {
+      const finish = (error, value, source = "lifecycle", detail) => {
         if (!pending.delete(requestId)) return;
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
+        report(error, source, detail);
         if (error && operation === "connect") {
           lateConnections.set(requestId, clock.monotonicMs() + 30000);
           // A timeout ends the physical attempt too, before a retry can reuse
@@ -234,7 +256,7 @@ async function createProvisioningHost({
         }
         error ? reject(error) : resolve(value);
       };
-      const abort = () => finish(new DOMException("Aborted", "AbortError"));
+      const abort = () => finish(new DOMException("Aborted", "AbortError"), undefined, "abort");
       const timer = setTimeout(
         () =>
           finish(
@@ -243,6 +265,7 @@ async function createProvisioningHost({
                 ? "GATT_FRAGMENT_INCOMPLETE"
                 : "LOCAL_CONNECT_TIMEOUT",
             ),
+            undefined, "deadline",
           ),
         // Allow the renderer's 30-second GATT request to finish (including all
         // token fragments) before the IPC fallback fires. Connect/read/close
@@ -254,7 +277,7 @@ async function createProvisioningHost({
       try {
       send("wanx:setup:transport", { requestId, operation, args });
       } catch {
-        finish(localFailure("LOCAL_TRANSPORT_DISCONNECTED"));
+        finish(localFailure("LOCAL_TRANSPORT_DISCONNECTED"), undefined, "send");
       }
     });
   };
@@ -364,6 +387,7 @@ async function createProvisioningHost({
           ? localFailure(code)
           : failure(code),
       value.value,
+      "renderer", value.diagnostic,
     );
   };
   const statusListener = (event, value) => {

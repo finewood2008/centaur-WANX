@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 // Reproducible local patch of the pinned SDK; never patch node_modules in place.
 const root = fileURLToPath(new URL('../', import.meta.url));
-const version = '2.0.1-wanx.2';
+const version = '2.0.1-wanx.3';
 const archive = path.join(root, 'vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz');
 const check = process.argv.includes('--check');
 if (process.argv.slice(2).some(arg => arg !== '--check')) throw Error('Only --check is supported');
@@ -52,6 +52,14 @@ try {
             }`;
   const after = `            let server, service, deviceInfo, command, status;
             let stage = "connect", retired = false, closeOnRetire;
+            const diagnosticFailure = (code, failureStage, error) => {
+                const failure = new LocalProvisioningFailure(code);
+                const names = ["NetworkError", "NotFoundError", "NotSupportedError", "InvalidStateError",
+                    "SecurityError", "AbortError", "TimeoutError", "UnknownError"];
+                failure.diagnostic = { stage: failureStage,
+                    errorName: names.includes(error?.name) ? error.name : "UnknownError" };
+                return failure;
+            };
             const retireConnection = () => {
                 if (retired) return;
                 retired = true;
@@ -86,7 +94,7 @@ try {
                 const code = error?.name === "NotFoundError" && stage !== "connect"
                     ? (stage === "service" ? "GATT_SERVICE_NOT_FOUND" : "GATT_CHARACTERISTIC_MISMATCH")
                     : "LOCAL_TRANSPORT_DISCONNECTED";
-                throw new LocalProvisioningFailure(code);
+                throw diagnosticFailure(code, stage, error);
             }`;
   if (source.split(before).length !== 2) throw Error('SDK GATT patch anchor is not unique');
   let patched = source.replace(before, after);
@@ -96,6 +104,30 @@ try {
       '            closeOnRetire = () => closeWith(new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED"));\n            device.addEventListener("gattserverdisconnected", onDisconnect);'],
     ['                await status.startNotifications();',
       '                await status.startNotifications();\n                assertActive();'],
+    [`            catch {
+                closeWith();
+                throw new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
+            }`, `            catch (error) {
+                closeWith();
+                throw diagnosticFailure("LOCAL_TRANSPORT_DISCONNECTED", "notifications", error);
+            }`],
+    ['                    const abort = () => {', `                    // Observe response failures immediately, including while a native write
+                    // is blocked. Race only failures: a successful reply must not bypass
+                    // completion of the final write. Losing native promises stay observed.
+                    const interruption = new Promise((_, reject) => { void response.catch(reject); });
+                    void interruption.catch(() => undefined);
+                    const abort = () => {`],
+    ['            let closed = false, pending, statusListener;',
+      '            let closed = false, pending, statusListener, terminalFailure;'],
+    ['                closed = true;',
+      '                closed = true;\n                terminalFailure = error ?? new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");'],
+    ['                            await command.writeValueWithResponse(fragment.slice().buffer);',
+      '                            if (closed) throw terminalFailure;\n                            await Promise.race([command.writeValueWithResponse(fragment.slice().buffer), interruption]);'],
+    ['                        if (error instanceof DOMException && error.name === "AbortError")\n                            throw error;',
+      `                        if (error instanceof DOMException && error.name === "AbortError") {
+                            closeWith(error);
+                            throw error;
+                        }`],
   ];
   for (const [from, to] of changes) {
     if (patched.split(from).length !== 2) throw Error('SDK GATT lifecycle patch anchor is not unique');

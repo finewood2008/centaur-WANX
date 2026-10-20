@@ -276,14 +276,24 @@ async def test_missing_advisory_registration_is_configuration_not_runtime_failur
     assert "ADVISORY_PRODUCT_NOT_CONFIGURED" in blocked_codes(report)
 
 
-async def test_browser_does_not_treat_arbitrary_chat_provider_as_supported(root):
+@pytest.mark.parametrize(
+    "active",
+    [
+        {"provider_name": "qs", "model": "deepseek-flash"},
+        {"provider_name": "removed", "model": "old"},
+        {},
+    ],
+)
+async def test_browser_accepts_configured_proxy_model(root, active):
     upstream = Upstream()
+    upstream.models = [{"provider_name": "qs", "model": "deepseek-flash"}]
+    upstream.overrides["/api/providers/active-model"] = (200, active)
     upstream.overrides["/api/providers"] = (
         200,
         [
             {
-                "name": "deepseek",
-                "base_url": "https://other.example.com",
+                "name": "qs",
+                "base_url": "https://proxy.example.com/v1",
                 "api_key": "never-output",
                 "enabled": True,
             }
@@ -291,9 +301,11 @@ async def test_browser_does_not_treat_arbitrary_chat_provider_as_supported(root)
     )
     report = await inspect(root, upstream)
     assert report["serviceReady"] is True
-    assert "BROWSER_MODEL_NOT_CONFIGURED" in blocked_codes(report)
+    assert report["ready"] is True
+    assert "BROWSER_MODEL_NOT_CONFIGURED" not in blocked_codes(report)
     assert "MODEL_NOT_CONFIGURED" not in blocked_codes(report)
     assert "never-output" not in json.dumps(report)
+    assert "proxy.example.com" not in json.dumps(report)
 
 
 async def test_product_credentials_never_probe_customer_private_resources(root):
@@ -319,6 +331,7 @@ async def test_catalog_alone_is_not_evidence_of_usable_model(root, field, value)
     assert report["serviceReady"] is True
     assert report["ready"] is False
     assert "MODEL_NOT_CONFIGURED" in blocked_codes(report)
+    assert "BROWSER_MODEL_NOT_CONFIGURED" in blocked_codes(report)
 
 
 async def test_stale_active_selection_uses_first_usable_model(root):
