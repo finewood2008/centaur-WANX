@@ -1927,20 +1927,29 @@ test("pending cleanup cannot reopen a box removed from the fresh authorized dire
 });
 
 test("a native engine outage reconnects the user's box after the engine returns", async t => {
-  let offline = false;
-  const h = harness(t, { sidecarStatus: () => offline ? { phase: "unavailable", peers: [] } : undefined });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let offline = false, firstAgent, stale = false;
+  const h = harness(t, {
+    sidecarStatus: () => offline ? { phase: "unavailable", peers: [] } : undefined,
+    probe: async (_url, { agent }) => {
+      firstAgent ??= agent;
+      if (offline || stale && agent === firstAgent) throw fail("network_unavailable");
+    },
+  });
   await h.client.loginPassword({ phone: "account-1" });
   await h.client.connectBox("box-1");
   offline = true;
+  stale = true;
   await h.transports[0].network.refresh();
-  assert.equal(h.client.snapshot().connection, null);
-  const recovered = new Promise(resolve => {
-    const stop = h.client.subscribe(s => { if (s.phase === "ready") { stop(); resolve(); } });
-    t.after(stop);
-  });
+  assert.equal(h.client.snapshot().phase, "recovering");
+  assert.equal(h.client.snapshot().connection.deviceId, "box-1");
+  assert.equal(h.sessions[0].closed, false, "status loss alone must not retire a valid app lease");
   offline = false;
   await h.transports[0].network.refresh();
-  await recovered;
+  t.mock.timers.tick(30_000);
+  await tick();
+  assert.equal(h.client.snapshot().phase, "ready");
   assert.equal(h.client.snapshot().connection.deviceId, "box-1");
+  assert.equal(h.sessions[0].closed, true, "a destroyed tunnel agent must retire its old session");
   assert.equal(h.sessions.length, 2, "fresh box authentication, never reuse the closed gateway");
 });

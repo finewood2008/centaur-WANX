@@ -6,7 +6,7 @@ const source=await readFile(new URL('../local-ui/renderer/space-workspaces.js',i
 function setup(){
  const events={},saved=new Map(),calls=[],positions=[],fileActions=[];let reloads=0;
  const spaces=[{id:'personal',root:'',name:'我的空间',connections:[]},{id:'agent',root:'agent-root',name:'同名 Agent',connections:[],bytes:2},{id:'other',root:'other-root',name:'同名 Agent',connections:[],bytes:3}];
- let resolveStat,delay=false,selection={path:'/Volumes/Space Drive'};
+ let syncData,resolveStat,delay=false,selection={path:'/Volumes/Space Drive'};
  const rows=new Map([['folder',{id:'folder',name:'原名',space_id:'agent',kind:'folder',parent:'agent-root'}]]);
  const root={addEventListener(type,fn){events[type]=fn;}},doc={querySelector:s=>s==='#app'?root:null,addEventListener(){},querySelectorAll:()=>[]};
  const window={location:{origin:'file://'}};
@@ -14,6 +14,7 @@ function setup(){
  const w=window.wanxWorkspaces;
  w.bind({icon:kind=>`<svg data-icon="${kind}"></svg>`,fileAction:async(...a)=>fileActions.push(a),render(){},navigate:async(...p)=>positions.push(p),reload:async()=>reloads++,message:e=>e.message,error:e=>{throw Error(e);},call:async(method,input)=>{
  calls.push([method,input]);
+ if(method==='links-sync-status')return syncData;
  if(method==='links-spaces')return spaces;
  if(method==='links-storage-choose')return typeof selection==='function'?selection(input):selection;
  if(method==='links-requests')return [{id:'one',profile:'profile-one',name:'Same',status:'pending'},{id:'two',profile:'profile-two',name:'Same',status:'pending'}];
@@ -24,7 +25,7 @@ function setup(){
  }});
  w.reset('account:box');w.storageScope('platform:account:box');
  const click=(action,data={})=>events.click({preventDefault(){},target:{closest:()=>({dataset:{workspaceAction:action,...data}})}});
- return {w,spaces,rows,saved,calls,positions,fileActions,reloads:()=>reloads,click,events,select(v){selection=v;},delay(){delay=true;},resolve(v){resolveStat(v);}};
+ return {w,spaces,rows,saved,calls,positions,fileActions,reloads:()=>reloads,click,events,setSync(v){syncData=v;},select(v){selection=v;},delay(){delay=true;},resolve(v){resolveStat(v);}};
 }
 test('favorites follow resource IDs across rename and move and remain isolated by platform/account/box',async()=>{
  const h=setup();await h.w.refresh();await h.w.observe({space:'agent',parent:'agent-root',trash:false},{items:[],breadcrumbs:[]});await h.w.pin({id:'folder',name:'原名'});
@@ -121,4 +122,31 @@ test('stale sidebar folder resolution cannot act after an account switch or afte
  const h=setup();await h.w.refresh();h.rows.set('folder',{id:'folder',kind:'folder',space_id:'other'});
  await h.click('menu',sidebarTarget('folder','agent','folder','原名'));await assert.rejects(h.click('menu-command',{command:'trash'}),/SPACE_CONTEXT_CHANGED/);assert.equal(h.fileActions.length,0);
  h.delay();await h.click('menu',sidebarTarget('folder','agent','folder','原名'));const pending=h.click('menu-command',{command:'trash'});await new Promise(r=>setImmediate(r));h.w.reset('new-account');h.resolve({id:'folder',kind:'folder',space_id:'agent'});await pending;assert.equal(h.fileActions.length,0);assert.equal(h.w.menuView(),'');
+});
+
+test('new approval selects task context/progress/outcome and persists user choices per identity',async()=>{
+ const h=setup();await h.click('requests');await h.click('approve-form',{id:'one'});
+ const html=h.w.dialogView();
+ for(const category of ['context','progress','outcome'])assert.match(html,new RegExp(`data-sync-option="${category}" checked`));
+ for(const category of ['project_memory','user_memory'])assert.doesNotMatch(html,new RegExp(`data-sync-option="${category}" checked`));
+ h.events.change({target:{dataset:{syncOption:'outcome'},checked:false}});
+ await h.w.refresh();
+ assert.doesNotMatch(h.w.dialogView(),/data-sync-option="outcome" checked/);
+ h.events.submit({target:{hasAttribute:()=>true},preventDefault(){}});await new Promise(r=>setImmediate(r));
+ const approval=h.calls.find(([m])=>m==='links-approve')[1];
+ assert.equal(approval.id,'one');assert.equal(approval.sync_policy.context,true);assert.equal(approval.sync_policy.outcome,false);
+});
+
+test('sync view distinguishes selected rules, stored receipts, unsupported memory and stale scope',async()=>{
+ const h=setup();
+ const data={policy:{configured:true,revision:1,options:{context:true,progress:true,outcome:true,project_memory:true,user_memory:false}},connection_state:'active',bytes:123,tasks:[]};
+ h.setSync(data);await h.click('sync-open',{id:'connection'});
+ assert.match(h.w.dialogView(),/等待任务/);assert.doesNotMatch(h.w.dialogView(),/<strong>已同步<\/strong>/);
+ data.tasks.push({id:'task',title:'合成 <script>任务',version:2,record_count:2,modified:1,state:'active',categories:{context:{status:'provided',summary:'test'},progress:{status:'provided',summary:'written'},project_memory:{status:'unsupported',reason:'no export'}}});
+ await h.w.updateSync();
+ const html=h.w.dialogView();assert.match(html,/部分同步/);assert.match(html,/宿主不支持/);assert.match(html,/等待任务结束/);assert.match(html,/未开启/);assert.match(html,/&lt;script&gt;/);assert.doesNotMatch(html,/<script>/);
+ data.delivery={state:'saving'};await h.w.updateSync();assert.match(h.w.dialogView(),/等待保存/);
+ data.delivery={state:'failed'};await h.w.updateSync();assert.match(h.w.dialogView(),/同步失败/);
+ data.connection_state='paused';await h.w.updateSync();assert.match(h.w.dialogView(),/已暂停/);
+ h.w.reset('new-account');await h.w.updateSync();assert.equal(h.w.dialogView(),'');
 });

@@ -157,8 +157,11 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
+for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
+
+for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])
+  actions[`clipboard.${method}`] = input => ipcRenderer.invoke(`wanx-client:clipboard-${method}`, input);
 
 async function action(name, input = {}) {
   const handler = actions[name];
@@ -168,7 +171,9 @@ async function action(name, input = {}) {
     const value = await handler(input);
     return { ok: true, value, state: await getLocalState() };
   } catch (error) {
-    return { ok: false, code: errorCode(error), state: await getLocalState(),
+    const rawCode = errorCode(error);
+    const clipboardCode = rawCode.match(/(?:^|Error: )((?:CLIPBOARD|SPACE|BOX|ACCOUNT|SECURE_STORAGE)_[A-Z0-9_]+)$/)?.[1];
+    return { ok: false, code: name.startsWith("clipboard.") ? clipboardCode || "CLIPBOARD_OPERATION_FAILED" : rawCode, state: await getLocalState(),
       ...(name.startsWith("wallet.") ? { request_id: error.request_id || null, details: error.details || {},
         retryable: error.retryable === true, status: error.status || null } : {}) };
   }
@@ -195,6 +200,22 @@ contextBridge.exposeInMainWorld(
       } catch (error) {
         return { ok: false, code: errorCode(error) };
       }
+    },
+    async clipboardFiles(files, input={}) {
+      try {
+        if(!Array.isArray(files)||!files.length||files.length>20)throw new Error("CLIPBOARD_LIMIT");
+        if(files.some(file=>file.size>20*1024*1024))throw new Error("CLIPBOARD_LIMIT");
+        const paths=files.map(file=>webUtils.getPathForFile(file));
+        let payload;
+        if(paths.every(Boolean))payload={paths};
+        else if(files.length===1&&["image/png","image/jpeg","image/gif","image/webp"].includes(files[0].type))payload={image:Buffer.from(await files[0].arrayBuffer()).toString("base64"),name:files[0].name,mime:files[0].type};
+        else throw new Error("CLIPBOARD_VIRTUAL_FILE");
+        return await action("clipboard.capture",{...payload,scope:input.scope});
+      }catch(error){return {ok:false,code:errorCode(error)};}
+    },
+    onClipboardState(listener) {
+      const receive=(_event,state)=>listener(state);ipcRenderer.on("wanx-client:clipboard-state",receive);
+      return ()=>ipcRenderer.removeListener("wanx-client:clipboard-state",receive);
     },
     checkHealth: async () => ({
       ok: false,

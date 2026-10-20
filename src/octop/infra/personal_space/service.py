@@ -520,6 +520,11 @@ class PersonalSpace:
             pending = db.execute(
                 "SELECT COALESCE(SUM(offset),0) FROM uploads WHERE state='pending'"
             ).fetchone()[0]
+            sync_bytes = 0
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='space_sync_records'").fetchone():
+                sync_bytes = db.execute(
+                    "SELECT COALESCE(SUM(size),0) FROM space_sync_records"
+                ).fetchone()[0]
         disk = shutil.disk_usage(self.objects)
         # Container measurements are not advertised as whole-box memory.
         container = (
@@ -545,6 +550,7 @@ class PersonalSpace:
             "chunkSize": CHUNK_SIZE,
             "collectedAt": time.time(),
             "filesBytes": used,
+            "syncBytes": sync_bytes,
             "pendingBytes": pending,
             "volume": {
                 "scope": "personal-files-volume",

@@ -15,9 +15,18 @@ export async function createAgentTransport({profileFile,endpoint,fetchImpl=fetch
   const profile=JSON.parse(await readFile(profileFile,'utf8'));
   if(!/^[a-f0-9]{32}$/.test(profile.profile || '') || !/^[A-Za-z0-9_-]{43}$/.test(profile.key || ''))throw fail('SPACE_INVALID_PROFILE');
   const send=async(route,input)=>{
-    const response=await fetchImpl(new URL(route,base),{method:'POST',redirect:'error',headers:{'content-type':'application/json'},body:JSON.stringify(input),signal:AbortSignal.timeout(125000)});
-    if(!response.ok){let code;try{code=(await response.json()).error?.code;}catch{}throw fail(code || 'SPACE_REQUEST_FAILED');}
-    return response;
+    const body=JSON.stringify(input);
+    const retryable=route==='/space-agents/enroll'||input.request_id||input.operation_id||['clipboard-list','clipboard-read','access','sync-status','task-records','stat','list','read','describe','write-status','begin-write','write-chunk','commit-write','cancel-write'].includes(input.action);
+    for(let attempt=0;;attempt++) {
+      try {
+        const response=await fetchImpl(new URL(route,base),{method:'POST',redirect:'error',headers:{'content-type':'application/json'},body,signal:AbortSignal.timeout(125000)});
+        if(!response.ok){let code;try{code=(await response.json()).error?.code;}catch{}const error=fail(code || 'SPACE_REQUEST_FAILED');error.retryable=[502,503,504].includes(response.status);throw error;}
+        return response;
+      }catch(error){
+        if(!retryable||attempt>=2||(error.code&&!error.retryable))throw error;
+        await new Promise(resolve=>setTimeout(resolve,250*(attempt+1)));
+      }
+    }
   };
   let name='Agent';
   const enroll=async info=>{name=String(info?.name || name).slice(0,80);return (await send('/space-agents/enroll',{...profile,name})).json();};

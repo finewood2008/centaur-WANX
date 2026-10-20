@@ -2,6 +2,10 @@
   const esc = v => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const size = value => { if (value == null) return "暂不可用"; let n = value, i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][i]}`; };
   const errors = {
+    SPACE_SYNC_POLICY_INVALID: "同步设置无效，请检查所选范围。",
+    SPACE_SYNC_PROJECT_REQUIRED: "开启项目记忆时，请填写项目范围。",
+    SPACE_SYNC_POLICY_CHANGED: "同步设置已更新，请重新打开设置后再保存。",
+    SPACE_SYNC_TASK_FINISHED: "此任务已结束，请新建任务。",
     SPACE_AGENT_PAUSED: "该接入已暂停。恢复接入后可继续操作。",
     SPACE_AGENT_DISCONNECTED: "接入已断开，请重新申请并确认。",
     SPACE_LINK_SCOPE: "该资源不在授权范围内。",
@@ -97,6 +101,7 @@
     finally { if (epoch === revision) { loading = false; render(); } }
   }
   function hostState(state) {
+    window.wanxClipboard?.hostState(state);
     if (state.route === "auth" || (host && state.account?.accountId !== host.account?.accountId)) lastSeen = null;
     if (state.activeDeviceId && lastSeen && state.activeDeviceId !== lastSeen.boxId) lastSeen = null;
     const priorBox = state.account?.accountId === host?.account?.accountId ? host?.activeDeviceId || status.boxId : null;
@@ -688,7 +693,7 @@
       if (event.key === "F2") document.querySelector("#space-name")?.focus?.();
     } catch (cause) { error = message(cause); render(); }
   });
-  window.wanxClient.onSpaceContentChanged?.(() => { if (dialog || workspaces?.blocked()) { pendingRefresh = true; return; } if (active && !loading && !dialog && !moving && !marquee) void load(); });
+  window.wanxClient.onSpaceContentChanged?.(() => { void workspaces?.updateSync?.(); if (dialog || workspaces?.blocked()) { pendingRefresh = true; return; } if (active && !loading && !dialog && !moving && !marquee) void load(); });
   window.wanxClient.onSpaceState?.(next => {
     if (!host || host.route === "auth") return;
     if (next.accountId !== host.account?.accountId || next.boxId !== host.activeDeviceId) {
@@ -703,7 +708,7 @@
       if (next.tasks?.some(t => t.phase === "complete" && previous.find(p => p.id === t.id)?.phase !== "complete")) void load();
     }
   });
-  setInterval(() => { if (active && !document.hidden && host?.canLaunchApplications && !loading && !dialog && !workspaces?.blocked() && !moving && !movePointer && !marquee) void load(); }, 15000);
+  setInterval(() => { if(active&&!document.hidden)void workspaces?.updateSync?.(); if (active && !document.hidden && host?.canLaunchApplications && !loading && !dialog && !workspaces?.blocked() && !moving && !movePointer && !marquee) void load(); }, 15000);
   workspaces?.bind({call,icon,fileAction:sidebarFileAction,dismissFileMenu:()=>{contextMenu=null;}, render:()=>render(), message, error:value=>{error=value;render();}, reload:()=>load(), navigate});
-  window.wanxSpace = { view, hostState, retainEditor, mounted, overview: () => status.overview, bind(options) { render = options.render; }, isSelecting: () => Boolean(marquee), isDragging: () => Boolean(movePointer || moving), activate(value, visible = value) { if (fileView !== visible) { stopMarquee(); clearDrag(); contextMenu = null; } fileView = visible; if (active === value) return; active = value; if (active) void load(); else { closeDialog(); clearDrag(); previews?.mount([], scope, false); } } };
+  window.wanxSpace = { reload: () => load(), view, hostState, retainEditor, mounted, overview: () => status.overview, bind(options) { render = options.render; }, isSelecting: () => Boolean(marquee), isDragging: () => Boolean(movePointer || moving), activate(value, visible = value) { window.wanxClipboard?.setActive(value && visible); if (fileView !== visible) { stopMarquee(); clearDrag(); contextMenu = null; } fileView = visible; if (active === value) return; active = value; if (active) void load(); else { closeDialog(); clearDrag(); previews?.mount([], scope, false); } } };
 })();

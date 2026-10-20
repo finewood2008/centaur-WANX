@@ -1,3 +1,4 @@
+import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
 
@@ -53,6 +54,7 @@ export function registerControlActions({
   selectApplicationArchive,
   market,
   personalSpace,
+  superClipboard,
   spaceLinks,
   confirmSpacePurge,
   updates,
@@ -74,9 +76,9 @@ export function registerControlActions({
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
-    "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
+    "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
-  const reads = new Set(["panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -96,7 +98,7 @@ export function registerControlActions({
       throw error;
     }
   };
-  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
+  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
       return spaceLinks.manage(action, input);
@@ -145,6 +147,28 @@ export function registerControlActions({
         if (scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
       }
       return personalSpace.operation(method, input);
+    });
+  }
+  register("panel-note", async (input={}) => {
+    if(!superClipboard)throw new Error("CLIPBOARD_UNAVAILABLE");
+    const {method,scope,...args}=input;
+    if(!PANEL_NOTE_METHODS.has(method))throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if(method!=="snapshot"&&(!scope||scope!==superClipboard.snapshot().scope))throw new Error("SPACE_CONTEXT_CHANGED");
+    if(method==="preview"&&!superClipboard.snapshot().note?.blocks?.some(b=>b.type==="image"&&b.item===args.id)&&!superClipboard.snapshot().tasks?.some(t=>t.kind==="image"&&t.id===args.id))throw new Error("CLIPBOARD_NOT_FOUND");
+    if(method==="transfer"&&!['pause','resume'].includes(args.action))throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if(method==="note-command"&&!['clear','restore','local','remote','recover-local'].includes(args.action))throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    return panelNoteState(await superClipboard.operation(method,{...args,...(method==="choose"?{panel:true}:{})}));
+  });
+  for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"]) {
+    register(`clipboard-${method}`, async (input={}) => {
+      if(!superClipboard)throw new Error("CLIPBOARD_UNAVAILABLE");
+      if(method!=="snapshot" && input.scope!==superClipboard.snapshot().scope)throw new Error("SPACE_CONTEXT_CHANGED");
+      if(method==="manage" && input.action==="purge") {
+        if(!(await confirmSpacePurge?.()))return {canceled:true};
+        if(input.scope!==superClipboard.snapshot().scope)throw new Error("SPACE_CONTEXT_CHANGED");
+      }
+      const {scope,...args}=input;
+      return superClipboard.operation(method,args);
     });
   }
   register("space-upload-dropped", (input = {}) => {

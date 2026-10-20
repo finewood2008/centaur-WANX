@@ -27,6 +27,8 @@ export function createClient({
   let pendingProbe = null;
   let healthTimer, healthController, activeEndpoint, activeSessionFactory;
   let recovery = null;
+  let boxSession = null;
+  const businessGateways = new Map();
   const listeners = new Set();
   const closing = new Set();
   const connecting = new Set();
@@ -66,13 +68,16 @@ export function createClient({
     pendingProbe?.abort();
     pendingProbe = null;
     const previous = gateway;
+    const businesses = [...businessGateways.values()];
+    businessGateways.clear();
+    boxSession = null;
     gateway = null;
     connection = null;
     pendingMode = null;
     phase = "disconnected";
     reason = nextReason;
     emit();
-    await dispose(previous);
+    await Promise.all([dispose(previous), ...businesses.map(p => p.then(dispose, () => {}))]);
     return snapshot();
   }
 
@@ -139,10 +144,13 @@ export function createClient({
             throw error;
           }
           const previous = gateway;
+          const businesses = [...businessGateways.values()];
+          businessGateways.clear();
           gateway = replacement;
+          boxSession = session;
           activeEndpoint = endpoint;
           connection = { ...connection, gatewayURL: replacement.url };
-          await dispose(previous);
+          await Promise.all([dispose(previous), ...businesses.map(p => p.then(dispose, () => {}))]);
           if (!live()) return;
         }
         recovery = null;
@@ -259,6 +267,7 @@ export function createClient({
       gateway = created;
       activeEndpoint = endpoint;
       activeSessionFactory = createSession;
+      boxSession = platformSession;
       connection = {
         deviceId: input.deviceId,
         name: input.name || input.deviceId,
@@ -303,6 +312,42 @@ export function createClient({
       const assertLive = () => { if (closed || gateway !== lease) throw new Error("SESSION_CLOSED"); };
       return {
         request: (input) => { assertLive(); return lease.request({ ...input, applicationScope, applicationExchange: false }); },
+        async businessRequest(service, input) {
+          assertLive();
+          // Fixed first-party service on this exact peer. Callers cannot choose
+          // another host, port or unrelated API; credentials stay in main.
+          if (service !== "clipboard" || selectedProduct || applicationId ||
+              typeof input?.path !== "string" || !/^\/api\/clipboard\/v1(?:\/|\?|$)/.test(input.path) ||
+              /[\\#\x00-\x1f]/.test(input.path) || /(?:^|\/)\.{1,2}(?:\/|\?|$)/.test(input.path) || /%2e|%2f|%5c/i.test(input.path))
+            throw Object.assign(new Error("BUSINESS_SERVICE_SCOPE"), { code: "BUSINESS_SERVICE_SCOPE" });
+          // Platform boxes expose business routes through their authenticated
+          // ingress. A second peer port is not part of the granted P2P route.
+          if (boxSession) {
+            const result = await lease.request({ ...input, applicationScope: undefined, applicationExchange: false });
+            assertLive();
+            return result;
+          }
+          if (!businessGateways.has(service)) {
+            const destination = new URL(connection.url); destination.port = "8092";
+            const mode = connection.mode, parent = boxSession, deviceId = connection.deviceId;
+            const pending = (async () => {
+              const endpoint = await network.resolveEndpoint({ url: destination.origin, mode });
+              assertLive();
+              const child = await createGateway({ deviceId, targetURL: endpoint.url, agent: endpoint.agent,
+                session: parent ? { getToken: () => parent.getToken(), close() {}, applicationExchangePath: parent.applicationExchangePath } : undefined,
+                businessService: service });
+              if (closed || gateway !== lease) { await child.close(); throw new Error("SESSION_CLOSED"); }
+              return child;
+            })();
+            businessGateways.set(service, pending);
+            pending.catch(() => { if (businessGateways.get(service) === pending) businessGateways.delete(service); });
+          }
+          const child = await businessGateways.get(service);
+          assertLive();
+          const result = await child.request(input);
+          assertLive();
+          return result;
+        },
         openStream: (input) => { assertLive(); return lease.openWebSocket({ ...input, applicationScope }); },
       };
     },

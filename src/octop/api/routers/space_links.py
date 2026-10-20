@@ -8,7 +8,7 @@ import hashlib
 from functools import partial
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import Field
 
 from octop.api.routers.personal_space import Input, call, space
@@ -169,6 +169,15 @@ class Approval(Input):
     profile: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=240)
     space_id: str = Field(default="", max_length=32)
+    sync_policy: dict[str, Any] | None = Field(
+        default=None,
+        description="Owner-selected synchronization categories; omitted preserves legacy file-only access.",
+    )
+
+
+class SyncPolicyInput(Input):
+    options: dict[str, Any]
+    expected: int = Field(ge=0, description="Observed synchronization policy revision.")
 
 
 class ConnectionAction(Input):
@@ -207,8 +216,23 @@ class AgentOperation(Operation):
         "commit-write",
         "write-status",
         "cancel-write",
+        "sync-status",
+        "task-begin",
+        "task-checkpoint",
+        "task-finish",
+        "task-records",
     ]  # type: ignore[assignment]
     grant_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
+    task_id: str = Field(default="", pattern=r"^([0-9a-f]{32})?$")
+    request_id: str = Field(default="", max_length=100)
+    operation_id: str = Field(default="", max_length=80)
+    policy_revision: int | None = Field(default=None, ge=0)
+    title: str = Field(default="", max_length=240)
+    categories: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Selected task context, progress and outcome summaries; data, never instructions.",
+    )
+    progress: str = Field(default="", max_length=8192)
 
 
 @router.get("/spaces", summary="List your personal and Agent spaces including recycled spaces")
@@ -234,7 +258,50 @@ async def change_storage(
 
 @router.post("/connections", summary="Owner approval creates a credential-bound Agent space")
 async def approve_connection(body: Approval, service: Workspaces = Depends(links)) -> Any:
-    return await call(service.approve, body.profile, body.name, body.space_id, body.credential)
+    return await call(
+        service.approve, body.profile, body.name, body.space_id, body.credential, body.sync_policy
+    )
+
+
+@router.get(
+    "/connections/{connection}/sync",
+    summary="Inspect owner-selected synchronization rules and the last 50 task summaries",
+)
+async def sync_status(connection: str, service: Workspaces = Depends(links)) -> Any:
+    return await call(service.sync_status, connection)
+
+
+@router.post(
+    "/connections/{connection}/sync",
+    summary="Change synchronization categories with an observed policy revision",
+)
+async def sync_policy(
+    connection: str, body: SyncPolicyInput, service: Workspaces = Depends(links)
+) -> Any:
+    return await call(service.set_sync_policy, connection, body.options, body.expected)
+
+
+@router.get(
+    "/connections/{connection}/tasks/{task_id}",
+    summary="Read a page of task handoff records without granting another Agent access",
+)
+async def sync_records(
+    connection: str,
+    task_id: str,
+    offset: int = Query(default=0, ge=0),
+    service: Workspaces = Depends(links),
+) -> Any:
+    return await call(service.sync_records, connection, task_id, offset)
+
+
+@router.delete(
+    "/connections/{connection}/tasks/{task_id}",
+    summary="Owner deletes task context and retained snapshots; file outputs are kept",
+)
+async def delete_sync_task(
+    connection: str, task_id: str, service: Workspaces = Depends(links)
+) -> Any:
+    return await call(service.delete_sync_task, connection, task_id)
 
 
 @router.post("/connections/{connection}/manage", summary="Pause, resume or disconnect an Agent")

@@ -95,14 +95,15 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     }
     return connectionPromise;
   }
-  async function request(connection, route, { method = "GET", body, signal, raw = false, headers = {} } = {}) {
+  async function request(connection, route, { method = "GET", body, signal, raw = false, headers = {}, prefix = PREFIX } = {}) {
     if (signal?.aborted) throw fail("SPACE_PAUSED");
     connection.context();
     const deadline = AbortSignal.timeout(route.endsWith("/complete") ? 120_000 : 60_000);
     let response;
     try {
-      response = await connection.request({ path: `${PREFIX}${route}`, method, signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
-        ...(method === "PUT" && route.startsWith("/uploads/") ? { idleTimeoutMs: 15_000, freshConnection: true } : {}),
+      const send = prefix === "/api/clipboard/v1" ? input => connection.businessRequest("clipboard", input) : input => connection.request(input);
+      response = await send({ path: `${prefix}${route}`, method, signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+        ...(method === "PUT" && (route.startsWith("/uploads/") || prefix === "/api/clipboard/v1") ? { idleTimeoutMs: 15_000, freshConnection: true } : {}),
         headers: { ...(body && !Buffer.isBuffer(body) ? { "content-type": "application/json" } : {}), ...headers },
         body: body && !Buffer.isBuffer(body) ? JSON.stringify(body) : body });
     } catch (cause) {
@@ -419,6 +420,15 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     if (hash(bytes) !== entry.digest) throw fail("SPACE_CHUNK_INVALID");
     return { name: entry.name, type, data: bytes.toString("base64") };
   }
-  return { snapshot, refresh, operation, uploads, download, downloads, transfer, preview,
+  async function clipboardRequest(route, options, bound) {
+    if (bound !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
+    const connection = await connect();
+    let result;
+    try { result = await request(connection, route, { ...options, prefix: "/api/clipboard/v1" }); }
+    catch (error) { if (error.code === "SPACE_UPGRADE_REQUIRED") throw fail("CLIPBOARD_SERVICE_UNAVAILABLE"); throw error; }
+    if (bound !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
+    return result;
+  }
+  return { snapshot, refresh, operation, uploads, download, downloads, transfer, preview, clipboardRequest,
     async close() { closed = true; clearTimeout(wakeTimer); generation++; unsubscribe(); for (const job of running.values()) job.controller.abort(); await Promise.allSettled([...running.values()].map(j => j.promise)); for (const t of tasks) if (t.phase === "queued") { t.phase = t.autoResume ? "waiting" : "paused"; t.pauseReason = "restart"; } if (!storageError) await persist(); } };
 }
