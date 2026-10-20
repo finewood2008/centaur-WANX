@@ -171,6 +171,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       const binaryPath = nativePaths.engine;
       const account = createAccount({
+        measure: timed,
         ...(process.env.WANX_CONSUMER_URL
           ? { baseURL: process.env.WANX_CONSUMER_URL }
           : {}),

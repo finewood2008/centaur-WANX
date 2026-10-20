@@ -269,11 +269,16 @@ test("box recovery shows attempts, supports cancellation and offers manual conne
 });
 
 test("login opens the store while the network prepares, with registration available and no account identifier", async () => {
-  const h = await harness({ account: { phase: "signed_out" } });
+  const login = pendingResponse();
+  const h = await harness({ account: { phase: "signed_out" } }, [application], { loginRequest: () => login.promise });
   assert.match(h.app.innerHTML, /登录万象平台/);
   assert.match(h.app.innerHTML, /data-action="auth-register"/);
   assert.doesNotMatch(h.app.innerHTML, /name="code"/);
-  await h.submit("auth", { username: "13800000000", password: "example-password" });
+  const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
+  await flushActions();
+  assert.match(h.form("auth").querySelector('button[type="submit"]').innerHTML, /正在登录…/);
+  assert.doesNotMatch(h.app.innerHTML, /正在完成退出…/);
+  login.resolve(); await loggingIn;
   assert.match(h.app.innerHTML, /我的应用/);
   assert.match(h.app.innerHTML, /网络连接中/);
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
@@ -2099,7 +2104,9 @@ test("logout unlocks the login form and its late completion cannot unlock a new 
   assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
   const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
   await flushActions();
-  assert.match(h.app.innerHTML, /正在完成退出…/);
+  assert.match(h.app.innerHTML, /正在登录…/);
+  assert.doesNotMatch(h.app.innerHTML, /正在完成退出…/);
+  assert.match(h.form("auth").querySelector('button[type="submit"]').innerHTML, /正在登录…/);
   logout.resolve(); await loggingOut;
   assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, true);
   login.resolve(); await loggingIn;

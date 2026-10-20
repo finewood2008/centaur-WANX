@@ -1149,7 +1149,11 @@ function provisioningView() {
 }
 
 function authBusyLabel() {
-  return currentState?.account?.logoutPending ? "正在完成退出…" : "处理中…";
+  return {
+    "auth.login": "正在登录…",
+    "auth.register": "正在创建账号…",
+    "auth.reset-password": "正在重置密码…",
+  }[busyRequest?.action] || "处理中…";
 }
 
 // State broadcasts must not detach the pressed control before Chromium emits click.
