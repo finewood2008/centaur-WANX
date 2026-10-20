@@ -1,0 +1,95 @@
+{
+  "checked_at": "2026-10-19T16:52:58.572918+00:00",
+  "origin": "http://127.0.0.1:8090",
+  "shared_credentials_used": false,
+  "synthetic_context_metadata_only": true,
+  "checks": [
+    {
+      "check": "live",
+      "http_status": 200,
+      "expected": 200,
+      "passed": true,
+      "metadata": {
+        "status": "ok",
+        "version": "0.12.0-i11"
+      }
+    },
+    {
+      "check": "ready",
+      "http_status": 200,
+      "expected": 200,
+      "passed": true,
+      "metadata": {
+        "status": "ready"
+      }
+    },
+    {
+      "check": "native_settings",
+      "http_status": 200,
+      "expected": 200,
+      "passed": true,
+      "metadata": {
+        "version": "0.12.0-i11",
+        "integration_mode": "standalone",
+        "mcp_authentication": false
+      }
+    },
+    {
+      "check": "unsigned_status",
+      "http_status": 200,
+      "expected": 200,
+      "passed": true,
+      "metadata": {
+        "version": "0.12.0-i11",
+        "integration_mode": "standalone",
+        "mcp_authentication": false
+      }
+    },
+    {
+      "check": "unsigned_capabilities",
+      "http_status": 200,
+      "expected": 200,
+      "passed": true,
+      "metadata": {
+        "managed": false,
+        "processing_ready": false,
+        "processing_checks": {
+          "embedding_prepared": false,
+          "cloud_configured": true,
+          "worker_ready": true,
+          "automatic_pipeline": true,
+          "graph_ready": true
+        },
+        "production_ready": false,
+        "ocr_ready": false
+      }
+    },
+    {
+      "check": "missing_context",
+      "http_status": 400,
+      "expected": 400,
+      "passed": true,
+      "metadata": {
+        "detail": "WANX request context is required"
+      }
+    },
+    {
+      "check": "expired_context",
+      "http_status": 400,
+      "expected": 400,
+      "passed": true,
+      "metadata": {
+        "detail": "request context expiration is invalid"
+      }
+    },
+    {
+      "check": "browser_origin",
+      "http_status": 403,
+      "expected": 403,
+      "passed": true,
+      "metadata": {
+        "detail": "browser origins are not permitted"
+      }
+    }
+  ]
+}

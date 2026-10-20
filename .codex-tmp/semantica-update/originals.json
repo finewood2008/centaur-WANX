@@ -1,0 +1,9 @@
+{
+  "app/integration/auth.py": "a5db5aa9a16c0228772485dddc2430ddaeacb3b9e10a37b7c12f194ac954a6e1",
+  "app/main.py": "7488e1b7801c0c76474b03546d3c69f35cb0f3307d36ae7537a26f4b9853dc6d",
+  "app/config.py": "6ae1734e65d8f6c06d81ca7e3251f8dfc0c21709276dc6fb17996f07911ea7bb",
+  "app/services/managed_readiness.py": "f23e9e61275dc149cccaeb0ed4e6643ce0b42e32800ccc5795fd51bbf0adaf96",
+  ".env.example": "393326fa1f9d6bf208000646c7c0576fc766c5f04157fb18d0f338a77bdefd84",
+  "README.md": "44dceb8217312d2d4414a6a469f6b39b1ffe1f3dc47ffa4feedcad55756ae84b",
+  "tests/test_standalone_integration.py": null
+}
