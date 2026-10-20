@@ -93,6 +93,7 @@ export function createAccount({
   platform = process.platform,
   deviceModel = "万象连接",
   now = Date.now,
+  measure = (_step, operation) => operation(),
 } = {}) {
   let base;
   try {
@@ -519,20 +520,25 @@ export function createAccount({
     // Logout revokes every server session for this client. Never let its late
     // response invalidate a freshly issued session for the same identity.
     const beforeCleanup = epoch;
-    await logoutCleanup;
-    await passwordUpdate?.catch(() => {});
+    await measure("account.login.cleanup", async () => {
+      await logoutCleanup;
+      await passwordUpdate?.catch(() => {});
+    });
     assert(beforeCleanup);
     cancel();
     const generation = epoch;
     publish({ phase: "authenticating", reason: null });
     try {
-      await loadVault(generation);
-      const identity = vault.accounts[input.phone]?.identity || newIdentity();
-      if (!vault.accounts[input.phone]) {
-        await persist({ phone: input.phone, identity, session: null });
-        assert(generation);
-      }
-      const data = await wire(
+      const identity = await measure("account.login.local", async () => {
+        await loadVault(generation);
+        const value = vault.accounts[input.phone]?.identity || newIdentity();
+        if (!vault.accounts[input.phone]) {
+          await persist({ phone: input.phone, identity: value, session: null });
+          assert(generation);
+        }
+        return value;
+      });
+      const data = await measure("account.login.request", () => wire(
         {
           method: "POST",
           path: mode === "register" ? "/app-api/auth/password/register" : `/app-api/auth/${mode}/login`,
@@ -555,13 +561,13 @@ export function createAccount({
           },
         },
         generation,
-      );
+      ));
       const next = {
         phone: input.phone,
         identity,
         session: sessionFrom(data, identity),
       };
-      await persist(next);
+      await measure("account.login.persist", () => persist(next));
       assert(generation);
       record = next;
       return publish({
