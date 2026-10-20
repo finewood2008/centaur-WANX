@@ -59,6 +59,7 @@ export function createPlatformClient({
     selectionController;
   let switching = Promise.resolve(),
     activeWork = null;
+  let refreshWork = null;
   let resumeHint = null;
   let retryActivation = false;
   let reconnectTarget = null;
@@ -185,6 +186,7 @@ export function createPlatformClient({
     activeController?.abort();
     activeController = null;
     activeWork = null;
+    refreshWork = null;
   }
   function retireTransport() {
     unsubscribeTransport?.();
@@ -481,17 +483,27 @@ export function createPlatformClient({
       return false;
     }
   }
-  async function loadNetworkDevices(generation, signal) {
+  async function loadNetworkDevices(generation, signal, { requireLiveSession = false } = {}) {
     const result = await request(
       { path: "/app-api/network/devices" },
       generation,
       signal,
     );
-    if (
-      !Array.isArray(result?.devices) ||
-      result.networkSessionId !== networkSession?.networkSessionId
-    )
+    if (!Array.isArray(result?.devices))
       throw fail("NETWORK_INVALID_RESPONSE");
+    if (result.networkSessionId !== networkSession?.networkSessionId)
+      throw fail(requireLiveSession ? "NETWORK_SESSION_REVOKED" : "NETWORK_INVALID_RESPONSE");
+    if (result.phase !== undefined && result.phase !== "ready")
+      throw fail(result.phase === "revocation_pending" ? "NETWORK_REVOCATION_PENDING" : "NETWORK_SESSION_REVOKED");
+    if (result.leaseExpiresAt !== undefined &&
+        (!Number.isFinite(result.leaseExpiresAt) || result.leaseExpiresAt * 1000 <= Date.now()))
+      throw fail("NETWORK_LEASE_EXPIRED");
+    if (requireLiveSession && (result.phase !== "ready" ||
+        !Number.isFinite(result.leaseExpiresAt) || result.leaseExpiresAt * 1000 <= Date.now())) {
+      // Older servers do not expose phase on this read. Use their existing
+      // restore protocol, never infer current authority from a cached lease.
+      throw fail("NETWORK_SESSION_RECHECK_REQUIRED");
+    }
     devices = result.devices.map((device) => {
       if (
         !validDeviceID(device.deviceId) ||
@@ -791,7 +803,15 @@ export function createPlatformClient({
     });
     return snapshot();
   }
-  async function refreshDevices() {
+  function refreshDevices() {
+    if (refreshWork) return refreshWork;
+    const work = refreshDevicesImpl().finally(() => {
+      if (refreshWork === work) refreshWork = null;
+    });
+    refreshWork = work;
+    return work;
+  }
+  async function refreshDevicesImpl() {
     authenticated();
     authorizationDeadline = 0;
     const generation = epoch;
@@ -803,7 +823,51 @@ export function createPlatformClient({
         await retireDirect();
       emit();
     }
+    // A live session with the same box access needs fresh reads, not another
+    // write-side preparation and NetBird projection under the account lock.
+    const accessKey = () => JSON.stringify(boxes.map(box =>
+      [box.deviceId, box.deviceRole, box.accessState]).sort((a, b) => a[0].localeCompare(b[0])));
+    const previousAccess = accessKey();
+    const ready = enabled && !activeWork && !prepareNeeded &&
+      platform.phase === "ready" && usableLease();
     const listing = loadDirectory(generation);
+    if (ready) {
+      const loaded = await listing;
+      if (!current(generation) || !enabled) return snapshot();
+      if (loaded && !activeWork && usableLease() && previousAccess === accessKey() &&
+          !boxes.some(box => box.accessState === "authorization_pending")) {
+        try {
+          await Promise.all([
+            transport.network.refresh(),
+            loadNetworkDevices(generation, undefined, { requireLiveSession: true }),
+          ]);
+          if (current(generation)) scheduleAuthorizationPolling(generation);
+          return snapshot();
+        } catch (error) {
+          // The normal activation path owns lease revocation and transient
+          // recovery; never convert a failed authorization read into readiness.
+          if (!current(generation)) return snapshot();
+          if (["NETWORK_REVOCATION_PENDING", "NETWORK_SESSION_REVOKED",
+            "NETWORK_LEASE_EXPIRED", "ACCOUNT_ACCESS_DENIED"].includes(error.code)) {
+            const selected = activeLink === transport ? activeLink?.client.snapshot().connection : null;
+            cancel();
+            const recoveryGeneration = epoch;
+            void persistResume(null);
+            networkSession = null;
+            devices = [];
+            platform = { phase: "unavailable", reason: safeReason(error) };
+            if (selected?.deviceId)
+              reconnectTarget = { deviceId: selected.deviceId, selection: connectionEpoch };
+            const retiring = retireTransport();
+            emit();
+            await retiring;
+            if (!current(recoveryGeneration) || !enabled) return snapshot();
+          }
+          await activate();
+          return snapshot();
+        }
+      }
+    }
     if (enabled) {
       prepareNeeded = true;
       await Promise.all([listing, activate()]);

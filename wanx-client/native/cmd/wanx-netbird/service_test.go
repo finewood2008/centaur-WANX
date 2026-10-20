@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -286,5 +287,121 @@ func TestRecoveryAuthDenialIsNotConvertedToRetryableDeadline(t *testing.T) {
 	defer cancel()
 	if _, err := s.recover(ctx); err == nil || err.Error() != "auth_required" {
 		t.Fatal(err)
+	}
+}
+
+// NetBird Status runs STUN/TURN health probes; a slow relay must not make the
+// desktop's local status RPC wait for that external I/O on every refresh.
+type delayedStatusEngine struct {
+	fakeEngine
+	reads   atomic.Int32
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (e *delayedStatusEngine) Status() networkStatus {
+	n := e.reads.Add(1)
+	if n > 1 {
+		if n == 2 && e.entered != nil {
+			close(e.entered)
+		}
+		<-e.release
+	}
+	result := state("ready", "")
+	result.Peers = []peerInfo{{IP: "100.80.1.2", Connected: n == 1}}
+	return result
+}
+func TestStatusDoesNotWaitForRepeatedHealthProbe(t *testing.T) {
+	e := &delayedStatusEngine{release: make(chan struct{})}
+	s := newService(func(startParams, string) (engine, error) { return e, nil })
+	defer s.stop()
+	defer close(e.release)
+	if _, err := s.start(context.Background(), startParams{}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan networkStatus, 1)
+	go func() { done <- s.status() }()
+	select {
+	case status := <-done:
+		if status.Phase != "ready" {
+			t.Fatalf("unexpected status: %+v", status)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("local status RPC blocked on the SDK's external health probe")
+	}
+}
+
+func TestHealthSamplingIsSingleFlightAndStaleObservationsCannotStayOnline(t *testing.T) {
+	e := &delayedStatusEngine{release: make(chan struct{}), entered: make(chan struct{})}
+	s := newService(func(startParams, string) (engine, error) { return e, nil })
+	defer s.stop()
+	released := false
+	defer func() {
+		if !released {
+			close(e.release)
+		}
+	}()
+	if _, err := s.start(context.Background(), startParams{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-e.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health sampler did not run")
+	}
+	for range 20 {
+		if got := s.status(); got.Phase != "ready" || !got.Peers[0].Connected {
+			t.Fatal(got)
+		}
+	}
+	if e.reads.Load() != 2 {
+		t.Fatal("status RPC spawned parallel health probes")
+	}
+	// A fresh copy prevents an IPC consumer from altering the sampler's result.
+	s.status().Peers[0].Connected = false
+	if !s.status().Peers[0].Connected {
+		t.Fatal("status observation was mutable")
+	}
+	s.mu.Lock()
+	s.statusAt = time.Now().Add(-statusMaxAge)
+	s.mu.Unlock()
+	if got := s.status(); got.Phase != "recovering" || len(got.Peers) != 0 {
+		t.Fatalf("stale health advertised online: %+v", got)
+	}
+	close(e.release)
+	released = true
+	deadline := time.Now().Add(time.Second)
+	for {
+		got := s.status()
+		if got.Phase == "ready" && len(got.Peers) == 1 && !got.Peers[0].Connected {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("latest health result not published: %+v", got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+func TestStoppedSamplerCannotPublishLateHealth(t *testing.T) {
+	e := &delayedStatusEngine{release: make(chan struct{}), entered: make(chan struct{})}
+	s := newService(func(startParams, string) (engine, error) { return e, nil })
+	defer s.stop()
+	defer close(e.release)
+	if _, err := s.start(context.Background(), startParams{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-e.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health sampler did not run")
+	}
+	s.stop()
+	if got := s.status(); got.Phase != "disabled" || len(got.Peers) != 0 {
+		t.Fatal(got)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.statusAt.IsZero() || s.statusStop != nil {
+		t.Fatal("stop retained health observation")
 	}
 }

@@ -20,6 +20,9 @@ type service struct {
 	jwt            string
 	authManagement string
 	activeParams   startParams
+	statusValue    networkStatus
+	statusAt       time.Time
+	statusStop     chan struct{}
 }
 
 func newService(factory engineFactory) *service { return &service{factory: factory} }
@@ -51,32 +54,86 @@ func (s *service) dispatch(ctx context.Context, method string, raw json.RawMessa
 		return nil, failure("unknown_method")
 	}
 }
+
+// The SDK Status call runs STUN/TURN probes (up to 1.3s), not just a local
+// recorder read. One sampler owns that I/O; UI status reads stay local. Expired
+// observations must never keep advertising old peers as connected.
+const statusSampleInterval = time.Second
+const statusMaxAge = 3 * time.Second
+
+func cloneStatus(value networkStatus) networkStatus {
+	value.Peers = append([]peerInfo{}, value.Peers...)
+	return value
+}
+func (s *service) invalidateStatusLocked() {
+	if s.statusStop != nil {
+		close(s.statusStop)
+		s.statusStop = nil
+	}
+	s.statusValue = networkStatus{}
+	s.statusAt = time.Time{}
+}
 func (s *service) status() networkStatus {
 	s.mu.Lock()
-	e := s.engine
-	starting := s.starting
-	recovering := s.proxy != nil
-	s.mu.Unlock()
-	if recovering && (starting || e == nil) {
+	defer s.mu.Unlock()
+	if s.proxy != nil && (s.starting || s.engine == nil) {
 		return state("recovering", "network_unavailable")
 	}
-	if starting {
+	if s.starting {
 		return state("starting", "")
 	}
-	if e == nil {
+	if s.engine == nil {
 		return state("disabled", "")
 	}
-	return e.Status()
+	if s.statusAt.IsZero() || time.Since(s.statusAt) >= statusMaxAge {
+		return state("recovering", "network_unavailable")
+	}
+	return cloneStatus(s.statusValue)
+}
+func (s *service) sampleStatus(e engine, epoch uint64) networkStatus {
+	// The initial observation is real: successful Start alone does not establish
+	// control-plane or peer health. Later refreshes reuse only bounded observations.
+	value := e.Status()
+	s.mu.Lock()
+	if s.epoch != epoch || s.engine != e {
+		s.mu.Unlock()
+		return state("disabled", "")
+	}
+	s.statusValue, s.statusAt = cloneStatus(value), time.Now()
+	stop := make(chan struct{})
+	s.statusStop = stop
+	s.mu.Unlock()
+	go func() {
+		timer := time.NewTimer(statusSampleInterval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-timer.C:
+			}
+			next := e.Status()
+			s.mu.Lock()
+			if s.epoch != epoch || s.engine != e {
+				s.mu.Unlock()
+				return
+			}
+			s.statusValue, s.statusAt = cloneStatus(next), time.Now()
+			s.mu.Unlock()
+			timer.Reset(statusSampleInterval)
+		}
+	}()
+	return value
 }
 func (s *service) start(parent context.Context, p startParams) (any, error) {
 	s.mu.Lock()
 	if s.engine != nil && s.activeParams.ManagementURL == p.ManagementURL && s.activeParams.ConfigDir == p.ConfigDir && s.activeParams.DeviceName == p.DeviceName {
-		e, proxy := s.engine, s.proxy
+		proxy := s.proxy
 		s.mu.Unlock()
 		return struct {
 			Proxy  proxyInfo     `json:"proxy"`
 			Status networkStatus `json:"status"`
-		}{proxy.info, e.Status()}, nil
+		}{proxy.info, s.status()}, nil
 	}
 	if s.pendingStart || s.engine != nil {
 		s.mu.Unlock()
@@ -139,7 +196,7 @@ func (s *service) start(parent context.Context, p startParams) (any, error) {
 	return struct {
 		Proxy  proxyInfo     `json:"proxy"`
 		Status networkStatus `json:"status"`
-	}{proxy.info, e.Status()}, nil
+	}{proxy.info, s.sampleStatus(e, epoch)}, nil
 }
 
 // Recovery reuses the saved peer identity and local proxy. It never consumes
@@ -157,6 +214,7 @@ func (s *service) recover(parent context.Context) (any, error) {
 	s.epoch++
 	epoch := s.epoch
 	previous, proxy, p := s.engine, s.proxy, s.activeParams
+	s.invalidateStatusLocked()
 	s.engine = nil
 	s.starting, s.pendingStart = true, true
 	ctx, cancel := context.WithTimeout(parent, 40*time.Second)
@@ -203,7 +261,7 @@ func (s *service) recover(parent context.Context) (any, error) {
 	return struct {
 		Proxy  proxyInfo     `json:"proxy"`
 		Status networkStatus `json:"status"`
-	}{proxy.info, e.Status()}, nil
+	}{proxy.info, s.sampleStatus(e, epoch)}, nil
 }
 func stopEngine(e engine) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -222,6 +280,7 @@ func (s *service) stop() {
 		s.login = nil
 	}
 	e, proxy := s.engine, s.proxy
+	s.invalidateStatusLocked()
 	s.engine = nil
 	s.proxy = nil
 	s.starting = false

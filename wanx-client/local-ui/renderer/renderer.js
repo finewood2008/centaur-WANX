@@ -1238,7 +1238,11 @@ function render(state) {
   const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm || claimForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  // Detached dialog nodes lose their scroll offsets when innerHTML is replaced.
+  const walletScroll = walletDialog ? { top: walletDialog.scrollTop, left: walletDialog.scrollLeft } : null;
   const walletFocus = walletDialog?.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
+  const walletInput = walletDialog && document.activeElement?.id === 'wallet-custom-amount' ? document.activeElement : null;
+  const walletSelection = walletInput ? [walletInput.selectionStart, walletInput.selectionEnd] : null;
   const scroller = document.scrollingElement;
   const scroll = (retainedForm || walletDialog) && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
   const spaceList = page === "space" ? app.querySelector?.(".space-file-list") : null;
@@ -1303,9 +1307,14 @@ function render(state) {
   const nextWalletDialog = app.querySelector?.('.wallet-purchase-dialog');
   if (nextWalletDialog) {
     const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled)'));
-    const previous = buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount);
+    const previous = walletInput ? nextWalletDialog.querySelector('#wallet-custom-amount:not(:disabled)')
+      : buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount && button.dataset.channel === walletFocus?.channel);
     (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
-    if (walletDialog) nextWalletDialog.scrollTop = walletDialog.scrollTop;
+    if (walletSelection && previous) previous.setSelectionRange(...walletSelection);
+    if (walletScroll) {
+      nextWalletDialog.scrollTop = walletScroll.top;
+      nextWalletDialog.scrollLeft = walletScroll.left;
+    }
   } else if (walletDialog && page === 'credits' && !auth) {
     app.querySelector?.('[data-action="credits-open"]')?.focus({ preventScroll: true });
   }
@@ -1851,6 +1860,9 @@ function selectWifi(key) {
   const hidden = form.querySelector('[name="hidden"]'); if (hidden) hidden.checked = false;
   updateWifiPicker();
 }
+app.addEventListener("input", event => {
+  if (event.target.id === "wallet-custom-amount") void creditsView.action("credits-amount", { value: event.target.value });
+});
 app.addEventListener("change", async (event) => {
   if (event.target.name === "remember" && !event.target.checked && !busy) {
     await run("auth.forget-login");
@@ -1869,7 +1881,7 @@ app.addEventListener("keydown", (event) => {
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
   if (walletDialog && event.key === 'Escape') { event.preventDefault(); releaseInteraction(); void creditsView.action('credits-dismiss'); return; }
   if (walletDialog && event.key === 'Tab') {
-    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled)'));
+    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
     if (buttons.length) {
       event.preventDefault();
       const index = buttons.indexOf(document.activeElement);

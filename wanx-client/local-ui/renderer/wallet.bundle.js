@@ -2143,7 +2143,8 @@
   }) {
     let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
     let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
-    let error = "", intent = null, qrImage = null, recoveryReady = false;
+    let error = "", intent = null, qrImage = null, recoveryReady = false, recovering = false;
+    let checkingOrder = false, orderReadFailed = false, customAmount = "";
     let selectedChannel = "alipay", remote = null, usage = [], nextUsage = null, usageLoading = false;
     const channels = () => catalog?.payment_channels?.filter((name) => ["alipay", "wechat"].includes(name)) ?? ["alipay"];
     const key = () => `wanx.credit.purchase.v1:${account}`;
@@ -2171,6 +2172,7 @@
         QEETOKEN_SYNC_PENDING: "\u6D88\u8D39\u6D41\u6C34\u6B63\u5728\u540C\u6B65\uFF0C\u8BF7\u7A0D\u5019\u3002",
         CREDITS_SERVICE_UNAVAILABLE: "\u79EF\u5206\u63A5\u53E3\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u68C0\u67E5\u670D\u52A1\u90E8\u7F72\u3002",
         REVISION_CONFLICT: "\u5546\u54C1\u5DF2\u8C03\u6574\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u65B0\u9009\u62E9\u3002",
+        VALIDATION_ERROR: "\u8D2D\u4E70\u91D1\u989D\u6216\u5546\u54C1\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u3002",
         ORDER_IN_PROGRESS: "\u8D26\u53F7\u5DF2\u6709\u8D2D\u4E70\u6D41\u7A0B\uFF0C\u6B63\u5728\u6062\u590D\u539F\u8BA2\u5355\u3002",
         ORDER_ALREADY_PAID: "\u8BA2\u5355\u5DF2\u652F\u4ED8\uFF0C\u8BF7\u7B49\u5F85\u5230\u8D26\u3002",
         ACCOUNT_SESSION_CHANGED: "\u8D26\u53F7\u5DF2\u5207\u6362\uFF0C\u8BF7\u5237\u65B0\u3002",
@@ -2192,7 +2194,7 @@
     function load() {
       try {
         const value = JSON.parse(storage.getItem(key()) || "null");
-        if (value && typeof value.purchase_intent_id === "string" && (typeof value.order_id === "string" && typeof value.close_intent_id === "string" || typeof value.product_id === "string" && typeof value.product_version === "string" || [5e3, 1e4, 2e4].includes(value.amount_fen))) return value;
+        if (value && typeof value.purchase_intent_id === "string" && (typeof value.order_id === "string" && typeof value.close_intent_id === "string" || typeof value.product_id === "string" && typeof value.product_version === "string" || Number.isSafeInteger(value.custom_amount_fen) && value.custom_amount_fen > 0 && typeof value.custom_recharge_version === "string" || [5e3, 1e4, 2e4].includes(value.amount_fen))) return value;
       } catch {
       }
       return null;
@@ -2203,6 +2205,7 @@
     async function acceptOrder(value, g) {
       if (g !== generation) return;
       if (qrTimer !== null) cancel(qrTimer);
+      const cachedImage = order?.order_id === value.order_id && order?.payment_action?.payload === value.payment_action?.payload ? qrImage : null;
       qrTimer = null;
       order = value;
       qrImage = null;
@@ -2213,7 +2216,7 @@
       }
       const action = value.payment_action;
       if (!intent?.close_intent_id && action?.type === "qr" && value.payment_state === "pending" && now() < Date.parse(value.expires_at) && now() < Date.parse(action.expires_at) && qr) {
-        const image = await qr(action.payload);
+        const image = cachedImage || await qr(action.payload);
         if (g === generation && order === value) {
           qrImage = image;
           const remaining = Math.min(Date.parse(value.expires_at), Date.parse(action.expires_at)) - now();
@@ -2232,11 +2235,36 @@
       if (timer !== null) cancel(timer);
       timer = null;
       if (identity) {
-        timer = schedule(() => {
-          timer = null;
-          void refresh();
-        }, error || !pendingOrder(order) && !intent && !remote ? 3e4 : 5e3);
+        const creating = order?.payment_state === "creating" && !intent?.close_intent_id;
+        timer = schedule(
+          () => {
+            timer = null;
+            void (creating ? refreshOrder() : refresh());
+          },
+          creating ? orderReadFailed ? 5e3 : 1e3 : error || !pendingOrder(order) && !intent && !remote ? 3e4 : 5e3
+        );
         timer?.unref?.();
+      }
+    }
+    async function refreshOrder() {
+      if (!identity || recovering || writing || checkingOrder || !pendingOrder(order)) return;
+      const g = generation;
+      checkingOrder = true;
+      try {
+        await acceptOrder(await read("order", { order_id: order.order_id }), g);
+        if (g === generation) orderReadFailed = false;
+      } catch (cause) {
+        if (g === generation) {
+          orderReadFailed = true;
+          error = message(cause);
+        }
+      } finally {
+        if (g === generation) {
+          checkingOrder = false;
+          notify();
+          poll();
+          if (!pendingOrder(order)) void refresh();
+        }
       }
     }
     async function recover(g) {
@@ -2252,7 +2280,7 @@
       } else if (intent) {
         value = intent.order_id ? await read("order", { order_id: intent.order_id }) : await read("createOrder", {
           purchase_intent_id: intent.purchase_intent_id,
-          ...intent.product_id ? { product_id: intent.product_id, product_version: intent.product_version } : { amount_fen: intent.amount_fen },
+          ...intent.custom_recharge_version ? { custom_amount_fen: intent.custom_amount_fen, custom_recharge_version: intent.custom_recharge_version } : intent.product_id ? { product_id: intent.product_id, product_version: intent.product_version } : { amount_fen: intent.amount_fen },
           ...intent.payment_channel ? { payment_channel: intent.payment_channel } : {}
         });
       } else if (pendingOrder(order)) {
@@ -2262,11 +2290,12 @@
         value = active.items[0];
       }
       if (value) await acceptOrder(value, g);
+      if (g === generation) orderReadFailed = false;
     }
     async function refresh() {
-      if (!identity || loading || writing) return;
+      if (!identity || loading || writing || checkingOrder) return;
       const g = generation;
-      loading = true;
+      loading = recovering = true;
       error = "";
       notify();
       try {
@@ -2277,11 +2306,20 @@
           if (g === generation) {
             discardRejectedIntent(cause);
             recoveryReady = false;
+            orderReadFailed = true;
             error = message(cause);
           }
         }
         if (g !== generation) return;
-        const [c, b] = await Promise.all([read("catalog"), read("balance")]);
+        recovering = false;
+        notify();
+        if (order?.payment_state === "creating") poll();
+        const [, b] = await Promise.all([read("catalog").then((c) => {
+          if (g !== generation) return;
+          catalog = c;
+          if (!pendingOrder(order) && !intent && !channels().includes(selectedChannel)) selectedChannel = channels()[0];
+          notify();
+        }), read("balance")]);
         if (g !== generation) return;
         creditAtoms(b.balance_credit_atoms);
         creditAtoms(b.debt_credit_atoms);
@@ -2293,7 +2331,6 @@
           validateWallet(q);
           validateUsage(u);
         }
-        catalog = c;
         if (!remote || !q || BigInt(q.remote_sequence) >= BigInt(remote.remote_sequence)) {
           remote = q;
           if (u) {
@@ -2301,13 +2338,12 @@
             nextUsage = u.next_before_sequence;
           }
         }
-        if (!pendingOrder(order) && !intent && !channels().includes(selectedChannel)) selectedChannel = channels()[0];
         if (!balance || b.ledger_sequence >= balance.ledger_sequence) balance = b;
       } catch (cause) {
         if (g === generation) error = message(cause);
       } finally {
         if (g === generation) {
-          loading = false;
+          loading = recovering = false;
           notify();
           poll();
         }
@@ -2368,20 +2404,50 @@
     }
     const products = () => catalog?.products?.length ? catalog.products : catalog?.tiers || [];
     const productKey = (product) => product.product_id || String(product.amount_fen);
-    async function purchase(key2) {
-      const product = products().find((item) => productKey(item) === key2);
-      if (!identity || !recoveryReady || writing || loading || pendingOrder(order) || intent || !catalog?.recharge_enabled || !product || !channels().includes(selectedChannel)) return;
+    const locked = () => writing || Boolean(pendingOrder(order) || intent);
+    const customRule = () => {
+      const rule = catalog?.custom_recharge;
+      return rule?.enabled && rule.points_per_yuan === "100" && typeof rule.version === "string" && Number.isSafeInteger(rule.min_amount_fen) && rule.min_amount_fen >= 1 && Number.isSafeInteger(rule.max_amount_fen) && rule.max_amount_fen >= rule.min_amount_fen && rule.max_amount_fen <= 1e10 ? rule : null;
+    };
+    const customFen = () => {
+      const rule = customRule(), match = /^(\d{1,9})(?:\.(\d{1,2}))?$/.exec(customAmount.trim());
+      if (!rule || !match) return null;
+      const fen = Number(BigInt(match[1]) * 100n + BigInt((match[2] || "").padEnd(2, "0")));
+      return fen >= rule.min_amount_fen && fen <= rule.max_amount_fen ? fen : null;
+    };
+    const draft = () => {
+      if (selectedAmount === "custom") {
+        const fen = customFen();
+        return fen === null ? null : {
+          amount_fen: fen,
+          grant_credit_atoms: (BigInt(fen) * 1000000n).toString(),
+          target: { custom_amount_fen: fen, custom_recharge_version: customRule().version }
+        };
+      }
+      const product = products().find((item) => productKey(item) === selectedAmount && item.enabled !== false);
+      return product ? { ...product, target: product.product_id ? { product_id: product.product_id, product_version: product.version } : { amount_fen: product.amount_fen } } : null;
+    };
+    function select(value) {
+      if (locked()) return;
+      selectedAmount = value;
+      order = null;
+      error = "";
+      dialogOpen = true;
+      notify();
+    }
+    async function purchase() {
+      const selection = draft();
+      if (!identity || !recoveryReady || recovering || checkingOrder || locked() || !catalog?.recharge_enabled || !selection || !channels().includes(selectedChannel)) return;
       const g = generation;
       writing = true;
       error = "";
       dialogOpen = true;
-      selectedAmount = key2;
       order = null;
       notify();
       try {
         if (!intent) save({
           purchase_intent_id: uuid(),
-          ...product.product_id ? { product_id: product.product_id, product_version: product.version } : { amount_fen: product.amount_fen },
+          ...selection.target,
           ...catalog.payment_channels ? { payment_channel: selectedChannel } : {}
         });
         await recover(g);
@@ -2413,7 +2479,7 @@
       }
     }
     async function close() {
-      if (!order || writing || loading || order.payment_state === "paid") return;
+      if (!order || writing || recovering || checkingOrder || order.payment_state === "paid") return;
       const g = generation;
       writing = true;
       error = "";
@@ -2441,7 +2507,8 @@
     function paymentView() {
       const state = order?.display_state;
       const expired = order && (now() >= Date.parse(order.expires_at) || order.payment_action && now() >= Date.parse(order.payment_action.expires_at));
-      let title = "\u9009\u62E9\u79EF\u5206\u5546\u54C1", description = "\u9009\u62E9\u4E0A\u65B9\u5546\u54C1\u540E\uFF0C\u8FD9\u91CC\u4F1A\u751F\u6210\u4ED8\u6B3E\u7801\u3002", success = false;
+      const selection = draft();
+      let title = selection ? "\u786E\u8BA4\u8D2D\u4E70" : "\u9009\u62E9\u5145\u503C\u91D1\u989D", description = selection ? `\u5E94\u4ED8 \xA5${selection.amount_fen / 100} \xB7 \u5230\u8D26 ${exactPoints(selection.grant_credit_atoms)} \u70B9\u79EF\u5206` : "\u9009\u62E9\u5546\u54C1\u6216\u8F93\u5165\u81EA\u5B9A\u4E49\u91D1\u989D\uFF0C\u518D\u70B9\u51FB\u201C\u7ACB\u5373\u652F\u4ED8\u201D\u751F\u6210\u4ED8\u6B3E\u7801\u3002", success = false;
       if (order?.review_state === "open") {
         title = "\u652F\u4ED8\u7ED3\u679C\u5F85\u6838\u5BF9";
         description = `${order.payment_state === "paid" ? "\u5DF2\u652F\u4ED8\u3002" : "\u4ED8\u6B3E\u7ED3\u679C\u5C1A\u5F85\u6838\u5B9E\u3002"}${order.fulfillment_state === "credited" ? "\u79EF\u5206\u5DF2\u5230\u8D26\u3002" : "\u79EF\u5206\u5230\u8D26\u60C5\u51B5\u6B63\u5728\u6838\u5BF9\u3002"}\u8BF7\u52FF\u91CD\u590D\u652F\u4ED8\u3002`;
@@ -2474,17 +2541,18 @@
       } else if (order?.payment_state === "pending") {
         title = "\u6B63\u5728\u83B7\u53D6\u4ED8\u6B3E\u7801";
         description = "\u6B63\u5728\u6062\u590D\u672C\u6B21\u8D2D\u4E70\uFF0C\u8BF7\u7A0D\u5019\u6216\u5237\u65B0\u652F\u4ED8\u72B6\u6001\u3002";
-      } else if (!catalog?.recharge_enabled || !products().length) {
+      } else if (!catalog?.recharge_enabled || !products().length && !customRule()) {
         title = loading ? "\u6B63\u5728\u8BFB\u53D6\u5546\u54C1" : "\u8D2D\u4E70\u6682\u4E0D\u53EF\u7528";
         description = loading ? "\u8BF7\u7A0D\u5019\u3002" : "\u79EF\u5206\u8D2D\u4E70\u6682\u672A\u5F00\u653E\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002";
       }
       return `<section class="wallet-payment ${success ? "is-success" : ""}" aria-label="\u652F\u4ED8\u8FDB\u5EA6">
-      ${paymentImage() ? `<img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}">` : `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : state === "closed" || expired ? "\u2014" : "\xB7"}</div>`}
+      ${paymentImage() ? `<img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}">` : order || intent || writing ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : state === "closed" || expired ? "\u2014" : "\xB7"}</div>` : ""}
       <div role="status" aria-live="polite"><h3>${esc(title)}</h3><p>${esc(description)}</p></div>
       ${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}
       <div class="wallet-payment-actions">
-        ${(order || intent || error) && (!success || error) ? `<button class="text-button" data-action="credits-refresh" ${loading || writing ? "disabled" : ""}>${loading ? "\u6B63\u5728\u786E\u8BA4\u2026" : "\u5237\u65B0\u652F\u4ED8\u72B6\u6001"}</button>` : ""}
-        ${order && ["creating", "pending"].includes(order.payment_state) && !intent?.close_intent_id ? `<button class="text-button" data-action="credits-close-order" ${loading || writing ? "disabled" : ""}>\u53D6\u6D88\u5E76\u91CD\u65B0\u9009\u62E9</button>` : ""}
+        ${!locked() && !order ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || !catalog?.recharge_enabled || !recoveryReady || recovering || checkingOrder || !channels().includes(selectedChannel) ? "disabled" : ""}>\u7ACB\u5373\u652F\u4ED8</button>` : ""}
+        ${(order || intent || error) && (!success || error) ? `<button class="text-button" data-action="credits-refresh" ${loading || writing || checkingOrder ? "disabled" : ""}>${loading ? "\u6B63\u5728\u786E\u8BA4\u2026" : "\u5237\u65B0\u652F\u4ED8\u72B6\u6001"}</button>` : ""}
+        ${order && ["creating", "pending"].includes(order.payment_state) && !intent?.close_intent_id ? `<button class="text-button" data-action="credits-close-order" ${recovering || checkingOrder || writing ? "disabled" : ""}>\u53D6\u6D88\u5E76\u91CD\u65B0\u9009\u62E9</button>` : ""}
         ${success ? '<button class="button primary" data-action="credits-dismiss">\u5B8C\u6210</button>' : ""}
       </div>
       ${pendingOrder(order) || intent ? '<p class="wallet-payment-footnote">\u6536\u8D77\u5F39\u6846\u4E0D\u4F1A\u53D6\u6D88\u652F\u4ED8\uFF0C\u6211\u4EEC\u4F1A\u7EE7\u7EED\u786E\u8BA4\u7ED3\u679C\u3002</p>' : ""}
@@ -2492,12 +2560,19 @@
     }
     function dialog() {
       if (!dialogOpen) return "";
-      const selected = pendingOrder(order) ? intent?.product_id || String(order.amount_fen) : selectedAmount;
+      const selected = pendingOrder(order) ? intent?.custom_recharge_version ? "custom" : intent?.product_id || String(order.amount_fen) : selectedAmount;
+      const rule = customRule();
+      const invalidAmount = selectedAmount === "custom" && customAmount !== "" && customFen() === null;
       return `<div class="wallet-modal"><section class="wallet-purchase-dialog" role="dialog" aria-modal="true" aria-labelledby="wallet-purchase-title" tabindex="-1">
-      <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">\u8D2D\u4E70\u79EF\u5206</h2><p>\u6309\u5546\u54C1\u6807\u6CE8\u7684\u91D1\u989D\u548C\u79EF\u5206\u8D2D\u4E70 \xB7 \u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="\u5173\u95ED\u8D2D\u4E70\u5F39\u6846">\xD7</button></header>
-      <div class="wallet-payment-actions wallet-channel-picker" aria-label="\u652F\u4ED8\u65B9\u5F0F">${channels().map((channel) => `<button class="button ${selectedChannel === channel ? "primary" : ""}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${writing || loading || pendingOrder(order) || intent ? "disabled" : ""}>${channel === "wechat" ? "\u5FAE\u4FE1\u652F\u4ED8" : "\u652F\u4ED8\u5B9D"}</button>`).join("")}</div>
-      <div class="wallet-products" aria-label="\u79EF\u5206\u5546\u54C1">${products().map((tier) => `<button class="wallet-product" data-action="credits-buy" data-amount="${esc(productKey(tier))}" aria-pressed="${selected === productKey(tier)}" ${!catalog?.recharge_enabled || !recoveryReady || writing || loading || pendingOrder(order) || intent ? "disabled" : ""}>
+      <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">\u8D2D\u4E70\u79EF\u5206</h2><p>\u9009\u62E9\u91D1\u989D\u548C\u652F\u4ED8\u65B9\u5F0F\uFF0C\u786E\u8BA4\u540E\u751F\u6210\u4ED8\u6B3E\u7801 \xB7 \u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="\u5173\u95ED\u8D2D\u4E70\u5F39\u6846">\xD7</button></header>
+      <div class="wallet-payment-actions wallet-channel-picker" aria-label="\u652F\u4ED8\u65B9\u5F0F">${channels().map((channel) => `<button class="button ${selectedChannel === channel ? "primary" : ""}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? "disabled" : ""}>${channel === "wechat" ? "\u5FAE\u4FE1\u652F\u4ED8" : "\u652F\u4ED8\u5B9D"}</button>`).join("")}</div>
+      <div class="wallet-products" aria-label="\u79EF\u5206\u5546\u54C1">${products().map((tier) => `<button class="wallet-product" data-action="credits-buy" data-amount="${esc(productKey(tier))}" aria-pressed="${selected === productKey(tier)}" ${!catalog?.recharge_enabled || tier.enabled === false || locked() ? "disabled" : ""}>
         ${tier.name ? `<span>${esc(tier.name)}</span>` : ""}<span class="wallet-product-points">${esc(exactPoints(tier.grant_credit_atoms))}<small>\u70B9\u79EF\u5206</small></span><strong>\xA5${tier.amount_fen / 100}</strong><span class="wallet-product-selection">${selected === productKey(tier) ? "\u5DF2\u9009\u62E9" : "\u9009\u62E9\u5546\u54C1"}</span></button>`).join("")}</div>
+      <div class="wallet-custom" data-selected="${selected === "custom"}">
+        <button class="text-button" data-action="credits-custom" aria-pressed="${selected === "custom"}" ${!catalog?.recharge_enabled || !rule || locked() ? "disabled" : ""}>\u81EA\u5B9A\u4E49\u91D1\u989D</button>
+        <label for="wallet-custom-amount">\xA5 <input id="wallet-custom-amount" type="text" inputmode="decimal" autocomplete="off" maxlength="12" placeholder="\u8F93\u5165\u91D1\u989D\uFF08\u5143\uFF09" aria-label="\u81EA\u5B9A\u4E49\u5145\u503C\u91D1\u989D\uFF08\u5143\uFF09" aria-describedby="wallet-custom-hint" aria-invalid="${invalidAmount}" value="${esc(customAmount)}" ${!catalog?.recharge_enabled || !rule || locked() ? "disabled" : ""}></label>
+        <p id="wallet-custom-hint" ${invalidAmount ? 'role="status"' : ""}>${!rule ? "\u81EA\u5B9A\u4E49\u5145\u503C\u6682\u4E0D\u53EF\u7528" : invalidAmount ? `\u8BF7\u8F93\u5165 \xA5${rule.min_amount_fen / 100} \u81F3 \xA5${rule.max_amount_fen / 100} \u7684\u91D1\u989D\uFF0C\u6700\u591A\u4E24\u4F4D\u5C0F\u6570\u3002` : `1 \u5143\u5151\u6362 100 \u79EF\u5206${selectedAmount === "custom" && customFen() !== null ? ` \xB7 \u53EF\u5F97 ${exactPoints((BigInt(customFen()) * 1000000n).toString())} \u70B9\u79EF\u5206` : ""}`}</p>
+      </div>
       ${paymentView()}
     </section></div>`;
     }
@@ -2514,12 +2589,17 @@
         usage = [];
         nextUsage = null;
         usageLoading = false;
-        dialogOpen = loading = writing = recoveryReady = false;
+        dialogOpen = loading = writing = recoveryReady = recovering = checkingOrder = orderReadFailed = false;
         error = "";
         timer = null;
+        customAmount = "";
         selectedChannel = "alipay";
         intent = account ? load() : null;
         if (intent?.payment_channel) selectedChannel = intent.payment_channel;
+        if (intent?.custom_recharge_version) {
+          selectedAmount = "custom";
+          customAmount = String(intent.custom_amount_fen / 100);
+        }
         return true;
       },
       refresh,
@@ -2540,13 +2620,19 @@
         if (action === "credits-refresh") return refresh();
         if (action === "credits-usage-more") return loadUsage();
         if (action === "credits-channel") {
-          if (!writing && !loading && !pendingOrder(order) && !intent && channels().includes(dataset.channel)) {
+          if (!locked() && channels().includes(dataset.channel)) {
             selectedChannel = dataset.channel;
             notify();
           }
           return;
         }
-        if (action === "credits-buy") return purchase(String(dataset.amount));
+        if (action === "credits-buy" && products().some((item) => productKey(item) === String(dataset.amount) && item.enabled !== false)) return select(String(dataset.amount));
+        if (action === "credits-custom" && customRule()) return select("custom");
+        if (action === "credits-amount" && customRule() && !locked()) {
+          customAmount = String(dataset.value).slice(0, 12);
+          return select("custom");
+        }
+        if (action === "credits-pay") return purchase();
         if (action === "credits-close-order") return close();
       },
       render() {

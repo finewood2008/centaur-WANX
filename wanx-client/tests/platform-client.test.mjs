@@ -103,7 +103,8 @@ function harness(t, options = {}) {
       if (input.path.startsWith("/app-api/network/enrollments/"))
         return result();
       if (input.path === "/app-api/network/devices")
-        return { networkSessionId: serverSession, devices: catalog };
+        return { networkSessionId: serverSession, devices: catalog, phase: "ready",
+          leaseExpiresAt: result().leaseExpiresAt };
       if (input.path === "/app-api/network/current") {
         serverSession = null;
         return { phase: "revoked" };
@@ -205,6 +206,89 @@ function harness(t, options = {}) {
       catalog = value;
     },
   };
+}
+
+test("refreshing an unchanged authorized directory does not prepare or restore the network", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  const baseline = h.calls.length;
+  const starts = h.transports[0].starts;
+  const state = await h.client.refreshDevices();
+  assert.equal(state.devices[0].canOpen, true);
+  assert.deepEqual(h.calls.slice(baseline).map(call => call.path).sort(), [
+    "/app-api/network/boxes", "/app-api/network/devices",
+  ]);
+  assert.equal(h.transports[0].starts, starts);
+});
+
+test("concurrent device refreshes share the same directory and authorization reads", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  const baseline = h.calls.length;
+  const gate = deferred();
+  h.override(async input => {
+    if (input.path === "/app-api/network/boxes") await gate.promise;
+  });
+  const first = h.client.refreshDevices();
+  const second = h.client.refreshDevices();
+  try {
+    await tick();
+    assert.equal(h.calls.slice(baseline).filter(call => call.path === "/app-api/network/boxes").length, 1);
+  } finally {
+    gate.resolve();
+    await Promise.all([first, second]);
+  }
+  assert.equal(h.calls.slice(baseline).filter(call => call.path === "/app-api/network/devices").length, 1);
+});
+
+for (const reported of [
+  {},
+  { phase: "ready", leaseExpiresAt: 0 },
+  { phase: "revocation_pending", leaseExpiresAt: Date.now() / 1000 + 300 },
+]) {
+  test(`device refresh rechecks session authority when phase or lease is unsuitable: ${JSON.stringify(reported)}`, async t => {
+    const h = harness(t);
+    await h.client.loginPassword({ phone: "account-a" });
+    const baseline = h.calls.length;
+    h.override(input => input.path === "/app-api/network/devices" ? {
+      networkSessionId: "enrollment-1", devices: [device], ...reported,
+    } : undefined);
+    await h.client.refreshDevices();
+    assert.equal(h.calls.slice(baseline).filter(call => call.path === "/app-api/network/restore").length, 1);
+  });
+}
+
+test("a newly visible box still prepares and projects its network access", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  const baseline = h.calls.length;
+  h.catalog([device, { ...device, deviceId: "box-2", identityDeviceId: "identity-2" }]);
+  await h.client.refreshDevices();
+  assert.equal(h.calls.slice(baseline).filter(call => call.path.endsWith("/prepare")).length, 1);
+  assert.equal(h.calls.slice(baseline).filter(call => call.path.endsWith("/restore")).length, 1);
+  assert.equal(h.client.snapshot().devices.length, 2);
+});
+
+for (const sessionState of [
+  { phase: "revocation_pending", leaseExpiresAt: Date.now() / 1000 + 300 },
+  { phase: "ready", leaseExpiresAt: 0 },
+  { networkSessionId: null, phase: null, leaseExpiresAt: null },
+  { networkSessionId: "replacement-session", phase: "ready", leaseExpiresAt: Date.now() / 1000 + 300 },
+]) {
+  test(`explicitly invalid device session stays closed if restoration is offline: ${JSON.stringify(sessionState)}`, async t => {
+    const h = harness(t);
+    await h.client.loginPassword({ phone: "account-a" });
+    await h.client.connectBox("box-1");
+    h.override(input => {
+      if (input.path.endsWith("/devices"))
+        return { networkSessionId: "enrollment-1", devices: [device], ...sessionState };
+      if (input.path.endsWith("/restore")) throw fail("ACCOUNT_NETWORK_ERROR");
+    });
+    await h.client.refreshDevices();
+    assert.equal(h.sessions[0].closed, true);
+    assert.equal(h.client.snapshot().connection, null);
+    assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  });
 }
 
 test("periodic box health does not depend on Admin availability while the existing lease is valid", async t => {
@@ -718,7 +802,7 @@ test("temporary control-plane failure keeps a valid box session until its lease"
   await h.client.loginPassword({ phone: "13800000001", password: "test" });
   await h.client.connectBox("box-1");
   h.override((input) => {
-    if (input.path === "/app-api/network/restore")
+    if (["/app-api/network/restore", "/app-api/network/devices"].includes(input.path))
       throw fail("ACCOUNT_NETWORK_ERROR");
   });
   await h.client.refreshDevices();
@@ -726,7 +810,7 @@ test("temporary control-plane failure keeps a valid box session until its lease"
   assert.equal(h.client.snapshot().phase, "ready");
   assert.equal(h.sessions[0].closed, false);
   h.override((input) => {
-    if (input.path === "/app-api/network/restore")
+    if (["/app-api/network/restore", "/app-api/network/devices"].includes(input.path))
       throw fail("ACCOUNT_ACCESS_DENIED", 403);
   });
   await h.client.refreshDevices();
@@ -1840,10 +1924,13 @@ test("pending cleanup retires the tunnel, polls with backoff and reconnects the 
   await h.client.loginPassword({ phone: "account-1" });
   await h.client.connectBox("box-1");
   let pending = true;
-  h.override(input => input.path.endsWith("/restore") && pending ? {
+  h.override(input => {
+    if (input.path.endsWith("/devices") && pending) throw fail("NETWORK_REVOCATION_PENDING", 503);
+    return input.path.endsWith("/restore") && pending ? {
     enrollmentId: "enrollment-1", networkSessionId: "enrollment-1",
     phase: "revocation_pending", managementUrl: "https://p2p.qeeshu.com",
-  } : undefined);
+    } : undefined;
+  });
   await h.client.refreshDevices();
   assert.equal(h.transports[0].closed, true);
   assert.equal(h.client.snapshot().connection, null);
@@ -1866,10 +1953,13 @@ for (const action of ["disconnect", "logout", "disable", "close", "denied"]) {
     const h = harness(t);
     await h.client.loginPassword({ phone: "account-1" });
     await h.client.connectBox("box-1");
-    h.override(input => input.path.endsWith("/restore") ? {
+    h.override(input => {
+      if (input.path.endsWith("/devices")) throw fail("NETWORK_REVOCATION_PENDING", 503);
+      return input.path.endsWith("/restore") ? {
       enrollmentId: "enrollment-1", networkSessionId: "enrollment-1",
       phase: "revocation_pending", managementUrl: "https://p2p.qeeshu.com",
-    } : undefined);
+      } : undefined;
+    });
     await h.client.refreshDevices();
     if (action === "disconnect") await h.client.disconnect();
     if (action === "logout") await h.client.logout();
@@ -1892,10 +1982,13 @@ test("revocation cleanup only replaces enrollment after a confirmed revoked rest
   await h.client.loginPassword({ phone: "account-1" });
   await h.client.connectBox("box-1");
   let phase = "revocation_pending";
-  h.override(input => input.path.endsWith("/restore") ? {
+  h.override(input => {
+    if (input.path.endsWith("/devices") && phase === "revocation_pending") throw fail("NETWORK_REVOCATION_PENDING", 503);
+    return input.path.endsWith("/restore") ? {
     enrollmentId: "enrollment-1", networkSessionId: "enrollment-1", phase,
     managementUrl: "https://p2p.qeeshu.com",
-  } : undefined);
+    } : undefined;
+  });
   await h.client.refreshDevices();
   phase = "revoked";
   const recovered = new Promise(resolve => {
@@ -1914,10 +2007,13 @@ test("pending cleanup cannot reopen a box removed from the fresh authorized dire
   const h = harness(t);
   await h.client.loginPassword({ phone: "account-1" });
   await h.client.connectBox("box-1");
-  h.override(input => input.path.endsWith("/restore") ? {
+  h.override(input => {
+    if (input.path.endsWith("/devices")) throw fail("NETWORK_REVOCATION_PENDING", 503);
+    return input.path.endsWith("/restore") ? {
     enrollmentId: "enrollment-1", networkSessionId: "enrollment-1",
     phase: "revocation_pending", managementUrl: "https://p2p.qeeshu.com",
-  } : undefined);
+    } : undefined;
+  });
   await h.client.refreshDevices();
   h.catalog([]); h.override(undefined);
   t.mock.timers.tick(5000); await tick();

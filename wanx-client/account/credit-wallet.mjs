@@ -110,13 +110,19 @@ export function createCreditWallet({ request }) {
       return read(`calls/${encodeURIComponent(value.call_id)}`);
     },
     createOrder: async value => {
-      input(value, ["purchase_intent_id", "amount_fen", "product_id", "product_version", "payment_channel"]);
+      input(value, ["purchase_intent_id", "amount_fen", "product_id", "product_version", "payment_channel", "custom_amount_fen", "custom_recharge_version"]);
       if (value.payment_channel !== undefined && !["alipay", "wechat"].includes(value.payment_channel)) throw fail("CREDITS_INVALID_INPUT");
       const product = value.product_id !== undefined;
-      if (!id(value.purchase_intent_id) || (product
+      const custom = value.custom_amount_fen !== undefined || value.custom_recharge_version !== undefined;
+      if (!id(value.purchase_intent_id) || (custom
+        ? product || value.product_version !== undefined || value.amount_fen !== undefined ||
+          !id(value.custom_recharge_version) || !Number.isSafeInteger(value.custom_amount_fen) ||
+          value.custom_amount_fen < 1 || value.custom_amount_fen > 10000000000
+        : product
         ? !id(value.product_id) || !id(value.product_version) || value.amount_fen !== undefined
         : value.product_version !== undefined || ![5000, 10000, 20000].includes(value.amount_fen))) throw fail("CREDITS_INVALID_INPUT");
-      const target = product ? { product_id: value.product_id, product_version: value.product_version } : { amount_fen: value.amount_fen };
+      const target = custom ? { custom_amount_fen: value.custom_amount_fen, custom_recharge_version: value.custom_recharge_version }
+        : product ? { product_id: value.product_id, product_version: value.product_version } : { amount_fen: value.amount_fen };
       return request({ method: "POST", path: `${PREFIX}/orders`, idempotencyKey: value.purchase_intent_id,
         body: { schema_version: "1", purchase_intent_id: value.purchase_intent_id, ...target,
           ...(value.payment_channel === undefined ? {} : { payment_channel: value.payment_channel }) } });
