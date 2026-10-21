@@ -33,7 +33,7 @@ try {
           products: [1, 100, 200].map(amount => ({ product_id: 'product-' + amount, version: 'v1', name: '充值商品 ' + amount, enabled: true, amount_fen: amount, grant_credit_atoms: String(amount * 200000) })) };
         if (action === 'wallet.balance') data = { balance_credit_atoms: activeOrder?.display_state === 'credited' ? activeOrder.grant_credit_atoms : '0', debt_credit_atoms: '0', ledger_sequence: activeOrder?.display_state === 'credited' ? 1 : 0, execution_slot_state: 'none', pending_call_count: 0 };
         if (action === 'wallet.balance' && window.qeeMode) data.billing_backend = 'qeetoken';
-        if (action === 'wallet.wallet') data = { account_id: snapshot.account.accountId, billing_backend: 'qeetoken', currency_rule_id: 'usd-credit-1-v1', usd_per_credit: '1', credit_scale: 6, currency: 'USD', currency_scale: 8, balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60', remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-19T12:00:00Z', pending_executions: 1 };
+        if (action === 'wallet.wallet') data = { account_id: snapshot.account.accountId, billing_backend: 'qeetoken', currency_rule_id: 'usd-credit-1-v1', usd_per_credit: '1', credit_scale: 6, currency: 'USD', currency_scale: 8, balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60', remote_sequence: '2', sync_state: 'synced', synced_at: window.walletSyncedAt || '2026-10-19T12:00:00Z', pending_executions: 1 };
         if (action === 'wallet.usage') data = { items: [{ event_id: 'e1', account_sequence: '2', debit_usd_atoms: '60', debit_credit_atoms: '1', occurred_at: '2026-10-19T12:00:00Z', device_id: '客厅盒子', model: 'test-model', input_tokens: 7, output_tokens: 2 }], next_before_sequence: null };
         if (action === 'wallet.createOrder') {
           const custom = input.custom_amount_fen !== undefined;
@@ -115,9 +115,13 @@ try {
       check(Math.abs(dialog().scrollTop - position) < 1, 'channel selection reset dialog scroll');
     }
     document.getElementById('wallet-custom-amount').focus({ preventScroll: true });
+    const stableDialog = dialog(), stableInput = document.activeElement;
     const balanceReads = requests.filter(row => row.action === 'wallet.balance').length;
     walletPoll();
+    check(dialog() === stableDialog && document.activeElement === stableInput, 'background refresh replaced the purchase dialog or input');
+    check(!button('credits-pay').disabled, 'background refresh flashed a disabled pay button');
     await until(() => requests.filter(row => row.action === 'wallet.balance').length > balanceReads && !button('credits-pay').disabled);
+    check(dialog() === stableDialog && document.activeElement === stableInput, 'background refresh replaced the purchase dialog after reading');
     check(Math.abs(dialog().scrollTop - position) < 1, 'background refresh reset dialog scroll');
     check(document.activeElement.id === 'wallet-custom-amount', 'background refresh stole input focus');
     enterAmount('12.34');
@@ -153,6 +157,13 @@ try {
     await until(() => !!document.querySelector('.wallet-qr'));
     check(dialog().textContent.includes('微信扫码'), 'Native payment label missing');
     check(product('product-1').getAttribute('aria-pressed') === 'true' && product('product-200').disabled, 'active product not locked');
+    const stableDialog = dialog(), stableQR = document.querySelector('.wallet-qr');
+    const balanceReads = requests.filter(row => row.action === 'wallet.balance').length;
+    walletPoll();
+    check(dialog() === stableDialog && document.querySelector('.wallet-qr') === stableQR, 'order polling replaced the payment QR');
+    check(button('credits-refresh').textContent === '刷新支付状态', 'order polling flashed a loading label');
+    await until(() => requests.filter(row => row.action === 'wallet.balance').length > balanceReads);
+    check(dialog() === stableDialog && document.querySelector('.wallet-qr') === stableQR, 'order polling replaced the settled QR');
     button('credits-dismiss').click(); button('credits-open').click();
     check(document.activeElement === dialog(), 'pending purchase should focus its dialog when product cards are disabled');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
@@ -227,6 +238,12 @@ try {
     check(document.body.textContent.includes('0.00000060') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
     check(document.body.textContent.includes('20:00:00'), 'server timezone not applied');
     check(document.querySelector('.wallet-usage table tbody tr'), 'usage row missing');
+    button('credits-open').click();
+    const stableDialog = dialog(), stableQR = document.querySelector('.wallet-qr');
+    window.walletSyncedAt = '2026-10-19T12:00:05Z'; walletPoll();
+    await until(() => document.body.textContent.includes('20:00:05'));
+    check(dialog() === stableDialog && document.querySelector('.wallet-qr') === stableQR, 'sync timestamp update replaced the purchase dialog or QR');
+    button('credits-dismiss').click();
   })()`);
   if (process.env.WALLET_SCREENSHOT_DIR) {
     await js('new Promise(resolve => realTimeout(resolve, 100))');

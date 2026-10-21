@@ -88,6 +88,182 @@ test('background balance refresh permits draft edits and payment after active or
     { purchase_intent_id: 'intent-1', amount_fen: 5000, payment_channel: 'wechat' });
 });
 
+test('automatic polling leaves an unchanged purchase draft visually stable', async () => {
+  const frames = []; let poll;
+  const { view, seen } = setup({ changed: () => frames.push(view.render()),
+    schedule: callback => { poll = callback; return null; } });
+  await view.refresh(); await view.action('credits-open'); await view.action('credits-buy', { amount: '10000' });
+  const before = view.render(); frames.length = 0;
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(frames.every(html => html === before), true, 'background recovery must not flash a disabled pay button');
+  assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
+});
+
+test('automatic pending order polling keeps payment controls stable and still reports a paid transition', async () => {
+  const frames = []; let poll, current = order;
+  const { view } = setup({ changed: () => frames.push(view.render()),
+    schedule: (callback, delay) => { if (delay === 5000) poll = callback; return null; },
+    request: action => {
+      if (action === 'wallet.orders') return envelope({ items: [current] });
+      if (action === 'wallet.order') return envelope(current);
+    } });
+  await view.refresh(); await view.action('credits-open');
+  const before = view.render(); frames.length = 0;
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(frames.every(html => html === before), true, 'automatic status reads must not flash busy or disabled controls');
+  assert.match(view.render(), /支付二维码/);
+  frames.length = 0;
+  current = { ...order, payment_state: 'paid', display_state: 'paid_pending', fulfillment_state: 'pending', payment_action: null };
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(frames.some(html => html.includes('支付成功，积分到账中')), true);
+  assert.doesNotMatch(view.render(), /支付二维码/);
+});
+
+test('automatic QeeToken polling updates sync time and retains an unchanged failure notice during retry', async () => {
+  const frames = []; let poll, unavailable = false, syncedAt = remoteWallet.synced_at;
+  const { view } = setup({ changed: () => frames.push(view.render()),
+    schedule: (callback, delay) => { if (delay === 5000 || delay === 30000) poll = callback; return null; },
+    request: action => {
+      if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+      if (action === 'wallet.wallet') {
+        if (unavailable) throw new Error('QEETOKEN_UNAVAILABLE');
+        return envelope({ ...remoteWallet, synced_at: syncedAt });
+      }
+      if (action === 'wallet.usage') return envelope({ items: [], next_before_sequence: null });
+    } });
+  await view.refresh();
+  const before = view.render(); frames.length = 0;
+  syncedAt = '2026-10-18T02:00:05Z';
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(frames.some(html => html.includes('10:00:05')), true, 'real sync time changes must still notify');
+  assert.equal(before.replace('10:00:00', 'SYNC_TIME'), view.render().replace('10:00:05', 'SYNC_TIME'));
+  unavailable = true;
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.match(view.render(), /余额服务暂不可用/);
+  frames.length = 0;
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(frames.every(html => html.includes('余额服务暂不可用')), true, 'a background retry must not clear the visible failure before success');
+});
+
+test('automatic polling keeps an initializing wallet label stable until its balance arrives', async () => {
+  const labels = []; let poll, pending = true;
+  const { view } = setup({ changed: () => labels.push(view.label()),
+    schedule: (callback, delay) => { if (delay === 5000) poll = callback; return null; },
+    request: action => {
+      if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+      if (action === 'wallet.wallet') return envelope(pending
+        ? { ...remoteWallet, balance_credit_atoms: null, balance_usd_atoms: null, spent_usd_atoms: null,
+          sync_state: 'pending', synced_at: null }
+        : { ...remoteWallet, balance_credit_atoms: '0', balance_usd_atoms: '0', spent_usd_atoms: '0' });
+      if (action === 'wallet.usage') return envelope({ items: [], next_before_sequence: null });
+    } });
+  await view.refresh();
+  const before = view.label(); labels.length = 0;
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(labels.every(label => label === before), true, 'background polling must not flash the initializing balance label');
+  pending = false; labels.length = 0;
+  poll(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(view.label(), '0.00 点');
+  assert.equal(labels.includes('0.00 点'), true, 'a real initialized balance must still notify');
+});
+
+test('manual payment refresh still shows its busy state until the requested read completes', async () => {
+  let delayOrder = false, resolveOrder;
+  const { view } = setup({ request: action => {
+    if (action === 'wallet.orders') return envelope({ items: [order] });
+    if (action === 'wallet.order' && delayOrder) return new Promise(resolve => { resolveOrder = resolve; });
+  } });
+  await view.refresh(); await view.action('credits-open'); delayOrder = true;
+  const refresh = view.action('credits-refresh');
+  while (!resolveOrder) await new Promise(resolve => setImmediate(resolve));
+  try {
+    assert.match(view.render(), /正在确认…/);
+    assert.match(view.render(), /data-action="credits-refresh"[^>]*disabled/);
+  } finally { resolveOrder(envelope(order)); await refresh; }
+  assert.doesNotMatch(view.render(), /正在确认…/);
+});
+
+for (const recovered of ['empty', 'existing', 'account-switched']) {
+  test(`payment waits for background recovery and handles ${recovered} without a duplicate order`, async () => {
+    let delayRecovery = false, resolveRecovery;
+    const { view, seen } = setup({ request: action => {
+      if (action === 'wallet.orders' && delayRecovery) return new Promise(resolve => { resolveRecovery = resolve; });
+    } });
+    await view.refresh(); await view.action('credits-open'); await view.action('credits-buy', { amount: '10000' });
+    delayRecovery = true;
+    const refresh = view.refresh({ background: true });
+    while (!resolveRecovery) await new Promise(resolve => setImmediate(resolve));
+    let finished = 0;
+    const payments = [view.action('credits-pay'), view.action('credits-pay')].map(promise => promise.then(() => { finished++; }));
+    await new Promise(resolve => setImmediate(resolve));
+    const finishedBeforeRecovery = finished;
+    assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
+    if (recovered === 'account-switched') view.reset(JSON.stringify(['bob', 'client-2']));
+    resolveRecovery(envelope({ items: recovered === 'existing' ? [order] : [] }));
+    await refresh; await Promise.all(payments);
+    assert.equal(finishedBeforeRecovery, 0, 'pay must wait rather than silently discard a click during recovery');
+    assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, recovered === 'empty' ? 1 : 0);
+    if (recovered === 'existing') assert.match(view.render(), /支付二维码/);
+    if (recovered === 'account-switched') assert.doesNotMatch(view.render(), /role="dialog"|支付二维码/);
+  });
+}
+
+test('waiting payment confirmation freezes the clicked product version and channel', async () => {
+  let delayRecovery = false, resolveRecovery, version = 'v1';
+  const { view, seen } = setup({ request: action => {
+    if (action === 'wallet.orders' && delayRecovery) return new Promise(resolve => { resolveRecovery = resolve; });
+    if (action === 'wallet.catalog') return envelope({ recharge_enabled: true, payment_channels: ['alipay', 'wechat'],
+      products: [100, 200].map(value => ({ product_id: `product-${value}`, version,
+        amount_fen: value * 100, grant_credit_atoms: String(value * 100000000) })) });
+  } });
+  await view.refresh(); await view.action('credits-open');
+  await view.action('credits-buy', { amount: 'product-100' }); await view.action('credits-channel', { channel: 'wechat' });
+  delayRecovery = true;
+  const refresh = view.refresh({ background: true });
+  while (!resolveRecovery) await new Promise(resolve => setImmediate(resolve));
+  const payment = view.action('credits-pay');
+  const waiting = view.render();
+  await view.action('credits-buy', { amount: 'product-200' });
+  await view.action('credits-channel', { channel: 'alipay' });
+  const duplicate = view.action('credits-pay');
+  version = 'v2';
+  resolveRecovery(envelope({ items: [] })); await refresh; await Promise.all([payment, duplicate]);
+  const creates = seen.filter(([action]) => action === 'wallet.createOrder');
+  assert.equal(creates.length, 1);
+  assert.deepEqual(creates[0][1], { purchase_intent_id: 'intent-1', product_id: 'product-100',
+    product_version: 'v1', payment_channel: 'wechat' });
+  assert.match(waiting, /正在确认购买/);
+  assert.match(waiting, /data-amount="product-200"[^>]*disabled/);
+  assert.match(waiting, /data-channel="alipay"[^>]*disabled/);
+});
+
+test('waiting payment confirmation freezes the clicked custom amount rule and channel', async () => {
+  let delayRecovery = false, resolveRecovery, ruleVersion = 'cny-100-v1';
+  const { view, seen } = setup({ request: action => {
+    if (action === 'wallet.orders' && delayRecovery) return new Promise(resolve => { resolveRecovery = resolve; });
+    if (action === 'wallet.catalog') return envelope({ recharge_enabled: true, payment_channels: ['alipay', 'wechat'],
+      products: [], tiers: [], custom_recharge: { ...customRecharge, version: ruleVersion } });
+  } });
+  await view.refresh(); await view.action('credits-open'); await view.action('credits-custom');
+  await view.action('credits-amount', { value: '12.34' }); await view.action('credits-channel', { channel: 'wechat' });
+  delayRecovery = true;
+  const refresh = view.refresh({ background: true });
+  while (!resolveRecovery) await new Promise(resolve => setImmediate(resolve));
+  const payment = view.action('credits-pay');
+  const waiting = view.render();
+  await view.action('credits-amount', { value: '98.76' });
+  await view.action('credits-channel', { channel: 'alipay' });
+  const duplicate = view.action('credits-pay');
+  ruleVersion = 'cny-100-v2';
+  resolveRecovery(envelope({ items: [] })); await refresh; await Promise.all([payment, duplicate]);
+  const creates = seen.filter(([action]) => action === 'wallet.createOrder');
+  assert.equal(creates.length, 1);
+  assert.deepEqual(creates[0][1], { purchase_intent_id: 'intent-1', custom_amount_fen: 1234,
+    custom_recharge_version: 'cny-100-v1', payment_channel: 'wechat' });
+  assert.match(waiting, /正在确认购买/);
+  assert.match(waiting, /id="wallet-custom-amount"[^>]*value="12\.34"[^>]*disabled/);
+});
+
 test('creating order polls its status after one second without waiting for balance reads', async () => {
   const timers = new Map();
   let current = { ...order, display_state: 'creating', payment_state: 'creating', payment_action: null };
