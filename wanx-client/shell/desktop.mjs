@@ -30,6 +30,7 @@ export function createDesktopIntegration({
   tray.setToolTip(DESKTOP_NAME);
   let panelHeight = 520;
   let hidingPanel = false;
+  let ignoreTrayClickUntil = 0;
 
   function showControl() {
     if (control.isDestroyed()) return;
@@ -88,6 +89,7 @@ export function createDesktopIntegration({
   function show() {
     if (!usesPanel) { showControl(); return; }
     if (panel.isDestroyed()) return;
+    ignoreTrayClickUntil = 0;
     positionPanel();
     panel.show();
     panel.focus();
@@ -108,8 +110,21 @@ export function createDesktopIntegration({
   }
 
   function togglePanel() {
+    const ignoreClick = Date.now() < ignoreTrayClickUntil;
+    ignoreTrayClickUntil = 0;
+    if (ignoreClick) return;
     if (panel.isVisible()) hidePanel();
     else show();
+  }
+
+  function hidePanelOnBlur() {
+    if (panel.isDestroyed() || !panel.isVisible() || hidingPanel) return;
+    const cursor = screen?.getCursorScreenPoint();
+    const bounds = tray.getBounds();
+    // The tray can blur the panel before delivering the click that closes it.
+    ignoreTrayClickUntil = cursor && cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width &&
+      cursor.y >= bounds.y && cursor.y < bounds.y + bounds.height ? Date.now() + 300 : 0;
+    hidePanel();
   }
 
   function updatePanelPosition() {
@@ -198,6 +213,7 @@ export function createDesktopIntegration({
   app.on("activate", show);
   if (usesPanel) {
     panel.on("close", hidePanelOnClose);
+    panel.on("blur", hidePanelOnBlur);
     tray.on("click", togglePanel);
     if (platform === "win32") tray.on("double-click", show);
     tray.on("right-click", showTrayMenu);
@@ -220,6 +236,7 @@ export function createDesktopIntegration({
       app.removeListener("activate", show);
       if (usesPanel) {
         panel.removeListener("close", hidePanelOnClose);
+        panel.removeListener("blur", hidePanelOnBlur);
         for (const event of ["display-added", "display-removed", "display-metrics-changed"])
           screen?.removeListener(event, updatePanelPosition);
       }

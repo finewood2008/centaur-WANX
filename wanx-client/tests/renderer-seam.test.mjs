@@ -2756,17 +2756,15 @@ test("box overview shows WANX-wide usage and the box public IP, never private or
   assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|≥ 1\.0 KB/);
 });
 
-test("ownership transfer is hidden and console claim lives in the add wizard", async () => {
+test("ownership transfer and console claim entries are hidden while box scanning remains available", async () => {
   const h = await harness(supportState(), []);
   await h.click("show-boxes");
   assert.doesNotMatch(h.app.innerHTML, /data-form="console-claim"/);
   const css = await readFile(new URL("../local-ui/renderer/styles.css", import.meta.url), "utf8");
   assert.match(css, /(?:transfer-open|ownership-section)[^{]*\{[^}]*display:\s*none/);
   await h.click("provisioning");
-  assert.match(h.app.innerHTML, /已有认领码，盒子已联网/);
-  assert.match(h.app.innerHTML, /已有认领码，需要先配网/);
-  await h.click("console-claim-online");
-  assert.match(h.app.innerHTML, /data-form="console-claim"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-(?:online|offline)"|已有认领码|没有认领码？/);
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
 });
 
 test("console claim retains input and retry intent, then waits for real device authorization", async () => {
@@ -2860,7 +2858,8 @@ test("a new client session for the same account discards an unfinished console c
   await h.click('console-claim-confirm');
   assert.equal(h.calls.filter(([name]) => name === 'wanx:setup:redeemClaimCode').length, 0);
   await h.click('provisioning');
-  assert.match(h.app.innerHTML, /已有认领码，盒子已联网/);
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-(?:online|offline)"/);
 });
 
 test("cancelled offline code setup clears its claim intent", async () => {
@@ -2872,7 +2871,8 @@ test("cancelled offline code setup clears its claim intent", async () => {
   await h.click('cancel-provisioning');
   await h.click('console-claim-confirm');
   assert.equal(h.calls.filter(([name]) => name === 'wanx:setup:redeemClaimCode').length, 0);
-  assert.match(h.app.innerHTML, /已有认领码，盒子已联网/);
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-(?:online|offline)"/);
 });
 
 test("a rejected code can be corrected without restarting the add wizard", async () => {
