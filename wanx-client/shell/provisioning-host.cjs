@@ -140,6 +140,7 @@ async function createProvisioningHost({
   trustedRootSpkiPins,
   coordinatorFactory,
   ownerWifiCoordinatorFactory,
+  consoleWifiCoordinatorFactory,
   cryptoFactory,
   beforeConnect = async () => {},
   onDiagnostic = () => {},
@@ -158,6 +159,8 @@ async function createProvisioningHost({
   const makeCoordinator = coordinatorFactory || core.createClaimCoordinator;
   const makeOwnerWifiCoordinator = ownerWifiCoordinatorFactory ||
     (await import('../account/owner-wifi.mjs')).createOwnerWifiCoordinator;
+  const makeConsoleWifiCoordinator = consoleWifiCoordinatorFactory ||
+    (await import('../account/owner-wifi.mjs')).createConsoleWifiCoordinator;
   const makeCrypto =
     cryptoFactory ||
     (await import("@nexusaos/local-provisioning-core/node"))
@@ -407,9 +410,14 @@ async function createProvisioningHost({
   async function release(current, reason) {
     if (!current) return;
     current.abort.abort();
+    clearClaimCode(current);
     current.unsubscribe?.();
     await current.coordinator.suspend(reason).catch(() => {});
     await current.coordinator.dispose().catch(() => {});
+  }
+  function clearClaimCode(current) {
+    if (current.beginInput) delete current.beginInput.claimCode;
+    if (current.claimAttempt) delete current.claimAttempt.code;
   }
   function reset(reason = "app_background") {
     if (resetting) return resetting;
@@ -456,7 +464,8 @@ async function createProvisioningHost({
       webContents.isDestroyed?.() ||
       webContents.mainFrame?.url !== documentUrl ||
       current.abort.signal.aborted ||
-      preview.state !== "previewReady" ||
+      preview.state !== (current.mode === 'console' ? 'awaitingCodeClaim' : 'previewReady') ||
+      (current.mode === 'console' && preview.networkState !== 'connected') ||
       typeof deviceId !== "string" ||
       !/^[A-Za-z0-9._-]{1,36}$(?![\s\S])/u.test(deviceId)
     )
@@ -482,6 +491,8 @@ async function createProvisioningHost({
       "syncBootstrap",
       "getOwnerWifiAttestation",
       "authorizeOwnerWifi",
+      "getConsoleWifiAttestation",
+      "authorizeConsoleWifi",
     ]) {
       consumerApi[method] = async (...args) => {
         try {
@@ -503,7 +514,7 @@ async function createProvisioningHost({
         }
       };
     }
-    current.coordinator = (mode === 'wifi' ? makeOwnerWifiCoordinator : makeCoordinator)({
+    current.coordinator = (mode === 'wifi' ? makeOwnerWifiCoordinator : mode === 'console' ? makeConsoleWifiCoordinator : makeCoordinator)({
       transportFactory,
       crypto: makeCrypto({ trustedRootCertificatesPem }),
       consumerApi,
@@ -518,7 +529,7 @@ async function createProvisioningHost({
     return current;
   }
   async function readClaimStatus(current) {
-    if (current.mode === 'wifi') return;
+    if (current.mode !== 'claim') return;
     if (typeof current.pairing.getClaimState !== 'function') {
       current.claimStatus = { claimStatusError: 'CLAIM_STATUS_UNAVAILABLE' };
       publish();
@@ -550,7 +561,7 @@ async function createProvisioningHost({
     publish();
   }
   function claimBlock(current) {
-    if (current.mode === 'wifi') return undefined;
+    if (current.mode !== 'claim') return undefined;
     if (current.claimStatus?.claimStatusError) return current.claimStatus.claimStatusError;
     if (!current.claimStatus) return 'CLAIM_STATUS_UNAVAILABLE';
     if (current.claimStatus.ownershipState === 'unclaimed' && current.claimStatus.canClaim === true) return undefined;
@@ -564,7 +575,7 @@ async function createProvisioningHost({
     const old = current.coordinator.getSnapshot();
     const identity = old.preview ?? old.compatiblePreview;
     const next = createContext({ accountId: current.accountId, clientId: current.clientId }, current.pairing, current.mode);
-    next.beginInput = current.beginInput;
+    next.beginInput = { ...current.beginInput };
     next.sessionRenewed = true;
     context = next;
     await release(current, 'session_expired');
@@ -596,7 +607,7 @@ async function createProvisioningHost({
     const current = await check(context);
     if (current.suspending) await current.suspending;
     await check(current);
-    if (current.mode === 'wifi' && !['confirmPhysicalDevice', 'provideWifi'].includes(method))
+    if (current.mode !== 'claim' && !['confirmPhysicalDevice', 'provideWifi'].includes(method))
       throw failure('CLAIM_INVALID_STATE');
     if (method === "confirmPhysicalDevice") {
       const value = current.coordinator.getSnapshot();
@@ -650,8 +661,14 @@ async function createProvisioningHost({
       if (disposed || disposing) throw failure("CLAIM_INVALID_STATE");
       if (beginning) throw failure("CLAIM_OPERATION_IN_PROGRESS");
       const mode = value?.mode ?? 'claim';
-      if (!['claim', 'wifi'].includes(mode)) throw failure('INVALID_REQUEST');
-      const candidate = selected(plain(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'mode')) : value);
+      if (!['claim', 'wifi', 'console'].includes(mode)) throw failure('INVALID_REQUEST');
+      const claimCode = value?.claimCode;
+      if ((mode === 'console' && (typeof claimCode !== 'string' || !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$(?![\s\S])/u.test(claimCode))) ||
+          (mode !== 'console' && claimCode !== undefined)) throw failure('INVALID_REQUEST');
+      const expectedDeviceId = value?.expectedDeviceId;
+      if (expectedDeviceId !== undefined && (mode !== 'wifi' || typeof expectedDeviceId !== 'string' ||
+          !/^[A-Za-z0-9._-]{1,36}$(?![\s\S])/u.test(expectedDeviceId))) throw failure('INVALID_REQUEST');
+      const candidate = selected(plain(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => !['mode', 'expectedDeviceId', 'claimCode'].includes(key))) : value);
       beginning = true;
       try {
         if (resetting) await resetting;
@@ -682,6 +699,8 @@ async function createProvisioningHost({
         context = current;
         current.beginInput = {
             selected: candidate,
+            ...(expectedDeviceId === undefined ? {} : { expectedDeviceId }),
+            ...(mode === 'console' ? { claimCode } : {}),
             accountId: current.accountId,
             clientId: current.clientId,
             clientPlatform:
@@ -730,10 +749,16 @@ async function createProvisioningHost({
         resuming = false;
       }
     },
-    async redeemClaimCode(code) {
+    async redeemClaimCode(input) {
+      const code = typeof input === 'string' ? input : input?.claimCode;
+      const clientAttemptId = typeof input === 'string' ? undefined : input?.clientAttemptId;
       if (
         typeof code !== "string" ||
-        !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$(?![\s\S])/u.test(code)
+        !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$(?![\s\S])/u.test(code) ||
+        (typeof input !== 'string' && (!plain(input) ||
+          Object.keys(input).some(key => !['claimCode', 'clientAttemptId'].includes(key)))) ||
+        (clientAttemptId !== undefined && (typeof clientAttemptId !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$(?![\s\S])/u.test(clientAttemptId)))
       )
         throw failure("INVALID_REQUEST");
       if (claimPending) throw failure("CLAIM_OPERATION_IN_PROGRESS");
@@ -742,6 +767,17 @@ async function createProvisioningHost({
         const current = await check(context);
         if (current.mode === 'wifi') throw failure('CLAIM_INVALID_STATE');
         const deviceId = claimPreviewId(current);
+        if (current.claimReceipt) {
+          if (clientAttemptId !== undefined && clientAttemptId !== current.claimAttempt.clientAttemptId)
+            throw failure('CLAIM_INVALID_STATE');
+          return current.claimReceipt;
+        }
+        if (current.mode === 'console' && code !== current.beginInput?.claimCode)
+          throw failure('CLAIM_INVALID_STATE');
+        if (current.claimAttempt && (current.claimAttempt.code !== code ||
+            (clientAttemptId !== undefined && current.claimAttempt.clientAttemptId !== clientAttemptId)))
+          throw failure('CLAIM_INVALID_STATE');
+        current.claimAttempt ??= { code, clientAttemptId: clientAttemptId ?? randomUUID() };
         if (typeof redeemConsoleClaim !== "function")
           throw failure("CONSOLE_CLAIM_UNAVAILABLE");
         await check(current);
@@ -751,6 +787,7 @@ async function createProvisioningHost({
           accountId: current.accountId,
           clientId: current.clientId,
           signal: current.abort.signal,
+          clientAttemptId: current.claimAttempt.clientAttemptId,
         });
         await check(current);
         if (claimPreviewId(current) !== deviceId)
@@ -758,15 +795,19 @@ async function createProvisioningHost({
         if (
           !plain(result) ||
           result.deviceId !== deviceId ||
+          result.ownership !== 'claimed' ||
           !["deviceAckPending", "ready", "blocked"].includes(
             result.authorizationState,
           )
         )
           throw failure("CONTRACT_MISMATCH");
-        return Object.freeze({
+        current.claimReceipt = Object.freeze({
           deviceId,
+          ownership: 'claimed',
           authorizationState: result.authorizationState,
         });
+        clearClaimCode(current);
+        return current.claimReceipt;
       } finally {
         claimPending = false;
       }
@@ -833,6 +874,7 @@ async function createProvisioningHost({
     async cancel() {
       const current = await check(context);
       current.abort.abort();
+      clearClaimCode(current);
       await current.coordinator.cancel("user_cancelled");
       await check(current);
       return state();
@@ -888,7 +930,7 @@ async function createProvisioningHost({
     // local transport and secrets, retaining the original cloud task to query.
     if (
       current &&
-      current.mode !== 'wifi' &&
+      current.mode === 'claim' &&
       (previous.pairingSessionId ||
         ["waitingCloud", "attentionRequired", "completed"].includes(
           previous.state,

@@ -183,12 +183,20 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .setup-preview dt { color: var(--fn-text-tertiary); }
 .setup-preview dd { margin: 0; overflow-wrap: anywhere; color: var(--fn-text-secondary); }
 .setup-wifi { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; margin: 12px 0; }
-.setup-wifi label { display: grid; gap: 6px; }
-.setup-wifi .check { display: flex; align-items: center; gap: 8px; }
+.setup-wifi label { display: grid; gap: 6px; min-width: 0; }
+.setup-wifi .check { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; }
 .setup-wifi .check input { width: auto; accent-color: var(--fn-color-brand); }
+.setup-wifi .password-field { display: block; position: relative; }
+.wizard-card [data-form="console-claim"] > button { margin-top: 12px; }
+.setup-wifi .password-field input { height: 40px; padding-right: 44px; }
+.setup-wifi .password-toggle { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 34px; height: 34px; padding: 7px; border: 0; border-radius: 5px; color: var(--fn-text-tertiary); background: transparent; }
+.setup-wifi .password-toggle:hover { color: var(--fn-color-brand); background: var(--fn-color-brand-bg); }
+.setup-wifi .password-toggle:focus-visible { outline-offset: -2px; }
+.setup-wifi .password-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .auth-card .remember-login { display: flex; align-items: center; gap: 8px; }
 .auth-card .remember-login input { width: auto; accent-color: var(--fn-color-brand); }
 .setup-wifi > button { justify-self: start; margin-top: 14px; }
+.setup-wifi > .primary[type="submit"] { align-self: end; height: 40px; margin: 14px 0 7px; }
 .discovery-list { display: grid; gap: 9px; margin: 18px 0; }
 .discovery-card { flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; text-align: left; }
 .discovery-card strong, .discovery-card span { overflow-wrap: anywhere; max-width: 100%; }
@@ -223,7 +231,8 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .code-field { display: flex; gap: 8px; align-items: center; } .code-field input { flex: 1; }
 .notice.success { color: var(--fn-text-success); background: var(--fn-bg-success); }
 
-/* Temporarily hide ownership transfer entry points while retaining the workflow. */
+/* Hide remote support and ownership transfer entry points while retaining their workflows. */
+[data-action="support-open"], [data-action="transfer-open"], .ownership-section { display: none; }
 
 /* Ownership handoff remains a deliberate form within box management. */
 .device-action { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
@@ -468,7 +477,8 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .box-section-heading { margin-bottom: 15px; }
 .box-section-heading h3 { font-size: 14px; margin-bottom: 6px; }
 .box-device-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.box-device-grid .device-card { min-height: 100px; padding: 20px; border-radius: 12px; }
+.box-device-grid .device-card { min-height: 100px; padding: 20px; border-radius: 12px; flex-wrap: wrap; }
+.box-device-grid .device-action { flex: 1 1 100%; }
 .box-device-grid .device-card.selected { border-color: #d0dccd; background: #f7faf4; }
 .box-device-grid .device-main h3 { font-size: 14px; }
 .box-device-grid .device-icon { width: 35px; height: 40px; }

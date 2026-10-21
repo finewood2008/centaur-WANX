@@ -80,7 +80,7 @@ export function registerControlActions({
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
-  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -296,9 +296,14 @@ export function registerControlActions({
     return client.lookupDeviceDiscovery([...ids]);
   });
   register("console-claim", (input) => {
-    if (!input || Object.keys(input).some(key => !["claimCode", "clientAttemptId"].includes(key)))
+    if (!input || Object.keys(input).some(key => !["claimCode", "clientAttemptId", "expectedDeviceId"].includes(key)))
       throw new Error("ACCOUNT_INVALID_INPUT");
-    return client.redeemConsoleClaim({ claimCode: input.claimCode, clientAttemptId: input.clientAttemptId });
+    return client.redeemConsoleClaim({ claimCode: input.claimCode, clientAttemptId: input.clientAttemptId,
+      ...(input.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) });
+  });
+  register("console-claim-status", (input) => {
+    if (!input || Object.keys(input).some(key => key !== "deviceId")) throw new Error("ACCOUNT_INVALID_INPUT");
+    return client.getConsoleClaimAuthorization(text(input.deviceId, 36, "invalid_device"));
   });
   register("ownership-list", () => client.listOwnershipTransfers());
   for (const method of ["current", "decide", "revoke"]) register(`support-${method}`, input => {

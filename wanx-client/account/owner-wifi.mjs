@@ -23,9 +23,19 @@ function pause(ms, signal) {
 
 /** Owner-only Wi-Fi reconfiguration. No claim task, owner mutation or resume record. */
 export function createOwnerWifiCoordinator(deps) {
-  let snapshot = { flowId: '', state: 'idle', mode: 'wifi' };
+  return createWifiCoordinator(deps, 'wifi');
+}
+
+/** A claim code authorizes networking only; binding is a separate explicit step. */
+export function createConsoleWifiCoordinator(deps) {
+  return createWifiCoordinator(deps, 'console');
+}
+
+function createWifiCoordinator(deps, mode) {
+  const consoleClaim = mode === 'console';
+  let snapshot = { flowId: '', state: 'idle', mode };
   let transport, channel, operation, termination, expiryTimer, deadline = 0, sessionId, preview;
-  let clientId, accountId;
+  let clientId, accountId, claimCode;
   const lifetime = new AbortController(), listeners = new Set();
   const publish = (state, extra = {}) => {
     snapshot = { ...snapshot, ...extra, state };
@@ -37,6 +47,7 @@ export function createOwnerWifiCoordinator(deps) {
   };
   const cleanup = async () => {
     clearTimeout(expiryTimer);
+    claimCode = undefined;
     channel?.destroy(); channel = undefined;
     const connected = transport; transport = undefined;
     await connected?.close().catch(() => {});
@@ -96,7 +107,7 @@ export function createOwnerWifiCoordinator(deps) {
     active(signal);
     const requestId = randomUUID();
     // The installed claim SDK intentionally accepts only claim operations. Keep
-    // its closed schemas intact and encode the two owner-specific frames here.
+    // its closed schemas intact and encode the two Wi-Fi-only frames here.
     const frame = ['pairing.start', 'pairing.token'].includes(type)
       ? encodeJsonLine({ schema_version: 2, request_id: requestId, message_type: type,
         ...(session ? { pairing_session_id: session } : {}), payload })
@@ -140,6 +151,11 @@ export function createOwnerWifiCoordinator(deps) {
       return run(async (signal) => {
         if (snapshot.state !== 'idle') throw fail('CLAIM_INVALID_STATE');
         accountId = input.accountId; clientId = input.clientId;
+        if (consoleClaim) {
+          if (typeof input.claimCode !== 'string' || !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$(?![\s\S])/u.test(input.claimCode))
+            throw fail('INVALID_REQUEST');
+          claimCode = input.claimCode;
+        }
         publish('connecting', { flowId: randomUUID() });
         const connected = await deps.transportFactory.connect(input.selected, signal);
         if (signal.aborted) { await connected.close(); signal.throwIfAborted(); }
@@ -147,6 +163,8 @@ export function createOwnerWifiCoordinator(deps) {
         publish('readingDeviceInfo');
         const bytes = await transport.readDeviceInfo(signal); active(signal);
         preview = decodeDeviceInfo(bytes, 'ble-gatt');
+        if (input.expectedDeviceId !== undefined && preview.device_id !== input.expectedDeviceId)
+          throw fail('DEVICE_IDENTITY_MISMATCH');
         if (preview.cloud_enrollment_status !== 'ready') throw fail('DEVICE_NOT_ENROLLED');
         publish('previewReady', { preview, compatiblePreview: preview, networkState: preview.network_state });
       }, caller);
@@ -155,9 +173,11 @@ export function createOwnerWifiCoordinator(deps) {
       return run(async (signal) => {
         if (snapshot.state !== 'previewReady') throw fail('CLAIM_INVALID_STATE');
         publish('verifyingLocalDevice');
-        // Owner authorization is checked before allocating an authenticated local
-        // session; a nearby non-owner cannot obtain this certificate endpoint.
-        const att = await deps.consumerApi.getOwnerWifiAttestation(preview.device_id, signal);
+        if (consoleClaim && preview.pairing_mode_remaining_seconds <= 0) throw fail('PAIRING_MODE_CLOSED');
+        // Check account/code authority before allocating the local session.
+        const att = consoleClaim
+          ? await deps.consumerApi.getConsoleWifiAttestation(claimCode, preview.device_id, signal)
+          : await deps.consumerApi.getOwnerWifiAttestation(preview.device_id, signal);
         active(signal);
         const at = Date.parse(att.serverTime), checked = Date.parse(att.data.statusCheckedAt);
         if (att.data.deviceId !== preview.device_id || !Number.isFinite(at) || !Number.isFinite(checked) ||
@@ -176,6 +196,7 @@ export function createOwnerWifiCoordinator(deps) {
         const deviceInfoSha256 = toHex(await deps.crypto.sha256(deviceInfo));
         if (identity(latest) !== identity(preview) || deviceInfoSha256 !== hello.device_info_sha256 || latest.cloud_enrollment_status !== 'ready')
           throw fail('DEVICE_IDENTITY_MISMATCH');
+        if (consoleClaim && latest.pairing_mode_remaining_seconds <= 0) throw fail('PAIRING_MODE_CLOSED');
         preview = latest;
         const clientAttemptId = randomUUID(), clientNonce = toBase64Url(await deps.crypto.randomBytes(32));
         deadline = deps.clock.monotonicMs() + 300000;
@@ -202,15 +223,23 @@ export function createOwnerWifiCoordinator(deps) {
           active(signal);
           const ciphertextHash = toHex(await deps.crypto.sha256(token.ciphertext));
           const challengeHash = toHex(await deps.crypto.sha256(canonical));
-          const authorized = await deps.consumerApi.authorizeOwnerWifi({ ...fields, signature: challenge.signature,
-            pairingTokenCiphertextSha256: ciphertextHash }, signal);
+          const authorizationInput = { ...fields, signature: challenge.signature,
+            pairingTokenCiphertextSha256: ciphertextHash };
+          const authorized = consoleClaim
+            ? await deps.consumerApi.authorizeConsoleWifi(claimCode, authorizationInput, signal)
+            : await deps.consumerApi.authorizeOwnerWifi(authorizationInput, signal);
           active(signal);
           const permit = authorized.data.permit, grant = permit.payload;
-          if (grant.deviceId !== preview.device_id || grant.ownerAccountId !== accountId || grant.clientId !== clientId ||
+          if (grant.deviceId !== preview.device_id || (consoleClaim ? grant.accountId : grant.ownerAccountId) !== accountId || grant.clientId !== clientId ||
             grant.pairingSessionId !== sessionId || grant.challengeCanonicalSha256 !== challengeHash ||
             grant.pairingTokenCiphertextSha256 !== ciphertextHash) throw fail('PAIRING_MISMATCH');
+          if (consoleClaim && (!exact(grant, ['schemaVersion', 'purpose', 'deviceId', 'claimSessionId', 'accountId',
+            'clientId', 'pairingSessionId', 'challengeCanonicalSha256', 'pairingTokenCiphertextSha256', 'expiresInSeconds']) ||
+            grant.schemaVersion !== 1 || grant.purpose !== 'console-wifi' || grant.expiresInSeconds !== 300 ||
+            !uuid(grant.claimSessionId)))
+            throw fail('PAIRING_MISMATCH');
           // The transcript format is unchanged; the claim SDK's transcriptHash
-          // rejects wifi-only operations, so hash our fully constructed owner transcript.
+          // rejects wifi-only operations, so hash our fully constructed transcript.
           const digest = await deps.crypto.sha256(utf8(stableJson({ appNonce, attestationSpkiSha256: verified.publicKeySha256,
             challengeCanonicalSha256: challengeHash, clientAttemptId, clientId, clientNonce, deviceInfoSha256,
             deviceId: preview.device_id, helloContextId: hello.hello_context_id, pairingDeviceNonce: start.pairing_device_nonce,
@@ -220,12 +249,14 @@ export function createOwnerWifiCoordinator(deps) {
           active(signal);
           publish('establishingSecureChannel');
           const accepted = await plain('pairing.token', { ciphertext: toBase64(token.ciphertext),
-            algorithm: 'RSA-OAEP-SHA256-MGF1-SHA256', owner_wifi_permit: permit }, signal, sessionId);
+            algorithm: 'RSA-OAEP-SHA256-MGF1-SHA256',
+            [consoleClaim ? 'console_wifi_permit' : 'owner_wifi_permit']: permit }, signal, sessionId);
           if (!await verifyKeyConfirm(deps.crypto, keys.confirmKey, digest, accepted.key_confirm)) throw fail('DEVICE_IDENTITY_MISMATCH');
           active(signal);
           deps.crypto.zeroize(keys.confirmKey);
           channel = createSecureChannel(deps.crypto, { deviceId: preview.device_id, pairingSessionId: sessionId, keys });
           keys = undefined; // channel now owns and destroys the key material
+          claimCode = undefined;
         } finally {
           deps.crypto.zeroize(token.pairingToken);
           if (keys) for (const key of Object.values(keys)) deps.crypto.zeroize(key);
@@ -274,7 +305,7 @@ export function createOwnerWifiCoordinator(deps) {
             version = status.state_version;
             if (status.operation_status === 'completed') {
               if (status.device_state !== 'connected') throw fail('PROTOCOL_CHANGED');
-              await cleanup(); publish('completed', { networkState: 'connected' }); return;
+              await cleanup(); publish(consoleClaim ? 'awaitingCodeClaim' : 'completed', { networkState: 'connected' }); return;
             }
             await pause(1000, signal);
           }

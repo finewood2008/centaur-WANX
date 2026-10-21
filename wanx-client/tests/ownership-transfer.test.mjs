@@ -89,7 +89,7 @@ test("console claim signs request, keeps retry intent and never exposes device c
   }) : undefined);
   const claim = { claimCode: 'ABCDEFG234', clientAttemptId: 'b338f42e-e1ab-46e0-89a7-b2c6f79f45f1' };
   for (let i = 0; i < 2; i++) {
-    assert.deepEqual(await account.redeemConsoleClaim(claim), { deviceId: 'box-one', ownership: 'claimed' });
+    assert.deepEqual(await account.redeemConsoleClaim(claim), { deviceId: 'box-one', ownership: 'claimed', authorizationState: 'deviceAckPending' });
     assert.deepEqual(calls.at(-1).body, claim);
     assert.equal(calls.at(-1).headers['Idempotency-Key'], claim.clientAttemptId);
     assert.match(calls.at(-1).headers['X-Nexus-Signature'], /.+/);
