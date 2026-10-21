@@ -2165,7 +2165,10 @@
     now = () => Date.now(),
     schedule = (fn, ms) => setTimeout(fn, ms),
     cancel = (timer) => clearTimeout(timer),
-    qr
+    qr,
+    onTiming = () => {
+    },
+    monotonic = () => globalThis.performance?.now?.() ?? now()
   }) {
     let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
     let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
@@ -2185,6 +2188,12 @@
       return text.includes("\u79EF\u5206") ? text : `${text} \u79EF\u5206`;
     };
     const notify = () => changed();
+    const timing = (stage, started, details = {}) => {
+      try {
+        onTiming({ stage, durationMs: Math.max(0, Math.round(monotonic() - started)), ...details });
+      } catch {
+      }
+    };
     function message(cause, fallback = "\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5\u79EF\u5206\u670D\u52A1\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002") {
       const code = cause?.code || cause?.message;
       const messages = {
@@ -2239,7 +2248,13 @@
       }
       const action = value.payment_action;
       if (grant !== null && !intent?.close_intent_id && action?.type === "qr" && value.payment_state === "pending" && now() < Date.parse(value.expires_at) && now() < Date.parse(action.expires_at) && qr) {
-        const image = await qr(action.payload);
+        const qrStarted = monotonic();
+        let image;
+        try {
+          image = await qr(action.payload);
+        } finally {
+          timing("qr", qrStarted, { ready: Boolean(image) });
+        }
         if (g === generation && order === value) {
           qrImage = image;
           const remaining = Math.min(Date.parse(value.expires_at), Date.parse(action.expires_at)) - now();
@@ -2464,6 +2479,8 @@
       dialogOpen = true;
       order = null;
       notify();
+      const confirmStarted = monotonic();
+      let outcome = "failed";
       try {
         if (!intent) save({
           purchase_intent_id: uuid(),
@@ -2473,6 +2490,7 @@
         });
         notify();
         await recover(g);
+        outcome = "completed";
       } catch (cause) {
         if (g !== generation) return;
         error = message(cause);
@@ -2494,6 +2512,7 @@
         }
       } finally {
         if (g === generation) {
+          timing("confirm", confirmStarted, { outcome, qrReady: Boolean(paymentImage()) });
           writing = false;
           notify();
           poll();
@@ -2507,6 +2526,8 @@
       error = "";
       qrImage = null;
       notify();
+      const closeStarted = monotonic();
+      let outcome = "failed";
       try {
         const value = {
           ...intent || { purchase_intent_id: order.purchase_intent_id, amount_fen: order.amount_fen },
@@ -2515,10 +2536,12 @@
         };
         save(value);
         await recover(g);
+        outcome = "completed";
       } catch (cause) {
         if (g === generation) error = message(cause);
       } finally {
         if (g === generation) {
+          timing("close", closeStarted, { outcome });
           writing = false;
           notify();
           poll();

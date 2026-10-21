@@ -43,6 +43,20 @@ TB00–TB09 的开发、测试命令、失败修复与审查结论全部保留�
 
 TB10 JSON 和 `credit-release-evidence/` 截图保存当次源码/夹具事实，后续购买交互已有独立证据，原摘要不代表当前工作区。日志位置及具体执行命令见归档；原始证据文件保持不变。
 
+## 支付交互时延优化验收记录（2026-10-21）
+
+本次按 QeeToken 的支付路径优化 WANX 充值：渠道切换继续只改前端状态；订单落库后，Admin 在同一创建请求内领取并执行该订单的 `create_payment` 工作，支付渠道返回二维码时直接在创建响应中返回 `payment_action`。网络超时、渠道不可用或进程中断仍保留 durable work，由后台恢复器继续查询或重试。创建、支付准备、二维码绘制和关闭阶段写入现有本地 `connection-timings.jsonl`，日志只保留阶段、耗时、结果和二维码是否就绪，不记录支付 payload。
+
+验收结果：
+
+- WANX 渠道回归：`node --test tests/credit-wallet-view.test.mjs tests/credit-wallet-transport.test.mjs`，42 passed；连续切换 `wechat → alipay → wechat` 每一步请求计数均保持不变，确认后只创建一次订单。
+- 支付观测回归：`node --test tests/timings.test.mjs tests/credit-wallet-view.test.mjs tests/credit-wallet-transport.test.mjs`，48 passed；确认、二维码绘制和关闭阶段只写入阶段耗时、结果与二维码就绪状态，不写入支付 payload。
+- WANX 全量客户端：`npm test`，1463 passed / 19 skipped；新增支付 timing hook、IPC 和渲染 bundle 均通过。
+- Admin 恢复与 HTTP 回归：`uv run pytest -q tests/module_nexus/test_credit_http.py tests/module_nexus/test_credit_payment_recovery.py`，当前环境因未提供 `CREDITS_TEST_CONTAINER`，14 项全部按既有容器门禁跳过；代码已通过 `python -m compileall`。需在 disposable MySQL 8 环境重跑，确认 HTTP 创建响应为 200、`payment_state=pending` 且带 QR `payment_action`。
+- Admin Python 3.10：本次新增代码只使用 Python 3.10 支持的语法和时间 API；正式线上验收仍需按既有 3.10.17 兼容命令执行，不以本机 3.12 编译代替。
+
+当前验收结论为 **代码就绪、外部支付容器待补证**；没有真实支付渠道或 Windows 实机证据，不解除原有生产 NO-GO 门槛。
+
 ## 文档维护约定
 
 业务决定只维护在业务规则；接口字段与兼容行为维护在专题合同和各端 API；发布操作只维护在上线手册；T01–T32 和外部门槛只维护在验收矩阵。新一轮验证更新本页摘要并留具名记录，不继续把完整阶段日志追加到入口页。历史设计及归档不得作为当前部署指令。

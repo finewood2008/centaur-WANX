@@ -5,7 +5,8 @@ const pendingOrder = value => value && !['credited', 'closed'].includes(value.di
 
 export function createWalletView({ request, changed, storage = globalThis.localStorage,
   uuid = () => globalThis.crypto.randomUUID(), now = () => Date.now(),
-  schedule = (fn, ms) => setTimeout(fn, ms), cancel = timer => clearTimeout(timer), qr }) {
+  schedule = (fn, ms) => setTimeout(fn, ms), cancel = timer => clearTimeout(timer), qr,
+  onTiming = () => {}, monotonic = () => globalThis.performance?.now?.() ?? now() }) {
   let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
   let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
   let error = '', intent = null, qrImage = null, recoveryReady = false;
@@ -21,6 +22,10 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   const amount = value => displayCreditAtoms(value);
   const points = (value, context = 'balance') => { const text = displayCreditAtoms(value, context); return text.includes('积分') ? text : `${text} 积分`; };
   const notify = () => changed();
+  const timing = (stage, started, details = {}) => {
+    try { onTiming({ stage, durationMs: Math.max(0, Math.round(monotonic() - started)), ...details }); }
+    catch { /* Diagnostics must never interrupt payment recovery. */ }
+  };
   function message(cause, fallback = '暂时无法连接积分服务，请稍后重试。') {
     const code = cause?.code || cause?.message;
     const messages = { UNSUPPORTED_SCHEMA: '请升级万象客户端后再充值，原订单仍会继续处理。',
@@ -69,7 +74,13 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     }
     const action = value.payment_action;
     if (grant !== null && !intent?.close_intent_id && action?.type === 'qr' && value.payment_state === 'pending' && now() < Date.parse(value.expires_at) && now() < Date.parse(action.expires_at) && qr) {
-      const image = await qr(action.payload);
+      const qrStarted = monotonic();
+      let image;
+      try {
+        image = await qr(action.payload);
+      } finally {
+        timing('qr', qrStarted, { ready: Boolean(image) });
+      }
       if (g === generation && order === value) {
         qrImage = image;
         const remaining = Math.min(Date.parse(value.expires_at), Date.parse(action.expires_at)) - now();
@@ -237,12 +248,15 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     const product = selectedProduct();
     if (!identity || !recoveryReady || writing || loading || pendingOrder(order) || intent || !catalog?.recharge_enabled || !product || !channels().includes(selectedChannel)) return;
     const g = generation; writing = true; error = ''; dialogOpen = true; order = null; notify();
+    const confirmStarted = monotonic();
+    let outcome = 'failed';
     try {
       if (!intent) save({ purchase_intent_id: uuid(), ...(product.product_id ? { product_id: product.product_id, product_version: product.version } : { amount_fen: product.amount_fen }),
         ...(catalog.payment_channels ? { payment_channel: selectedChannel } : {}),
         ...(catalog.view_version === '2' ? { currency_rule_id: 'usd-credit-100-v2' } : {}) });
       notify();
       await recover(g);
+      outcome = 'completed';
     } catch (cause) {
       if (g !== generation) return;
       error = message(cause);
@@ -255,18 +269,31 @@ export function createWalletView({ request, changed, storage = globalThis.localS
         try { await acceptOrder(await read('order', { order_id: original }), g); }
         catch (failure) { if (g === generation) error = message(failure); }
       }
-    } finally { if (g === generation) { writing = false; notify(); poll(); } }
+    } finally {
+      if (g === generation) {
+        timing('confirm', confirmStarted, { outcome, qrReady: Boolean(paymentImage()) });
+        writing = false; notify(); poll();
+      }
+    }
   }
   async function close() {
     if (!order || writing || loading || order.payment_state === 'paid') return;
     const g = generation; writing = true; error = ''; qrImage = null; notify();
+    const closeStarted = monotonic();
+    let outcome = 'failed';
     try {
       const value = { ...(intent || { purchase_intent_id: order.purchase_intent_id, amount_fen: order.amount_fen }),
         order_id: order.order_id, close_intent_id: intent?.close_intent_id || uuid() };
       save(value);
       await recover(g);
+      outcome = 'completed';
     } catch (cause) { if (g === generation) error = message(cause); }
-    finally { if (g === generation) { writing = false; notify(); poll(); } }
+    finally {
+      if (g === generation) {
+        timing('close', closeStarted, { outcome });
+        writing = false; notify(); poll();
+      }
+    }
   }
   const paymentImage = () => qrImage && order && !intent?.close_intent_id && order.payment_state === 'pending' &&
     now() < Date.parse(order.expires_at) && now() < Date.parse(order.payment_action?.expires_at) ? qrImage : null;

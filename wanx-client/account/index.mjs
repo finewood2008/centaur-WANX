@@ -502,18 +502,28 @@ export function createAccount({
       if (generation === epoch) refreshPromise = null;
     }
   }
+  function measureCreditRequest(input, operation) {
+    const path = input?.path || '';
+    if (!path.startsWith('/app-api/v1/credits/')) return operation();
+    let step = 'credit.payment.status';
+    if (input.method === 'POST' && path === '/app-api/v1/credits/orders') step = 'credit.payment.create';
+    else if (input.method === 'POST' && /\/orders\/[^/]+\/close$/.test(path)) step = 'credit.payment.close';
+    else if (path.endsWith('/catalog/v2')) step = 'credit.checkout.catalog';
+    return measure(step, operation);
+  }
+
   async function request(input) {
     const generation = epoch;
     if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
     if (record.session.expiresAt <= now() + 30000) await refresh();
     assert(generation);
     try {
-      return await wire({ ...input, authenticated: true }, generation);
+      return await measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
     } catch (error) {
       if (error.status !== 401) throw error;
       await refresh();
       assert(generation);
-      return wire({ ...input, authenticated: true }, generation);
+      return measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
     }
   }
   async function login(input, mode) {

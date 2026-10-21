@@ -73,6 +73,7 @@ export function registerControlActions({
   showAbout,
   quit,
   allowDevelopmentInstall = false,
+  timings = null,
 }) {
   const panelActions = new Set([
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
@@ -81,6 +82,7 @@ export function registerControlActions({
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
   const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  reads.add("credit-payment-timing");
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -227,6 +229,7 @@ export function registerControlActions({
       }
     });
   }
+  register("credit-payment-timing", input => { timings?.creditPayment(input); });
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {
       if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");

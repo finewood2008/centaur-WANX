@@ -5,10 +5,11 @@ import { createAccount } from "../account/index.mjs";
 import { createCreditWallet } from "../account/credit-wallet.mjs";
 
 const response = (payload, status = 200) => new Response(JSON.stringify(payload), { status });
-function fixture(handler) {
+function fixture(handler, options = {}) {
   let stored = null, clientId;
   const requests = [];
   const account = createAccount({
+    measure: options.measure,
     store: { load: async () => structuredClone(stored), save: async value => { stored = structuredClone(value); },
       clear: async () => { stored = null; } },
     fetch: async (url, options) => {
@@ -26,6 +27,18 @@ function fixture(handler) {
   });
   return { account, requests, wallet: createCreditWallet({ request: input => account.request(input) }) };
 }
+
+test('credit payment requests emit stage timings for the local diagnostic recorder', async () => {
+  const steps = [];
+  const { account, wallet } = fixture(
+    () => response({ schema_version: '1', request_id: 'timed-create', data: { order_id: 'order-1' } }, 202),
+    { measure: async (step, operation) => { steps.push(step); return operation(); } },
+  );
+  await account.loginPassword({ phone: '13800138000', password: 'test-password', remember: false });
+  await wallet.createOrder({ purchase_intent_id: 'timed-buy', amount_fen: 10000 });
+  assert.ok(steps.includes('credit.payment.create'));
+  await account.close();
+});
 
 test("undeployed credits routes report service availability without weakening the contract", async () => {
   for (const [reply, expected] of [

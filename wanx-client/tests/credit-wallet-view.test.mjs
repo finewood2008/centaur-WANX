@@ -116,9 +116,10 @@ test('product and channel selection stay local until confirmation creates one fr
   await view.action('credits-reselect');
   assert.match(view.render(), /data-action="credits-buy"/);
   await view.action('credits-buy', { amount: '10000' });
-  await view.action('credits-channel', { channel: 'wechat' });
-  await view.action('credits-channel', { channel: 'alipay' });
-  await view.action('credits-channel', { channel: 'wechat' });
+  for (const channel of ['wechat', 'alipay', 'wechat']) {
+    await view.action('credits-channel', { channel });
+    assert.equal(seen.length, beforeSelection, 'switching channels must not call the payment API');
+  }
   assert.equal(seen.length, beforeSelection, 'selection must not create, close or query an order');
   assert.match(view.render(), /确定支付 ¥100/);
   assert.doesNotMatch(view.render(), /支付二维码/);
@@ -347,6 +348,20 @@ test('credits offers one purchase entry and shows products only inside the purch
   await view.action('credits-open');
   assert.match(view.render(), /支付二维码/);
   assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
+});
+
+test('payment timing hooks record confirmation and QR readiness without changing the request flow', async () => {
+  const events = [];
+  let tick = 0;
+  const { view } = setup({
+    onTiming: event => events.push(event),
+    monotonic: () => ++tick,
+  });
+  await view.refresh(); await view.action('credits-open');
+  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-confirm');
+  assert.ok(events.some(event => event.stage === 'qr' && event.ready === true));
+  assert.ok(events.some(event => event.stage === 'confirm' && event.qrReady === true && event.outcome === 'completed'));
 });
 
 test('QR expires on time even when a payment status request is still in flight', async () => {
