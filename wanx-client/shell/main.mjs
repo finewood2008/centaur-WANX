@@ -23,7 +23,7 @@ import {
 } from "electron";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
-import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
+import { readFile, writeFile, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -193,7 +193,6 @@ if (process.argv.includes("--wanx-managed-app")) {
           creditsServiceURL = config.serviceURL;
         } catch (error) { if (error.code !== "ENOENT") reportError(new Error("CREDITS_INVALID_CONFIG")); }
       }
-      const preferenceFile = path.join(userData, "p2p-preference.json");
       const requestAccount = account.request;
       account.request = (input) => {
         const step =
@@ -213,7 +212,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           ? timed(step, () => requestAccount(input))
           : requestAccount(input);
       };
-      let preferenceWrites = Promise.resolve();
+      // Desktop networking follows login; ignore the retired manual-off preference.
       client = createPlatformClient({
         account,
         localBoxes: createLocalBoxes(),
@@ -223,31 +222,6 @@ if (process.argv.includes("--wanx-managed-app")) {
           filePath: path.join(userData, "network-resume.enc"),
           safeStorage,
         }),
-        async readPreference() {
-          try {
-            return (
-              JSON.parse(await readFile(preferenceFile, "utf8")).enabled !==
-              false
-            );
-          } catch (error) {
-            if (error.code === "ENOENT") return true;
-            throw error;
-          }
-        },
-        writePreference(enabled) {
-          preferenceWrites = preferenceWrites
-            .catch(() => {})
-            .then(async () => {
-              await mkdir(userData, { recursive: true, mode: 0o700 });
-              await writeFile(
-                `${preferenceFile}.tmp`,
-                JSON.stringify({ enabled }),
-                { mode: 0o600 },
-              );
-              await rename(`${preferenceFile}.tmp`, preferenceFile);
-            });
-          return preferenceWrites;
-        },
         createTransport(identity) {
           const scope = createHash("sha256")
             .update(JSON.stringify(identity || "direct"))

@@ -135,8 +135,6 @@ const actions = {
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
   "maintenance.open": (input) => ipcRenderer.invoke("wanx-client:maintenance-open", { tool: input?.tool, deviceId: input?.deviceId }),
-  "network.set-enabled": (input) =>
-    ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
   "market.list": () => ipcRenderer.invoke("wanx-client:market-list"),
   "market.candidate": (input) => ipcRenderer.invoke("wanx-client:market-candidate", { applicationId: input?.applicationId }),
