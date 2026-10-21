@@ -11,6 +11,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   let error = '', intent = null, qrImage = null, recoveryReady = false, recovering = false;
   let checkingOrder = false, orderReadFailed = false, customAmount = '';
   let backgroundLoading = false, recoveryTask = null, confirmingPurchase = false;
+  let cancellationAccepted = false;
   let selectedChannel = 'alipay', remote = null, usage = [], nextUsage = null, usageLoading = false;
   const channels = () => catalog?.payment_channels?.filter(name => ['alipay', 'wechat'].includes(name)) ?? ['alipay'];
   const key = () => `wanx.credit.purchase.v1:${account}`;
@@ -69,6 +70,15 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     if (qrTimer !== null) cancel(qrTimer);
     const cachedImage = order?.order_id === value.order_id && order?.payment_action?.payload === value.payment_action?.payload ? qrImage : null;
     qrTimer = null; order = value; qrImage = null;
+    // Only Admin can release a cancelled purchase while the channel is still
+    // closing it. Paid or disputed results must remain visible.
+    if (value.purchase_released === true && ['close_pending', 'closed'].includes(value.payment_state) &&
+      ['close_pending', 'closed'].includes(value.display_state) && value.fulfillment_state === 'not_due' &&
+      ['none', 'resolved'].includes(value.review_state)) {
+      if (intent) save(null);
+      order = null; cancellationAccepted = true;
+      return;
+    }
     if (value.payment_channel) selectedChannel = value.payment_channel;
     if (intent) {
       if (['credited', 'closed'].includes(value.display_state)) save(null);
@@ -261,7 +271,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   }
   async function purchase(selection = draft(), channel = selectedChannel) {
     if (!identity || !recoveryReady || recovering || checkingOrder || locked() || !catalog?.recharge_enabled || !selection || !channels().includes(channel)) return;
-    const g = generation; writing = true; error = ''; dialogOpen = true; order = null; notify();
+    const g = generation; writing = true; error = ''; dialogOpen = true; order = null; cancellationAccepted = false; notify();
     try {
       if (!intent) save({ purchase_intent_id: uuid(), ...selection.target,
         ...(catalog.payment_channels ? { payment_channel: channel } : {}) });
@@ -331,6 +341,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     return `<section class="wallet-payment ${success ? 'is-success' : ''}" aria-label="支付进度">
       ${paymentImage() ? `<img class="wallet-qr" alt="积分支付二维码" src="${esc(qrImage)}">` : order || intent || writing ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? '✓' : state === 'closed' || expired ? '—' : '·'}</div>` : ''}
       <div role="status" aria-live="polite"><h3>${esc(title)}</h3><p>${esc(description)}</p></div>
+      ${cancellationAccepted ? '<p class="wallet-payment-footnote" role="status">取消请求已受理，可重新选择。请勿继续支付原付款码；如已付款，将继续确认到账。</p>' : ''}
       ${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ''}
       <div class="wallet-payment-actions">
         ${!locked() && !order ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? 'disabled' : ''}>立即支付</button>` : ''}
@@ -369,7 +380,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       catalog = balance = order = qrImage = selectedAmount = remote = null;
       usage = []; nextUsage = null; usageLoading = false;
       dialogOpen = loading = writing = recoveryReady = recovering = checkingOrder = orderReadFailed = false; error = ''; timer = null; customAmount = '';
-      backgroundLoading = confirmingPurchase = false; recoveryTask = null;
+      backgroundLoading = confirmingPurchase = cancellationAccepted = false; recoveryTask = null;
       selectedChannel = 'alipay';
       intent = account ? load() : null;
       if (intent?.payment_channel) selectedChannel = intent.payment_channel;

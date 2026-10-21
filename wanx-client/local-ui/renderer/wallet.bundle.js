@@ -2146,6 +2146,7 @@
     let error = "", intent = null, qrImage = null, recoveryReady = false, recovering = false;
     let checkingOrder = false, orderReadFailed = false, customAmount = "";
     let backgroundLoading = false, recoveryTask = null, confirmingPurchase = false;
+    let cancellationAccepted = false;
     let selectedChannel = "alipay", remote = null, usage = [], nextUsage = null, usageLoading = false;
     const channels = () => catalog?.payment_channels?.filter((name) => ["alipay", "wechat"].includes(name)) ?? ["alipay"];
     const key = () => `wanx.credit.purchase.v1:${account}`;
@@ -2212,6 +2213,12 @@
       qrTimer = null;
       order = value;
       qrImage = null;
+      if (value.purchase_released === true && ["close_pending", "closed"].includes(value.payment_state) && ["close_pending", "closed"].includes(value.display_state) && value.fulfillment_state === "not_due" && ["none", "resolved"].includes(value.review_state)) {
+        if (intent) save(null);
+        order = null;
+        cancellationAccepted = true;
+        return;
+      }
       if (value.payment_channel) selectedChannel = value.payment_channel;
       if (intent) {
         if (["credited", "closed"].includes(value.display_state)) save(null);
@@ -2458,6 +2465,7 @@
       error = "";
       dialogOpen = true;
       order = null;
+      cancellationAccepted = false;
       notify();
       try {
         if (!intent) save({
@@ -2566,6 +2574,7 @@
       return `<section class="wallet-payment ${success ? "is-success" : ""}" aria-label="\u652F\u4ED8\u8FDB\u5EA6">
       ${paymentImage() ? `<img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}">` : order || intent || writing ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : state === "closed" || expired ? "\u2014" : "\xB7"}</div>` : ""}
       <div role="status" aria-live="polite"><h3>${esc(title)}</h3><p>${esc(description)}</p></div>
+      ${cancellationAccepted ? '<p class="wallet-payment-footnote" role="status">\u53D6\u6D88\u8BF7\u6C42\u5DF2\u53D7\u7406\uFF0C\u53EF\u91CD\u65B0\u9009\u62E9\u3002\u8BF7\u52FF\u7EE7\u7EED\u652F\u4ED8\u539F\u4ED8\u6B3E\u7801\uFF1B\u5982\u5DF2\u4ED8\u6B3E\uFF0C\u5C06\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002</p>' : ""}
       ${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}
       <div class="wallet-payment-actions">
         ${!locked() && !order ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? "disabled" : ""}>\u7ACB\u5373\u652F\u4ED8</button>` : ""}
@@ -2611,7 +2620,7 @@
         error = "";
         timer = null;
         customAmount = "";
-        backgroundLoading = confirmingPurchase = false;
+        backgroundLoading = confirmingPurchase = cancellationAccepted = false;
         recoveryTask = null;
         selectedChannel = "alipay";
         intent = account ? load() : null;

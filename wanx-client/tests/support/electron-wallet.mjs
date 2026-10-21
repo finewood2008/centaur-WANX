@@ -49,7 +49,12 @@ try {
           if (createCount === 1) await new Promise(resolve => { window.resolveCreate = resolve; });
           data = activeOrder;
         }
-        if (action === 'wallet.closeOrder') data = activeOrder = { ...activeOrder, payment_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', display_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', payment_action: null };
+        if (action === 'wallet.closeOrder') {
+          data = activeOrder = { ...activeOrder, payment_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', display_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', payment_action: null };
+          if (window.releaseOnClose) {
+            data.purchase_released = true; window.cancelledOrder = data; activeOrder = null;
+          }
+        }
         return { ok: true, state: snapshot, value: action.startsWith('wallet.') ? { schema_version: '1', request_id: 'req-test', data } : data };
       },
     };
@@ -229,6 +234,21 @@ try {
     await until(() => !!document.querySelector('.wallet-qr'));
     check(createCount === 4 && activeOrder.amount_fen === 1234 && activeOrder.grant_credit_atoms === '1234000000', 'custom amount or conversion did not reach payment');
     check(dialog().textContent.includes('1,234') && dialog().textContent.includes('微信扫码'), 'custom payment summary missing');
+    window.releaseOnClose = true;
+    button('credits-close-order').click();
+    await until(() => !product('product-100').disabled);
+    check(!document.querySelector('.wallet-qr') && !dialog().textContent.includes('关闭确认中'), 'accepted cancellation kept the old payment locked');
+    check(cancelledOrder.payment_state === 'close_pending', 'cancellation must not pretend the channel has closed');
+    const previousIntent = cancelledOrder.purchase_intent_id;
+    product('product-100').click();
+    document.querySelector('[data-action="credits-channel"][data-channel="alipay"]').click();
+    button('credits-custom').click(); enterAmount('0.2');
+    walletPoll();
+    await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
+    check(createCount === 4, 'reselecting after cancellation submitted payment');
+    button('credits-pay').click();
+    await until(() => !!document.querySelector('.wallet-qr'));
+    check(createCount === 5 && activeOrder.purchase_intent_id !== previousIntent && activeOrder.amount_fen === 20 && activeOrder.payment_channel === 'alipay', 'accepted cancellation did not allow the confirmed replacement');
     button('credits-dismiss').click();
   })()`);
   await js(`(async () => {
