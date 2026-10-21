@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/netbirdio/netbird/client/embed"
 	"google.golang.org/grpc/codes"
@@ -49,7 +50,10 @@ type engine interface {
 	DialContext(context.Context, string, string) (net.Conn, error)
 }
 type engineFactory func(startParams, string) (engine, error)
-type embeddedEngine struct{ client *embed.Client }
+type embeddedEngine struct {
+	client          *embed.Client
+	diagnosticsPath string
+}
 
 func validateParams(p startParams) error {
 	u, err := url.Parse(p.ManagementURL)
@@ -131,6 +135,15 @@ func newEmbeddedEngine(p startParams, jwt string) (engine, error) {
 		}
 		opts.PrivateKey = saved.PrivateKey
 	}
+	diagnosticsPath := os.Getenv("WANX_NETWORK_DIAGNOSTICS_FILE")
+	if !filepath.IsAbs(diagnosticsPath) {
+		diagnosticsPath = ""
+	}
+	if diagnosticsPath != "" {
+		// Raw SDK output remains discarded; the hook emits only fixed counters.
+		opts.LogLevel = "debug"
+		enableDiagnosticEvents()
+	}
 	c, err := embed.New(opts)
 	if err != nil {
 		return nil, failure("config_failed")
@@ -138,7 +151,7 @@ func newEmbeddedEngine(p startParams, jwt string) (engine, error) {
 	if err := secureConfigDir(p.ConfigDir); err != nil {
 		return nil, err
 	}
-	return &embeddedEngine{client: c}, nil
+	return &embeddedEngine{client: c, diagnosticsPath: diagnosticsPath}, nil
 }
 func (e *embeddedEngine) Start(ctx context.Context) error {
 	err := e.client.Start(ctx)
@@ -160,6 +173,7 @@ func (e *embeddedEngine) Status() networkStatus {
 	if err != nil {
 		return state("recovering", "network_unavailable")
 	}
+	diagnostics := networkDiagnostics{ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ManagementConnected: s.ManagementState.Connected, SignalConnected: s.SignalState.Connected, Peers: []peerDiagnostics{}, Relays: []relayDiagnostics{}}
 	out := state("ready", "")
 	if !s.ManagementState.Connected || !s.SignalState.Connected {
 		out = state("recovering", "network_unavailable")
@@ -170,6 +184,19 @@ func (e *embeddedEngine) Status() networkStatus {
 			continue
 		}
 		out.Peers = append(out.Peers, peerInfo{IP: ip.String(), Name: p.FQDN, Connected: p.ConnStatus == embed.PeerStatusConnected})
+		if e.diagnosticsPath != "" {
+			peer := peerDiagnostics{ConnectionState: connectionState(p.ConnStatus.String()), Events: networkDiagnosticEvents.snapshot(p.PubKey), IP: ip.WithZone("").String(), Connected: p.ConnStatus == embed.PeerStatusConnected, Relayed: p.Relayed, LocalCandidate: candidateKind(p.LocalIceCandidateType), RemoteCandidate: candidateKind(p.RemoteIceCandidateType), BytesTx: p.BytesTx, BytesRx: p.BytesRx}
+			if !p.LastWireguardHandshake.IsZero() {
+				peer.LastHandshake = p.LastWireguardHandshake.UTC().Format(time.RFC3339Nano)
+			}
+			diagnostics.Peers = append(diagnostics.Peers, peer)
+		}
+	}
+	if e.diagnosticsPath != "" {
+		for _, relay := range s.Relays {
+			diagnostics.Relays = append(diagnostics.Relays, relayDiagnostics{Healthy: relay.Err == nil, Kind: relayKind(relay.URI), Transport: relayTransport(relay.Transport)})
+		}
+		publishNetworkDiagnostics(e.diagnosticsPath, diagnostics)
 	}
 	return out
 }
