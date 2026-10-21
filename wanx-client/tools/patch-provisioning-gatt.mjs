@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 // Reproducible local patch of the pinned SDK; never patch node_modules in place.
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -12,6 +13,13 @@ const archive = path.join(root, 'vendor/nexusaos-local-provisioning-electron-ble
 const check = process.argv.includes('--check');
 if (process.argv.slice(2).some(arg => arg !== '--check')) throw Error('Only --check is supported');
 const sha256 = data => createHash('sha256').update(data).digest('hex');
+const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+const runNpm = (args, options) => execFileSync(process.platform === 'win32' ? process.execPath : 'npm',
+  process.platform === 'win32' ? [npmCli, ...args] : args, options);
+function archiveEqual(left, right) {
+  const a = readFileSync(left), b = readFileSync(right);
+  return a.equals(b) || gunzipSync(a).equals(gunzipSync(b));
+}
 if (sha256(readFileSync(archive)) !== '3a321b54ac255904b190b9b772282999f2e62677806b1f624f18dfedf8f0e248') {
   throw Error('SDK baseline hash mismatch: electron-ble');
 }
@@ -19,7 +27,7 @@ const temporary = mkdtempSync(path.join(os.tmpdir(), 'wanx-provisioning-gatt-'))
 try {
   const directory = path.join(temporary, 'package');
   mkdirSync(directory);
-  for (const entry of execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n')) {
+  for (const entry of execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean)) {
     if (!/^package\/(?:package\.json|README\.md|dist\/[a-z]+\.js|dist\/[a-z]+\.d\.ts)$/.test(entry)) {
       throw Error(`Unexpected SDK archive member: ${entry}`);
     }
@@ -134,14 +142,14 @@ try {
     patched = patched.replace(from, to);
   }
   writeFileSync(target, patched);
-  const packed = JSON.parse(execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm',
+  const packed = JSON.parse(runNpm(
     ['pack', '--offline', '--ignore-scripts', '--json', '--pack-destination', temporary],
     { cwd: directory, encoding: 'utf8' }));
   const filename = `nexusaos-local-provisioning-electron-ble-${version}.tgz`;
   if (packed.length !== 1 || packed[0].filename !== filename) throw Error('Unexpected packed SDK filename');
   const generated = path.join(temporary, filename), destination = path.join(root, 'vendor', filename);
   if (check) {
-    if (!readFileSync(destination).equals(readFileSync(generated))) throw Error('SDK GATT patch is not reproducible');
+    if (!archiveEqual(destination, generated)) throw Error('SDK GATT patch is not reproducible');
   } else renameSync(generated, destination);
   console.log(`${check ? 'Verified' : 'Built'} ${filename} ${sha256(readFileSync(destination))}`);
 } finally {
