@@ -408,6 +408,9 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .space-transfers-heading .count { margin-left: 9px; font-size: 10px; }
 .space-transfers-heading > span { font-size: 11px; color: var(--fn-text-tertiary); }
 .space-transfer-list { max-height: min(240px, 42vh); overflow-y: auto; padding: 0 16px 4px; }
+.space-import-summary { margin: 6px 0 10px; padding: 10px 12px; background: #a9715109; border: 1px solid #a9715120; border-radius: 8px; }
+.space-import-summary small { display: block; line-height: 1.7; color: var(--fn-text-secondary); }
+.space-import-summary .inline-error { margin: 5px 0; font-size: 11px; }
 .space-transfer { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid #efeae3; }
 .space-transfer-icon { display: grid; place-items: center; width: 24px; color: var(--fn-color-brand); }
 .space-transfer-icon svg { width: 18px; height: 18px; }

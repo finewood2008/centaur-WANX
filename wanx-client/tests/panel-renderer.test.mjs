@@ -63,7 +63,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
       getSpace: async () => spaceValue, refreshSpace: async () => spaceValue,
       onSpace(fn) { spaceListener = fn; },
       uploadDroppedFiles: async (files, scope) => { uploads.push({ files, scope }); return responses.get("upload")?.(files, scope) || { ok: true }; },
-      transfer: async (...args) => { calls.push(["transfer", ...args]); },
+      transfer: async (...args) => { calls.push(["transfer", ...args]); return responses.get("transfer")?.(...args); },
     } : {}),
     getBalance: async () => { calls.push(["panel-balance"]); return getBalance(); },
     onState(fn) { listener = fn; },
@@ -381,17 +381,17 @@ test("whole panel drop overlay is stable through updates and submits multiple fi
   await h.click({ page: "space" });
   assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "space" }]);
 });
-test("panel ignores text, clears drag leave, rejects directories and changed connections", async () => {
+test("panel ignores text, accepts directories, clears drag leave and rejects changed connections", async () => {
   const h = await harness(connectedState(), undefined, uploadState());
   await h.drag("dragenter", { types: ["text/plain"] }); assert.equal(h.overlay.hidden, true);
   await h.drag("dragenter"); await h.drag("dragleave"); assert.equal(h.overlay.hidden, true);
   await h.drag("dragenter");
   await h.drag("drop", { files: [{ name: "folder" }], items: [{ webkitGetAsEntry: () => ({ isDirectory: true }) }] });
-  assert.equal(h.uploads.length, 0); assert.match(h.html, /暂不支持文件夹/);
+  assert.equal(h.uploads.length, 1);
   await h.drag("dragenter");
   await h.update({ ...connectedState(), connection: { mode: "local", deviceId: "box-103" } });
   assert.match(h.overlay.innerHTML, /盒子或账号已变化/);
-  await h.drag("drop", { files: [{ name: "one.txt" }] }); assert.equal(h.uploads.length, 0);
+  await h.drag("drop", { files: [{ name: "one.txt" }] }); assert.equal(h.uploads.length, 1);
 });
 for (const [label, connection, storage] of [
   ["signed out", { ...connectedState(), account: { phase: "signed_out" } }, uploadState()],
@@ -532,7 +532,7 @@ test("quick panel shows the whole-batch rejection, escapes filenames, and keeps 
   const h = await harness(connectedState(), async () => ({ available: 0 }), uploadState());
   h.respond("upload", () => ({ ok: false, code: "SPACE_UPLOAD_LIMIT", message: "单文件最大 200 MB：<large>.bin。本批文件未加入上传队列。" }));
   await h.drag("dragenter");
-  assert.match(h.overlay.innerHTML, /最多 20 个文件.*200 MB/);
+  assert.match(h.overlay.innerHTML, /文件夹自动分批上传.*200 MB/);
   await h.drag("drop", { files: [{ name: "<large>.bin" }, { name: "small.txt" }] });
   assert.match(h.html, /200 MB：&lt;large&gt;.bin.*本批文件未加入上传队列/);
   assert.doesNotMatch(h.html, /<large>|class="panel-transfers"/);
@@ -548,4 +548,48 @@ test('note page keeps its edit height and does not route pasted images to ordina
  await h.space({...uploadState(),tasks:[]});
  assert.equal(h.calls.filter(([n])=>n==='desktop-resize').at(-1)[1].height,560);
  await h.noteView(false);assert.equal(h.calls.filter(([n])=>n==='desktop-resize').at(-1)[1].height,264);
+});
+
+test('folder batch panel reports scanning and partial failures, permits batch retry and hides healthy completion',async()=>{
+ const h=await harness(connectedState(),undefined,uploadState());const batch={id:'b'.repeat(32),name:'资料目录',files:110,folders:3,completed:45,failed:0,pending:68,scanComplete:false,phase:'scanning'};
+ await h.space({...uploadState(),imports:[batch],tasks:[{id:'a'.repeat(32),name:'中文.txt',size:100,offset:40,phase:'running'}]});assert.match(h.html,/正在扫描/);assert.match(h.html,/110 个文件/);assert.match(h.html,/暂停本批/);
+ await h.space({...uploadState(),imports:[{...batch,scanComplete:true,phase:'failed',failed:2}],tasks:[{id:'a'.repeat(32),name:'中文.txt',size:100,offset:40,phase:'paused',error:'ECONNRESET'}]});assert.match(h.html,/2 项未完成/);assert.match(h.html,/重试问题项/);assert.match(h.html,/网络连接中断/);
+ await h.space({...uploadState(),imports:[{...batch,scanComplete:true,phase:'complete',failed:0,pending:0}],tasks:[{id:'a'.repeat(32),name:'中文.txt',size:100,offset:100,phase:'complete'}]});assert.doesNotMatch(h.html,/class="panel-transfers"/);
+});
+
+test('accepted panel upload follows network state and retires its stale submission error',async()=>{
+ const h=await harness(connectedState(),undefined,uploadState());
+ h.respond('upload',()=>({ok:false,code:'SPACE_REQUEST_FAILED'}));
+ await h.drag('dragenter');await h.drag('drop',{files:[{name:'样本.bin'}]});
+ assert.match(h.html,/暂未确认操作结果/);
+ const task={id:'a'.repeat(32),name:'样本.bin',size:200,offset:100,phase:'retrying',error:'SPACE_CHUNK_STALLED'};
+ await h.space({...uploadState(),tasks:[task]});
+ assert.match(h.html,/等待网络，恢复后自动继续/);assert.doesNotMatch(h.html,/暂未确认操作结果|上传未完成|上传失败|notice error/);
+ await h.space({...uploadState(),tasks:[{...task,phase:'queued'}]});
+ assert.match(h.html,/等待网络，恢复后自动继续/);assert.doesNotMatch(h.html,/等待上传|notice error/);
+ await h.space({...uploadState(),tasks:[{...task,phase:'running',offset:150}]});
+ assert.doesNotMatch(h.html,/等待网络，恢复后自动继续|notice error/);
+ await h.space({...uploadState(),tasks:[{...task,phase:'complete',offset:200}]});
+ await h.space({...uploadState(),tasks:[]});assert.doesNotMatch(h.html,/panel-transfers|暂未确认操作结果|notice error/);
+});
+test('a late failed panel reply cannot revive an error after the accepted upload completed',async()=>{
+ const h=await harness(connectedState(),undefined,uploadState()),reply=deferred();h.respond('upload',()=>reply.promise);
+ await h.drag('dragenter');const pending=h.drag('drop',{files:[{name:'样本.bin'}]});await settle();
+ const task={id:'b'.repeat(32),name:'样本.bin',size:10,offset:10,phase:'complete'};
+ await h.space({...uploadState(),tasks:[task]});reply.resolve({ok:false,code:'SPACE_REQUEST_FAILED'});await pending;
+ await h.space(uploadState());assert.doesNotMatch(h.html,/暂未确认操作结果|notice error|panel-transfers/);
+});
+test('panel keeps unaccepted submissions and actionable errors separate from another recovering upload',async()=>{
+ const task={id:'a'.repeat(32),name:'原有.bin',size:100,offset:50,phase:'retrying'};
+ for(const [code,text] of [['SPACE_REQUEST_FAILED',/暂未确认操作结果/],['SPACE_DISK_FULL',/存储空间不足/],['ACCOUNT_LOGIN_REQUIRED',/请先登录万象/]]){
+  const h=await harness(connectedState(),undefined,{...uploadState(),tasks:[task]});h.respond('upload',()=>({ok:false,code}));
+  await h.drag('dragenter');await h.drag('drop',{files:[{name:'未入队.bin'}]});assert.match(h.html,text);
+  await h.space({...uploadState(),tasks:[{...task,phase:'running'}]});assert.match(h.html,text);
+ }
+});
+test('panel clears a transfer action network notice from the same batch without promising auto-resume for user pauses',async()=>{
+ const id='b'.repeat(32),task={id:'a'.repeat(32),batchId:id,name:'样本.bin',size:100,offset:50,phase:'waiting'};
+ const h=await harness(connectedState(),undefined,{...uploadState(),tasks:[task]});h.respond('transfer',()=>{throw Error('SPACE_REQUEST_FAILED');});
+ await h.click({transfer:id,command:'pause-batch'});assert.match(h.html,/等待网络，恢复后自动继续/);assert.doesNotMatch(h.html,/notice error/);
+ await h.space({...uploadState(),tasks:[{...task,phase:'paused',error:null}]});assert.match(h.html,/已暂停/);assert.doesNotMatch(h.html,/等待网络，恢复后自动继续|notice error/);
 });

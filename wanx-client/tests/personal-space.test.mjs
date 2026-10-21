@@ -70,10 +70,9 @@ test("dropped files use the same verified transfer queue without opening a picke
   assert.equal(f.requests.filter(r => r.method === 'PUT').length, 36);
   assert.equal(f.service.snapshot().tasks[0].localPath, undefined);
 });
-test("invalid drops and directories do not create remote uploads", async t => {
+test("invalid native path payloads do not create remote uploads", async t => {
   const f = await fixture(t);
   await assert.rejects(f.service.uploads('', ['relative.bin']), { code: 'SPACE_INVALID_DROP' });
-  await assert.rejects(f.service.uploads('', [path.dirname(f.source)]), { code: 'SPACE_DROP_FILES_ONLY' });
   assert.deepEqual(f.service.snapshot().tasks, []);
   assert.equal(f.requests.some(r => r.method === 'POST'), false);
 });

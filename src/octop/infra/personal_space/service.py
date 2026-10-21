@@ -53,6 +53,13 @@ def _safe_file(path: Path, *, missing: bool = False) -> None:
         if missing:
             return
         raise SpaceError("SPACE_NOT_FOUND", 404) from None
+    # SQLite can unlink a journal while lstat is resolving its directory entry.
+    # Recheck only an unlinked regular file, never a link or another unsafe type.
+    if missing and stat.S_ISREG(info.st_mode) and info.st_nlink == 0:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise SpaceError("SPACE_UNSAFE_STORAGE", 409)
 

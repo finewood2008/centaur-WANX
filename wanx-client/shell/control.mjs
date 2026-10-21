@@ -130,8 +130,8 @@ export function registerControlActions({
   });
   register("panel-space-transfer", (input = {}) => {
     requirePanelSpace(input.scope, true);
-    if (!["pause", "resume"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
-    if (!personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload"))
+    if (!["pause", "resume", "pause-batch", "resume-batch", "retry-batch"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if (!(input.action.endsWith("-batch") ? personalSpace.snapshot().imports?.some(batch => batch.id === input.id) : personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload")))
       throw new Error("SPACE_NOT_FOUND");
     return personalSpace.transfer(input.action, input.id);
   });
@@ -140,7 +140,7 @@ export function registerControlActions({
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
       if (method === "snapshot" || method === "refresh") return personalSpace[method]();
       if (method === "downloads") return personalSpace.downloads(input.ids);
-      if (method === "uploads") return uploadResult(() => personalSpace.uploads(input.parent || ""));
+      if (method === "uploads") return uploadResult(() => personalSpace.uploads(input.parent || "", undefined, input.scope, undefined, input.space_id || "personal", input.folders === true));
       if (method === "download" || method === "preview") return personalSpace[method](input.id);
       if (method === "transfer") return personalSpace.transfer(input.action, input.id);
       if (method === "purge") {
@@ -176,7 +176,7 @@ export function registerControlActions({
   register("space-upload-dropped", (input = {}) => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
-    return uploadResult(() => personalSpace.uploads(input.parent || "", input.paths, undefined, input.names));
+    return uploadResult(() => personalSpace.uploads(input.parent || "", input.paths, input.scope, input.names, input.space_id || "personal"));
   });
   register("panel-application-names", async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");

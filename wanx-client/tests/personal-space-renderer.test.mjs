@@ -530,7 +530,7 @@ test('waiting/retrying queue remains visible offline and batch controls send exp
   const task = { id: 'a'.repeat(32), direction: 'upload', name: 'sample.txt', size: 512, offset: 0, phase: 'waiting' };
   h.space.hostState({ ...connected('box'), canLaunchApplications: false, activeDeviceId: null, connectionPhase: 'recovering' });
   h.emit({ accountId: 'owner', boxId: 'box', phase: 'disconnected', tasks: [task] });
-  assert.match(h.space.view(), /等待连接恢复/);
+  assert.match(h.space.view(), /等待网络，恢复后自动继续/);
   assert.doesNotMatch(h.space.view(), /传输 · 进行中/);
   await h.click('transfer', '', { command: 'pause-all' });
   assert.ok(calls.some(([action, input]) => action === 'space.transfer' && input.action === 'pause-all'));
@@ -565,4 +565,25 @@ test('unsupported preview offers download of the same original resource and mode
  await h.click('preview-mode');assert.match(h.space.view(),/aria-pressed="true"/);
  await h.click('preview','a'.repeat(32));assert.match(h.space.view(),/下载原文件/);
  await h.click('preview-download');assert.deepEqual(downloads,['a'.repeat(32)]);
+});
+
+for(const entry of ['picker','drop']) test(`main ${entry} retires accepted-upload errors and uses only the network waiting message`,async()=>{
+ let snapshot={accountId:'owner',boxId:'box',scope:'scope-a',phase:'ready',tasks:[]};
+ const h=harness(async action=>action==='space.uploads'?{ok:false,code:'SPACE_REQUEST_FAILED'}:ok(action==='space.refresh'?snapshot:listed('existing.txt')),async()=>({ok:false,code:'SPACE_REQUEST_FAILED'}));
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();
+ if(entry==='picker')await h.click('upload');else await h.event('drop',{preventDefault(){},dataTransfer:{types:['Files'],files:[{name:'样本.bin'}]}});
+ assert.match(h.space.view(),/notice error/);
+ const task={id:'a'.repeat(32),direction:'upload',name:'样本.bin',phase:'retrying',size:100,offset:40,error:'SPACE_REQUEST_FAILED'};
+ snapshot={...snapshot,tasks:[task]};h.emit(snapshot);
+ assert.match(h.space.view(),/等待网络，恢复后自动继续/);assert.doesNotMatch(h.space.view(),/notice error|inline-error/);
+ snapshot={...snapshot,tasks:[{...task,phase:'queued'}]};h.emit(snapshot);assert.match(h.space.view(),/等待网络，恢复后自动继续/);assert.doesNotMatch(h.space.view(),/等待传输|inline-error/);
+ snapshot={...snapshot,tasks:[{...task,phase:'running',offset:70}]};h.emit(snapshot);assert.doesNotMatch(h.space.view(),/等待网络，恢复后自动继续|notice error/);
+ snapshot={...snapshot,tasks:[{...task,phase:'complete',offset:100}]};h.emit(snapshot);await tick();assert.doesNotMatch(h.space.view(),/等待网络，恢复后自动继续|notice error|inline-error/);
+ snapshot={...snapshot,tasks:[]};h.emit(snapshot);assert.doesNotMatch(h.space.view(),/notice error/);
+});
+test('main preserves true submission errors and manual pauses during unrelated automatic recovery',async()=>{
+ let snapshot={accountId:'owner',boxId:'box',scope:'scope-a',phase:'ready',tasks:[{id:'a'.repeat(32),direction:'upload',name:'原有.bin',phase:'retrying',size:100,offset:40,error:'ECONNRESET'}]};
+ const h=harness(async action=>action==='space.uploads'?{ok:false,code:'SPACE_DISK_FULL'}:ok(action==='space.refresh'?snapshot:listed('existing.txt')));
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();await h.click('upload');assert.match(h.space.view(),/存储空间不足/);
+ snapshot={...snapshot,tasks:[{...snapshot.tasks[0],phase:'paused',error:null}]};h.emit(snapshot);assert.match(h.space.view(),/已暂停|存储空间不足/);assert.doesNotMatch(h.space.view(),/等待网络，恢复后自动继续/);
 });

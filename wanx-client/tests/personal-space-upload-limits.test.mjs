@@ -1,93 +1,38 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { mkdtemp, open, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { createPersonalSpace, MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from "../shell/personal-space.mjs";
-
-async function fixture(t) {
-  const root = await mkdtemp(path.join(tmpdir(), "wanx-upload-limits-"));
-  let chosen = [], saved = [], writes = 0;
-  const requests = [], events = [];
-  const state = { phase: "ready", account: { phase: "authenticated", accountId: "owner" }, connection: { deviceId: "box" } };
-  const client = { snapshot: () => state, subscribe: () => () => {}, applicationConnection: async () => ({
-    context() {}, request(input) { requests.push(input); throw Error("No network needed for preflight"); },
-  }) };
-  const service = await createPersonalSpace({ client, serviceURL: "https://accounts.test",
-    chooseUploads: async () => chosen,
-    store: { load: async () => [], save: async value => {
-      saved = structuredClone(value); writes++;
-      // Stop at the queue boundary: sparse 200 MB fixtures need no hashing/upload.
-      if (value.length) state.phase = "recovering";
-    } }, onEvent: event => events.push(event),
-  });
-  await new Promise(resolve => setImmediate(resolve));
-  t.after(async () => { await service.close(); await rm(root, { recursive: true, force: true }); });
-  return { service, requests, events, saved: () => saved, writes: () => writes,
-    select(files) { chosen = files; state.phase = "ready"; },
-    async file(name, size = 0) { const file = path.join(root, name), handle = await open(file, "wx"); try { await handle.truncate(size); } finally { await handle.close(); } return file; },
-  };
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,open,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createPersonalSpace,MAX_UPLOAD_BYTES} from '../shell/personal-space.mjs';
+async function fixture(t){
+ const root=await mkdtemp(path.join(tmpdir(),'wanx-limits-'));let chosen=[],saved=[],writes=0;
+ const requests=[],events=[],state={phase:'ready',account:{phase:'authenticated',accountId:'owner'},connection:{deviceId:'box'}};
+ const client={snapshot:()=>state,subscribe:()=>()=>{},applicationConnection:async()=>({context(){},request(input){requests.push(input);throw Error('preflight only');}})};
+ const service=await createPersonalSpace({client,serviceURL:'https://test',chooseUploads:async()=>chosen,store:{load:async()=>[],save:async value=>{saved=structuredClone(value);writes++;if(value.length)state.phase='recovering';}},onEvent:e=>events.push(e)});
+ await new Promise(r=>setImmediate(r));t.after(async()=>{await service.close();await rm(root,{recursive:true,force:true});});
+ return {service,requests,events,saved:()=>saved,writes:()=>writes,select(files){chosen=files;state.phase='ready';},async file(name,size=0){const file=path.join(root,name),h=await open(file,'wx');await h.truncate(size);await h.close();return file;}};
 }
-
-for (const entry of ["picker", "drop"]) {
-  for (const count of [19, 20, 21]) test(`${entry}: ${count} files respects the whole-batch count boundary`, async t => {
-    const f = await fixture(t), paths = [];
-    for (let i = 0; i < count; i++) paths.push(await f.file(`${i}.txt`));
-    f.select(paths);
-    const invoke = () => f.service.uploads("", entry === "drop" ? paths : undefined);
-    if (count > MAX_UPLOAD_FILES) {
-      const writes = f.writes();
-      await assert.rejects(invoke(), error => error.code === "SPACE_UPLOAD_LIMIT" && /20.*21.*未加入/.test(error.message));
-      assert.equal(f.service.snapshot().tasks.length, 0); assert.equal(f.writes(), writes); assert.equal(f.events.length, 0);
-    } else { await invoke(); assert.equal(f.saved().length, count); }
-    assert.equal(f.requests.length, 0);
-  });
-  for (const bytes of [0, MAX_UPLOAD_BYTES - 1, MAX_UPLOAD_BYTES, MAX_UPLOAD_BYTES + 1]) test(`${entry}: file size ${bytes} bytes`, async t => {
-    const f = await fixture(t), file = await f.file("boundary.bin", bytes); f.select([file]);
-    const invoke = () => f.service.uploads("", entry === "drop" ? [file] : undefined);
-    if (bytes > MAX_UPLOAD_BYTES) {
-      await assert.rejects(invoke(), error => error.code === "SPACE_UPLOAD_LIMIT" && /200 MB.*boundary.bin.*未加入/.test(error.message));
-      assert.equal(f.saved().length, 0); assert.equal(f.events.length, 0);
-    } else { await invoke(); assert.equal(f.saved()[0].size, bytes); }
-    assert.equal(f.requests.length, 0);
-  });
+for(const entry of ['picker','drop']){
+ for(const count of [19,20,21,201])test(`${entry}: ${count} files are accepted without a whole-batch count ceiling`,async t=>{
+  const f=await fixture(t),paths=[];for(let i=0;i<count;i++)paths.push(await f.file(`${i}.txt`));f.select(paths);await f.service.uploads('',entry==='drop'?paths:undefined);assert.equal(f.saved().length,count);assert.equal(f.requests.length,0);
+ });
+ for(const bytes of [0,MAX_UPLOAD_BYTES-1,MAX_UPLOAD_BYTES,MAX_UPLOAD_BYTES+1])test(`${entry}: ${bytes} byte boundary is isolated to its own file`,async t=>{
+  const f=await fixture(t),file=await f.file('boundary.bin',bytes);f.select([file]);await f.service.uploads('',entry==='drop'?[file]:undefined);assert.equal(f.saved().length,1);const task=f.saved()[0];assert.equal(task.size,bytes);assert.equal(task.phase,bytes>MAX_UPLOAD_BYTES?'paused':'queued');assert.equal(task.error,bytes>MAX_UPLOAD_BYTES?'SPACE_UPLOAD_LIMIT':undefined);assert.equal(f.requests.length,0);
+ });
 }
-
-test("mixed oversized batch leaves an existing queue unchanged and lists every oversized basename", async t => {
-  const f = await fixture(t), existing = await f.file("existing.txt", 1);
-  await f.service.uploads("", [existing]);
-  const before = structuredClone(f.saved()), writes = f.writes(), events = f.events.length;
-  const small = await f.file("small.txt", 10), big1 = await f.file("大文件.bin", MAX_UPLOAD_BYTES + 1), big2 = await f.file("large.bin", MAX_UPLOAD_BYTES + 2);
-  f.select([small, big1, big2]);
-  await assert.rejects(f.service.uploads(""), error => {
-    assert.equal(error.code, "SPACE_UPLOAD_LIMIT");
-    assert.match(error.message, /以下 2 个文件.*大文件.bin、large.bin/);
-    assert.ok(!error.message.includes(path.dirname(big1))); return true;
-  });
-  assert.deepEqual(f.saved(), before); assert.equal(f.writes(), writes); assert.equal(f.events.length, events); assert.equal(f.requests.length, 0);
+test('mixed oversized batch keeps valid files and records each skipped basename without native path leakage',async t=>{
+ const f=await fixture(t),small=await f.file('small.txt',10),big1=await f.file('大文件.bin',MAX_UPLOAD_BYTES+1),big2=await f.file('large.bin',MAX_UPLOAD_BYTES+2);f.select([small,big1,big2]);await f.service.uploads('');
+ assert.equal(f.saved().filter(t=>t.phase==='queued').length,1);assert.equal(f.saved().filter(t=>t.error==='SPACE_UPLOAD_LIMIT').length,2);assert.equal(f.service.snapshot().imports[0].failed,2);assert.doesNotMatch(JSON.stringify(f.service.snapshot()),new RegExp(path.dirname(small)));assert.equal(f.requests.length,0);
 });
-
-test("empty selection/cancel writes nothing; count is checked before deduplication or stat", async t => {
-  const f = await fixture(t), writes = f.writes();
-  await f.service.uploads(""); assert.equal(f.writes(), writes);
-  const missing = path.join(tmpdir(), "not-a-real-file-for-limit-test");
-  await assert.rejects(f.service.uploads("", Array(21).fill(missing)), { code: "SPACE_UPLOAD_LIMIT" });
-  assert.equal(f.writes(), writes); assert.deepEqual(f.saved(), []);
+test('cancel selects nothing; repeated local selections deduplicate by path plus visible name',async t=>{
+ const f=await fixture(t),writes=f.writes();await f.service.uploads('');assert.equal(f.writes(),writes);const file=await f.file('one.txt');f.select(Array(21).fill(file));await f.service.uploads('');assert.equal(f.saved().length,1);
 });
-
-test('drop preserves visible Unicode names even when the disk basename is temporary', async t => {
-  const f = await fixture(t), file = await f.file('temporary-123.bin', 1);
-  const names = ['中文 报告（终稿）😀.png', 'cafe\u0301.txt'];
-  await f.service.uploads('', [file, file], undefined, names);
-  assert.deepEqual(f.saved().map(task => task.name), names);
+test('dropped Unicode names remain byte-for-byte even if their disk basename is temporary',async t=>{
+ const f=await fixture(t),file=await f.file('temporary.bin',1),names=['中文 报告（终稿）😀.png','cafe\u0301.txt'];await f.service.uploads('',[file,file],undefined,names);assert.deepEqual(f.saved().map(t=>t.name),names);
 });
-
-test('invalid dropped names reject the entire batch before queueing', async t => {
-  const f = await fixture(t), file = await f.file('temporary.bin', 1);
-  for (const bad of [' 前导空格.txt', '尾部.txt ', '../escape.txt', 'x\\bad.txt', 'a\n.txt', 'x.', '字'.repeat(81)]) {
-    await assert.rejects(f.service.uploads('', [file, file], undefined, ['正常.txt', bad]), {code: 'SPACE_INVALID_NAME'});
-    assert.equal(f.saved().length, 0);
-  }
-  await assert.rejects(f.service.uploads('', [file], undefined, []));
-  assert.equal(f.saved().length, 0);
+test('invalid names are isolated and do not prevent valid peers; malformed bridge arrays are rejected',async t=>{
+ for(const bad of [' 前导空格.txt','尾部.txt ','../escape.txt','x\\bad.txt','a\n.txt','x.','字'.repeat(81)]){
+  const f=await fixture(t),file=await f.file('temporary.bin',1);await f.service.uploads('',[file,file],undefined,['正常.txt',bad]);assert.equal(f.saved().filter(t=>t.phase==='queued').length,1);assert.equal(f.saved().filter(t=>t.error==='SPACE_INVALID_NAME').length,1);
+ }
+ const f=await fixture(t),file=await f.file('one.bin');await assert.rejects(f.service.uploads('',[file],undefined,[]),{code:'SPACE_INVALID_DROP'});assert.equal(f.saved().length,0);
 });

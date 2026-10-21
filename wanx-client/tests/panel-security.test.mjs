@@ -348,8 +348,8 @@ test("all three upload IPC entries return only the deliberate preflight notice a
   };
   const h = harness({ personalSpace });
   for (const [method, input, window, expected] of [
-    ["space-uploads", { parent: "a".repeat(32) }, h.control, ["a".repeat(32)]],
-    ["space-upload-dropped", { parent: "b".repeat(32), paths: ["/tmp/file"] }, h.control, ["b".repeat(32), ["/tmp/file"], undefined, undefined]],
+    ["space-uploads", { parent: "a".repeat(32) }, h.control, ["a".repeat(32), undefined, undefined, undefined, "personal", false]],
+    ["space-upload-dropped", { parent: "b".repeat(32), paths: ["/tmp/file"] }, h.control, ["b".repeat(32), ["/tmp/file"], undefined, undefined, "personal"]],
     ["panel-space-upload", { parent: "ignored", scope: "scope-a", paths: ["/tmp/file"] }, h.panel, ["", ["/tmp/file"], "scope-a", undefined]],
   ]) {
     assert.deepEqual(await h.invoke(method, input, window), { uploadRejection: notice });
