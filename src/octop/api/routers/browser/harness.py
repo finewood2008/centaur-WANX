@@ -437,14 +437,14 @@ class ModelAccessBody(BaseModel):
 
 
 @router.post(
-    "/browser/model-access", summary="Use the configured DeepSeek in an owned browser thread"
+    "/browser/model-access", summary="Use the configured WANX model in an owned browser thread"
 )
 async def browser_model_access(
     body: ModelAccessBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Opt an owned browser conversation into the administrator's configured DeepSeek."""
+    """Bind an owned browser conversation to WANX's configured usable model."""
     from octop.infra.browser.model_access import configured_model
 
     if not user.is_admin or not user_has_permission(user, "browser"):

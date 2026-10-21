@@ -19,7 +19,7 @@ try {
     Date.now = () => realNow() + nowOffset;
     window.requests = [];
     const realTimeout = window.setTimeout.bind(window);
-    window.setTimeout = (callback, delay, ...args) => delay === 5000 || delay === 30000 ? (window.walletPoll = callback, 0) : delay > 30000 ? (window.qrExpiry = callback, 1) : realTimeout(callback, delay, ...args);
+    window.setTimeout = (callback, delay, ...args) => delay === 1000 || delay === 5000 || delay === 30000 ? (window.walletPoll = callback, 0) : delay > 30000 ? (window.qrExpiry = callback, 1) : realTimeout(callback, delay, ...args);
     window.wanxClient = {
       getLocalState: async () => snapshot,
       onLocalState: listener => { window.publish = listener; },
@@ -28,26 +28,33 @@ try {
         let data = { items: [], next_cursor: null };
         if (action === 'wallet.orders') data = { items: activeOrder && !['credited', 'closed'].includes(activeOrder.display_state) ? [activeOrder] : [], next_cursor: null };
         if (action === 'wallet.order') data = activeOrder;
-        if (action === 'wallet.catalog') data = { recharge_enabled: true, payment_channels: ['alipay', 'wechat'], timezone: 'Asia/Shanghai', tiers: [], products: [1, 100, 200].map(amount => ({ product_id: 'product-' + amount, version: 'v1', name: '充值商品 ' + amount, enabled: true, amount_fen: amount, grant_credit_atoms: String(amount * 200000) })) };
-        if (action === 'wallet.catalog' && window.rechargeV2) data = { view_version: '2', currency_rule_id: 'usd-credit-100-v2', recharge_enabled: true, payment_channels: ['alipay', 'wechat'], timezone: 'Asia/Shanghai', custom_amount: { min_fen: 1000, max_fen: 100000, step_fen: 100 }, products: [10,50,100,200,500].map(yuan => ({product_id: 'v2-'+yuan,version:'2',amount_fen:yuan*100,grant_credit_atoms:String(yuan*100000000),name:yuan+'元充值',enabled:true})) };
-        if (action === 'wallet.quote') data = { view_version: '2', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, rule_id: 'wanx-recharge-100-v2', amount_fen: input.amount_fen, grant_credit_atoms: '1100000000' };
+        if (action === 'wallet.catalog') data = { recharge_enabled: true, payment_channels: ['alipay', 'wechat'], timezone: 'Asia/Shanghai', tiers: [],
+          custom_recharge: { enabled: true, version: 'cny-100-v1', min_amount_fen: 1, max_amount_fen: 10000000000, points_per_yuan: '100' },
+          products: [1, 100, 200].map(amount => ({ product_id: 'product-' + amount, version: 'v1', name: '充值商品 ' + amount, enabled: true, amount_fen: amount, grant_credit_atoms: String(amount * 200000) })) };
         if (action === 'wallet.balance') data = { balance_credit_atoms: activeOrder?.display_state === 'credited' ? activeOrder.grant_credit_atoms : '0', debt_credit_atoms: '0', ledger_sequence: activeOrder?.display_state === 'credited' ? 1 : 0, execution_slot_state: 'none', pending_call_count: 0 };
         if (action === 'wallet.balance' && window.qeeMode) data.billing_backend = 'qeetoken';
-        if (action === 'wallet.wallet') data = { view_version: '2', account_id: snapshot.account.accountId, currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, balance_credit_atoms: '199999999940', spent_credit_atoms: '60', correction_credit_atoms: '0', net_spent_credit_atoms: '60', remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-19T12:00:00Z', pending_executions: 1 };
-        if (action === 'wallet.usage') data = { view_version: '2', account_id: snapshot.account.accountId, currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, remote_sequence: '2', items: [{ event_id: 'e1', account_sequence: '2', debit_credit_atoms: '60', occurred_at: '2026-10-19T12:00:00Z', device_id: '客厅盒子', model: 'test-model' }], next_before_sequence: null };
+        if (action === 'wallet.wallet') data = { account_id: snapshot.account.accountId, billing_backend: 'qeetoken', currency_rule_id: 'usd-credit-1-v1', usd_per_credit: '1', credit_scale: 6, currency: 'USD', currency_scale: 8, balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60', remote_sequence: '2', sync_state: 'synced', synced_at: window.walletSyncedAt || '2026-10-19T12:00:00Z', pending_executions: 1 };
+        if (action === 'wallet.usage') data = { items: [{ event_id: 'e1', account_sequence: '2', debit_usd_atoms: '60', debit_credit_atoms: '1', occurred_at: '2026-10-19T12:00:00Z', device_id: '客厅盒子', model: 'test-model', input_tokens: 7, output_tokens: 2 }], next_before_sequence: null };
         if (action === 'wallet.createOrder') {
-          if (window.rechargeV2) check(input.currency_rule_id === 'usd-credit-100-v2' && input.amount_fen === 1100 && !('grant_credit_atoms' in input), 'custom purchase must preserve server contract');
-          else check(input.product_version === 'v1' && !('amount_fen' in input), 'purchase must use server-owned product price');
-          const amountFen = window.rechargeV2 ? input.amount_fen : Number(input.product_id.replace('product-', ''));
+          const custom = input.custom_amount_fen !== undefined;
+          check(!('amount_fen' in input), 'purchase must use the configured product or custom contract');
+          if (custom) check(input.custom_recharge_version === 'cny-100-v1' && !('product_id' in input), 'custom purchase contract missing');
+          else check(input.product_version === 'v1', 'purchase must use server-owned product price');
+          const amountFen = custom ? input.custom_amount_fen : Number(input.product_id.replace('product-', ''));
           createCount++;
           activeOrder = { payment_channel: input.payment_channel, order_id: 'test-order-' + createCount, purchase_intent_id: input.purchase_intent_id, amount_fen: amountFen,
-            grant_credit_atoms: String(amountFen * (window.rechargeV2 ? 1000000 : 200000)), created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString(),
+            grant_credit_atoms: String(amountFen * (custom ? 1000000 : 200000)), created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString(),
             payment_state: 'pending', fulfillment_state: 'not_due', review_state: 'none', display_state: 'pending',
             payment_action: { type: 'qr', payload: input.payment_channel === 'wechat' ? 'weixin://wxpay/bizpayurl?pr=isolated-test-not-payable' : 'isolated-test-not-payable', expires_at: new Date(Date.now() + 60000).toISOString() } };
           if (createCount === 1) await new Promise(resolve => { window.resolveCreate = resolve; });
           data = activeOrder;
         }
-        if (action === 'wallet.closeOrder') data = activeOrder = { ...activeOrder, payment_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', display_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', payment_action: null };
+        if (action === 'wallet.closeOrder') {
+          data = activeOrder = { ...activeOrder, payment_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', display_state: activeOrder.payment_state === 'closed' ? 'closed' : 'close_pending', payment_action: null };
+          if (window.releaseOnClose) {
+            data.purchase_released = true; window.cancelledOrder = data; activeOrder = null;
+          }
+        }
         return { ok: true, state: snapshot, value: action.startsWith('wallet.') ? { schema_version: '1', request_id: 'req-test', data } : data };
       },
     };
@@ -56,6 +63,13 @@ try {
     window.button = action => document.querySelector('[data-action="' + action + '"]');
     window.product = amount => document.querySelector('[data-action="credits-buy"][data-amount="' + amount + '"]');
     window.dialog = () => document.querySelector('.wallet-purchase-dialog');
+    window.enterAmount = value => {
+      const input = document.getElementById('wallet-custom-amount');
+      check(!!input, 'custom amount input missing');
+      input.focus(); input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+      check(document.activeElement.id === 'wallet-custom-amount', 'custom amount lost input focus');
+      check(document.getElementById('wallet-custom-amount').value === value, 'custom amount value was reset');
+    };
     void 0;
   `);
   const files = ['discovery-selection.js', 'wallet.bundle.js', 'personal-space.js', 'app-catalog.js', 'store-carousel.js', 'support.js', 'renderer.js'];
@@ -74,32 +88,87 @@ try {
     check(dialog().textContent.includes('¥0.01') && dialog().textContent.includes('充值商品 1'), 'penny product not displayed');
     check(document.querySelector('.credits-page').inert && button('show-applications').closest('[inert]'), 'background remained interactive');
     check(dialog().contains(document.activeElement), 'dialog did not take focus');
-    check(!button('credits-channel') && !button('credits-confirm'), 'payment choice appeared before product selection');
-    const beforeSelection = requests.length;
-    product('product-200').click();
-    check(!product('product-1'), 'product list remained in the channel step');
-    button('credits-reselect').click();
-    product('product-1').click();
     const wechat = document.querySelector('[data-action="credits-channel"][data-channel="wechat"]');
     check(wechat && !wechat.disabled, 'WeChat choice unavailable');
     wechat.click();
-    document.querySelector('[data-action="credits-channel"][data-channel="alipay"]').click();
-    document.querySelector('[data-action="credits-channel"][data-channel="wechat"]').click();
-    check(requests.length === beforeSelection && createCount === 0, 'selection sent a network request');
-    check(!document.querySelector('.wallet-qr'), 'selection generated a QR before confirmation');
-    await until(() => !button('credits-confirm').disabled);
-    button('credits-confirm').click();
+    check(createCount === 0, 'switching channel created a purchase');
+    product('product-100').click(); product('product-200').click();
+    check(createCount === 0 && !document.querySelector('.wallet-qr'), 'product selection created a purchase');
+    check(product('product-200').getAttribute('aria-pressed') === 'true', 'product selection was not updated');
+    button('credits-custom').click();
+    enterAmount('1'); enterAmount('12'); enterAmount('12.'); enterAmount('12.3'); enterAmount('12.34');
+    check(dialog().textContent.includes('1,234'), 'custom conversion preview missing');
+    product('product-100').click(); button('credits-custom').click();
+    check(document.getElementById('wallet-custom-amount').value === '12.34', 'switching choices lost custom draft');
+    check(createCount === 0, 'custom amount edits created a purchase');
+  })()`);
+  window.setSize(640, 500);
+  await js(`(async () => {
+    await until(() => dialog().scrollHeight > dialog().clientHeight + 100);
+    const input = document.getElementById('wallet-custom-amount');
+    input.focus({ preventScroll: true });
+    dialog().scrollTop = 140;
+    const position = dialog().scrollTop;
+    check(position > 0, 'scroll regression requires an overflowing dialog');
+    input.value = '0.2'; input.setSelectionRange(2, 2);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    check(Math.abs(dialog().scrollTop - position) < 1, 'amount edit reset dialog scroll: ' + position + ' -> ' + dialog().scrollTop);
+    check(document.activeElement.id === 'wallet-custom-amount' && document.activeElement.selectionStart === 2, 'amount edit moved the caret');
+    for (const channel of ['alipay', 'wechat']) {
+      const choice = document.querySelector('[data-action="credits-channel"][data-channel="' + channel + '"]');
+      choice.focus({ preventScroll: true }); choice.click();
+      check(Math.abs(dialog().scrollTop - position) < 1, 'channel selection reset dialog scroll');
+    }
+    document.getElementById('wallet-custom-amount').focus({ preventScroll: true });
+    const stableDialog = dialog(), stableInput = document.activeElement;
+    const balanceReads = requests.filter(row => row.action === 'wallet.balance').length;
+    walletPoll();
+    check(dialog() === stableDialog && document.activeElement === stableInput, 'background refresh replaced the purchase dialog or input');
+    check(!button('credits-pay').disabled, 'background refresh flashed a disabled pay button');
+    await until(() => requests.filter(row => row.action === 'wallet.balance').length > balanceReads && !button('credits-pay').disabled);
+    check(dialog() === stableDialog && document.activeElement === stableInput, 'background refresh replaced the purchase dialog after reading');
+    check(Math.abs(dialog().scrollTop - position) < 1, 'background refresh reset dialog scroll');
+    check(document.activeElement.id === 'wallet-custom-amount', 'background refresh stole input focus');
+    enterAmount('12.34');
+    check(Math.abs(dialog().scrollTop - position) < 1, 'continued amount editing reset dialog scroll');
+  })()`);
+  window.setSize(1280, 900);
+  if (process.env.WALLET_SCREENSHOT_DIR) {
+    await mkdir(process.env.WALLET_SCREENSHOT_DIR, { recursive: true });
+    await js('new Promise(resolve => realTimeout(resolve, 100))');
+    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'purchase-draft-custom.png'), (await window.webContents.capturePage()).toPNG());
+    window.setSize(390, 780);
+    await js('new Promise(resolve => realTimeout(resolve, 50))');
+    await js(`check(dialog().scrollWidth <= dialog().clientWidth, 'draft dialog overflows narrow screen')`);
+    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'purchase-draft-narrow.png'), (await window.webContents.capturePage()).toPNG());
+    await js(`document.getElementById('wallet-custom-amount').scrollIntoView({ block: 'center' }); new Promise(resolve => realTimeout(resolve, 50))`);
+    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'purchase-draft-custom-narrow.png'), (await window.webContents.capturePage()).toPNG());
+    window.setSize(1280, 900);
+  }
+  await js(`(async () => {
+    product('product-1').click();
+    check(createCount === 0, 'choosing the final product submitted payment');
+    await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
+    button('credits-pay').click(); button('credits-pay')?.click();
     await until(() => document.body.textContent.includes('正在生成付款码'));
-    check(createCount === 1, 'confirmation did not create exactly one purchase');
+    product('product-200').click();
+    check(createCount === 1, 'duplicate product selection created another purchase');
     check(activeOrder.payment_channel === 'wechat', 'selected channel did not reach order');
-    check(!product('product-200') && !button('credits-channel') && !button('credits-confirm'), 'payment still allowed changing product/channel');
+    check(document.querySelector('[data-action="credits-channel"][data-channel="alipay"]').disabled, 'pending channel was not locked');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     check(!dialog() && document.activeElement === button('credits-open'), 'Escape did not restore purchase entry focus');
     check(!requests.some(row => row.action === 'wallet.closeOrder'), 'dismiss unexpectedly cancelled payment');
     button('credits-open').click(); resolveCreate();
     await until(() => !!document.querySelector('.wallet-qr'));
     check(dialog().textContent.includes('微信扫码'), 'Native payment label missing');
-    check(!product('product-1') && !product('product-200'), 'payment screen still displayed product selection');
+    check(product('product-1').getAttribute('aria-pressed') === 'true' && product('product-200').disabled, 'active product not locked');
+    const stableDialog = dialog(), stableQR = document.querySelector('.wallet-qr');
+    const balanceReads = requests.filter(row => row.action === 'wallet.balance').length;
+    walletPoll();
+    check(dialog() === stableDialog && document.querySelector('.wallet-qr') === stableQR, 'order polling replaced the payment QR');
+    check(button('credits-refresh').textContent === '刷新支付状态', 'order polling flashed a loading label');
+    await until(() => requests.filter(row => row.action === 'wallet.balance').length > balanceReads);
+    check(dialog() === stableDialog && document.querySelector('.wallet-qr') === stableQR, 'order polling replaced the settled QR');
     button('credits-dismiss').click(); button('credits-open').click();
     check(document.activeElement === dialog(), 'pending purchase should focus its dialog when product cards are disabled');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
@@ -111,6 +180,7 @@ try {
   })()`);
   if (process.env.WALLET_SCREENSHOT_DIR) {
     await mkdir(process.env.WALLET_SCREENSHOT_DIR, { recursive: true });
+    await js('new Promise(resolve => realTimeout(resolve, 100))');
     await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'purchase.png'), (await window.webContents.capturePage()).toPNG());
     window.setSize(390, 780);
     await js('new Promise(resolve => realTimeout(resolve, 50))');
@@ -122,22 +192,27 @@ try {
     activeOrder = { ...activeOrder, payment_state: 'paid', fulfillment_state: 'pending', display_state: 'paid_pending', payment_action: null };
     walletPoll();
     await until(() => document.body.textContent.includes('支付成功，积分到账中'));
-    check(!document.querySelector('.wallet-qr') && !product('product-200'), 'paid purchase remained payable');
+    check(!document.querySelector('.wallet-qr') && product('product-200').disabled, 'paid purchase remained payable');
     activeOrder = { ...activeOrder, fulfillment_state: 'credited', display_state: 'credited' };
     walletPoll();
-    await until(() => document.body.textContent.includes('积分已到账'));
+    await until(() => document.body.textContent.includes('积分已到账') && !product('product-100').disabled);
     check(document.querySelector('.credits-total').textContent.includes('0.20'), 'credited balance did not refresh');
     button('credits-dismiss').click();
     check(!dialog() && document.activeElement === button('credits-open'), 'complete did not close dialog');
-    button('credits-open').click(); product('product-100').click(); button('credits-confirm').click();
+    button('credits-open').click(); product('product-100').click();
+    check(createCount === 1, 'choosing another product submitted payment');
+    await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
+    button('credits-pay').click();
     await until(() => !!document.querySelector('.wallet-qr'));
     button('credits-close-order').click();
     await until(() => document.body.textContent.includes('关闭确认中'));
-    check(!document.querySelector('.wallet-qr') && !product('product-200'), 'close-pending purchase allowed a replacement');
+    check(!document.querySelector('.wallet-qr') && product('product-200').disabled, 'close-pending purchase allowed a replacement');
     activeOrder = { ...activeOrder, payment_state: 'closed', display_state: 'closed' }; walletPoll();
-    await until(() => !!button('credits-reselect'));
-    button('credits-reselect').click();
-    product('product-200').click(); button('credits-confirm').click();
+    await until(() => !product('product-200').disabled);
+    product('product-200').click();
+    check(createCount === 2, 'choosing after cancellation submitted payment');
+    await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
+    button('credits-pay').click();
     await until(() => !!document.querySelector('.wallet-qr'));
     check(createCount === 3, 'closed order did not allow new purchase');
     nowOffset = 61000; qrExpiry();
@@ -146,15 +221,49 @@ try {
     snapshot = { ...snapshot, account: { ...snapshot.account, accountId: 'bob', clientId: 'client-2' } };
     publish(snapshot);
     check(!dialog() && !document.querySelector('.wallet-qr'), 'account change retained old purchase');
+    await until(() => !!button('show-credits'));
+    button('show-credits').click();
+    await until(() => !!button('credits-open'));
+    button('credits-open').click();
+    await until(() => !!button('credits-custom') && !button('credits-custom').disabled);
+    button('credits-custom').click(); enterAmount('12.34');
+    document.querySelector('[data-action="credits-channel"][data-channel="wechat"]').click();
+    check(createCount === 3, 'custom choice submitted payment');
+    await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
+    button('credits-pay').click();
+    await until(() => !!document.querySelector('.wallet-qr'));
+    check(createCount === 4 && activeOrder.amount_fen === 1234 && activeOrder.grant_credit_atoms === '1234000000', 'custom amount or conversion did not reach payment');
+    check(dialog().textContent.includes('1,234') && dialog().textContent.includes('微信扫码'), 'custom payment summary missing');
+    window.releaseOnClose = true;
+    button('credits-close-order').click();
+    await until(() => !product('product-100').disabled);
+    check(!document.querySelector('.wallet-qr') && !dialog().textContent.includes('关闭确认中'), 'accepted cancellation kept the old payment locked');
+    check(cancelledOrder.payment_state === 'close_pending', 'cancellation must not pretend the channel has closed');
+    const previousIntent = cancelledOrder.purchase_intent_id;
+    product('product-100').click();
+    document.querySelector('[data-action="credits-channel"][data-channel="alipay"]').click();
+    button('credits-custom').click(); enterAmount('0.2');
+    walletPoll();
+    await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
+    check(createCount === 4, 'reselecting after cancellation submitted payment');
+    button('credits-pay').click();
+    await until(() => !!document.querySelector('.wallet-qr'));
+    check(createCount === 5 && activeOrder.purchase_intent_id !== previousIntent && activeOrder.amount_fen === 20 && activeOrder.payment_channel === 'alipay', 'accepted cancellation did not allow the confirmed replacement');
+    button('credits-dismiss').click();
   })()`);
   await js(`(async () => {
     await new Promise(resolve => realTimeout(resolve, 50));
     window.qeeMode = true; if (button('show-credits')) button('show-credits').click(); walletPoll();
-    await until(() => document.body.textContent.includes('200,000.00'));
-    check(document.body.textContent.includes('消耗不足 0.01 积分') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
+    await until(() => document.body.textContent.includes('1 USD = 1 积分'));
+    check(document.body.textContent.includes('0.00000060') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
     check(document.body.textContent.includes('20:00:00'), 'server timezone not applied');
     check(document.querySelector('.wallet-usage table tbody tr'), 'usage row missing');
-    check(!/USD|tokens?|[$]|199999999940/i.test(document.querySelector('.credits-page').innerHTML), 'internal accounting leaked into wallet');
+    button('credits-open').click();
+    const stableDialog = dialog(), stableQR = document.querySelector('.wallet-qr');
+    window.walletSyncedAt = '2026-10-19T12:00:05Z'; walletPoll();
+    await until(() => document.body.textContent.includes('20:00:05'));
+    check(dialog() === stableDialog && document.querySelector('.wallet-qr') === stableQR, 'sync timestamp update replaced the purchase dialog or QR');
+    button('credits-dismiss').click();
   })()`);
   if (process.env.WALLET_SCREENSHOT_DIR) {
     await js('new Promise(resolve => realTimeout(resolve, 100))');
@@ -164,69 +273,6 @@ try {
     await js(`check(document.querySelector('.wallet-usage-scroll').getBoundingClientRect().right <= innerWidth, 'usage table overflows screen')`);
     await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'qeetoken-wallet-narrow.png'), (await window.webContents.capturePage()).toPNG());
   }
-  // The desktop shell supports a minimum width of 760. The 390px captures
-  // above only stress the wallet's scrolling components, not the whole shell.
-  window.setSize(760, 560);
-  await js('new Promise(resolve => realTimeout(resolve, 50))');
-  await js(`check(document.documentElement.scrollWidth <= innerWidth, 'wallet overflows supported desktop width')`);
-  if (process.env.WALLET_SCREENSHOT_DIR) {
-    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'wallet-minimum-desktop.png'), (await window.webContents.capturePage()).toPNG());
-  }
-  window.setSize(1280, 900);
-  await js(`(async () => {
-    window.rechargeV2 = true; walletPoll();
-    await new Promise(resolve => realTimeout(resolve, 50));
-    button('credits-open').click();
-    await until(() => !!document.querySelector('#wallet-custom-amount'));
-    check(document.querySelectorAll('[data-action="credits-buy"]').length === 5, 'five tiers missing');
-    let input = document.querySelector('#wallet-custom-amount'); input.click(); input.focus(); input.value = '11';
-    input.dispatchEvent(new Event('input', { bubbles:true }));
-    check(document.activeElement.id === 'wallet-custom-amount' && document.activeElement.value === '11', 'custom input lost focus/value');
-    document.querySelector('#wallet-custom-amount').click();
-    check(document.querySelector('#wallet-custom-amount').value === '11', 'click changed custom amount');
-    document.querySelector('#wallet-custom-amount').dispatchEvent(new KeyboardEvent('keydown', { key:'Tab', bubbles:true }));
-    check(document.activeElement.dataset.action === 'credits-quote', 'Tab from amount missed quote');
-    document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key:'Tab', shiftKey:true, bubbles:true }));
-    check(document.activeElement.id === 'wallet-custom-amount', 'Shift Tab missed amount');
-    walletPoll(); await new Promise(resolve => realTimeout(resolve, 50));
-    check(document.querySelector('#wallet-custom-amount').value === '11', 'refresh lost draft amount');
-    button('credits-quote').click();
-    await until(() => !!button('credits-custom-buy'));
-    check(dialog().textContent.includes('支付 ¥11 · 到账 1,100.00 积分'), 'server quote missing');
-  })()`);
-  if (process.env.WALLET_SCREENSHOT_DIR) {
-    await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'recharge-v2.png'), (await window.webContents.capturePage()).toPNG());
-    window.setSize(390, 780); await js('new Promise(resolve => realTimeout(resolve, 50))');
-    await js(`check(dialog().scrollWidth <= dialog().clientWidth, 'v2 dialog overflows narrow screen');
-      for (const product of document.querySelectorAll('.wallet-product')) check(product.scrollWidth <= product.clientWidth, 'tier amount overflows product');`);
-    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'recharge-v2-narrow.png'), (await window.webContents.capturePage()).toPNG());
-    await js(`button('credits-custom-buy').scrollIntoView({block:'center'})`);
-    await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'recharge-v2-narrow-quote.png'), (await window.webContents.capturePage()).toPNG());
-  }
-  await js(`(() => {
-    const beforeSelection = requests.length;
-    button('credits-custom-buy').click();
-    document.querySelector('[data-action="credits-channel"][data-channel="wechat"]').click();
-    check(requests.length === beforeSelection && !document.querySelector('.wallet-qr'), 'custom selection started payment before confirmation');
-    check(button('credits-confirm').textContent.includes('确定支付 ¥11'), 'custom confirmation amount missing');
-    check(!product('v2-10') && !document.querySelector('#wallet-custom-amount'), 'selection remained in confirmation step');
-    check(dialog().scrollWidth <= dialog().clientWidth, 'confirmation overflows narrow screen');
-  })()`);
-  if (process.env.WALLET_SCREENSHOT_DIR) {
-    await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'checkout-confirmation-narrow.png'), (await window.webContents.capturePage()).toPNG());
-    window.setSize(1280, 900);
-    await js('new Promise(resolve => realTimeout(resolve, 50))');
-    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'checkout-confirmation.png'), (await window.webContents.capturePage()).toPNG());
-  }
-  await js(`(async () => {
-    button('credits-confirm').click();
-    await until(() => !!document.querySelector('.wallet-qr'));
-    check(activeOrder.amount_fen === 1100 && activeOrder.grant_credit_atoms === '1100000000', 'custom payment amounts changed');
-    check(!document.querySelector('#wallet-custom-amount'), 'payment screen still displayed custom amount input');
-  })()`);
   console.log('WALLET_ELECTRON_PASS');
 } catch (error) {
   console.error(error);

@@ -1,16 +1,17 @@
 // Compile the real NSIS hooks without an Electron payload or a Windows host.
 // This checks syntax/assets for install and uninstall; it is NOT install QA.
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getMakeNsisPath } from "app-builder-lib/out/toolsets/windows.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+const version = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version;
 const output = path.resolve(process.argv[2] || path.join(root, "release/installer-ui-check"));
 await mkdir(output, { recursive: true });
 const compiler = await getMakeNsisPath();
-const nsisPath = value => value.replaceAll("\\", "/").replaceAll("$", "$$").replaceAll('"', '$\\"');
+const nsisPath = value => value.replaceAll("$", "$$").replaceAll('"', '$\\"');
 for (const uninstall of [false, true]) {
   const name = uninstall ? "uninstall" : "install";
   const source = `Unicode true
@@ -19,6 +20,7 @@ OutFile "${nsisPath(path.join(output, `${name}-compile-check.exe`))}"
 RequestExecutionLevel user
 ShowInstDetails nevershow
 !define PROJECT_DIR "${nsisPath(root)}"
+!define VERSION "${version}"
 !define isUpdated '\"\" == \"updated\"'
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_RIGHT

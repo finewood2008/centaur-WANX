@@ -2,6 +2,10 @@
 !include nsDialogs.nsh
 SetFont "Microsoft YaHei UI" 9
 
+!ifndef WANX_BUILD_LABEL
+  !define WANX_BUILD_LABEL "${VERSION}"
+!endif
+
 !define MUI_BGCOLOR "FCF9F5"
 !define MUI_TEXTCOLOR "302C28"
 !define MUI_HEADER_TRANSPARENT_TEXT
@@ -33,6 +37,9 @@ Var wxProgressAnimation
 
 ; electron-builder inserts this after MUI pages declare their control variables.
 !macro customHeader
+; The NSIS branding control sits underneath the custom page and gets clipped.
+; Show the application version inside the page instead.
+BrandingText " "
 Function WanxInstallerGuiInit
   CreateFont $wxTitleFont "Microsoft YaHei UI" 16 600
   CreateFont $wxBodyFont "Microsoft YaHei UI" 9 400
@@ -57,33 +64,39 @@ Function WanxWelcomePage
   ${EndIf}
   !insertmacro MUI_HEADER_TEXT "欢迎使用万象" "应用 · 空间 · 盒子"
   Call WanxExtractArtwork
-  ; Use the full welcome-page area so poster headlines are legible.
+  ; Relative coordinates keep the artwork and controls inside the page when
+  ; Windows text scaling changes the dialog-unit size.
   nsDialogs::Create 1044
   Pop $wxWelcomeDialog
   ${If} $wxWelcomeDialog == error
     Abort
   ${EndIf}
   SetCtlColors $wxWelcomeDialog 302C28 FCF9F5
-  ${NSD_CreateBitmap} 0 0 100% 122u ""
+  ${NSD_CreateBitmap} 5% 0 90% 68% ""
   Pop $wxArtwork
-  ${NSD_CreateLabel} 10u 130u 95% 21u ""
+  ; Keep STM_SETIMAGE from resizing the bitmap control on each slide change.
+  ${NSD_AddStyle} $wxArtwork ${SS_REALSIZECONTROL}
+  ${NSD_CreateLabel} 5% 71% 90% 8% ""
   Pop $wxSlideTitle
   SendMessage $wxSlideTitle ${WM_SETFONT} $wxTitleFont 1
   SetCtlColors $wxSlideTitle 302C28 FCF9F5
-  ${NSD_CreateLabel} 10u 156u 95% 12u ""
+  ${NSD_CreateLabel} 5% 81% 90% 6% ""
   Pop $wxSlideText
   SetCtlColors $wxSlideText 756B61 FCF9F5
-  ${NSD_CreateLabel} 10u 176u 80u 12u ""
+  ${NSD_CreateLabel} 5% 91% 38% 6% ""
   Pop $wxSlideIndex
   SetCtlColors $wxSlideIndex A35D40 FCF9F5
-  ${NSD_CreateButton} 169u 172u 38u 18u "上一页"
+  ${NSD_CreateLink} 56% 89% 13% 8% "上一页"
   Pop $0
+  SetCtlColors $0 A35D40 FCF9F5
   ${NSD_OnClick} $0 WanxPreviousSlide
-  ${NSD_CreateButton} 213u 172u 38u 18u "暂停"
+  ${NSD_CreateLink} 70% 89% 13% 8% "暂停"
   Pop $wxPauseButton
+  SetCtlColors $wxPauseButton A35D40 FCF9F5
   ${NSD_OnClick} $wxPauseButton WanxToggleSlides
-  ${NSD_CreateButton} 257u 172u 38u 18u "下一页"
+  ${NSD_CreateLink} 84% 89% 13% 8% "下一页"
   Pop $0
+  SetCtlColors $0 A35D40 FCF9F5
   ${NSD_OnClick} $0 WanxNextSlide
   StrCpy $wxSlide 1
   StrCpy $wxPaused 0
@@ -103,17 +116,17 @@ Function WanxRenderSlide
   ${NSD_SetStretchedImage} $wxArtwork "$PLUGINSDIR\wanx-feature-$wxSlide.bmp" $wxBitmap
   ${Switch} $wxSlide
     ${Case} 1
-      ${NSD_SetText} $wxSlideIndex "1 / 3 · 应用"
+      ${NSD_SetText} $wxSlideIndex "万象 ${WANX_BUILD_LABEL} · 1 / 3"
       ${NSD_SetText} $wxSlideTitle "应用，让 AI 融入日常"
       ${NSD_SetText} $wxSlideText "发现、安装和使用适合你的 AI 应用。"
       ${Break}
     ${Case} 2
-      ${NSD_SetText} $wxSlideIndex "2 / 3 · 空间"
+      ${NSD_SetText} $wxSlideIndex "万象 ${WANX_BUILD_LABEL} · 2 / 3"
       ${NSD_SetText} $wxSlideTitle "空间，安放你的文件与资料"
       ${NSD_SetText} $wxSlideText "集中管理文件，自主决定 AI 可以访问的内容。"
       ${Break}
     ${Case} 3
-      ${NSD_SetText} $wxSlideIndex "3 / 3 · 盒子"
+      ${NSD_SetText} $wxSlideIndex "万象 ${WANX_BUILD_LABEL} · 3 / 3"
       ${NSD_SetText} $wxSlideTitle "盒子，连接你的 AI 底座"
       ${NSD_SetText} $wxSlideText "连接万象盒子，查看设备状态，管理运行服务。"
       ${Break}

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import re
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,6 +33,7 @@ from .managed_resource_guard import ManagedResourceGuard
 from .readiness import diagnose_application
 from .upstream import BridgeUpstreamError
 from .version import bridge_build_metadata, version_snapshot
+from .zhijun_bootstrap import recover_private_profile
 
 _HOP = frozenset(
     {
@@ -507,6 +509,63 @@ def create_app(
                 if guard in done:
                     await guard
             upstream = await pending
+            ontology = re.fullmatch(r"/api/agents/([^/]+)/ontology", path)
+            if session and request.method == "GET" and ontology and upstream.status_code == 404:
+                # Only retry the read. Never replay ontology edits or model calls.
+                # Existing sessions may predate primary-profile provisioning.
+                async def recover() -> tuple[bytes, bool]:
+                    async with asyncio.timeout(30):
+                        data = bytearray()
+                        async for chunk in upstream.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > 65536:
+                                raise _error("BOX_UPSTREAM_PROTOCOL_INVALID", 502)
+                        await _call(auth.assert_live, session)
+                        try:
+                            body = json.loads(data)
+                        except (ValueError, UnicodeError):
+                            return bytes(data), False
+                        missing = (
+                            isinstance(body, dict)
+                            and isinstance(body.get("error"), dict)
+                            and body["error"].get("code") == "NOT_FOUND"
+                        )
+                        repaired = missing and await recover_private_profile(
+                            adapter,
+                            token,
+                            _field(session, "user"),
+                            ontology[1],
+                            lambda: _call(auth.assert_live, session),
+                        )
+                        return bytes(data), repaired
+
+                pending = asyncio.create_task(recover())
+                done, _ = await asyncio.wait({pending, guard}, return_when=asyncio.FIRST_COMPLETED)
+                if guard in done:
+                    await guard
+                data, repaired = await pending
+                await upstream.aclose()
+                if not repaired:
+                    headers = _response_headers(upstream, service_origin)
+                    for name in ("content-length", "content-encoding"):
+                        headers.pop(name, None)
+                    guard.cancel()
+                    with contextlib.suppress(BaseException):
+                        await guard
+                    return Response(data, status_code=404, headers=headers)
+                await _call(auth.assert_live, session)
+                req = client.build_request(
+                    "GET",
+                    _target(service_origin, path, request.query_params, token),
+                    headers=_headers(request.headers, token),
+                )
+                req.headers.pop("cookie", None)
+                upstream = None
+                pending = asyncio.create_task(client.send(req, stream=True))
+                done, _ = await asyncio.wait({pending, guard}, return_when=asyncio.FIRST_COMPLETED)
+                if guard in done:
+                    await guard
+                upstream = await pending
             headers = _response_headers(upstream, service_origin)
             if upstream.status_code == 200 and managed_resources.needs_response(
                 request.method, path

@@ -4,6 +4,10 @@ import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 // Codes are an allowlist, not a pattern: even a plausible code may contain a secret.
 const errorCodes = new Set([
+  "LOCAL_CONNECT_TIMEOUT", "LOCAL_CONNECT_UNSUPPORTED_BOND_FLOW", "LOCAL_SELECTION_LEASE_INVALID",
+  "LOCAL_DEVICE_INFO_INVALID", "LOCAL_DEVICE_INCOMPATIBLE", "LOCAL_TRANSPORT_DISCONNECTED",
+  "LOCAL_USER_CANCELLED", "GATT_SERVICE_NOT_FOUND", "GATT_CHARACTERISTIC_MISMATCH",
+  "GATT_FRAGMENT_PROTOCOL_ERROR", "GATT_FRAGMENT_INCOMPLETE", "PROTOCOL_CHANGED", "RESOURCE_EXHAUSTED",
   ...BOX_SESSION_ERROR_CODES,
   "PLATFORM_SESSION_EXPIRED", "SPACE_RETRY_EXHAUSTED", "ENOENT", "ENOSPC", "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "SPACE_TRANSFER_FAILED", "SPACE_CONNECTION_TIMEOUT", "SPACE_CHUNK_STALLED", "SPACE_LOCAL_FILE_CHANGED", "SPACE_UPLOAD_OFFSET", "SPACE_UPLOAD_OFFSET_INVALID", "SPACE_CONTEXT_CHANGED", "SPACE_NETWORK_WAIT", "SPACE_PAUSED", "SECURE_STORAGE_WRITE_FAILED",
   "ACCOUNT_ACCESS_DENIED", "ACCOUNT_CANCELLED", "ACCOUNT_INVALID_RESPONSE",
@@ -49,6 +53,26 @@ export function createTimingRecorder({
       .catch(() => {}); // Diagnostic I/O must never break a connection.
   }
   return {
+    provisioning(value) {
+      if (!["connect", "readDeviceInfo", "request", "subscribeStatus", "close", "closeAll"].includes(value.operation)
+          || !["completed", "failed"].includes(value.outcome)) return;
+      const details = { operation: value.operation };
+      if (/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.requestId || ""))
+        details.requestId = value.requestId;
+      if ([1, 2].includes(value.attempt)) details.attempt = value.attempt;
+      if (["renderer", "deadline", "abort", "send", "lifecycle"].includes(value.source)) details.source = value.source;
+      if (["connect", "service", "characteristic", "notifications"].includes(value.stage)) details.stage = value.stage;
+      if (["NetworkError", "NotFoundError", "NotSupportedError", "InvalidStateError", "SecurityError",
+        "AbortError", "TimeoutError", "UnknownError", "LocalProvisioningFailure"].includes(value.errorName))
+        details.errorName = value.errorName;
+      if (["device.info.result", "hello.result", "status.result", "pairing.start.result",
+        "pairing.challenge.result", "pairing.token.result", "pairing.cancel.result",
+        "wifi.scan.result", "wifi.apply.result", "job.status.result"].includes(value.messageType))
+        details.messageType = value.messageType;
+      if (value.errorCode) details.errorCode = safeCode(value.errorCode);
+      const duration = Number.isSafeInteger(value.durationMs) && value.durationMs >= 0 ? value.durationMs : undefined;
+      record("setup.transport", value.outcome, duration, details);
+    },
     transfer(value) {
       if (!["enqueued", "connection", "reconciled", "confirmed", "completed", "interrupted", "resumed", "paused", "request"].includes(value.action)) return;
       const details = {};

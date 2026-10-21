@@ -13,6 +13,7 @@ const hex = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 const b64 = (value, size) => typeof value === 'string' && Buffer.from(value, 'base64').length === size && Buffer.from(value, 'base64').toString('base64') === value;
 const nonce = (value, size) => typeof value === 'string' && Buffer.from(value, 'base64url').length === size && Buffer.from(value, 'base64url').toString('base64url') === value;
 const safeText = (value, max = 128) => typeof value === 'string' && value.length > 0 && value.length <= max && !/[\u0000-\u0020\u007f]/u.test(value);
+const claimCode = (value) => typeof value === 'string' && /^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(value);
 function validateOwnerWifiRequest(input) {
   return exact(input, ['deviceId', 'clientId', 'pairingSessionId', 'helloContextId', 'appNonce', 'clientAttemptId',
     'clientNonce', 'pairingDeviceNonce', 'challengeNonce', 'deviceInfoSha256', 'signature', 'pairingTokenCiphertextSha256']) &&
@@ -30,6 +31,16 @@ function validateOwnerWifiPermit(data) {
     deviceID(grant.deviceId) && safeText(grant.ownerAccountId) && safeText(grant.bindingId) && safeText(grant.clientId, 64) &&
     uuid(grant.pairingSessionId) && hex(grant.challengeCanonicalSha256) && hex(grant.pairingTokenCiphertextSha256) &&
     Number.isSafeInteger(grant.ownershipEpoch) && grant.ownershipEpoch > 0 && Number.isSafeInteger(grant.authVersion) && grant.authVersion > 0;
+}
+function validateConsoleWifiPermit(data) {
+  const permit = data?.permit, grant = permit?.payload;
+  return exact(data, ['permit']) && exact(permit, ['payload', 'keyId', 'algorithm', 'signature']) &&
+    permit.algorithm === 'Ed25519' && safeText(permit.keyId, 64) && b64(permit.signature, 64) &&
+    exact(grant, ['schemaVersion', 'purpose', 'deviceId', 'claimSessionId', 'accountId', 'clientId',
+      'pairingSessionId', 'challengeCanonicalSha256', 'pairingTokenCiphertextSha256', 'expiresInSeconds']) &&
+    grant.schemaVersion === 1 && grant.purpose === 'console-wifi' && grant.expiresInSeconds === 300 &&
+    deviceID(grant.deviceId) && uuid(grant.claimSessionId) && safeText(grant.accountId) && safeText(grant.clientId, 64) &&
+    uuid(grant.pairingSessionId) && hex(grant.challengeCanonicalSha256) && hex(grant.pairingTokenCiphertextSha256);
 }
 
 // Reuse the logged-in account's signing, refresh and cancellation; never own tokens.
@@ -81,6 +92,22 @@ export function createPairingConsumer(account) {
           if (!validateOwnerWifiRequest(input) || input.clientId !== identity.clientId) throw fail('INVALID_REQUEST');
           return request('/app-api/v1/device-wifi/authorize', validateOwnerWifiPermit,
             { method: 'POST', body: input, signal });
+        },
+        getConsoleWifiAttestation(code, expectedDeviceId, signal) {
+          if (!claimCode(code) || !deviceID(expectedDeviceId)) throw fail('INVALID_REQUEST');
+          return request('/app-api/device-console-claims/wifi-attestation', data =>
+            validateDeviceAttestationView(data) && data.deviceId === expectedDeviceId,
+          { method: 'POST', body: { claimCode: code, expectedDeviceId }, signal });
+        },
+        authorizeConsoleWifi(code, input, signal) {
+          if (!claimCode(code) || !validateOwnerWifiRequest(input) || input.clientId !== identity.clientId)
+            throw fail('INVALID_REQUEST');
+          return request('/app-api/device-console-claims/wifi-authorize', data =>
+            validateConsoleWifiPermit(data) && data.permit.payload.deviceId === input.deviceId &&
+            data.permit.payload.accountId === identity.accountId && data.permit.payload.clientId === identity.clientId &&
+            data.permit.payload.pairingSessionId === input.pairingSessionId &&
+            data.permit.payload.pairingTokenCiphertextSha256 === input.pairingTokenCiphertextSha256,
+          { method: 'POST', body: { claimCode: code, ...input }, signal });
         },
         preparePairing(input, idempotencyKey, signal) {
           if (!validatePairingPrepareRequest(input) || input.clientAttemptId !== idempotencyKey) throw fail('INVALID_REQUEST');

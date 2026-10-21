@@ -1,4 +1,4 @@
-import { displayCreditAtoms, validateCreditWallet } from "../account/credit-wallet.mjs";
+import { formatCreditAtoms } from "../account/credit-wallet.mjs";
 
 import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
@@ -81,8 +81,7 @@ export function registerControlActions({
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
-  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
-  reads.add("credit-payment-timing");
+  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize", "credit-payment-timing"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -187,16 +186,12 @@ export function registerControlActions({
     return items.map(({ applicationId, name }) => ({ applicationId, name }));
   });
   register("panel-balance", () => creditsRead(async () => {
-    const session = client.snapshot().account;
-    if (session?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
     if (creditWallet) {
       const summary = (await creditWallet.balance()).data;
       const wallet = summary.billing_backend === "qeetoken" ? (await creditWallet.wallet()).data : summary;
-      const current = client.snapshot().account;
-      if (current?.phase !== "authenticated" || current.accountId !== session.accountId || current.clientId !== session.clientId)
-        throw new Error("ACCOUNT_SESSION_CHANGED");
-      if (summary.billing_backend === "qeetoken") validateCreditWallet(wallet, session.accountId);
-      return { available_text: wallet.balance_credit_atoms == null ? null : displayCreditAtoms(wallet.balance_credit_atoms),
+      const formatted = wallet.balance_credit_atoms == null ? null : formatCreditAtoms(wallet.balance_credit_atoms);
+      return { available_text: formatted ? (formatted.direction === "debt" && formatted.text === "<0.01" ? "-<0.01" : formatted.text) : null,
         sync_state: wallet.sync_state || "synced" };
     }
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
@@ -209,7 +204,7 @@ export function registerControlActions({
       return credits[method](input);
     }));
   }
-  for (const method of ["catalog", "quote", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+  for (const method of ["catalog", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
     if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
     register(`wallet-${method}`, async input => {
       try {
@@ -229,7 +224,7 @@ export function registerControlActions({
       }
     });
   }
-  register("credit-payment-timing", input => { timings?.creditPayment(input); });
+  register("credit-payment-timing", input => timings?.creditPayment(input));
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {
       if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
@@ -242,11 +237,6 @@ export function registerControlActions({
     if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
     return { ...client.snapshot(), applications: installed };
-  });
-  register("set-network-enabled", (enabled) => {
-    if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
-    if (!enabled) uiState?.invalidateOpen();
-    return client.setNetworkEnabled(enabled);
   });
   register("login-password", (input) => {
     const number = phone(input);
@@ -303,9 +293,14 @@ export function registerControlActions({
     return client.lookupDeviceDiscovery([...ids]);
   });
   register("console-claim", (input) => {
-    if (!input || Object.keys(input).some(key => !["claimCode", "clientAttemptId"].includes(key)))
+    if (!input || Object.keys(input).some(key => !["claimCode", "clientAttemptId", "expectedDeviceId"].includes(key)))
       throw new Error("ACCOUNT_INVALID_INPUT");
-    return client.redeemConsoleClaim({ claimCode: input.claimCode, clientAttemptId: input.clientAttemptId });
+    return client.redeemConsoleClaim({ claimCode: input.claimCode, clientAttemptId: input.clientAttemptId,
+      ...(input.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) });
+  });
+  register("console-claim-status", (input) => {
+    if (!input || Object.keys(input).some(key => key !== "deviceId")) throw new Error("ACCOUNT_INVALID_INPUT");
+    return client.getConsoleClaimAuthorization(text(input.deviceId, 36, "invalid_device"));
   });
   register("ownership-list", () => client.listOwnershipTransfers());
   for (const method of ["current", "decide", "revoke"]) register(`support-${method}`, input => {

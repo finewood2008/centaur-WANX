@@ -115,7 +115,9 @@ const actions = {
   "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
-  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
+  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId,
+    ...(input?.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) }),
+  "devices.claim-status": (input) => ipcRenderer.invoke("wanx-client:console-claim-status", { deviceId: input?.deviceId }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
   "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {
@@ -134,8 +136,6 @@ const actions = {
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
   "maintenance.open": (input) => ipcRenderer.invoke("wanx-client:maintenance-open", { tool: input?.tool, deviceId: input?.deviceId }),
-  "network.set-enabled": (input) =>
-    ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
   "market.list": () => ipcRenderer.invoke("wanx-client:market-list"),
   "market.candidate": (input) => ipcRenderer.invoke("wanx-client:market-candidate", { applicationId: input?.applicationId }),
@@ -268,6 +268,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
   scanWifi: () => setupCall("scanWifi"),
   wifi: (input) => setupCall("wifi", input),
   confirmOwnership: () => setupCall("confirmOwnership"),
+  redeemClaimCode: (input) => setupCall("redeemClaimCode", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
   refresh: () => setupCall("refresh"),
   cancel: () => setupCall("cancel"),
   reset: () => setupCall("reset"),
@@ -284,7 +285,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
 });
 
 contextBridge.exposeInMainWorld("wanxSetupTransport", {
-  scanTimeoutMs: process.platform === "win32" ? 60000 : 12000,
+  scanTimeoutMs: process.platform === "win32" ? 60000 : 30000,
   subscribe: (listener) => {
     const handler = (_event, request) => listener(request);
     ipcRenderer.on("wanx:setup:transport", handler);

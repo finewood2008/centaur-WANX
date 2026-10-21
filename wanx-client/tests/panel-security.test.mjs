@@ -79,7 +79,7 @@ for (const surface of ["control", "panel"]) {
 test("panel cannot invoke account, market mutation, version selection, or management-only operations", () => {
   const h = harness();
   for (const name of [
-    "console-claim", "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open", "maintenance-open",
+    "console-claim", "login-password", "login-sms", "send-sms", "logout", "connect", "dashboard-open", "maintenance-open",
     "applications-install", "applications-launch", "applications-select-current", "applications-stop",
     "market-list", "market-candidate", "market-install", "market-uninstall", "market-rollback",
     "desktop-startup-get", "desktop-startup-set", "desktop-quit",
@@ -91,6 +91,8 @@ test("panel cannot invoke account, market mutation, version selection, or manage
     }, h.panel), denied, name);
   }
   assert.deepEqual(h.calls, []);
+  assert.equal(h.handlers.has("wanx-client:set-network-enabled"), false,
+    "neither management nor panel can disable automatic networking");
   assert.equal([...h.handlers.keys()].some(name => name.startsWith("wanx:setup:")), false,
     "setup IPC is registered separately against only the management window");
 });

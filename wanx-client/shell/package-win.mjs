@@ -46,6 +46,25 @@ function sha256(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
+function maintenanceFiles() {
+  const directory = path.join(root, "local-ui", "maintenance");
+  const htmlPath = path.join(directory, "maintenance.html");
+  if (!existsSync(htmlPath) || statSync(htmlPath).size === 0)
+    throw new Error("MAINTENANCE_HTML_MISSING");
+  const html = readFileSync(htmlPath, "utf8");
+  const assets = [...html.matchAll(/(?:src|href)=["']\/__wanx_tools\/(assets\/[a-zA-Z0-9._-]+\.(?:js|css))["']/g)]
+    .map(match => match[1]);
+  if (!assets.some(file => file.endsWith(".js")) || !assets.some(file => file.endsWith(".css")))
+    throw new Error("MAINTENANCE_ASSET_REFERENCES_MISSING");
+  const files = ["maintenance.html", ...new Set(assets)];
+  for (const relative of files) {
+    const file = path.join(directory, relative);
+    if (!existsSync(file) || statSync(file).size === 0)
+      throw new Error(`MAINTENANCE_ASSET_MISSING:${relative}`);
+  }
+  return files.map(relative => ({ relative, sha256: sha256(path.join(directory, relative)) }));
+}
+
 function assertPE64(file) {
   const data = readFileSync(file);
   if (data.length < 1024 || data.toString("ascii", 0, 2) !== "MZ")
@@ -90,6 +109,10 @@ async function main() {
   if (!existsSync(npmCli)) throw new Error("NPM_CLI_MISSING");
   run(process.execPath, [npmCli, "ci"]);
   run(process.execPath, [npmCli, "run", "build:renderer"]);
+  const dashboard = path.join(repo, "dashboard");
+  run(process.execPath, [npmCli, "ci", "--replace-registry-host=never"], dashboard);
+  run(process.execPath, [npmCli, "run", "build:maintenance"], dashboard);
+  const maintenance = maintenanceFiles();
   if (!skipTests && quickPackage) run(process.execPath, ["--test",
     "tests/desktop-seam.test.mjs", "tests/desktop-runtime-seam.test.mjs",
     "tests/panel-renderer.test.mjs", "tests/panel-security.test.mjs",
@@ -189,8 +212,17 @@ async function main() {
       },
       afterPack: async ({ appOutDir }) => {
         const asar = path.join(appOutDir, "resources", "app.asar");
-        const { listPackage } = require("@electron/asar");
-        const entries = new Set(listPackage(asar).map(value => value.replaceAll("\\", "/").replace(/^\//, "")));
+        const { listPackage, extractFile } = require("@electron/asar");
+        const packedEntries = new Map(listPackage(asar).map(value => [
+          value.replaceAll("\\", "/").replace(/^\//, ""), value.replace(/^[\\/]/, ""),
+        ]));
+        const entries = new Set(packedEntries.keys());
+        for (const file of maintenance) {
+          const relative = `local-ui/maintenance/${file.relative}`;
+          if (!entries.has(relative)) throw new Error(`PACKED_FILE_MISSING:${relative}`);
+          const packedHash = createHash("sha256").update(extractFile(asar, packedEntries.get(relative))).digest("hex");
+          if (packedHash !== file.sha256) throw new Error(`PACKED_MAINTENANCE_HASH_MISMATCH:${relative}`);
+        }
         for (const relative of [
           "shell/entry.mjs", "shell/main.mjs", "applications/runtime.mjs",
           "shell/desktop.mjs", "shell/ui-state.mjs", "shell/ui-broadcast.mjs",

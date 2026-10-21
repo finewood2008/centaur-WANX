@@ -89,6 +89,8 @@ for (const [phase, name, code] of [
     const result = await h.connect();
     assert.equal(result.ok, false);
     assert.equal(result.code, code);
+    assert.equal(result.diagnostic.stage, phase === COMMAND_UUID ? 'characteristic' : phase);
+    assert.equal(result.diagnostic.errorName, name);
     assert.equal(h.disconnects, 1);
     assert.equal(JSON.stringify(result).includes('private OS diagnostic'), false);
     if (phase === COMMAND_UUID) assert.deepEqual(h.calls, [DEVICE_INFO_UUID, COMMAND_UUID]);

@@ -62,6 +62,7 @@ export function consumerSignature({
 }
 
 const ownershipId = (value) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(value);
+const claimDeviceId = (value) => typeof value === "string" && /^[A-Za-z0-9._-]{1,36}$/.test(value) && ![".", ".."].includes(value);
 function transferView(value) {
   if (!value || !ownershipId(value.transferId) || !ownershipId(value.deviceId) ||
       !["incoming", "outgoing"].includes(value.direction) ||
@@ -790,15 +791,46 @@ export function createAccount({
       );
       return { expiresIn: Number(result?.expiresIn) || 300 };
     },
-    async redeemConsoleClaim({ claimCode, clientAttemptId } = {}) {
+    async redeemConsoleClaim({ claimCode, clientAttemptId, expectedDeviceId, signal } = {}) {
       if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
       if (typeof claimCode !== "string" || !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(claimCode) ||
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientAttemptId || ""))
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientAttemptId || "") ||
+          (expectedDeviceId !== undefined && !claimDeviceId(expectedDeviceId)))
         throw failure("ACCOUNT_INVALID_INPUT");
+      signal?.throwIfAborted();
       const data = await request({ method: "POST", path: "/app-api/device-console-claims/redeem",
-        body: { claimCode, clientAttemptId }, idempotencyKey: clientAttemptId });
-      if (!ownershipId(data?.deviceId) || data.ownership !== "claimed") throw failure("ACCOUNT_INVALID_RESPONSE");
-      return { deviceId: data.deviceId, ownership: data.ownership };
+        body: { claimCode, clientAttemptId, ...(expectedDeviceId === undefined ? {} : { expectedDeviceId }) },
+        idempotencyKey: clientAttemptId, signal });
+      signal?.throwIfAborted();
+      if (!claimDeviceId(data?.deviceId) || data.ownership !== "claimed" ||
+          (expectedDeviceId !== undefined && data.deviceId !== expectedDeviceId) ||
+          (data.authorizationState !== undefined && !["deviceAckPending", "ready", "blocked"].includes(data.authorizationState)))
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      return { deviceId: data.deviceId, ownership: data.ownership,
+        authorizationState: data.authorizationState ?? "deviceAckPending" };
+    },
+    async getConsoleClaimAuthorization(deviceId, signal) {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (!claimDeviceId(deviceId)) throw failure("ACCOUNT_INVALID_INPUT");
+      const generation = epoch, accountId = record.session.accountId, clientId = record.identity.clientId;
+      signal?.throwIfAborted();
+      const result = await request({ path: "/app-api/v1/sync/bootstrap", signal, responseMetadata: true });
+      assert(generation);
+      signal?.throwIfAborted();
+      const data = result.data, currentClient = data?.account?.currentClient;
+      if (data?.account?.accountId !== accountId || currentClient?.clientId !== clientId ||
+          currentClient.isCurrent !== true || data.account.accountStatus !== "active" ||
+          currentClient.clientStatus !== "active" || currentClient.hasActiveSession !== true || !Array.isArray(data.devices))
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      const matching = data.devices.filter(device => device?.deviceId === deviceId);
+      if (matching.length > 1) throw failure("ACCOUNT_INVALID_RESPONSE");
+      const device = matching[0];
+      let authorizationState = "deviceAckPending";
+      if (device?.accessStatus === "blocked" || ["disabled", "quarantined"].includes(device?.securityStatus) ||
+          device?.ownershipStatus === "releasePending") authorizationState = "blocked";
+      else if (device?.accessStatus === "ready" && device.ownershipStatus === "active" &&
+          device.securityStatus === "normal" && device.capabilities?.canConnect?.enabled === true) authorizationState = "ready";
+      return { deviceId, authorizationState };
     },
     async listOwnershipTransfers() {
       const data = await request({ path: "/app-api/ownership/transfers" });
