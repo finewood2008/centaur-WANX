@@ -28,6 +28,20 @@ export async function createSetupRuntime({
       // Public-name probes use their own native GATT connection. Selection
       // closes the chooser first; wait for the probe process to release it.
       beforeConnect: () => advertisementNames?.stopAndWait?.(),
+      async redeemConsoleClaim(claimCode, expectedDeviceId, { accountId, clientId, signal, clientAttemptId }) {
+        const checkIdentity = async () => {
+          signal?.throwIfAborted();
+          const identity = await consumer.current();
+          if (identity.accountId !== accountId || identity.clientId !== clientId)
+            throw Object.assign(new Error('AUTH_SESSION_CHANGED'), { code: 'AUTH_SESSION_CHANGED' });
+        };
+        await checkIdentity();
+        const result = await account.redeemConsoleClaim({ claimCode, expectedDeviceId, clientAttemptId, signal });
+        await checkIdentity();
+        if (result.deviceId !== expectedDeviceId)
+          throw Object.assign(new Error('CONTRACT_MISMATCH'), { code: 'CONTRACT_MISMATCH' });
+        return result;
+      },
       onDiagnostic,
       ...JSON.parse(await readFile(new URL('./provisioning-trust.json', import.meta.url), 'utf8')),
     });

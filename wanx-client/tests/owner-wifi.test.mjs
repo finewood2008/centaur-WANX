@@ -121,12 +121,12 @@ async function harness(options = {}) {
     }, trustedRootSpkiPins: [], clientVersion: 'wanx-client/test', clock: { monotonicMs: () => now } });
   return { coordinator, messages, requests, apiCalls, secretRefs, authorized: () => authorizedInput,
     closed: () => closed, advance: (ms) => { now += ms; },
-    begin: () => coordinator.begin({ selected: {}, accountId: ownerAccountId, clientId }),
-    pair: async () => { await coordinator.begin({ selected: {}, accountId: ownerAccountId, clientId }); await coordinator.confirmPhysicalDevice(); } };
+    begin: () => coordinator.begin({ selected: {}, accountId: ownerAccountId, clientId, expectedDeviceId: options.expectedDeviceId }),
+    pair: async () => { await coordinator.begin({ selected: {}, accountId: ownerAccountId, clientId, expectedDeviceId: options.expectedDeviceId }); await coordinator.confirmPhysicalDevice(); } };
 }
 
 test('owner changes Wi-Fi over real RSA/HKDF/AEAD with closed claim window and no claim APIs', async () => {
-  const h = await harness();
+  const h = await harness({ expectedDeviceId: deviceId });
   try {
     await h.pair(); assert.equal(h.coordinator.getSnapshot().state, 'awaitingWifi');
     assert.deepEqual(await h.coordinator.scanWifi(), [{ ssid: 'office', signal: 85, security: 'wpa_personal' }]);
@@ -144,6 +144,21 @@ test('owner changes Wi-Fi over real RSA/HKDF/AEAD with closed claim window and n
     await h.coordinator.dispose();
     assert.equal(h.coordinator.getSnapshot().state, 'completed');
     assert.ok(!h.messages.includes('pairing.cancel'));
+  } finally { await h.coordinator.dispose(); }
+});
+
+test('a different box is rejected before preview, owner authorization or Wi-Fi writes', async () => {
+  const h = await harness({ expectedDeviceId: 'centauros-000000000000000000000001' });
+  const states = [];
+  h.coordinator.subscribe(value => states.push(value.state));
+  try {
+    await assert.rejects(h.begin(), { code: 'DEVICE_IDENTITY_MISMATCH' });
+    assert.equal(h.coordinator.getSnapshot().state, 'terminalError');
+    assert.ok(!states.includes('previewReady'));
+    assert.deepEqual(h.apiCalls, []);
+    assert.deepEqual(h.messages, []);
+    assert.equal(h.closed(), 1);
+    await assert.rejects(h.coordinator.confirmPhysicalDevice(), { code: 'CLAIM_INVALID_STATE' });
   } finally { await h.coordinator.dispose(); }
 });
 

@@ -114,7 +114,9 @@ const actions = {
   "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
-  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
+  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId,
+    ...(input?.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) }),
+  "devices.claim-status": (input) => ipcRenderer.invoke("wanx-client:console-claim-status", { deviceId: input?.deviceId }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
   "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {
@@ -266,6 +268,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
   scanWifi: () => setupCall("scanWifi"),
   wifi: (input) => setupCall("wifi", input),
   confirmOwnership: () => setupCall("confirmOwnership"),
+  redeemClaimCode: (input) => setupCall("redeemClaimCode", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
   refresh: () => setupCall("refresh"),
   cancel: () => setupCall("cancel"),
   reset: () => setupCall("reset"),

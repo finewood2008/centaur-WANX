@@ -31,6 +31,7 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
   }, getIdentity: () => identity, snapshot: () => ({ phase: identity ? 'authenticated' : 'signed_out' }),
     subscribe: (fn) => { accountListeners.add(fn); return () => accountListeners.delete(fn); } };
   let pickerInput, coordinators = 0, ownershipSubmissions = 0;
+  const beginInputs = [];
   const runtime = await createSetupRuntime({ control: { webContents, isDestroyed: () => false }, controlURL: webContents.mainFrame.url,
     ipcMain, account, client: { refreshDevices: async () => { refreshes++; } },
     consumerBaseUrl: 'https://consumer.example', userData: 'unused',
@@ -45,6 +46,7 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
       const set = (next) => { state = { ...state, state: next }; notify?.(); };
       return { getSnapshot: () => state, subscribe: (fn) => { notify = fn; return () => {}; },
         begin: async (input, signal) => {
+          beginInputs.push(input);
           if (connectTransport) await transportFactory.connect(input.selected, signal);
           set('previewReady');
         }, confirmPhysicalDevice: async () => {
@@ -64,7 +66,7 @@ async function harness({ preview = { cloud_enrollment_status: 'ready', pairing_m
         ...(ownerWifi ? { ownerWifiCoordinatorFactory: factory } : {}) });
     },
   });
-  return { ownershipSubmissions: () => ownershipSubmissions, runtime, handlers, event, sent, pickerInput, advertisementNames, handshakes: () => handshakes, refreshes: () => refreshes, pickerDisposed: () => pickerDisposed,
+  return { beginInputs, ownershipSubmissions: () => ownershipSubmissions, runtime, handlers, event, sent, pickerInput, advertisementNames, handshakes: () => handshakes, refreshes: () => refreshes, pickerDisposed: () => pickerDisposed,
     logout() { identity = null; for (const fn of accountListeners) fn(); },
     invoke: (name, input) => handlers.get(`wanx:setup:${name}`)(event, input),
   };
@@ -134,6 +136,33 @@ test('renderer crash discards the owner Wi-Fi session instead of restoring a cla
     await new Promise(resolve => setImmediate(resolve));
     assert.equal((await h.invoke('state')).value.state, 'idle');
     assert.equal(h.refreshes(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+
+test('targeted Wi-Fi IPC preserves the target through renewal without changing the selected transport', async () => {
+  const h = await harness({ ownerWifi: true, expireHandshake: 1 });
+  try {
+    assert.equal((await h.invoke('begin', { ...candidate, mode: 'wifi', expectedDeviceId: 'box-new' })).ok, true);
+    assert.equal((await h.invoke('confirmPhysical')).value.state, 'awaitingWifi');
+    assert.equal(h.beginInputs.length, 2);
+    for (const input of h.beginInputs) {
+      assert.equal(input.expectedDeviceId, 'box-new');
+      assert.deepEqual(input.selected, candidate);
+    }
+    assert.equal(h.ownershipSubmissions(), 0);
+  } finally { await h.runtime.dispose(); }
+});
+
+test('targeted Wi-Fi IPC rejects invalid IDs and targets attached to a claim flow', async () => {
+  const h = await harness({ ownerWifi: true });
+  try {
+    for (const expectedDeviceId of ['', null, 12, 'x'.repeat(37), 'box/id', 'box-new\n']) {
+      assert.equal((await h.invoke('begin', { ...candidate, mode: 'wifi', expectedDeviceId })).code, 'INVALID_REQUEST');
+    }
+    for (const mode of [undefined, 'claim']) {
+      assert.equal((await h.invoke('begin', { ...candidate, mode, expectedDeviceId: 'box-new' })).code, 'INVALID_REQUEST');
+    }
+    assert.equal(h.beginInputs.length, 0);
   } finally { await h.runtime.dispose(); }
 });
 test('Wi-Fi scan IPC is identity-gated, deduplicated and revoked on logout', async () => {

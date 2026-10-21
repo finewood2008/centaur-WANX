@@ -1013,6 +1013,7 @@ export function createPlatformClient({
     refreshDevices,
     lookupDeviceDiscovery: (deviceIds) => account.lookupDeviceDiscovery(deviceIds),
     redeemConsoleClaim: (input) => ownershipChange(() => account.redeemConsoleClaim(input)),
+    getConsoleClaimAuthorization: (deviceId) => account.getConsoleClaimAuthorization(deviceId),
     listOwnershipTransfers: () => account.listOwnershipTransfers(),
     sendTransferCode: () => account.sendTransferCode(),
     createOwnershipTransfer: (input) => ownershipChange(() => account.createOwnershipTransfer(input)),
