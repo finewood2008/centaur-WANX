@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { patchWifiScan } from './provisioning-wifi-patch.mjs';
 
 // Local compatibility patch until the upstream SDK accepts public box names.
@@ -17,6 +18,13 @@ const baselines = {
 const check = process.argv.includes('--check');
 if (process.argv.slice(2).some((arg) => arg !== '--check')) throw Error('Only --check is supported');
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
+const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+const runNpm = (args, options) => execFileSync(process.platform === 'win32' ? process.execPath : 'npm',
+  process.platform === 'win32' ? [npmCli, ...args] : args, options);
+function archiveEqual(left, right) {
+  const a = readFileSync(left), b = readFileSync(right);
+  return a.equals(b) || gunzipSync(a).equals(gunzipSync(b));
+}
 function replaceOnce(source, from, to) {
   if (source.split(from).length !== 2) throw Error(`SDK patch anchor is not unique: ${from}`);
   return source.replace(from, to);
@@ -27,7 +35,7 @@ try {
     const version = versions[kind];
     const archive = path.join(root, 'vendor', `nexusaos-local-provisioning-${kind}-2.0.0.tgz`);
     if (sha256(readFileSync(archive)) !== expected) throw Error(`SDK baseline hash mismatch: ${kind}`);
-    const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n');
+    const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean);
     const directory = path.join(temporary, kind);
     mkdirSync(directory);
     for (const entry of entries) {
@@ -71,7 +79,7 @@ try {
     }
     // npm pack uses a fixed archive timestamp; scripts are intentionally disabled
     // because these upstream archives contain the published dist files only.
-    const packed = JSON.parse(execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    const packed = JSON.parse(runNpm(
       ['pack', '--offline', '--ignore-scripts', '--json', '--pack-destination', temporary],
       { cwd: directory, encoding: 'utf8' }));
     const expectedFilename = `nexusaos-local-provisioning-${kind}-${version}.tgz`;
@@ -79,7 +87,7 @@ try {
     const generated = path.join(temporary, expectedFilename);
     const destination = path.join(root, 'vendor', expectedFilename);
     if (check) {
-      if (!readFileSync(destination).equals(readFileSync(generated))) throw Error(`SDK patch is not reproducible: ${kind}`);
+      if (!archiveEqual(destination, generated)) throw Error(`SDK patch is not reproducible: ${kind}`);
     } else renameSync(generated, destination);
     console.log(`${check ? 'Verified' : 'Built'} ${expectedFilename} ${sha256(readFileSync(destination))}`);
   }
