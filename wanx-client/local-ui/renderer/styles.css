@@ -872,6 +872,8 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wallet-purchase-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:24px; }
 .wallet-purchase-heading p { margin-top:8px; font-size:12px; color:var(--fn-text-secondary); }
 .wallet-dialog-close { flex-shrink:0; width:32px; height:32px; border:0; border-radius:50%; background:var(--fn-bg-secondary); color:var(--fn-text-secondary); font-size:23px; line-height:1; }
+.wallet-custom { display:grid; gap:10px; margin-top:18px; padding-top:18px; border-top:1px solid var(--fn-border-primary); }
+.wallet-custom input { min-width:0; width:100%; padding:10px; font:inherit; }
 .wallet-products { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .wallet-product { display:flex; flex-direction:column; align-items:center; padding:22px 10px 14px; border:1px solid var(--fn-border-primary); border-radius:12px; background:var(--fn-bg-elevated); color:var(--fn-text-primary); }
 .wallet-product:not(:disabled):hover { border-color:var(--fn-color-brand); background:var(--fn-color-brand-bg); }
@@ -887,10 +889,18 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wallet-payment.is-success .wallet-payment-mark { background:var(--fn-bg-success); color:var(--fn-text-success); }
 .wallet-payment-actions { display:flex; justify-content:center; flex-wrap:wrap; gap:16px; margin-top:16px; }
 .wallet-channel-picker { margin-bottom:16px; }
+.wallet-step-title { font-size:14px; font-weight:600; margin-bottom:12px; }
+.wallet-order-summary { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:20px; margin-bottom:24px; border-radius:12px; background:var(--fn-bg-secondary); }
+.wallet-order-summary p { line-height:1.8; font-variant-numeric:tabular-nums; }
+.wallet-order-summary strong { font-size:20px; }
+.wallet-order-summary button { flex-shrink:0; }
+.wallet-checkout .wallet-channel-picker { justify-content:flex-start; margin-top:0; }
+.wallet-checkout > .wallet-payment-actions:last-child { justify-content:flex-end; }
+.wallet-selection-hint { margin-top:20px; font-size:12px; }
 .wallet-payment .wallet-payment-footnote { font-size:11px; color:var(--fn-text-tertiary); }
 .wallet-purchase-dialog :focus-visible { outline:2px solid var(--fn-color-brand); outline-offset:3px; }
 .credits-recharge { flex-direction:column; align-items:flex-end; }
-@media(max-width:650px) { .wallet-modal { padding:12px; } .wallet-purchase-dialog { padding:20px; max-height:calc(100dvh - 24px); } .wallet-products { gap:8px; } .wallet-product-points { font-size:20px; } .credits-page .credits-overview { grid-template-columns:1fr; } .credits-recharge { align-items:flex-start; } }
+@media(max-width:650px) { .wallet-modal { padding:12px; } .wallet-purchase-dialog { padding:20px; max-height:calc(100dvh - 24px); } .wallet-products { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .wallet-product-points { font-size:20px; } .credits-page .credits-overview { grid-template-columns:1fr; } .credits-recharge { align-items:flex-start; } }
 
 .wallet-usage { margin-top:24px; min-width:0; }
 .wallet-usage h3 { margin-bottom:12px; }

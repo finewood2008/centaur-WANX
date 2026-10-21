@@ -74,6 +74,7 @@ async function rawState() {
 }
 
 const actions = {
+  "wallet.quote": input => walletRequest("quote", input),
   "wallet.catalog": () => walletRequest("catalog"),
   "wallet.balance": () => walletRequest("balance"),
   "wallet.wallet": () => walletRequest("wallet"),

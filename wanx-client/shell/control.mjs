@@ -1,4 +1,4 @@
-import { formatCreditAtoms } from "../account/credit-wallet.mjs";
+import { displayCreditAtoms, validateCreditWallet } from "../account/credit-wallet.mjs";
 
 import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
@@ -185,12 +185,16 @@ export function registerControlActions({
     return items.map(({ applicationId, name }) => ({ applicationId, name }));
   });
   register("panel-balance", () => creditsRead(async () => {
-    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    const session = client.snapshot().account;
+    if (session?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
     if (creditWallet) {
       const summary = (await creditWallet.balance()).data;
       const wallet = summary.billing_backend === "qeetoken" ? (await creditWallet.wallet()).data : summary;
-      const formatted = wallet.balance_credit_atoms == null ? null : formatCreditAtoms(wallet.balance_credit_atoms);
-      return { available_text: formatted ? (formatted.direction === "debt" && formatted.text === "<0.01" ? "-<0.01" : formatted.text) : null,
+      const current = client.snapshot().account;
+      if (current?.phase !== "authenticated" || current.accountId !== session.accountId || current.clientId !== session.clientId)
+        throw new Error("ACCOUNT_SESSION_CHANGED");
+      if (summary.billing_backend === "qeetoken") validateCreditWallet(wallet, session.accountId);
+      return { available_text: wallet.balance_credit_atoms == null ? null : displayCreditAtoms(wallet.balance_credit_atoms),
         sync_state: wallet.sync_state || "synced" };
     }
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
@@ -203,7 +207,7 @@ export function registerControlActions({
       return credits[method](input);
     }));
   }
-  for (const method of ["catalog", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+  for (const method of ["catalog", "quote", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
     if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
     register(`wallet-${method}`, async input => {
       try {

@@ -28,7 +28,80 @@ function setup(overrides = {}) {
   return { view, seen };
 }
 
-test('Native channel selection is frozen and renders only the selected WeChat QR', async () => {
+test('v2 wallet renders rounded credits and contextual tiny usage without internal currency or token details', async () => {
+  const wallet = { view_version: '2', account_id: 'alice', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6,
+    balance_credit_atoms: '-12345000', spent_credit_atoms: '1009999', correction_credit_atoms: '0',
+    net_spent_credit_atoms: '1009999', remote_sequence: '4', sync_state: 'synced',
+    synced_at: '2026-10-18T02:00:00Z', pending_executions: 0, error_code: null };
+  const page = { view_version: '2', account_id: 'alice', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6,
+    remote_sequence: '4', next_before_sequence: null, items: [
+      { event_id: 'tiny', account_sequence: '4', debit_credit_atoms: '9999', occurred_at: wallet.synced_at, model: 'model', device_id: 'box' },
+      { event_id: 'normal', account_sequence: '3', debit_credit_atoms: '1000000', occurred_at: wallet.synced_at, model: 'model', device_id: 'box' },
+    ] };
+  const { view } = setup({ request: action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope(wallet);
+    if (action === 'wallet.usage') return envelope(page);
+  } });
+  await view.refresh();
+  assert.match(view.render(), /-12\.35/);
+  assert.match(view.render(), /消耗不足 0\.01 积分/);
+  assert.match(view.render(), />1\.00</);
+  assert.doesNotMatch(view.render(), /USD|tokens?|\$|12\.345|1\.009999|账本变动|无法校验/i);
+});
+
+test('recovered old order renders the explicitly versioned current grant without creating a new intent', async () => {
+  const store = storage();
+  store.setItem('wanx.credit.purchase.v1:alice', JSON.stringify({
+    purchase_intent_id: 'old-intent', order_id: 'order-1', amount_fen: 5000,
+  }));
+  const recovered = { ...order, grant_credit_atoms: '20000000',
+    credit_display: { currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, grant_credit_atoms: '2000000000' },
+    display_state: 'credited', payment_state: 'paid', fulfillment_state: 'credited', payment_action: null };
+  const { view, seen } = setup({ storage: store, request: action =>
+    action === 'wallet.order' ? envelope(recovered) : undefined });
+  await view.refresh(); await view.action('credits-open');
+  assert.match(view.render(), /2,000\.00 点积分已记入当前账号/);
+  assert.doesNotMatch(view.render(), /20\.00 点积分已记入当前账号/);
+  assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
+  assert.equal(store.getItem('wanx.credit.purchase.v1:alice'), null);
+});
+
+test('unknown order display version retains the persisted purchase for recovery', async () => {
+  const store = storage();
+  const saved = JSON.stringify({ purchase_intent_id: 'old-intent', order_id: 'order-1', amount_fen: 5000 });
+  store.setItem('wanx.credit.purchase.v1:alice', saved);
+  const { view, seen } = setup({ storage: store, request: action => action === 'wallet.order' ? envelope({
+    ...order, display_state: 'credited',
+    credit_display: { currency_rule_id: 'unknown', credit_scale: 6, grant_credit_atoms: '2000000000' },
+  }) : undefined });
+  await view.refresh(); await view.action('credits-open');
+  assert.match(view.render(), /积分响应无法校验/);
+  assert.doesNotMatch(view.render(), /积分已到账/);
+  assert.equal(store.getItem('wanx.credit.purchase.v1:alice'), saved);
+  assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
+});
+
+test('unavailable order projection preserves close recovery and never shows the original amount as current', async () => {
+  const store = storage();
+  store.setItem('wanx.credit.purchase.v1:alice', JSON.stringify({
+    purchase_intent_id: 'old-intent', order_id: 'order-1', amount_fen: 5000,
+  }));
+  const uncertain = { ...order, grant_credit_atoms: '20000000', credit_display: null };
+  const { view, seen } = setup({ storage: store, request: action => {
+    if (action === 'wallet.order') return envelope(uncertain);
+    if (action === 'wallet.closeOrder') return envelope({ ...uncertain, display_state: 'closed', payment_state: 'closed' });
+  } });
+  await view.refresh(); await view.action('credits-open');
+  assert.match(view.render(), /到账积分待核对/);
+  assert.doesNotMatch(view.render(), /到账 20|wallet-qr/);
+  assert.notEqual(store.getItem('wanx.credit.purchase.v1:alice'), null);
+  await view.action('credits-close-order');
+  assert.equal(seen.some(([action]) => action === 'wallet.closeOrder'), true);
+  assert.equal(store.getItem('wanx.credit.purchase.v1:alice'), null);
+});
+
+test('product and channel selection stay local until confirmation creates one frozen payment', async () => {
   const payload = 'weixin://wxpay/bizpayurl?pr=native-test';
   const native = { ...order, payment_channel: 'wechat', payment_action: { ...order.payment_action, payload } };
   const { view, seen } = setup({ request: async action => {
@@ -36,13 +109,27 @@ test('Native channel selection is frozen and renders only the selected WeChat QR
     if (action === 'wallet.createOrder' || action === 'wallet.order') return envelope(native);
   }, qr: async value => { assert.equal(value, payload); return 'data:image/png;base64,local'; } });
   await view.refresh(); await view.action('credits-open');
-  await view.action('credits-channel', { channel: 'wechat' });
+  assert.doesNotMatch(view.render(), /data-action="credits-channel"|支付二维码/);
+  const beforeSelection = seen.length;
   await view.action('credits-buy', { amount: '10000' });
+  assert.doesNotMatch(view.render(), /data-action="credits-buy"/);
+  await view.action('credits-reselect');
+  assert.match(view.render(), /data-action="credits-buy"/);
+  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-channel', { channel: 'wechat' });
+  await view.action('credits-channel', { channel: 'alipay' });
+  await view.action('credits-channel', { channel: 'wechat' });
+  assert.equal(seen.length, beforeSelection, 'selection must not create, close or query an order');
+  assert.match(view.render(), /确定支付 ¥100/);
+  assert.doesNotMatch(view.render(), /支付二维码/);
+  await view.action('credits-confirm');
   assert.equal(seen.find(([action]) => action === 'wallet.createOrder')[1].payment_channel, 'wechat');
   await view.action('credits-channel', { channel: 'alipay' });
   await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-confirm');
   assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
   assert.match(view.render(), /微信扫码支付/);
+  assert.doesNotMatch(view.render(), /data-action="credits-buy"|data-action="credits-channel"/);
   assert.doesNotMatch(view.render(), /微信 \/ 支付宝扫码支付/);
   assert.equal((view.render().match(/class="wallet-qr"/g) || []).length, 1);
 });
@@ -55,8 +142,9 @@ test('lost Native create response preserves channel and intent across restart', 
   };
   const first = setup({ storage: store, request });
   await first.view.refresh();
-  await first.view.action('credits-channel', { channel: 'wechat' });
   await first.view.action('credits-buy', { amount: '10000' });
+  await first.view.action('credits-channel', { channel: 'wechat' });
+  await first.view.action('credits-confirm');
   const restarted = setup({ storage: store, request });
   await restarted.view.refresh();
   const initial = first.seen.find(([action]) => action === 'wallet.createOrder')[1];
@@ -65,12 +153,27 @@ test('lost Native create response preserves channel and intent across restart', 
   assert.equal(retry.payment_channel, 'wechat');
 });
 
+test('cancelling product selection has no payment side effects and requires selecting again', async () => {
+  const store = storage();
+  const { view, seen } = setup({ storage: store });
+  await view.refresh(); await view.action('credits-open');
+  const before = seen.length;
+  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-dismiss');
+  assert.equal(seen.length, before);
+  assert.equal(store.getItem('wanx.credit.purchase.v1:alice'), null);
+  await view.action('credits-open');
+  await view.action('credits-confirm');
+  assert.equal(seen.length, before);
+  assert.doesNotMatch(view.render(), /data-action="credits-confirm"|支付二维码/);
+});
+
 test('purchase retry survives restart with same account intent and local QR only', async () => {
   const store = storage(); let failed = false;
   const first = setup({ storage: store, request: async action => {
     if (action === 'wallet.createOrder' && !failed) { failed = true; throw new Error('NETWORK_ERROR'); }
   } });
-  await first.view.refresh(); await first.view.action('credits-buy', { amount: '10000' });
+  await first.view.refresh(); await first.view.action('credits-buy', { amount: '10000' }); await first.view.action('credits-confirm');
   const second = setup({ storage: store });
   second.view.reset(JSON.stringify(['alice', 'new-client']));
   await second.view.refresh(); await second.view.action('credits-open');
@@ -85,7 +188,7 @@ test('purchase retry survives restart with same account intent and local QR only
 test('storage failure prevents a purchase and account switch discards old reads', async () => {
   const store = { getItem() { return null; }, setItem() { throw new Error('disk full'); }, removeItem() {} };
   const first = setup({ storage: store });
-  await first.view.refresh(); await first.view.action('credits-buy', { amount: '10000' });
+  await first.view.refresh(); await first.view.action('credits-buy', { amount: '10000' }); await first.view.action('credits-confirm');
   assert.equal(first.seen.some(([action]) => action === 'wallet.createOrder'), false);
   assert.match(first.view.render(), /无法保存购买意图/);
   let resolve;
@@ -103,13 +206,13 @@ test('unavailable credits routes explain the deployment issue and keep purchase 
   await view.action('credits-open');
   assert.match(view.render(), /积分接口暂不可用，请联系管理员检查服务部署/);
   assert.doesNotMatch(view.render(), /响应无法校验/);
-  await view.action('credits-buy', { amount: '5000' });
+  await view.action('credits-buy', { amount: '5000' }); await view.action('credits-confirm');
   assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
 });
 
 test('expired payment material is hidden and request IDs remain visible', async () => {
   const old = setup({ now: () => Date.parse('2026-10-18T02:16:00Z') });
-  await old.view.refresh(); await old.view.action('credits-buy', { amount: '10000' });
+  await old.view.refresh(); await old.view.action('credits-buy', { amount: '10000' }); await old.view.action('credits-confirm');
   assert.doesNotMatch(old.view.render(), /data:image/);
   assert.match(old.view.render(), /已到期/);
   const failure = setup({ request: async action => { if (action === 'wallet.balance') throw Object.assign(new Error('SERVICE_UNAVAILABLE'), { request_id: 'support-123' }); } });
@@ -124,7 +227,7 @@ test('close recovery survives balance failure and hides uncertain or expired QR'
     if (action === 'wallet.createOrder') return envelope({ ...order, payment_action: { ...order.payment_action, expires_at: '2026-10-18T02:02:00Z' } });
     if (action === 'wallet.closeOrder') { closing = true; throw new Error('NETWORK_ERROR'); }
   } });
-  await first.view.refresh(); await first.view.action('credits-buy', { amount: '10000' });
+  await first.view.refresh(); await first.view.action('credits-buy', { amount: '10000' }); await first.view.action('credits-confirm');
   assert.match(first.view.render(), /data:image/);
   timestamp = Date.parse('2026-10-18T02:03:00Z');
   assert.doesNotMatch(first.view.render(), /data:image/);
@@ -165,7 +268,7 @@ test('review keeps paid and credited facts visible without a payable QR', async 
   const { view } = setup({ request: async action =>
     ['wallet.createOrder', 'wallet.order'].includes(action) ? envelope(reviewed) : undefined });
   await view.refresh();
-  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   const html = view.render();
   assert.match(html, /待核对/);
   assert.match(html, /已支付/);
@@ -205,7 +308,7 @@ test('expired order stays blocked until Admin closes it, then restart can purcha
   };
   const options = { storage: store, uuid: () => `purchase-${++sequence}`, now: () => Date.parse('2026-10-18T02:16:00Z'), request };
   const first = setup(options);
-  await first.view.refresh(); await first.view.action('credits-buy', { amount: '5000' });
+  await first.view.refresh(); await first.view.action('credits-buy', { amount: '5000' }); await first.view.action('credits-confirm');
   await first.view.action('credits-close-order');
   assert.match(first.view.render(), /关闭确认中/);
   assert.doesNotMatch(first.view.render(), /支付二维码/);
@@ -215,12 +318,14 @@ test('expired order stays blocked until Admin closes it, then restart can purcha
   closed = true;
   await restarted.view.refresh(); await restarted.view.action('credits-open');
   assert.match(restarted.view.render(), /已关闭/);
-  await restarted.view.action('credits-buy', { amount: '10000' });
+  await restarted.view.action('credits-reselect');
+  await restarted.view.action('credits-buy', { amount: '10000' }); await restarted.view.action('credits-confirm');
   const oldIntent = first.seen.find(([action]) => action === 'wallet.createOrder')[1];
   const newIntent = restarted.seen.find(([action]) => action === 'wallet.createOrder')[1];
   assert.notEqual(oldIntent.purchase_intent_id, newIntent.purchase_intent_id);
   assert.equal(newIntent.amount_fen, 10000);
-  assert.match(restarted.view.render(), /data-amount="10000" aria-pressed="true"/);
+  assert.match(restarted.view.render(), /付款码已到期/);
+  assert.doesNotMatch(restarted.view.render(), /data-action="credits-buy"/);
   assert.doesNotMatch(restarted.view.render(), /new-order|old-order/);
 });
 
@@ -234,7 +339,7 @@ test('credits offers one purchase entry and shows products only inside the purch
   assert.match(view.render(), /role="dialog"/);
   assert.match(view.render(), /data-action="credits-buy"/);
   assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
-  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   assert.match(view.render(), /支付二维码/);
   await view.action('credits-dismiss');
   assert.doesNotMatch(view.render(), /role="dialog"|支付二维码/);
@@ -248,7 +353,7 @@ test('QR expires on time even when a payment status request is still in flight',
   const timers = new Map(); let timestamp = Date.parse('2026-10-18T02:01:00Z'), resolve;
   const { view } = setup({ now: () => timestamp, schedule: (callback, delay) => { timers.set(delay, callback); return delay; },
     request: action => action === 'wallet.order' ? new Promise(done => { resolve = done; }) : undefined });
-  await view.refresh(); await view.action('credits-buy', { amount: '10000' });
+  await view.refresh(); await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   assert.equal(typeof timers.get(14 * 60 * 1000), 'function');
   const inFlight = view.refresh();
   timestamp = Date.parse('2026-10-18T02:15:00Z');
@@ -264,18 +369,18 @@ test('an unavailable active purchase lookup prevents new purchases until recover
     if (action === 'wallet.orders' && input?.active && offline) throw new Error('NETWORK_ERROR');
   } });
   await view.refresh(); await view.action('credits-open');
-  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   assert.equal(seen.some(([action]) => action === 'wallet.createOrder'), false);
   offline = false; await view.refresh();
-  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   assert.match(view.render(), /支付二维码/);
 });
 
 test('payment confirmation and fulfillment are distinct and neither permits a second payment', async () => {
   let value = order;
   const { view, seen } = setup({ request: action => action === 'wallet.order' ? envelope(value) : undefined });
-  await view.refresh(); await view.action('credits-buy', { amount: '10000' });
-  await view.action('credits-buy', { amount: '10000' });
+  await view.refresh(); await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
+  await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
   value = { ...order, display_state: 'paid_pending', payment_state: 'paid', fulfillment_state: 'pending', payment_action: null };
   await view.refresh();
@@ -295,10 +400,11 @@ test('creating purchase can be dismissed and reopened without losing its in-flig
   let resolve;
   const { view, seen } = setup({ request: action => action === 'wallet.createOrder' ? new Promise(done => { resolve = done; }) : undefined });
   await view.refresh();
-  const purchase = view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-buy', { amount: '10000' });
+  const purchase = view.action('credits-confirm');
   assert.match(view.render(), /正在生成付款码/);
   await view.action('credits-dismiss'); await view.action('credits-open');
-  await view.action('credits-buy', { amount: '10000' });
+  await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
   resolve(envelope(order)); await purchase;
   assert.match(view.render(), /支付二维码/);
@@ -311,7 +417,7 @@ test('payment winning a cancellation immediately transitions to fulfillment inst
     if (action === 'wallet.closeOrder') throw Object.assign(new Error('ORDER_ALREADY_PAID'), { code: 'ORDER_ALREADY_PAID' });
     if (action === 'wallet.order') return envelope({ ...order, payment_state: 'paid', display_state: 'paid_pending', fulfillment_state: 'pending', payment_action: null });
   } });
-  await view.refresh(); await view.action('credits-buy', { amount: '10000' });
+  await view.refresh(); await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   await view.action('credits-close-order');
   assert.match(view.render(), /支付成功，积分到账中/);
   assert.doesNotMatch(view.render(), /关闭确认中|支付二维码/);
@@ -325,7 +431,7 @@ test('credited purchase still retries a failed balance read without recharging a
       if (action === 'wallet.balance' && failBalance) throw new Error('NETWORK_ERROR');
       if (action === 'wallet.balance' && paid) return envelope({ ...balance, balance_credit_atoms: '3998060000', ledger_sequence: 3 });
     } });
-  await view.refresh(); await view.action('credits-buy', { amount: '10000' });
+  await view.refresh(); await view.action('credits-buy', { amount: '10000' }); await view.action('credits-confirm');
   paid = failBalance = true; await view.refresh();
   assert.match(view.render(), /积分已到账/);
   assert.match(view.render(), /data-action="credits-refresh"/);
@@ -348,7 +454,7 @@ test('penny product displays its own grant and recovers the same version after r
   assert.match(first.view.render(), /¥0\.01/);
   assert.match(first.view.render(), /0\.2/);
   assert.doesNotMatch(first.view.render(), /1 元 = 20/);
-  await first.view.action('credits-buy', { amount: 'penny' });
+  await first.view.action('credits-buy', { amount: 'penny' }); await first.view.action('credits-confirm');
   const second = setup({ storage: store, request: async action => {
     if (action === 'wallet.createOrder') return envelope({ ...order, amount_fen: 1, grant_credit_atoms: '200000' });
     return request(action);
@@ -368,9 +474,9 @@ test('a rejected stale product clears the purchase intent and permits choosing t
       version = 'v2'; throw Object.assign(new Error('REVISION_CONFLICT'), { code: 'REVISION_CONFLICT' });
     }
   } });
-  await view.refresh(); await view.action('credits-buy', { amount: 'penny' });
+  await view.refresh(); await view.action('credits-buy', { amount: 'penny' }); await view.action('credits-confirm');
   assert.match(view.render(), /商品已调整/);
-  await view.action('credits-buy', { amount: 'penny' });
+  await view.action('credits-buy', { amount: 'penny' }); await view.action('credits-confirm');
   assert.deepEqual(seen.filter(([action]) => action === 'wallet.createOrder').map(([, value]) => value.product_version), ['v1', 'v2']);
 });
 
@@ -410,22 +516,23 @@ test('closing a recovered configurable-price order survives a lost response and 
   assert.equal(restarted.seen.some(([action]) => action === 'wallet.createOrder'), false);
 });
 
-const remoteWallet = { account_id: 'alice', billing_backend: 'qeetoken', currency_rule_id: 'usd-credit-1-v1',
-  usd_per_credit: '1', credit_scale: 6, currency: 'USD', currency_scale: 8,
-  balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60',
+const remoteWallet = { view_version: '2', account_id: 'alice', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6,
+  balance_credit_atoms: '199999999940', spent_credit_atoms: '60', correction_credit_atoms: '0', net_spent_credit_atoms: '60',
   remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-18T02:00:00Z', pending_executions: 1 };
+const remotePage = (items = []) => ({ view_version: '2', account_id: 'alice', currency_rule_id: 'usd-credit-100-v2',
+  credit_scale: 6, remote_sequence: '2', items, next_before_sequence: null });
 
-test('QeeToken wallet displays exact balance, tiny consumption and server timezone with escaped metadata', async () => {
+test('QeeToken wallet displays rounded balance, tiny consumption and server timezone with escaped metadata', async () => {
   const { view } = setup({ request: async action => {
     if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
     if (action === 'wallet.wallet') return envelope(remoteWallet);
-    if (action === 'wallet.usage') return envelope({ items: [{ event_id: 'event', account_sequence: '2', debit_usd_atoms: '60', debit_credit_atoms: '1',
-      occurred_at: '2026-10-18T02:00:00Z', device_id: '<script>box</script>', model: 'model-x', input_tokens: 7, output_tokens: 2 }], next_before_sequence: null });
+    if (action === 'wallet.usage') return envelope(remotePage([{ event_id: 'event', account_sequence: '2', debit_credit_atoms: '60',
+      occurred_at: '2026-10-18T02:00:00Z', device_id: '<script>box</script>', model: 'model-x' }]));
   } });
   await view.refresh();
   const html = view.render();
-  assert.match(html, /class="credits-total">1,999\.999999<span>/);
-  assert.match(html, /1 USD = 1 积分/); assert.match(html, /1999\.99999940/); assert.match(html, /0\.00000060/);
+  assert.match(html, /class="credits-total">200,000\.00<span>/);
+  assert.doesNotMatch(html, /USD|tokens?|\$/i); assert.match(html, /消耗不足 0\.01 积分/);
   assert.match(html, /10:00:00/); assert.match(html, /1 笔调用正在结算/);
   assert.match(html, /&lt;script&gt;box/); assert.doesNotMatch(html, /<script>/);
 });
@@ -434,8 +541,8 @@ test('QeeToken initialization remains unknown and a stale wallet is labelled exp
   let pending = true;
   const { view } = setup({ request: async action => {
     if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
-    if (action === 'wallet.wallet') return envelope(pending ? { ...remoteWallet, balance_credit_atoms: null, balance_usd_atoms: null, spent_usd_atoms: null, sync_state: 'pending', synced_at: null } : { ...remoteWallet, sync_state: 'stale' });
-    if (action === 'wallet.usage') return envelope({ items: [], next_before_sequence: null });
+    if (action === 'wallet.wallet') return envelope(pending ? { ...remoteWallet, balance_credit_atoms: null, spent_credit_atoms: null, correction_credit_atoms: null, net_spent_credit_atoms: null, sync_state: 'pending', synced_at: null } : { ...remoteWallet, sync_state: 'stale' });
+    if (action === 'wallet.usage') return envelope(remotePage());
   } });
   await view.refresh(); assert.match(view.render(), /余额初始化中/); assert.doesNotMatch(view.label(), /0\.00/);
   pending = false; await view.refresh(); assert.match(view.render(), /显示上次同步余额/);
@@ -447,10 +554,156 @@ test('account switch discards in-flight QeeToken wallet and consumption', async 
   const { view, seen } = setup({ request: async action => {
     if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
     if (action === 'wallet.wallet') { await waiting; return envelope(remoteWallet); }
-    if (action === 'wallet.usage') return envelope({ items: [], next_before_sequence: null });
+    if (action === 'wallet.usage') return envelope(remotePage());
   } });
   const refresh = view.refresh();
   while (!seen.some(([action]) => action === 'wallet.wallet')) await new Promise(resolve => setImmediate(resolve));
   view.reset(JSON.stringify(['bob', 'client-2'])); release(); await refresh;
   assert.doesNotMatch(view.render(), /1999\.99999940|余额已同步/);
+});
+
+test('registration status shows the explicit new denomination without changing wallet totals or adding a claim action', async () => {
+  let state = 'queued';
+  const registration = () => ({ eligibility: 'new_account', grant_rule_id: 'registration-500-v1', state,
+    credit_display: { currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, grant_credit_atoms: '500000000' } });
+  const { view, seen } = setup({ request: action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope({ ...remoteWallet, registration_grant: registration() });
+    if (action === 'wallet.usage') return envelope(remotePage());
+  } });
+  await view.refresh(); await view.action('credits-open');
+  assert.match(view.render(), /注册赠送待到账 · 500\.00 新积分/);
+  state = 'credited'; await view.refresh();
+  assert.match(view.render(), /注册赠送已到账 · 500\.00 新积分/);
+  assert.doesNotMatch(view.render(), /USD|tokens?|\$/i);
+  assert.equal(seen.some(([action]) => /grant|claim/i.test(action)), false);
+  state = 'unknown'; await view.refresh();
+  assert.match(view.render(), /积分响应无法校验/);
+});
+
+test('v2 refresh keeps the last confirmed value on pending or older responses and rejects mixed account pages', async () => {
+  let wallet = remoteWallet, page = remotePage();
+  const { view } = setup({ request: action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope(wallet);
+    if (action === 'wallet.usage') return envelope(page);
+  } });
+  await view.refresh();
+  for (const state of ['pending', 'older', 'wrong-account']) {
+    wallet = state === 'pending' ? { ...remoteWallet, sync_state: 'pending', remote_sequence: '0', balance_credit_atoms: null,
+      spent_credit_atoms: null, correction_credit_atoms: null, net_spent_credit_atoms: null } :
+      state === 'older' ? { ...remoteWallet, remote_sequence: '1', balance_credit_atoms: '0' } : remoteWallet;
+    page = state === 'wrong-account' ? { ...remotePage(), account_id: 'bob' } :
+      state === 'older' ? { ...remotePage(), remote_sequence: '1' } : remotePage();
+    await view.refresh();
+    assert.match(view.render(), /200,000\.00/);
+    if (state === 'pending') assert.match(view.render(), /显示上次同步余额/);
+    assert.doesNotMatch(view.render(), /credits-total">0\.00/);
+  }
+  assert.match(view.render(), /无法校验/);
+});
+
+test('refresh invalidates an older in-flight usage page even when the cursor happens to match', async () => {
+  let finish;
+  const item = sequence => ({ event_id: `e${sequence}`, account_sequence: sequence, debit_credit_atoms: '1000000',
+    occurred_at: remoteWallet.synced_at, device_id: 'box', model: 'model' });
+  const first = { ...remotePage([item('2')]), next_before_sequence: '2' };
+  const { view } = setup({ request: (action, input) => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope(remoteWallet);
+    if (action === 'wallet.usage') return input.before_sequence ? new Promise(resolve => { finish = resolve; }) : envelope(first);
+  } });
+  await view.refresh();
+  const old = view.action('credits-usage-more');
+  await view.refresh();
+  finish(envelope(remotePage([item('1')])));
+  await old;
+  assert.equal((view.render().match(/>model</g) || []).length, 1);
+});
+
+// The server commits a new snapshot while the first read is in flight.
+test('v2 refresh reads usage before wallet to avoid independent snapshot races', async () => {
+  let sequence = '2';
+  const { view } = setup({ request: async action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope({ ...remoteWallet, remote_sequence: sequence });
+    if (action === 'wallet.usage') {
+      await Promise.resolve();
+      sequence = '3';
+      return envelope({ ...remotePage(), remote_sequence: sequence });
+    }
+  } });
+  await view.refresh();
+  assert.match(view.render(), /200,000\.00/);
+  assert.doesNotMatch(view.render(), /无法校验/);
+});
+
+test('custom recharge uses a server quote and persists the exact v2 intent across restart', async () => {
+  const store = storage();
+  const catalog = { view_version: '2', currency_rule_id: 'usd-credit-100-v2', recharge_enabled: true,
+    payment_channels: ['alipay'], products: [{ product_id: 'wanx-v2-10', version: '2', amount_fen: 1000, grant_credit_atoms: '1000000000' }],
+    custom_amount: { min_fen: 1000, max_fen: 100000, step_fen: 100 } };
+  const request = (action, input) => {
+    if (action === 'wallet.catalog') return envelope(catalog);
+    if (action === 'wallet.quote') return envelope({ view_version: '2', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6,
+      rule_id: 'wanx-recharge-100-v2', amount_fen: input.amount_fen, grant_credit_atoms: '1100000000' });
+    if (action === 'wallet.createOrder') throw new Error('NETWORK_ERROR');
+  };
+  const first = setup({ storage: store, request });
+  await first.view.refresh(); await first.view.action('credits-open');
+  assert.match(first.view.render(), /自定义金额/);
+  for (const amount of ['9', '1001', '10.50', '1e2']) {
+    await first.view.action('credits-quote', { amount });
+    assert.equal(first.seen.some(([action]) => action === 'wallet.quote'), false);
+  }
+  await first.view.action('credits-quote', { amount: '11' });
+  assert.match(first.view.render(), /1,100\.00/);
+  await first.view.action('credits-custom-buy');
+  assert.equal(first.seen.some(([action]) => action === 'wallet.createOrder'), false);
+  await first.view.action('credits-custom-change', { amount: '12' });
+  await first.view.action('credits-confirm');
+  assert.equal(first.seen.some(([action]) => action === 'wallet.createOrder'), false, 'editing the amount invalidates its quote');
+  await first.view.action('credits-quote', { amount: '11' });
+  await first.view.action('credits-custom-buy'); await first.view.action('credits-confirm');
+  const saved = JSON.parse(store.getItem('wanx.credit.purchase.v1:alice'));
+  assert.equal(saved.amount_fen, 1100);
+  assert.equal(saved.currency_rule_id, 'usd-credit-100-v2');
+  assert.equal('grant_credit_atoms' in saved, false);
+  const restarted = setup({ storage: store, request });
+  await restarted.view.refresh();
+  assert.deepEqual(restarted.seen.find(([name]) => name === 'wallet.createOrder')[1], first.seen.find(([name]) => name === 'wallet.createOrder')[1]);
+});
+
+
+test('an uncreated legacy intent rejected by the upgrade gate releases purchase recovery', async () => {
+  const store = storage();
+  store.setItem('wanx.credit.purchase.v1:alice', JSON.stringify({ purchase_intent_id: 'legacy-intent', amount_fen: 5000 }));
+  const { view, seen } = setup({ storage: store, request: action => {
+    if (action === 'wallet.createOrder') throw Object.assign(new Error('upgrade'), { code: 'UNSUPPORTED_SCHEMA' });
+  } });
+  await view.refresh();
+  assert.equal(store.getItem('wanx.credit.purchase.v1:alice'), null);
+  await view.refresh(); await view.action('credits-open');
+  assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
+  assert.doesNotMatch(view.render(), /data-action="credits-buy"[^>]*disabled/);
+});
+
+test('approved historical registration gift displays the original pending and credited intent without a claim button', async () => {
+  let state = 'queued';
+  const { view, seen } = setup({ request: action => {
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope({ ...remoteWallet, registration_grant: {
+      eligibility: 'history_unclaimed', state, grant_rule_id: 'registration-500-v1',
+      credit_display: state === 'waiting_migration' ? null : { currency_rule_id:'usd-credit-100-v2', credit_scale:6, grant_credit_atoms:'500000000' },
+    } });
+    if (action === 'wallet.usage') return envelope(remotePage());
+  } });
+  for (const [next, label] of [['queued','注册赠送待到账'],['retry_wait','注册赠送正在重试'],['credited','注册赠送已到账']]) {
+    state = next; await view.refresh();
+    assert.match(view.render(), new RegExp(label + ' · 500\\.00 新积分'));
+    assert.doesNotMatch(view.render(), /积分响应无法校验|USD|tokens?|\$/i);
+  }
+  state = 'waiting_migration'; await view.refresh();
+  assert.match(view.render(), /注册赠送资格已核实，等待处理/);
+  assert.equal(seen.some(([action]) => /grant|claim/i.test(action)), false);
 });

@@ -49,6 +49,20 @@ export function sumCreditAtoms(values) {
   return creditAtoms(total.toString()).toString();
 }
 
+export function orderGrantCreditAtoms(order) {
+  const display = order.credit_display;
+  if (display === null) return null; // Known service: original obligation needs reconciliation.
+  // A pre-upgrade service returns only the original v1 grant. Never multiply
+  // an unversioned order by the current wallet ratio.
+  if (display === undefined) {
+    if (creditAtoms(order.grant_credit_atoms) <= 0n) throw invalid();
+    return order.grant_credit_atoms;
+  }
+  if (!object(display) || !['usd-credit-1-v1', 'usd-credit-100-v2'].includes(display.currency_rule_id) ||
+      display.credit_scale !== 6 || creditAtoms(display.grant_credit_atoms) <= 0n) throw invalid();
+  return display.grant_credit_atoms;
+}
+
 export function formatCreditAtoms(value) {
   const amount = creditAtoms(value);
   const magnitude = amount < 0n ? -amount : amount;
@@ -61,6 +75,28 @@ export function formatCreditAtoms(value) {
   return { text: `${sign}${whole}.${String(cents % 100n).padStart(2, "0")}`, direction, exact };
 }
 
+export function displayCreditAtoms(value, context = "balance") {
+  const formatted = formatCreditAtoms(value);
+  if (formatted.text !== "<0.01") return formatted.text;
+  return `${formatted.direction === "debt" ? "欠费" : context === "consumption" ? "消耗" : "余额"}不足 0.01 积分`;
+}
+
+export function validateCreditWallet(value, accountId) {
+  if (!object(value) || value.view_version !== "2" || value.currency_rule_id !== "usd-credit-100-v2" ||
+      value.credit_scale !== 6 || typeof value.account_id !== "string" || (accountId && value.account_id !== accountId) ||
+      !["pending", "stale", "synced"].includes(value.sync_state) ||
+      !Number.isSafeInteger(value.pending_executions) || value.pending_executions < 0 ||
+      creditAtoms(value.remote_sequence) < 0n) throw invalid();
+  for (const field of ["balance_credit_atoms", "spent_credit_atoms", "correction_credit_atoms", "net_spent_credit_atoms"]) {
+    if (value.sync_state === "pending") { if (value[field] !== null) throw invalid(); }
+    else creditAtoms(value[field]);
+  }
+  if (value.sync_state !== "pending" && (!Number.isFinite(Date.parse(value.synced_at)) ||
+      creditAtoms(value.spent_credit_atoms) < 0n || creditAtoms(value.correction_credit_atoms) < 0n ||
+      creditAtoms(value.spent_credit_atoms) - creditAtoms(value.correction_credit_atoms) !== creditAtoms(value.net_spent_credit_atoms))) throw invalid();
+  return value;
+}
+
 function input(value, keys) {
   if (!object(value) || Object.keys(value).some(key => !keys.includes(key))) throw fail("CREDITS_INVALID_INPUT");
 }
@@ -71,7 +107,8 @@ function resource(value) {
 }
 
 const filters = {
-  usage: ["before_sequence", "limit"],
+  "quote/v2": ["amount_fen"],
+  "usage/v2": ["before_sequence", "limit"],
   orders: ["active", "payment_state", "fulfillment_state", "review_state", "from", "to", "cursor", "limit"],
   entries: ["kind", "order_id", "call_id", "device_id", "model_ref", "from", "to", "through_ledger_sequence", "cursor", "limit"],
   calls: ["device_id", "model_ref", "turn_id", "from", "to", "call_state", "execution_state", "execution_slot_state", "cursor", "limit"],
@@ -92,10 +129,11 @@ export function createCreditWallet({ request }) {
     return request({ method: "GET", path: `${PREFIX}/${path}${suffix}` });
   };
   return Object.freeze({
-    catalog: () => read("catalog"),
+    catalog: () => read("catalog/v2"),
+    quote: value => read("quote/v2", value),
     balance: () => read("balance"),
-    wallet: () => read("wallet"),
-    usage: query => read("usage", query),
+    wallet: () => read("wallet/v2"),
+    usage: query => read("usage/v2", query),
     orders: query => read("orders", query),
     entries: query => read("entries", query),
     calls: query => read("calls", query),
@@ -110,15 +148,18 @@ export function createCreditWallet({ request }) {
       return read(`calls/${encodeURIComponent(value.call_id)}`);
     },
     createOrder: async value => {
-      input(value, ["purchase_intent_id", "amount_fen", "product_id", "product_version", "payment_channel"]);
+      input(value, ["purchase_intent_id", "amount_fen", "product_id", "product_version", "payment_channel", "currency_rule_id"]);
       if (value.payment_channel !== undefined && !["alipay", "wechat"].includes(value.payment_channel)) throw fail("CREDITS_INVALID_INPUT");
       const product = value.product_id !== undefined;
+      if (value.currency_rule_id !== undefined && value.currency_rule_id !== "usd-credit-100-v2") throw fail("CREDITS_INVALID_INPUT");
+      const validAmount = value.currency_rule_id ? Number.isSafeInteger(value.amount_fen) && value.amount_fen >= 1000 && value.amount_fen <= 100000 && value.amount_fen % 100 === 0 : [5000, 10000, 20000].includes(value.amount_fen);
       if (!id(value.purchase_intent_id) || (product
         ? !id(value.product_id) || !id(value.product_version) || value.amount_fen !== undefined
-        : value.product_version !== undefined || ![5000, 10000, 20000].includes(value.amount_fen))) throw fail("CREDITS_INVALID_INPUT");
+        : value.product_version !== undefined || !validAmount)) throw fail("CREDITS_INVALID_INPUT");
       const target = product ? { product_id: value.product_id, product_version: value.product_version } : { amount_fen: value.amount_fen };
       return request({ method: "POST", path: `${PREFIX}/orders`, idempotencyKey: value.purchase_intent_id,
         body: { schema_version: "1", purchase_intent_id: value.purchase_intent_id, ...target,
+          ...(value.currency_rule_id ? { currency_rule_id: value.currency_rule_id } : {}),
           ...(value.payment_channel === undefined ? {} : { payment_channel: value.payment_channel }) } });
     },
     closeOrder: async value => {

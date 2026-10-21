@@ -1301,7 +1301,7 @@ function render(state) {
   }
   const nextWalletDialog = app.querySelector?.('.wallet-purchase-dialog');
   if (nextWalletDialog) {
-    const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled)'));
+    const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
     const previous = buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount);
     (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
     if (walletDialog) nextWalletDialog.scrollTop = walletDialog.scrollTop;
@@ -1678,7 +1678,7 @@ app.addEventListener("click", async (event) => {
     render(currentState); return;
   }
   if (action?.startsWith("credits-")) {
-    await creditsView.action(action, target.dataset);
+    await creditsView.action(action, action === "credits-quote" ? { amount: app.querySelector("#wallet-custom-amount")?.value } : target.dataset);
     return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
@@ -1852,7 +1852,7 @@ app.addEventListener("keydown", (event) => {
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
   if (walletDialog && event.key === 'Escape') { event.preventDefault(); releaseInteraction(); void creditsView.action('credits-dismiss'); return; }
   if (walletDialog && event.key === 'Tab') {
-    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled)'));
+    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
     if (buttons.length) {
       event.preventDefault();
       const index = buttons.indexOf(document.activeElement);
@@ -2066,3 +2066,12 @@ window.wanxSetup?.onReady?.(() => {
 });
 window.wanxSpace?.bind({ render: () => { if (currentState && ["space", "boxes"].includes(page)) render(currentState); } });
 window.wanxClient.getLocalState().then(acceptRemoteState);
+
+app.addEventListener('input', event => {
+  if (event.target?.id === 'wallet-custom-amount') {
+    const position = event.target.selectionStart;
+    void creditsView.action('credits-custom-change', { amount: event.target.value });
+    const input = app.querySelector('#wallet-custom-amount');
+    input?.setSelectionRange(position, position);
+  }
+});
