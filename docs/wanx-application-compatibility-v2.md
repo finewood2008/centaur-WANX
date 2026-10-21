@@ -72,7 +72,9 @@ Admin 市场接口已支持 v2 校验、兼容历史候选与合法历史制品�
 
 Host manager 在签名 v2 制品第一次访问空 profile 前，原子持久化 `applications/.data-access/<applicationId>.json`，记录可能的最后写入制品 `artifactId` 和已核验描述的 SHA-256 摘要。先同步临时文件，再原子替换记录并在支持的平台同步目录；启动中断和卸载均保留该记录。读取拒绝符号链接、非普通文件、重定向目录和损坏记录，不能把异常解释为没有数据。
 
-同一签名制品重新打开时，可以凭 manager 核验的私有连续性证据继续使用同一 profile，因此 Electron 正常写入配置后不会阻止第二次打开。该证据只表示这个制品已获准访问数据，不证明真实数据 schema，也不把 `writeVersion` 当作迁移成功。远端诊断和 renderer 不能提供连续性豁免。已知真实 schema 仍必须符合 `readRange`；换制品、降版、回退和卸载后重装都需要真实 schema 证据，当前壳未接入这种证据时继续阻断（包括卸载后重装同一制品），不自动迁移或删除数据。
+同一签名制品重新打开或卸载后重装时，可以凭 manager 核验的私有连续性证据继续使用同一 profile，因此 Electron 正常写入配置后不会阻止第二次打开。该证据只表示这个制品已获准访问数据，不证明真实数据 schema，也不把 `writeVersion` 当作迁移成功。远端诊断和 renderer 不能提供连续性豁免。已知真实 schema 仍必须符合 `readRange`；换制品、降版或没有同一签名制品连续性证据的重装需要真实 schema 证据，显式回退也保持严格检查。未接入这种证据的应用继续阻断，不自动迁移或删除数据。
+
+知君共享市场入口（`centaurai.wanx.zhijun`、`launchMode: shared`、`market/main.mjs`）已有只读格式识别：检查当前 `.runtime` 和保留的 `application-data` 两处 profile，读取 `host-scopes/<scope>/roles.json` 的真实 `version: 1` 和角色结构，映射为数据 schema `1.0.0`。只有已知 Chromium 运行文件和空业务目录时，判定没有业务数据；保留所有文件原样。此入口使用非持久化浏览器 partition，与带独立会话存储的 bundled 桌面入口不同，后者不使用该识别规则。未知路径、未知版本、损坏文件或重定向链接仍阻断；Host 连续性记录异常与提供方 schema 冲突也不会被覆盖。安装和每次启动重新检查，不能依赖上次观察或新包的 `writeVersion`。这使旧协议知君升级到 v3 时能够验证现有角色格式，而无需清除旧 profile。
 
 已安装版本等于或高于市场目标时，v2 候选仍重新核验当前盒子；不兼容时请求受支持的历史版本。历史候选低于本地版本只显示需要兼容恢复，不自动降版。
 

@@ -1207,6 +1207,33 @@ async function fillRememberedLogin(form) {
   }
 }
 
+// Keep the credits dialog, focused input and decoded QR image mounted while
+// polling changes text or attributes elsewhere on the page.
+function updateCreditsDOM(current, incoming) {
+  const previous = Array.from(current.childNodes);
+  const next = Array.from(incoming.childNodes);
+  for (let index = 0; index < Math.max(previous.length, next.length); index++) {
+    const oldNode = previous[index], newNode = next[index];
+    if (!newNode) { oldNode.remove(); continue; }
+    if (!oldNode) { current.appendChild(newNode.cloneNode(true)); continue; }
+    if (oldNode.nodeType !== newNode.nodeType || oldNode.nodeName !== newNode.nodeName) {
+      oldNode.replaceWith(newNode.cloneNode(true)); continue;
+    }
+    if (oldNode.nodeType !== 1) {
+      if (oldNode.nodeValue !== newNode.nodeValue) oldNode.nodeValue = newNode.nodeValue;
+      continue;
+    }
+    for (const attribute of Array.from(oldNode.attributes)) {
+      if (!newNode.hasAttribute(attribute.name)) oldNode.removeAttribute(attribute.name);
+    }
+    for (const attribute of newNode.attributes) {
+      if (oldNode.getAttribute(attribute.name) !== attribute.value) oldNode.setAttribute(attribute.name, attribute.value);
+    }
+    if (oldNode.tagName === 'INPUT' && oldNode.value !== newNode.value) oldNode.value = newNode.value;
+    updateCreditsDOM(oldNode, newNode);
+  }
+}
+
 function render(state) {
   const auth = state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
   const previousAuth = app.querySelector?.('[data-form="auth"]');
@@ -1250,7 +1277,11 @@ function render(state) {
   const spaceFocus = spaceList?.contains?.(document.activeElement) ? document.activeElement.closest?.("[data-entry-id]")?.dataset.entryId || "" : null;
   const spaceSearch = page === "space" && document.activeElement?.id === "space-search" ? document.activeElement : null;
   const searchSelection = spaceSearch ? [spaceSearch.selectionStart, spaceSearch.selectionEnd] : null;
-  app.innerHTML = markup;
+  if (!auth && page === 'credits' && app.querySelector?.('.credits-page')) {
+    const template = document.createElement('template');
+    template.innerHTML = markup;
+    updateCreditsDOM(app, template.content);
+  } else app.innerHTML = markup;
   if (spacePosition) {
     const replacement = app.querySelector?.(".space-file-list");
     if (replacement?.dataset.location === spacePosition.key) {
@@ -1309,7 +1340,9 @@ function render(state) {
     const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled)'));
     const previous = walletInput ? nextWalletDialog.querySelector('#wallet-custom-amount:not(:disabled)')
       : buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount && button.dataset.channel === walletFocus?.channel);
-    (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
+    if (!nextWalletDialog.contains(document.activeElement) || document.activeElement.disabled) {
+      (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
+    }
     if (walletSelection && previous) previous.setSelectionRange(...walletSelection);
     if (walletScroll) {
       nextWalletDialog.scrollTop = walletScroll.top;

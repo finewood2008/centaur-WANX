@@ -8,6 +8,7 @@ import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
 import { createDefaultApplicationStore } from "./delivery.mjs";
+import { inspectZhijunData } from "./zhijun-data.mjs";
 
 export async function createApplicationManager({
   applicationRoot,
@@ -93,16 +94,27 @@ export async function createApplicationManager({
     const id = input.manifest.applicationId;
     const writer = access === undefined ? await readDataAccess(id) : access;
     let localDataPresent = Boolean(writer);
-    for (const directory of [path.join(applicationRoot, ".runtime", id), path.join(applicationRoot, "..", "application-data", id)]) {
+    const profileDirectories = [path.join(applicationRoot, ".runtime", id), path.join(applicationRoot, "..", "application-data", id)];
+    for (const directory of profileDirectories) {
       try { localDataPresent ||= (await readdir(directory)).length > 0; }
       catch (error) {
         if (error.code !== "ENOENT") throw dataUnknown();
       }
     }
-    // The provider owns actual schema evidence. Never infer it from a package's
-    // writeVersion, and check its authenticated context after the disk reads.
+    // Only the audited shared Zhijun layout has a local schema reader. Other
+    // applications retain the provider/continuity rules. Inspect both paths so
+    // retained legacy data cannot disappear from the compatibility decision.
+    const local = await inspectZhijunData({ manifest: input.descriptor?.manifest, profileDirectories });
+    if (local?.status === "unknown") throw dataUnknown();
+    if (local) localDataPresent = local.localDataPresent;
+    // Never infer the actual schema from writeVersion. Refresh authenticated
+    // provider evidence after all disk reads and reject conflicting evidence.
     const supplied = await getCompatibilityContext?.(input) || {};
-    return { ...supplied, localDataPresent: localDataPresent || supplied.localDataPresent === true };
+    if (local?.localDataSchemaVersion && supplied.localDataSchemaVersion != null &&
+        local.localDataSchemaVersion !== supplied.localDataSchemaVersion) throw dataUnknown();
+    return { ...supplied,
+      ...(local?.localDataSchemaVersion ? { localDataSchemaVersion: local.localDataSchemaVersion } : {}),
+      localDataPresent: localDataPresent || supplied.localDataPresent === true };
   };
   const installer = createApplicationInstaller({
     rootDir: applicationRoot, trustedKeys, getCompatibilityContext: compatibilityContext, prepareApplication, authorizeRelease,
