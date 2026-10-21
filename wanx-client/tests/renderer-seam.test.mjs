@@ -139,9 +139,6 @@ async function harness(initial = state(), installed = [application], options = {
     sendTransferCode: async () => ({ expiresIn: 300 }),
     createOwnershipTransfer: async input => { calls.push(["ownership-created", input]); return { ...input, state: "pending_target" }; },
     acceptOwnershipTransfer: async input => { calls.push(["ownership-accepted", input]); if (options.acceptFailure) throw new Error(options.acceptFailure); return { ...input, state: "completed" }; },
-    setNetworkEnabled: async (enabled) => {
-      rawState = { ...state(enabled ? "enrolling" : "idle", enabled ? "checking" : "disabled"), network: { enabled, phase: enabled ? "checking" : "disabled" } };
-    },
   };
   const applications = {
       listInstalled: async () => records,
@@ -441,11 +438,11 @@ test("switching or disconnecting a box warns that the original application conne
   await h.click("market-confirm");
   assert.match(h.app.innerHTML, /尚未连接盒子/);
   await h.click("show-boxes");
-  await h.click("network-toggle");
-  assert.match(h.app.innerHTML, /aria-checked="false" aria-label="万象网络"/);
-  await h.click("network-toggle");
-  assert.match(h.app.innerHTML, /aria-checked="true" aria-label="万象网络"/);
-  assert.deepEqual(h.calls.filter(([name]) => name === "wanx-client:set-network-enabled").map(([, value]) => value), [false, true]);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="network-toggle"|class="box-network"/);
+  const disabled = await h.window.wanxClient.action("network.set-enabled", { enabled: false });
+  assert.equal(disabled.ok, false);
+  assert.equal(disabled.code, "UNKNOWN_CLIENT_ACTION");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:set-network-enabled").length, 0);
 });
 
 test("network failure is actionable without disabling independent app requests", async () => {
@@ -1617,7 +1614,7 @@ test("space is files only and the box tab combines management and maintenance", 
   assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
   assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
   assert.match(h.app.innerHTML, /CentuarAI-AMD-102/);
-  assert.match(h.app.innerHTML, /data-action="network-toggle"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="network-toggle"|class="box-network"/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"|返回设置/);
   await h.click("show-maintenance");
   assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);

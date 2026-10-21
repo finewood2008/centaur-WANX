@@ -236,11 +236,6 @@ export function registerControlActions({
     const installed = applications ? await applications.listInstalled() : [];
     return { ...client.snapshot(), applications: installed };
   });
-  register("set-network-enabled", (enabled) => {
-    if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
-    if (!enabled) uiState?.invalidateOpen();
-    return client.setNetworkEnabled(enabled);
-  });
   register("login-password", (input) => {
     const number = phone(input);
     if (

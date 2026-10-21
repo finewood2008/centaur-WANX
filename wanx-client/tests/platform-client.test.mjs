@@ -121,8 +121,7 @@ function harness(t, options = {}) {
   const client = createPlatformClient({
     account,
     localBoxes: options.localBoxes,
-    readPreference:
-      options.readPreference || (async () => options.enabled ?? true),
+    readPreference: options.readPreference || (options.enabled === undefined ? undefined : async () => options.enabled),
     pollIntervalMs: 1,
     renewIntervalMs: options.renewIntervalMs ?? 60_000,
     writePreference: options.writePreference,
@@ -346,6 +345,7 @@ test("one product login automatically enrolls and opens only a server-authorized
     password: "test",
   });
   assert.equal(logged.platform.phase, "ready");
+  assert.equal(logged.network.enabled, true);
   assert.equal(logged.devices.length, 1);
   assert.doesNotMatch(
     JSON.stringify(logged),

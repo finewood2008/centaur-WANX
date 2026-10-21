@@ -24,7 +24,6 @@ function harness() {
       "connectBox",
       "connect",
       "disconnect",
-      "setNetworkEnabled",
     ].map((name) => [name, (input) => calls.push([name, input])]),
   );
   for (const name of ["loginPassword", "loginSMS", "register"])
@@ -166,11 +165,7 @@ test("box actions accept only bounded IDs and direct connection cannot inject tr
     () => h.invoke("connect", { ...input, mode: "netbird" }),
     /invalid_network_mode/,
   );
-  assert.throws(
-    () => h.invoke("set-network-enabled", "true"),
-    /invalid_network_mode/,
-  );
-  for (const name of ["login-network", "enroll-network", "open-auth-url"])
+  for (const name of ["set-network-enabled", "login-network", "enroll-network", "open-auth-url"])
     assert.equal(h.handlers.has(`wanx-client:${name}`), false);
 });
 
