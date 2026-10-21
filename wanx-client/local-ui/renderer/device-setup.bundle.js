@@ -239,24 +239,6 @@
           throw new LocalProvisioningFailure("GATT_SERVICE_NOT_FOUND");
         let server, service, deviceInfo, command, status;
         let stage = "connect", retired = false, closeOnRetire;
-        const diagnosticFailure = (code, failureStage, error) => {
-          const failure2 = new LocalProvisioningFailure(code);
-          const names = [
-            "NetworkError",
-            "NotFoundError",
-            "NotSupportedError",
-            "InvalidStateError",
-            "SecurityError",
-            "AbortError",
-            "TimeoutError",
-            "UnknownError"
-          ];
-          failure2.diagnostic = {
-            stage: failureStage,
-            errorName: names.includes(error?.name) ? error.name : "UnknownError"
-          };
-          return failure2;
-        };
         const retireConnection = () => {
           if (retired) return;
           retired = true;
@@ -287,15 +269,14 @@
           if (signal.aborted || error?.name === "AbortError")
             throw new DOMException("Aborted", "AbortError");
           const code = error?.name === "NotFoundError" && stage !== "connect" ? stage === "service" ? "GATT_SERVICE_NOT_FOUND" : "GATT_CHARACTERISTIC_MISMATCH" : "LOCAL_TRANSPORT_DISCONNECTED";
-          throw diagnosticFailure(code, stage, error);
+          throw new LocalProvisioningFailure(code);
         }
         const allocator = createMessageIdAllocator(), reassemblers = /* @__PURE__ */ new Map(), completed = /* @__PURE__ */ new Map();
-        let closed = false, pending, statusListener, terminalFailure;
+        let closed = false, pending, statusListener;
         const closeWith = (error) => {
           if (closed)
             return;
           closed = true;
-          terminalFailure = error ?? new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
           if (pending) {
             clearTimeout(pending.timer);
             pending.reject(error ?? new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED"));
@@ -355,9 +336,9 @@ ${outer.messageType}`, now = input.clock.monotonicMs();
         try {
           await status.startNotifications();
           assertActive();
-        } catch (error) {
+        } catch {
           closeWith();
-          throw diagnosticFailure("LOCAL_TRANSPORT_DISCONNECTED", "notifications", error);
+          throw new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
         }
         const transport = {
           kind: "ble-gatt",
@@ -400,10 +381,6 @@ ${match.responseMessageType}`;
                 }, input.requestTimeoutMs ?? 5e3)
               };
             });
-            const interruption = new Promise((_, reject) => {
-              void response.catch(reject);
-            });
-            void interruption.catch(() => void 0);
             const abort = () => {
               if (pending?.key === requestKey) {
                 const current = pending;
@@ -418,8 +395,7 @@ ${match.responseMessageType}`;
               for (const fragment of fragmentLogicalFrame(logicalFrame, id)) {
                 if (requestSignal.aborted)
                   throw new DOMException("Aborted", "AbortError");
-                if (closed) throw terminalFailure;
-                await Promise.race([command.writeValueWithResponse(fragment.slice().buffer), interruption]);
+                await command.writeValueWithResponse(fragment.slice().buffer);
               }
               return await response;
             } catch (error) {
@@ -431,10 +407,8 @@ ${match.responseMessageType}`;
                 current.reject(error);
                 await response.catch(() => void 0);
               }
-              if (error instanceof DOMException && error.name === "AbortError") {
-                closeWith(error);
+              if (error instanceof DOMException && error.name === "AbortError")
                 throw error;
-              }
               const failure2 = error instanceof LocalProvisioningFailure ? error : new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
               closeWith(failure2);
               throw failure2;

@@ -509,7 +509,7 @@ export function createAccount({
     let step = 'credit.payment.status';
     if (input.method === 'POST' && path === '/app-api/v1/credits/orders') step = 'credit.payment.create';
     else if (input.method === 'POST' && /\/orders\/[^/]+\/close$/.test(path)) step = 'credit.payment.close';
-    else if (path.endsWith('/catalog/v2')) step = 'credit.checkout.catalog';
+    else if (path.endsWith('/catalog') || path.endsWith('/catalog/v2')) step = 'credit.checkout.catalog';
     return measure(step, operation);
   }
 
