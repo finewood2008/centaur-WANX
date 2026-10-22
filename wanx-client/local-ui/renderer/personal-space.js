@@ -2,6 +2,23 @@
   const esc = v => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   const size = value => { if (value == null) return "暂不可用"; let n = value, i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${["B", "KB", "MB", "GB", "TB"][i]}`; };
   const errors = {
+    ECONNRESET: "网络连接中断，进度已保留，请检查连接后重试。",
+    ECONNREFUSED: "网络连接中断，进度已保留，请检查连接后重试。",
+    EPIPE: "网络连接中断，进度已保留，请检查连接后重试。",
+    ETIMEDOUT: "网络连接中断，进度已保留，请检查连接后重试。",
+    EHOSTUNREACH: "网络连接中断，进度已保留，请检查连接后重试。",
+    ENETUNREACH: "网络连接中断，进度已保留，请检查连接后重试。",
+    ENETDOWN: "网络连接中断，进度已保留，请检查连接后重试。",
+    EAI_AGAIN: "网络连接中断，进度已保留，请检查连接后重试。",
+    SESSION_CLOSED: "网络连接中断，进度已保留，请检查连接后重试。",
+    GATEWAY_CLOSED: "网络连接中断，进度已保留，请检查连接后重试。",
+    NETWORK_CHANGED: "网络连接中断，进度已保留，请检查连接后重试。",
+    NETWORK_NOT_READY: "网络连接中断，进度已保留，请检查连接后重试。",
+    tunnel_timeout: "网络连接中断，进度已保留，请检查连接后重试。",
+    tunnel_rejected: "网络连接中断，进度已保留，请检查连接后重试。",
+    network_unavailable: "网络连接中断，进度已保留，请检查连接后重试。",
+    network_recovering: "网络连接中断，进度已保留，请检查连接后重试。",
+    netbird_peer_disconnected: "网络连接中断，进度已保留，请检查连接后重试。",
     SPACE_SYNC_POLICY_INVALID: "同步设置无效，请检查所选范围。",
     SPACE_SYNC_PROJECT_REQUIRED: "开启项目记忆时，请填写项目范围。",
     SPACE_SYNC_POLICY_CHANGED: "同步设置已更新，请重新打开设置后再保存。",
@@ -15,9 +32,21 @@
     SPACE_LINK_START_FAILED: "Agent 链接服务未启动，请检查系统钥匙串并重启万象。",
     SPACE_VERSION_CONFLICT: "文件已经更新，请刷新后再操作，避免覆盖其他修改。",
     SPACE_UPGRADE_REQUIRED: "当前盒子尚不支持文件空间，请升级盒端服务。",
+    SPACE_UPLOAD_LIMIT: "单文件最大 200 MB，此文件已跳过，其他文件继续上传。",
+    SPACE_SOURCE_MISSING: "本地文件已移动或删除，请恢复原位置后重试。",
+    SPACE_SOURCE_UNREADABLE: "无法读取本地内容，请检查文件权限或外接磁盘后重试。",
+    SPACE_SOURCE_CHANGED: "本地目录已变化，请重新拖入。",
+    SPACE_SOURCE_LINK: "符号链接不自动跟随，请拖入实际文件或文件夹。",
+    SPACE_SOURCE_UNSUPPORTED: "此项目不是普通文件或文件夹，已跳过。",
+    SPACE_IMPORT_PARENT_FAILED: "上级文件夹尚未成功创建，请先处理上级错误。",
+    SPACE_IMPORT_FOLDER_CHANGED: "目标文件夹已移动或删除，请重新选择目标。",
+    SPACE_IMPORT_FOLDER_CONFLICT: "目录重试核对发现冲突，已停止此目录，请刷新后重试。",
+    SPACE_NETWORK_WAIT: "连接暂不可用，进度已保留，将自动继续；也可手动暂停。",
     SPACE_INVALID_DROP: "请从本地拖入文件后重试。",
-    SPACE_DROP_FILES_ONLY: "暂不支持拖入整个文件夹，请选择其中的文件上传。",
+    SPACE_DROP_FILES_ONLY: "请选择本地文件或文件夹。",
     SPACE_DISK_FULL: "盒子存储空间不足，请清理文件或回收站后重试。",
+    SPACE_UNSAFE_STORAGE: "盒子存储安全检查未通过，此文件已停止上传。请检查盒子存储后重试，其他文件不受影响。",
+    SPACE_STORAGE_UNAVAILABLE: "盒子存储位置暂不可用，请检查磁盘是否在线；进度已保留。",
     SPACE_INVALID_NAME: "名称不能含路径字符、首尾空格或超过 240 字节；请修改后重试。",
     SPACE_INVALID_DESTINATION: "不能把文件夹移到自身或其子文件夹中。",
     SPACE_NOT_FOUND: "文件已发生变化，请刷新后重试。",
@@ -44,17 +73,32 @@
     SECURE_STORAGE_WRITE_FAILED: "无法保存传输记录，请检查本机存储空间。",
   };
   const message = error => error?.code === "SPACE_UPLOAD_LIMIT" && typeof error.message === "string" ? error.message : Object.entries(errors).find(([key]) => String(error?.message || error).includes(key))?.[1] || "操作未完成，请检查连接并重试。";
+  const networkWait = "等待网络，恢复后自动继续";
+  const recoverableTransfer = error => /\b(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENETDOWN|EAI_AGAIN|SESSION_CLOSED|GATEWAY_CLOSED|NETWORK_CHANGED|NETWORK_NOT_READY|BOX_CONNECTION_REQUIRED|SPACE_CONNECTION_TIMEOUT|SPACE_CHUNK_STALLED|SPACE_NETWORK_WAIT|SPACE_REQUEST_FAILED|SPACE_TRANSFER_FAILED|tunnel_timeout|tunnel_rejected|network_unavailable|network_recovering|netbird_peer_disconnected)\b/.test(String(error?.code || error?.message || error || ""));
+  const waitingForNetwork = task => ["waiting", "retrying"].includes(task.phase) || (task.phase === "queued" && recoverableTransfer(task.error));
   const workspaces = window.wanxWorkspaces;
   let previewMode = false;
   const previews = window.createSpacePreviews?.({ request: id => call("preview", { id }) });
   let workspace = "personal", recordNavigation = true;
   const rootFolder = () => workspaces?.root() || "";
   let host, scope, revision = 0, parent = "", trash = false, listing = { items: [], breadcrumbs: [] }, status = { phase: "idle", tasks: [] };
-  let lastSeen = null, dragDepth = 0, transfersOpen = false;
+  let lastSeen = null, dragDepth = 0, transfersOpen = false, transferLimit = 100;
   let selectedId = "", anchorId = "", selectedIds = new Set(), contextMenu = null, query = "", sortBy = "name", sortDirection = 1;
   let marquee = null, moving = null, movePointer = null, ignoreSelectionClick = false, batchBusy = false;
   let pendingRefresh = false, composing = false;
+  let transferIssue = null;
   let error = null, loading = false, active = false, fileView = false, dialog = null, previewURL = null, render = () => {};
+  const beginTransfer = target => ({ epoch: revision, scope: status.scope, target, before: new Set((status.tasks || []).map(task => task.id)) });
+  function reconcileTransferIssue() {
+    if (!transferIssue?.recoverable || transferIssue.attempt.scope !== status.scope) return;
+    const { target, before } = transferIssue.attempt;
+    if ((status.tasks || []).some(task => target ? task.id === target || task.batchId === target : !before.has(task.id))) transferIssue = null;
+  }
+  function transferProblem(cause, attempt) {
+    if (attempt.epoch !== revision) return;
+    transferIssue = { text: message(cause), recoverable: recoverableTransfer(cause), attempt };
+    reconcileTransferIssue();
+  }
   function closeDialog() { dialog = null; composing = false; if (pendingRefresh) { pendingRefresh = false; queueMicrotask(() => { if (active && !dialog) void load(); }); } if (previewURL) URL.revokeObjectURL(previewURL); previewURL = null; }
   function clearSelection() { selectedIds.clear(); selectedId = ""; anchorId = ""; }
   const selectedItems = () => visibleItems().filter(item => selectedIds.has(item.id));
@@ -112,7 +156,7 @@
     if (scope !== next) {
       previews?.reset();
       stopMarquee(); clearSelection(); batchBusy = false; contextMenu = null; query = "";
-      scope = next; workspaces?.reset(scope); workspace = "personal"; revision++; parent = ""; trash = false; listing = { items: [], breadcrumbs: [] }; closeDialog(); clearDrag(); error = null; loading = false;
+      scope = next; workspaces?.reset(scope); workspace = "personal"; revision++; parent = ""; trash = false; listing = { items: [], breadcrumbs: [] }; closeDialog(); clearDrag(); error = null; transferIssue = null; loading = false;
       status = { phase: "idle", tasks: [] };
       if (active && state.canLaunchApplications) queueMicrotask(() => { if (active) void load(); });
     } else if (active && reconnected) queueMicrotask(() => { if (active) void load(); });
@@ -143,12 +187,16 @@
     return `<section class="space-storage" aria-label="存储空间"><div class="space-storage-title"><span>空间用量</span><strong>${size(used)}</strong></div>${volume ? `<progress class="space-capacity" max="${volume.total || 1}" value="${volume.used}" aria-label="存储卷已用容量" title="磁盘总容量 ${size(volume.total)}；用量包含该卷其他数据"></progress><p title="磁盘总容量 ${size(volume.total)}；用量包含该卷其他数据">磁盘可用 ${size(volume.free)}</p>` : `<p>${location ? "存储目录暂不可用" : "正在获取容量…"}</p>`}</section>${workspaces?.storageView?.() || ""}`;
   }
   function transfers() {
-    const tasks = status.tasks || [];
-    if (!tasks.length) return "";
-    const labels = { waiting: "等待连接恢复", retrying: "正在自动重试", queued: "等待传输", checking: "正在核对文件", running: "正在传输", paused: "已暂停", complete: "已完成", canceled: "已取消" };
+    const tasks = status.tasks || [], batches = status.imports || [];
+    if (!tasks.length && !batches.length) return "";
+    const labels = { scanning: "正在扫描目录", waiting: networkWait, retrying: networkWait, queued: "等待传输", checking: "正在核对文件", running: "正在传输", paused: "已暂停", failed: "部分未完成", complete: "已完成", canceled: "已取消" };
     const pending = tasks.filter(t => !["complete", "canceled"].includes(t.phase)).length;
-    const ordered = [...tasks].reverse().sort((a, b) => Number(["complete", "canceled"].includes(a.phase)) - Number(["complete", "canceled"].includes(b.phase)));
-    return `<section class="space-transfers" aria-label="文件传输"><button class="space-transfers-heading" data-action="space-transfers-toggle" aria-expanded="${transfersOpen}"><strong>传输列表 <span class="count">${pending ? `${pending} 项待完成` : `${tasks.length} 项记录`}</span></strong><span>${transfersOpen ? "收起" : "展开"}</span></button>${transfersOpen ? `<div class="space-row-actions"><button class="text-button" data-action="space-transfer" data-command="pause-all">全部暂停</button><button class="text-button" data-action="space-transfer" data-command="resume-all">全部继续</button><button class="text-button" data-action="space-transfer" data-command="retry-failed">重试失败项</button></div><div class="space-transfer-list">${ordered.map(t => `<div class="space-transfer ${t.phase === "complete" ? "is-complete" : ""}"><span class="space-transfer-icon">${icon(t.direction)}</span><div class="space-transfer-main"><div class="space-transfer-title"><strong>${esc(t.name)}</strong><span>${percent(t)}%</span></div><progress class="space-progress" max="100" ${t.phase === "checking" ? "" : `value="${percent(t)}"`} aria-label="${esc(t.name)}${t.direction === "upload" ? "上传" : "下载"}进度"></progress><small>${t.direction === "upload" ? "上传" : "下载"} · ${t.phase === "running" && t.offset === t.size ? "正在保存" : labels[t.phase] || t.phase} · ${size(t.offset)} / ${size(t.size)}</small>${t.error && t.phase === "paused" ? `<small class="inline-error">${esc(message(t.error))}</small>` : ""}</div><div class="space-row-actions">${t.phase === "paused" ? `<button class="text-button" data-action="space-transfer" data-id="${t.id}" data-command="resume">继续</button>` : ["running", "checking", "queued", "waiting", "retrying"].includes(t.phase) ? `<button class="text-button" data-action="space-transfer" data-id="${t.id}" data-command="pause">暂停</button>` : ""}${!["complete", "canceled"].includes(t.phase) ? `<button class="text-button" data-action="space-transfer" data-id="${t.id}" data-command="cancel">取消</button>` : ""}</div></div>`).join("")}</div>` : ""}</section>`;
+    const rank = t => t.phase === "paused" && t.error ? 0 : ({running: 1, checking: 2, retrying: 3, waiting: 4, queued: 5, paused: 6, complete: 7, canceled: 8})[t.phase] ?? 9;
+    const ordered = [...tasks].reverse().sort((a, b) => rank(a) - rank(b));
+    const liveBatches = batches.filter(batch => batch.phase !== "complete");
+    const summaries = (liveBatches.length ? liveBatches.slice(-10) : batches.slice(-1)).reverse().map(batch => `<article class="space-import-summary"><div class="space-transfer-title"><strong title="${esc(batch.name)}">${esc(batch.name)}</strong><span>${labels[batch.phase] || batch.phase}</span></div><small>已发现 ${batch.files} 个文件 · ${batch.folders} 个文件夹${batch.scanComplete ? "" : " · 总量仍在统计"}<br>已完成 ${batch.completed} 项${batch.failed ? ` · ${batch.failed} 项未完成` : ""} · ${size(batch.offset)} / ${size(batch.size)}</small>${batch.failed ? '<p class="inline-error">问题项已单独保留，其余内容继续上传。查看下方原因后重试。</p>' : ""}<div class="space-row-actions">${!["complete", "failed"].includes(batch.phase) ? `<button class="text-button" data-action="space-transfer" data-id="${batch.id}" data-command="${batch.phase === "paused" ? "resume-batch" : "pause-batch"}">${batch.phase === "paused" ? "继续本批" : "暂停本批"}</button>` : ""}${batch.failed ? `<button class="text-button" data-action="space-transfer" data-id="${batch.id}" data-command="retry-batch">重试本批问题项</button>` : ""}</div></article>`).join("");
+    const rows = ordered.slice(0, transferLimit).map(t => `<div class="space-transfer ${t.phase === "complete" ? "is-complete" : ""}"><span class="space-transfer-icon">${icon(t.kind === "folder" ? "folder" : t.direction)}</span><div class="space-transfer-main"><div class="space-transfer-title"><strong title="${esc(t.relativePath || t.name)}">${esc(t.relativePath || t.name)}</strong><span>${t.kind === "folder" ? "目录" : `${percent(t)}%`}</span></div>${t.kind === "scan-error" ? "" : `<progress class="space-progress" max="100" ${t.phase === "checking" ? "" : `value="${percent(t)}"`} aria-label="${esc(t.name)}传输进度"></progress>`}<small>${t.kind === "folder" ? "创建文件夹" : t.direction === "upload" ? "上传" : "下载"} · ${t.phase === "running" && t.kind !== "folder" && t.offset === t.size ? "正在保存" : waitingForNetwork(t) ? networkWait : labels[t.phase] || t.phase}${t.kind === "folder" || t.kind === "scan-error" ? "" : ` · ${size(t.offset)} / ${size(t.size)}`}</small>${t.error && t.phase === "paused" ? `<small class="inline-error">${esc(message(t.error))}${t.retryAt ? ` · ${Math.max(1, Math.ceil((t.retryAt - Date.now()) / 1000))} 秒后重试` : ""}</small>` : ""}</div><div class="space-row-actions">${t.phase === "paused" ? `<button class="text-button" data-action="space-transfer" data-id="${t.id}" data-command="resume">重试</button>` : ["running", "checking", "queued", "waiting", "retrying"].includes(t.phase) ? `<button class="text-button" data-action="space-transfer" data-id="${t.id}" data-command="pause">暂停</button>` : ""}${!["complete", "canceled"].includes(t.phase) ? `<button class="text-button" data-action="space-transfer" data-id="${t.id}" data-command="cancel">取消</button>` : ""}</div></div>`).join("");
+    return `<section class="space-transfers" aria-label="文件传输"><button class="space-transfers-heading" data-action="space-transfers-toggle" aria-expanded="${transfersOpen}"><strong>传输列表 <span class="count">${pending ? `${pending} 项待完成` : `${tasks.length} 项记录`}</span></strong><span>${transfersOpen ? "收起" : "展开"}</span></button>${transfersOpen ? `<div class="space-row-actions"><button class="text-button" data-action="space-transfer" data-command="pause-all">全部暂停</button><button class="text-button" data-action="space-transfer" data-command="resume-all">全部继续</button><button class="text-button" data-action="space-transfer" data-command="retry-failed">重试失败项</button><button class="text-button" data-action="space-transfer" data-command="clear-completed">清理完成记录</button></div><div class="space-transfer-list">${summaries}${rows}${ordered.length > transferLimit ? `<button class="text-button" data-action="space-transfers-more">再显示 100 项（共 ${ordered.length} 项）</button>` : ""}</div>` : ""}</section>`;
   }
   const action = (label, kind, item, danger = false) => `<button role="menuitem" class="${danger ? "danger-text" : ""}" data-action="space-${kind}" data-id="${item?.id || ""}">${label}</button>`;
   const fileType = item => item.kind === "folder" ? "文件夹" : item.name.includes(".") ? item.name.split(".").pop().toUpperCase() + " 文件" : "文件";
@@ -175,7 +223,7 @@
     const item = listing.items.find(item => item.id === contextMenu.id);
     if (contextMenu.id && !item) return "";
     const count = selectedItems().length;
-    const choices = item && count > 1 ? (trash ? action(`恢复所选 ${count} 项`, "batch-restore") : action(`下载所选 ${count} 项…`, "batch-download") + action(`移动所选 ${count} 项…`, "batch-move") + (workspaces ? action(`复制所选 ${count} 项…`, "batch-copy") : "") + '<hr role="separator">' + action(`移入回收站（${count} 项）…`, "batch-trash", null, true)) : item ? trash ? action("恢复", "restore", item) + action("彻底删除…", "purge", item, true) : action(item.kind === "folder" ? "打开文件夹" : "预览", "open", item) + action("下载到电脑…", "download", item) + action("创建 Agent 访问链接…", "link-create", item) + (workspaces ? action("授予 Agent 读写权限…", "grant", item) + (item.kind === "folder" ? action("固定到常用位置", "pin", item) : "") : "") + (item.kind === "file" && item.previous_digest ? action("恢复上一版本…", "previous", item) : "") + '<hr role="separator">' + action("重命名…", "rename", item) + action("移动到…", "move", item) + (workspaces ? action("复制到…", "copy", item) : "") + '<hr role="separator">' + action("移入回收站…", "trash", item, true) : (trash ? "" : action("上传文件…", "upload") + action("新建文件夹…", "mkdir") + '<hr role="separator">') + action("刷新", "refresh");
+    const choices = item && count > 1 ? (trash ? action(`恢复所选 ${count} 项`, "batch-restore") : action(`下载所选 ${count} 项…`, "batch-download") + action(`移动所选 ${count} 项…`, "batch-move") + (workspaces ? action(`复制所选 ${count} 项…`, "batch-copy") : "") + '<hr role="separator">' + action(`移入回收站（${count} 项）…`, "batch-trash", null, true)) : item ? trash ? action("恢复", "restore", item) + action("彻底删除…", "purge", item, true) : action(item.kind === "folder" ? "打开文件夹" : "预览", "open", item) + action("下载到电脑…", "download", item) + action("创建 Agent 访问链接…", "link-create", item) + (workspaces ? action("授予 Agent 读写权限…", "grant", item) + (item.kind === "folder" ? action("固定到常用位置", "pin", item) : "") : "") + (item.kind === "file" && item.previous_digest ? action("恢复上一版本…", "previous", item) : "") + '<hr role="separator">' + action("重命名…", "rename", item) + action("移动到…", "move", item) + (workspaces ? action("复制到…", "copy", item) : "") + '<hr role="separator">' + action("移入回收站…", "trash", item, true) : (trash ? "" : action("上传文件…", "upload") + action("上传文件夹…", "upload-folder") + action("新建文件夹…", "mkdir") + '<hr role="separator">') + action("刷新", "refresh");
     return `<div class="space-context-menu" role="menu" aria-label="${item ? "文件操作" : "文件夹操作"}" style="left:${contextMenu.x}px;top:${contextMenu.y}px">${choices}</div>`;
   }
   function showMenu(item, x, y) {
@@ -266,16 +314,17 @@
   function view() {
     if (!host?.canLaunchApplications) return `<section class="empty-state space-connect"><h3>连接盒子，访问自己的文件</h3><p>${host?.connectionPhase === "recovering" ? "正在恢复与盒子的连接。" : "连接盒子后，即可像使用硬盘一样管理文件。"}</p>${lastSeen ? `<p class="muted">${esc(lastSeen.name)} · 上次更新 ${new Date(lastSeen.at * 1000).toLocaleString()}，当前状态待重新确认。</p>` : ""}<button class="button" data-action="show-boxes">前往盒子管理</button></section>${transfers()}`;
     const items = visibleItems(), selected = selectedItems();
+    const visibleError = error || transferIssue?.text;
     const upper = listing.breadcrumbs.length > 1 ? listing.breadcrumbs.at(-2).id : rootFolder();
     const sortOptions = Object.entries({ name: "名称", size: "大小", type: "种类", modified: "修改时间" }).map(([key, label]) => `<option value="${key}" ${sortBy === key ? "selected" : ""}>${label}</option>`).join("");
     return `<div class="space-workspace" ${dialog || workspaces?.modalOpen?.() ? "inert" : ""}><div class="space-browser"><aside class="space-sidebar" aria-label="文件空间导航"><div class="space-sidebar-scroll">${workspaces ? workspaces.sidebar() : `<div class="space-sidebar-caption">位置</div><button class="space-nav ${!trash ? "active" : ""}" data-action="space-folder" data-id="">${icon("folder")}全部文件</button>`}</div><div class="space-sidebar-bottom">${workspaces?.footerNavigation() || `<button class="space-nav" data-action="space-recycle">${icon('trash')}回收站</button>`}<div class="space-disk-identity" title="当前盒子：${esc(boxName())}">${icon("drive")}<span><strong>${esc(boxName())}</strong></span><i class="status-dot ready" title="已连接" aria-label="已连接"></i></div>${storage()}</div></aside><main class="space-main">
-      <div class="space-toolbar" aria-busy="${batchBusy}" ${batchBusy ? "inert" : ""}><div class="space-row-actions">${workspaces?.navigation() || ""}<button class="space-icon-button" data-action="space-folder" data-id="${upper}" aria-label="返回上级文件夹" title="返回上级文件夹" ${parent === rootFolder() || trash ? "disabled" : ""}>${icon("up")}</button><button class="space-icon-button ${loading ? "space-refreshing" : ""}" data-action="space-refresh" aria-label="${loading ? "正在刷新文件" : "刷新文件"}" aria-busy="${loading}" title="${loading ? "正在刷新文件" : "刷新"}" ${loading ? "disabled" : ""}>${icon("refresh")}</button><span class="space-toolbar-title">${trash ? "回收站" : parent !== rootFolder() ? esc(listing.breadcrumbs.at(-1)?.name || "文件夹") : esc(workspaces?.current().name || "全部文件")}</span></div><div class="space-row-actions"><button class="button small" data-action="space-links">Agent 访问链接</button>${selected.length ? `<span class="space-selected-count">已选 ${selected.length} 项</span>${trash ? '<button class="button small" data-action="space-batch-restore">恢复</button>' : '<button class="button small" data-action="space-batch-download">下载</button><button class="button small" data-action="space-batch-move">移动</button><button class="button small danger-text" data-action="space-batch-trash">删除</button>'}<button class="text-button space-clear-selection" data-action="space-selection-clear">取消选择</button>` : !trash && status.phase !== "unsupported" ? '<button class="button small" data-action="space-mkdir">新建文件夹</button><button class="button small primary space-upload-button" data-action="space-upload" title="一次最多 20 个文件，单文件最大 200 MB">' + icon("upload") + '上传文件</button>' : ""}</div></div>
+      <div class="space-toolbar" aria-busy="${batchBusy}" ${batchBusy ? "inert" : ""}><div class="space-row-actions">${workspaces?.navigation() || ""}<button class="space-icon-button" data-action="space-folder" data-id="${upper}" aria-label="返回上级文件夹" title="返回上级文件夹" ${parent === rootFolder() || trash ? "disabled" : ""}>${icon("up")}</button><button class="space-icon-button ${loading ? "space-refreshing" : ""}" data-action="space-refresh" aria-label="${loading ? "正在刷新文件" : "刷新文件"}" aria-busy="${loading}" title="${loading ? "正在刷新文件" : "刷新"}" ${loading ? "disabled" : ""}>${icon("refresh")}</button><span class="space-toolbar-title">${trash ? "回收站" : parent !== rootFolder() ? esc(listing.breadcrumbs.at(-1)?.name || "文件夹") : esc(workspaces?.current().name || "全部文件")}</span></div><div class="space-row-actions"><button class="button small" data-action="space-links">Agent 访问链接</button>${selected.length ? `<span class="space-selected-count">已选 ${selected.length} 项</span>${trash ? '<button class="button small" data-action="space-batch-restore">恢复</button>' : '<button class="button small" data-action="space-batch-download">下载</button><button class="button small" data-action="space-batch-move">移动</button><button class="button small danger-text" data-action="space-batch-trash">删除</button>'}<button class="text-button space-clear-selection" data-action="space-selection-clear">取消选择</button>` : !trash && status.phase !== "unsupported" ? '<button class="button small" data-action="space-mkdir">新建文件夹</button><button class="button small primary space-upload-button" data-action="space-upload" title="支持文件和文件夹；自动分批上传，单文件最大 200 MB">' + icon("upload") + '上传文件</button><button class="button small" data-action="space-upload-folder">上传文件夹</button>' : ""}</div></div>
       <div class="space-pathbar"><div class="space-breadcrumbs" aria-label="当前位置"><button class="text-button" data-action="space-folder" data-id="${rootFolder()}" data-space="${workspace}">${icon("drive")}${esc(workspaces?.current().name || "全部文件")}</button>${!trash ? breadcrumbsView() : '<span>›</span><strong>回收站</strong>'}</div><div class="space-view-tools"><button class="text-button space-preview-mode" data-action="space-preview-mode" aria-pressed="${previewMode}" title="按需显示图片缩略图；双击预览图片、PDF 或文本">${previewMode ? "✓ 预览模式" : "预览模式"}</button><label class="space-sort"><span>排列</span><select id="space-sort" aria-label="排列方式">${sortOptions}</select></label><button class="space-icon-button space-sort-direction ${sortDirection === -1 ? "is-descending" : ""}" data-action="space-sort" data-sort="${sortBy}" aria-label="${sortDirection === 1 ? "改为降序排列" : "改为升序排列"}" title="${sortDirection === 1 ? "升序排列" : "降序排列"}">${icon("up")}</button><label class="space-search">${icon("search")}<input type="search" id="space-search" value="${esc(query)}" placeholder="搜索当前文件夹" aria-label="搜索当前文件夹"></label></div></div>
-      ${error ? `<div class="notice error" role="status">${esc(error)} <button class="text-button" data-action="space-refresh">重试</button></div>` : ""}
+      ${visibleError ? `<div class="notice error" role="status">${esc(visibleError)} <button class="text-button" data-action="space-refresh">重试</button></div>` : ""}
       ${status.phase === "unsupported" ? '<section class="empty-state space-connect"><h3>文件空间需要新版盒端服务</h3><p>升级后这里会显示你的个人文件。</p></section>' : `<section class="space-files" aria-label="${trash ? "回收站" : "文件图标"}">${trash ? '<p class="space-trash-hint">文件可恢复；彻底删除后无法找回。恢复空间不会恢复接入授权。</p>' + (workspaces?.recycled() || "") : ""}
       <div class="space-file-list" role="listbox" aria-multiselectable="true" aria-label="${trash ? "回收站文件图标" : "当前文件夹图标"}" tabindex="0" data-location="${parent}:${trash}" aria-busy="${loading}">${items.map(item => `<article class="space-file-row ${selectedIds.has(item.id) ? "is-selected" : ""}" role="option" aria-selected="${selectedIds.has(item.id)}" tabindex="${selectedId === item.id ? "0" : "-1"}" draggable="false" data-entry-id="${item.id}" data-action="space-select" data-id="${item.id}" aria-label="${esc(item.name)}，${esc(fileType(item))}" title="${esc(item.name)}&#10;${esc(fileType(item))}${item.kind === "folder" ? "" : ` · ${size(item.size)}`}&#10;修改于 ${new Date(item.modified * 1000).toLocaleString()}"><span class="space-file-name">${fileIcon(item)}<strong>${esc(item.name)}</strong></span><span class="space-file-detail">${item.kind === "folder" ? "文件夹" : size(item.size)}</span><button class="space-icon-button space-file-more" data-action="space-more" data-id="${item.id}" aria-label="${esc(item.name)}的更多操作" title="更多操作">${icon("more")}</button></article>`).join("") || `<div class="space-empty">${icon(trash ? "trash" : "folder")}<strong>${loading ? "正在读取文件…" : query ? "没有找到匹配文件" : trash ? "回收站为空" : "此文件夹为空"}</strong><p>${loading ? "请稍候" : query ? "试试其他名称" : trash ? "这里没有已删除的文件" : "拖入本地文件，或右键新建文件夹"}</p></div>`}</div></section>`}
-      <footer class="space-statusbar"><span class="space-status-count" role="status">${query ? `${items.length} / ` : ""}${listing.items.length} 个项目${selected.length ? ` · 已选 ${selected.length} 项${selected.length === 1 ? `：${esc(selected[0].name)}` : ""}` : ""}${loading ? " · 正在刷新文件…" : batchBusy ? " · 正在处理…" : ""}</span><span class="space-status-hint">${trash ? "右键恢复或彻底删除" : "拖动框选 · ⌘ / Ctrl 多选 · 右键管理"}</span><button class="text-button" data-action="space-transfers-toggle">传输${(status.tasks || []).some(t => ["queued", "running", "checking"].includes(t.phase)) ? " · 进行中" : (status.tasks || []).some(t => ["waiting", "retrying"].includes(t.phase)) ? " · 等待恢复" : (status.tasks || []).some(t => t.phase === "paused") ? " · 已暂停" : ""}</button></footer>${transfersOpen ? transfers() : ""}
-      <div class="space-drop-overlay" aria-hidden="true">${icon("cloud")}<strong>松开上传到当前文件夹</strong><span>${esc(parent ? listing.breadcrumbs.at(-1)?.name || "当前文件夹" : "全部文件")} · 最多 20 个文件，单文件最大 200 MB</span></div></main></div></div>${menuView()}${workspaces?.menuView() || ""}${dialogView()}${workspaces?.dialogView() || ""}`;
+      <footer class="space-statusbar"><span class="space-status-count" role="status">${query ? `${items.length} / ` : ""}${listing.items.length} 个项目${selected.length ? ` · 已选 ${selected.length} 项${selected.length === 1 ? `：${esc(selected[0].name)}` : ""}` : ""}${loading ? " · 正在刷新文件…" : batchBusy ? " · 正在处理…" : ""}</span><span class="space-status-hint">${trash ? "右键恢复或彻底删除" : "拖动框选 · ⌘ / Ctrl 多选 · 右键管理"}</span><button class="text-button" data-action="space-transfers-toggle">传输${(status.tasks || []).some(waitingForNetwork) ? ` · ${networkWait}` : (status.tasks || []).some(t => ["queued", "running", "checking"].includes(t.phase)) ? " · 进行中" : (status.tasks || []).some(t => t.phase === "paused") ? " · 已暂停" : ""}</button></footer>${transfersOpen ? transfers() : ""}
+      <div class="space-drop-overlay" aria-hidden="true">${icon("cloud")}<strong>松开上传到当前文件夹</strong><span>${esc(parent ? listing.breadcrumbs.at(-1)?.name || "当前文件夹" : "全部文件")} · 文件夹自动分批上传 · 单文件最大 200 MB</span></div></main></div></div>${menuView()}${workspaces?.menuView() || ""}${dialogView()}${workspaces?.dialogView() || ""}`;
   }
   async function moveFolder(target) {
     const current = dialog;
@@ -364,6 +413,8 @@
       return;
     }
     const kind = button.dataset.action.slice(6), item = listing.items.find(i => i.id === button.dataset.id);
+    const transferAttempt = ["upload", "upload-folder", "transfer"].includes(kind) ? beginTransfer(kind === "transfer" ? button.dataset.id : null) : null;
+    if (transferAttempt) transferIssue = null;
     if (dialog && !["dialog-close", "dialog-confirm", "preview-download", "move-folder", "move-space", "link-save", "link-copy", "link-revoke", "link-config", "link-copy-info", "link-audit"].includes(kind)) return;
     try {
       if (kind === "pin" && item) { await workspaces.pin(item); contextMenu = null; render(); return; }
@@ -417,14 +468,15 @@
       if(kind==='rename'&&item)await beginFileAction('rename',[item]);
       if((kind==='trash'&&item)||kind==='batch-trash')await beginFileAction('trash',kind==='trash'?[item]:selectedItems());
       if((['move','copy'].includes(kind)&&item)||['batch-move','batch-copy'].includes(kind))await beginFileAction(kind.includes('copy')?'copy':'move',['move','copy'].includes(kind)?[item]:selectedItems());
-      if (kind === "upload") { transfersOpen = true; await call("uploads", { parent }); }
+      if (kind === "transfers-more") { transferLimit += 100; render(); return; }
+      if (kind === "upload" || kind === "upload-folder") { transfersOpen = true; await call("uploads", { parent, space_id: workspace, scope: status.scope, folders: kind === "upload-folder" }); }
       if (kind === "download" && item) await downloadItems([item]);
       if (kind === "transfer") await call("transfer", { id: button.dataset.id, action: button.dataset.command });
       if (["restore", "purge"].includes(kind) && item) { await call(kind, { id: item.id }); await load(); }
       if (kind === "preview" && item) await openItem(item);
       render();
       if (["mkdir", "rename"].includes(kind)) { const input = document.querySelector("#space-name"); input?.focus(); if (kind === "rename") input?.select?.(); }
-    } catch (cause) { error = message(cause); render(); }
+    } catch (cause) { if (transferAttempt) transferProblem(cause, transferAttempt); else error = message(cause); render(); }
   });
   const root = document.querySelector("#app");
   root.addEventListener("change", event => {
@@ -644,13 +696,15 @@
     const row = event.target?.closest?.("[data-entry-id]");
     const folder = listing.items.find(i=>i.id===row?.dataset.entryId && i.kind==="folder");
     const uploadParent = destination && !destination.disabled ? destination.dataset.id : folder?.id || parent;
+    const uploadSpace = destination && !destination.disabled ? destination.dataset.space || workspace : workspace;
     const files = Array.from(event.dataTransfer.files);
     if (!files.length) return;
-    transfersOpen = true; error = null; render();
+    const attempt = beginTransfer();
+    transfersOpen = true; error = null; transferIssue = null; render();
     try {
-      const result = await window.wanxClient.uploadDroppedFiles(files, { parent: uploadParent });
-      if (epoch === revision && !result.ok) error = message(result.code === "SPACE_UPLOAD_LIMIT" ? result : result.code);
-    } catch (cause) { if (epoch === revision) error = message(cause); }
+      const result = await window.wanxClient.uploadDroppedFiles(files, { parent: uploadParent, space_id: uploadSpace, scope: status.scope });
+      if (epoch === revision && !result.ok) transferProblem(result.code === "SPACE_UPLOAD_LIMIT" ? result : result.code, attempt);
+    } catch (cause) { if (epoch === revision) transferProblem(cause, attempt); }
     if (epoch === revision) render();
   });
   document.addEventListener("dragend", () => { const wasMoving = Boolean(moving); clearDrag(); if (wasMoving) render(); });
@@ -697,11 +751,11 @@
   window.wanxClient.onSpaceState?.(next => {
     if (!host || host.route === "auth") return;
     if (next.accountId !== host.account?.accountId || next.boxId !== host.activeDeviceId) {
-      revision++; workspaces?.reset(null); workspace="personal"; stopMarquee(); clearDrag(); clearSelection(); batchBusy = false; contextMenu = null; query = ""; listing = { items: [], breadcrumbs: [] }; status = { phase: "idle", tasks: [] }; closeDialog(); loading = false; render(); return;
+      revision++; workspaces?.reset(null); workspace="personal"; stopMarquee(); clearDrag(); clearSelection(); batchBusy = false; contextMenu = null; query = ""; listing = { items: [], breadcrumbs: [] }; status = { phase: "idle", tasks: [] }; closeDialog(); transferIssue = null; loading = false; render(); return;
     }
     const previous = status.tasks || [];
     if (next.tasks?.some(t => !["complete", "canceled"].includes(t.phase) && !previous.some(p => p.id === t.id))) transfersOpen = true;
-    status = next;
+    status = next; reconcileTransferIssue();
     if (next.overview) lastSeen = { boxId: host.activeDeviceId, name: host.connection?.name || host.devices?.find(d => d.deviceId === host.activeDeviceId)?.name || "盒子", at: next.overview.collectedAt };
     if (active) {
       render();

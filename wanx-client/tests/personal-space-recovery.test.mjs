@@ -92,11 +92,11 @@ test('pausing during retry cancels automatic work until explicit resume; dedupli
   await f.restart(); await sleep(30); assert.equal(f.calls.length, count);
   await f.service.transfer('resume-all'); await f.complete();
 });
-test('permanent storage/authorization errors stop immediately, transient errors stop after bounded retries', async t => {
-  for (const code of ['SPACE_DISK_FULL', 'ACCOUNT_ACCESS_DENIED', 'ECONNRESET']) {
+test('permanent storage and authorization errors stop immediately', async t => {
+  for (const code of ['SPACE_DISK_FULL', 'ACCOUNT_ACCESS_DENIED']) {
     const f = await fixture(t, { before: input => { if (input.method === 'PUT') throw Object.assign(Error(code), { code }); } });
     await f.service.uploads('', [f.paths[0]]); await wait(() => f.service.snapshot().tasks[0].phase === 'paused');
-    assert.equal(f.calls.filter(c => c.method === 'PUT').length, code === 'ECONNRESET' ? 4 : 1);
+    assert.equal(f.calls.filter(c => c.method === 'PUT').length, 1);
     assert.equal(f.service.snapshot().tasks[0].pauseReason, 'error');
   }
 });
@@ -130,10 +130,11 @@ test('authorization rejection stays terminal even if upstream labels it a tempor
 
 test('unreachable box opens batch circuit instead of failing every queued file', async t => {
   const f = await fixture(t, {maxRetries: 1, before: input => { if (input.method === 'PUT') throw reset(); }});
-  await f.service.uploads(''); await wait(() => f.service.snapshot().tasks.every(t => t.phase === 'paused'));
+  await f.service.uploads(''); await wait(() => f.service.snapshot().tasks.some(t => t.error === 'SPACE_NETWORK_WAIT'));
   const count = f.calls.length; await sleep(60); assert.equal(f.calls.length, count);
   assert.ok(f.remote.size <= 2, 'queued files must not all start against an unreachable box');
-  assert.ok(f.service.snapshot().tasks.every(t => t.error === 'SPACE_RETRY_EXHAUSTED'));
+  assert.ok(f.service.snapshot().tasks.every(t => t.autoResume));
+  assert.ok(f.service.snapshot().tasks.some(t => t.phase === 'retrying' && t.retryAt > Date.now()));
 });
 
 test('stalled chunks reconcile the stable upload ID and recover with at most 1 MiB chunks', async t => {

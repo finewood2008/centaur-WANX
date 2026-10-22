@@ -445,8 +445,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         onEvent: event => timings.transfer(event),
         client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         store: createSecureAccountStore({ filePath: path.join(userData, "space-transfers.enc"), safeStorage }),
-        chooseUploads: async () => {
-          const result = await dialog.showOpenDialog(control, { title: "上传到盒子空间", message: "一次最多 20 个文件，单文件最大 200 MB；超限时整批不加入队列。", properties: ["openFile", "multiSelections"] });
+        chooseUploads: async ({ folders = false } = {}) => {
+          const result = await dialog.showOpenDialog(control, { title: "上传到盒子空间", message: "支持文件和文件夹，自动分批上传并保留目录结构；单文件最大 200 MB，问题文件单独提示。", properties: [folders ? "openDirectory" : "openFile", "multiSelections"] });
           return result.canceled ? [] : result.filePaths;
         },
         chooseDownloadDirectory: async () => {
