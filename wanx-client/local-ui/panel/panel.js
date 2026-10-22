@@ -206,7 +206,7 @@
     const request = Promise.resolve().then(() => api.getBalance()).then(value => {
       if (generation !== sessionGeneration) return;
       if (Object.hasOwn(value || {}, "available_text")) {
-        if (!["synced", "pending", "stale"].includes(value.sync_state) || (value.available_text !== null && (typeof value.available_text !== "string" || !/^(?:-?[0-9,]+\.[0-9]{2}|(?:余额|欠费)不足 0\.01 积分)$/.test(value.available_text)))) throw new Error("invalid_balance");
+        if (!["synced", "pending", "stale"].includes(value.sync_state) || (value.available_text !== null && (typeof value.available_text !== "string" || !/^(?:-?[0-9,]+|(?:余额|欠费)不足 1 积分)$/.test(value.available_text)))) throw new Error("invalid_balance");
         if (value.available_text !== null) balance = value.available_text;
         balancePhase = value.sync_state === "synced" ? "ready" : balance !== null ? "stale" : value.sync_state; return;
       }

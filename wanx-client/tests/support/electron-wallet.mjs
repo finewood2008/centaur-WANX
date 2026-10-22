@@ -79,7 +79,7 @@ try {
   await js(`(async () => {
     await until(() => !!button('show-credits'));
     button('show-credits').click();
-    await until(() => !!button('credits-open') && document.body.textContent.includes('0.00'));
+    await until(() => !!button('credits-open') && document.querySelector('.credits-total')?.textContent === '0点');
     check(!dialog() && !product('product-1'), 'products leaked outside purchase dialog');
     check(!requests.some(row => ['wallet.entries', 'wallet.calls', 'wallet.summary'].includes(row.action) || row.action === 'wallet.orders' && !row.input?.active), 'hidden histories still loaded');
     button('credits-open').click();
@@ -202,7 +202,7 @@ try {
     activeOrder = { ...activeOrder, fulfillment_state: 'credited', display_state: 'credited' };
     walletPoll();
     await until(() => document.body.textContent.includes('积分已到账') && !!button('credits-result-confirm'));
-    check(document.querySelector('.credits-total').textContent.includes('0.20'), 'credited balance did not refresh');
+    check(document.querySelector('.credits-total').textContent.includes('余额不足 1 积分'), 'credited balance did not refresh');
     button('credits-dismiss').click();
     check(!dialog() && document.activeElement === button('credits-open'), 'complete did not close dialog');
     button('credits-open').click(); product('product-100').click();
@@ -265,7 +265,7 @@ try {
     await new Promise(resolve => realTimeout(resolve, 50));
     window.qeeMode = true; if (button('show-credits')) button('show-credits').click(); walletPoll();
     await until(() => document.body.textContent.includes('1 USD = 1 积分'));
-    check(document.body.textContent.includes('0.00000060') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
+    check(document.querySelector('.wallet-usage').textContent.includes('消耗不足 1 积分') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
     check(document.body.textContent.includes('20:00:00'), 'server timezone not applied');
     check(document.querySelector('.wallet-usage table tbody tr'), 'usage row missing');
     button('credits-open').click();

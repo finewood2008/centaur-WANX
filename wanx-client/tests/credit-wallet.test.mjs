@@ -1,16 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCreditAtoms, sumCreditAtoms, createCreditWallet, decodeCreditEnvelope } from "../account/credit-wallet.mjs";
+import { formatCreditAtoms, displayCreditAtoms, sumCreditAtoms, createCreditWallet, decodeCreditEnvelope } from "../account/credit-wallet.mjs";
 
 test("six-place accounting displays tiny debt, true zero and half-up totals exactly", () => {
-  assert.deepEqual(formatCreditAtoms("4000"), { text: "<0.01", direction: "credit", exact: "0.004000" });
-  assert.deepEqual(formatCreditAtoms("-4000"), { text: "<0.01", direction: "debt", exact: "-0.004000" });
-  assert.deepEqual(formatCreditAtoms("0"), { text: "0.00", direction: "zero", exact: "0.000000" });
-  assert.equal(formatCreditAtoms("15000").text, "0.02");
-  assert.equal(formatCreditAtoms("-15000").text, "-0.02");
-  assert.equal(formatCreditAtoms("1998060000").text, "1,998.06");
-  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("4000"))).text, "0.40");
-  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("6000"))).text, "0.60");
+  assert.deepEqual(formatCreditAtoms("4000"), { text: "<1", direction: "credit", exact: "0.004000" });
+  assert.deepEqual(formatCreditAtoms("-4000"), { text: "<1", direction: "debt", exact: "-0.004000" });
+  assert.deepEqual(formatCreditAtoms("0"), { text: "0", direction: "zero", exact: "0.000000" });
+  assert.equal(formatCreditAtoms("15000").text, "<1");
+  assert.equal(formatCreditAtoms("-15000").text, "<1");
+  assert.equal(formatCreditAtoms("1998060000").text, "1,998");
+  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("4000"))).text, "<1");
+  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("6000"))).text, "<1");
+  for (const [value, text] of [['999999', '<1'], ['-999999', '<1'], ['1000000', '1'],
+    ['-1000000', '-1'], ['1499999', '1'], ['1500000', '2'], ['-1500000', '-2'],
+    ['999500000', '1,000'], ['9223372036854775807', '9,223,372,036,855']]) {
+    assert.equal(formatCreditAtoms(value).text, text);
+  }
+  assert.equal(displayCreditAtoms('1'), '余额不足 1 积分');
+  assert.equal(displayCreditAtoms('-1'), '欠费不足 1 积分');
+  assert.equal(displayCreditAtoms('1', 'consumption'), '消耗不足 1 积分');
   for (const value of ["-0", "01", "1.0", 1, "9223372036854775808"]) {
     assert.throws(() => formatCreditAtoms(value), { code: "CREDITS_INVALID_RESPONSE" });
   }

@@ -1,4 +1,4 @@
-import { creditAtoms, displayCreditAtoms, formatCreditAtoms, orderGrantCreditAtoms, validateCreditWallet } from '../../account/credit-wallet.mjs';
+import { creditAtoms, displayCreditAtoms, orderGrantCreditAtoms, validateCreditWallet } from '../../account/credit-wallet.mjs';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const pendingOrder = value => value && !['credited', 'closed'].includes(value.display_state);
@@ -22,11 +22,6 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   };
   const read = async (name, input) => data(await request(`wallet.${name}`, input));
   const amount = value => displayCreditAtoms(value);
-  const exactPoints = value => {
-    const [whole, fraction] = formatCreditAtoms(value).exact.split('.');
-    const tail = fraction.replace(/0+$/, '');
-    return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (tail ? `.${tail}` : '');
-  };
   const notify = () => changed();
   const timing = (stage, started, details = {}) => {
     try { onTiming({ stage, durationMs: Math.max(0, Math.round(monotonic() - started)), ...details }); }
@@ -279,7 +274,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     return `<section aria-label="余额同步状态"><p>${esc(state)}${remote.synced_at ? ` · ${esc(date(remote.synced_at))}` : ''}</p>
       <p class="muted">1 USD = 1 积分${remote.balance_usd_atoms !== null ? ` · 余额 $${esc(usd(remote.balance_usd_atoms))} · 累计消耗 $${esc(usd(remote.spent_usd_atoms))}` : ''}</p>
       ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} 笔调用正在结算或核对，最终消耗以结算结果为准。</p>` : ''}</section>
-      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>输入 / 输出 tokens</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td title="账本变动 ${esc(exactPoints(item.debit_credit_atoms))} 积分">${esc(usd(item.debit_usd_atoms))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
+      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>输入 / 输出 tokens</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, 'consumption'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? 'disabled' : ''}>查看更多</button>` : ''}</section>`;
   }
   function registrationView() {
@@ -406,9 +401,9 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       (order.payment_action && now() >= Date.parse(order.payment_action.expires_at)));
     const selection = draft();
     const grant = order ? orderGrantCreditAtoms(order) : selection?.grant_credit_atoms;
-    const grantText = grant == null ? '' : order?.credit_display === undefined ? exactPoints(grant) : amount(grant);
+    const grantText = grant == null ? '' : amount(grant);
     let title = selection ? '确认购买' : '选择充值金额', description = selection
-      ? `应付 ¥${selection.amount_fen / 100} · 到账 ${exactPoints(selection.grant_credit_atoms)} 点积分`
+      ? `应付 ¥${selection.amount_fen / 100} · 到账 ${amount(selection.grant_credit_atoms)} 点积分`
       : '选择商品或输入自定义金额，选择支付方式后确认购买。', success = false;
     if (cancellationAccepted) {
       title = cancellationClosed ? '订单已取消' : '取消请求已受理';
@@ -453,7 +448,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
         <p class="wallet-scan-hint">请使用手机${selectedChannel === 'wechat' ? '微信' : '支付宝'}扫码完成支付</p>
         <div class="wallet-payment-clock"><span>剩余支付时间</span><strong data-wallet-deadline="${deadline}" role="timer" aria-live="off">${countdown}</strong><span>等待支付，付款后自动更新</span></div>` : ''}
       ${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ''}
-      ${step === 'selection' ? `<div class="wallet-checkout-total"><span>应付金额<strong>${selection ? `¥${selection.amount_fen / 100}` : '—'}</strong></span><span>${selection ? `到账 ${esc(exactPoints(selection.grant_credit_atoms))} 积分` : '请选择商品或获取自定义报价'}</span></div>` : ''}
+      ${step === 'selection' ? `<div class="wallet-checkout-total"><span>应付金额<strong>${selection ? `¥${selection.amount_fen / 100}` : '—'}</strong></span><span>${selection ? `到账 ${esc(amount(selection.grant_credit_atoms))} 积分` : '请选择商品或获取自定义报价'}</span></div>` : ''}
       <div class="wallet-payment-actions">
         ${step === 'selection' ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || locked() || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? 'disabled' : ''}>确认购买</button>` : ''}
         ${(step === 'payment' && (order || intent || error)) || error ? `<button class="text-button" data-action="credits-refresh" ${visibleLoading() || writing || checkingOrder ? 'disabled' : ''}>${visibleLoading() ? '正在确认…' : '刷新支付状态'}</button>` : ''}
@@ -473,7 +468,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">${step === 'selection' ? '购买积分' : step === 'payment' ? '订单支付' : '订单结果'}</h2><p>${step === 'selection' ? '选择充值金额与支付方式，充值积分长期有效' : step === 'payment' ? '请核对金额后扫码支付' : '本次购买的处理结果'}</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="关闭购买弹框">×</button></header>
       ${step === 'selection' ? `
       <div class="wallet-products" aria-label="积分商品">${products().map(tier => `<button class="wallet-product" data-action="credits-buy" data-amount="${esc(productKey(tier))}" aria-pressed="${selected === productKey(tier)}" ${!catalog?.recharge_enabled || tier.enabled === false || locked() ? 'disabled' : ''}>
-        ${tier.name ? `<span>${esc(tier.name)}</span>` : ''}<span class="wallet-product-points">${esc(exactPoints(tier.grant_credit_atoms))}<small>点积分</small></span><strong>¥${tier.amount_fen / 100}</strong><span class="wallet-product-selection">${selected === productKey(tier) ? '已选择' : '选择商品'}</span></button>`).join('')}</div>
+        ${tier.name ? `<span>${esc(tier.name)}</span>` : ''}<span class="wallet-product-points">${esc(amount(tier.grant_credit_atoms))}<small>点积分</small></span><strong>¥${tier.amount_fen / 100}</strong><span class="wallet-product-selection">${selected === productKey(tier) ? '已选择' : '选择商品'}</span></button>`).join('')}</div>
       ${catalog?.custom_amount ? `<div class="wallet-custom" data-selected="${selected === 'custom'}">
         <label for="wallet-custom-amount">自定义金额（10～1000 整数元）</label>
         <input id="wallet-custom-amount" data-wallet-input="custom-amount" inputmode="numeric" autocomplete="off" maxlength="4" value="${esc(customText)}" ${locked() ? 'disabled' : ''}>
@@ -482,7 +477,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       </div>` : `<div class="wallet-custom" data-selected="${selected === 'custom'}">
         <button class="text-button" data-action="credits-custom" aria-pressed="${selected === 'custom'}" ${!catalog?.recharge_enabled || !rule || locked() ? 'disabled' : ''}>自定义金额</button>
         <label for="wallet-custom-amount">¥ <input id="wallet-custom-amount" type="text" inputmode="decimal" autocomplete="off" maxlength="12" placeholder="输入金额（元）" aria-label="自定义充值金额（元）" aria-describedby="wallet-custom-hint" aria-invalid="${invalidAmount}" value="${esc(customAmount)}" ${!catalog?.recharge_enabled || !rule || locked() ? 'disabled' : ''}></label>
-        <p id="wallet-custom-hint" ${invalidAmount ? 'role="status"' : ''}>${!rule ? '自定义充值暂不可用' : invalidAmount ? `请输入 ¥${rule.min_amount_fen / 100} 至 ¥${rule.max_amount_fen / 100} 的金额，最多两位小数。` : `1 元兑换 100 积分${selectedAmount === 'custom' && customFen() !== null ? ` · 可得 ${exactPoints((BigInt(customFen()) * 1000000n).toString())} 点积分` : ''}`}</p>
+        <p id="wallet-custom-hint" ${invalidAmount ? 'role="status"' : ''}>${!rule ? '自定义充值暂不可用' : invalidAmount ? `请输入 ¥${rule.min_amount_fen / 100} 至 ¥${rule.max_amount_fen / 100} 的金额，最多两位小数。` : `1 元兑换 100 积分${selectedAmount === 'custom' && customFen() !== null ? ` · 可得 ${amount((BigInt(customFen()) * 1000000n).toString())} 点积分` : ''}`}</p>
       </div>`}
       <div class="wallet-channel-section"><h3>支付方式</h3>      <div class="wallet-payment-actions wallet-channel-picker" aria-label="支付方式">${channels().map(channel => `<button class="button ${selectedChannel === channel ? 'primary' : ''}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? 'disabled' : ''}>${channel === 'wechat' ? '微信支付' : '支付宝'}</button>`).join('')}</div></div>` : ''}
       ${paymentView()}
@@ -509,7 +504,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     refresh,
     paymentImage,
     isOpen: () => dialogOpen,
-    label: () => displayedBalance() != null ? `${remote?.currency_rule_id === 'usd-credit-1-v1' ? formatCreditAtoms(displayedBalance()).text : amount(displayedBalance())} 点` : visibleLoading() ? '读取中…' : '暂不可用',
+    label: () => displayedBalance() != null ? `${amount(displayedBalance())} 点` : visibleLoading() ? '读取中…' : '暂不可用',
     async action(action, dataset = {}) {
       if (action === 'credits-open') { dialogOpen = true; notify(); return; }
       if (action === 'credits-dismiss') { dialogOpen = false; if (checkoutStep() === 'result' && !pendingOrder(order)) { order = null; cancellationAccepted = cancellationClosed = false; } notify(); return; }
@@ -551,7 +546,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       return `<div class="page-content credits-page" ${dialogOpen ? 'inert' : ''}>
         <div class="page-heading"><div><h2>账号积分</h2><p class="muted">查看账号余额，购买的积分长期有效。</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? ' 当前显示上次读取的余额。' : ''}</div>` : ''}
-        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${displayedBalance() != null ? esc(remote?.currency_rule_id === 'usd-credit-1-v1' ? exactPoints(displayedBalance()) : amount(displayedBalance())) : '—'}<span>点</span></div>
+        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${displayedBalance() != null ? esc(amount(displayedBalance())) : '—'}<span>点</span></div>
         <p class="muted">积分归当前万象账号所有，跨设备共享。</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">购买积分</button>${pendingOrder(order) || intent ? '<p>有一笔购买正在处理中，点击继续查看。</p>' : ''}</div></section>
         ${remoteView()}

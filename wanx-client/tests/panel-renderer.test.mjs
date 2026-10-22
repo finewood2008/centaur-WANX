@@ -304,9 +304,16 @@ test("quick panel reads real available points and opens the ledger without launc
   assert.equal(h.calls.filter(([name]) => name === "panel-balance").length, 2);
 });
 
+test("quick panel accepts integer wallet balances", async () => {
+  for (const value of ['1,998', '0', '-2']) {
+    const h = await harness(baseState(), async () => ({ available_text: value, sync_state: "synced" }));
+    assert.ok(h.html.includes(`${value}<small>点`));
+  }
+});
+
 test("quick panel accepts the localized tiny debt display", async () => {
-  const h = await harness(baseState(), async () => ({ available_text: "欠费不足 0.01 积分", sync_state: "stale" }));
-  assert.match(h.html, /欠费不足 0\.01 积分/);
+  const h = await harness(baseState(), async () => ({ available_text: "欠费不足 1 积分", sync_state: "stale" }));
+  assert.match(h.html, /欠费不足 1 积分/);
 });
 
 test("balance loading, a real zero and failure remain distinct; repeated focus coalesces requests", async () => {
