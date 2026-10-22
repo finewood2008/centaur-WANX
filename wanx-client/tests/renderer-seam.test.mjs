@@ -2509,7 +2509,7 @@ test("wallet entry reads the versioned account ledger through real IPC without a
     calls: async () => envelope({ items: [], next_cursor: null }),
     summary: async () => envelope({ gross_consumed_credit_atoms: "0", correction_credit_atoms: "0", net_consumed_credit_atoms: "0", pending_call_count: 0, ledger_sequence: 1 }),
   } });
-  assert.match(h.app.innerHTML, /1,250\.00 点/);
+  assert.match(h.app.innerHTML, /1,250 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
   assert.match(h.app.innerHTML, /账号积分/);

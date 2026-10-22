@@ -324,7 +324,7 @@ test('panel reads QeeToken projection without exposing wallet history or falling
       wallet: async () => ({ data: { view_version: '2', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, remote_sequence: '2', synced_at: '2026-10-20T00:00:00Z', balance_credit_atoms: '-1', spent_credit_atoms: '1', correction_credit_atoms: '0', net_spent_credit_atoms: '1', sync_state: 'stale', pending_executions: 2, account_id: 'alice' } }),
     },
   });
-  assert.deepEqual(await h.invoke('panel-balance', undefined, h.panel), { available_text: '欠费不足 0.01 积分', sync_state: 'stale' });
+  assert.deepEqual(await h.invoke('panel-balance', undefined, h.panel), { available_text: '欠费不足 1 积分', sync_state: 'stale' });
   assert.throws(() => h.invoke('wallet-usage', {}, h.panel), /无权/);
 });
 

@@ -177,8 +177,8 @@ test('automatic polling keeps an initializing wallet label stable until its bala
   assert.equal(labels.every(label => label === before), true, 'background polling must not flash the initializing balance label');
   pending = false; labels.length = 0;
   poll(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(view.label(), '0.00 点');
-  assert.equal(labels.includes('0.00 点'), true, 'a real initialized balance must still notify');
+  assert.equal(view.label(), '0 点');
+  assert.equal(labels.includes('0 点'), true, 'a real initialized balance must still notify');
 });
 
 test('manual payment refresh still shows its busy state until the requested read completes', async () => {
@@ -510,7 +510,7 @@ test('purchase retry survives restart with same account intent and local QR only
   assert.equal(creates[0][1].purchase_intent_id, creates[1][1].purchase_intent_id);
   assert.match(second.view.render(), /data:image\/png;base64,local/);
   assert.doesNotMatch(second.view.render(), /provider-pay:private-payload|已支付.*确认按钮|赠送积分|预算/);
-  assert.match(second.view.render(), /1,998\.06/);
+  assert.match(second.view.render(), /1,998/);
 });
 
 test('storage failure prevents a purchase and account switch discards old reads', async () => {
@@ -525,7 +525,7 @@ test('storage failure prevents a purchase and account switch discards old reads'
   while (!resolve) await Promise.resolve();
   pending.view.reset(JSON.stringify(['bob', 'client-2']));
   resolve(envelope(balance)); await read;
-  assert.doesNotMatch(pending.view.render(), /1,998\.06/);
+  assert.doesNotMatch(pending.view.render(), /1,998/);
 });
 
 test('unavailable credits routes explain the deployment issue and keep purchase disabled', async () => {
@@ -727,9 +727,9 @@ test('review keeps paid and credited facts visible without a payable QR', async 
 
 test('wallet displays authoritative balances without promising undesigned consumption rules', async () => {
   for (const [atoms, slot, expected] of [
-    ['0', 'none', '0.00 点'],
-    ['-1000000', 'none', '-1.00 点'],
-    ['1000000', 'held', '1.00 点'],
+    ['0', 'none', '0 点'],
+    ['-1000000', 'none', '-1 点'],
+    ['1000000', 'held', '1 点'],
   ]) {
     const { view, seen } = setup({ request: action => action === 'wallet.balance' ? envelope({
       ...balance, balance_credit_atoms: atoms, debt_credit_atoms: atoms.startsWith('-') ? '1000000' : '0', execution_slot_state: slot,
@@ -859,7 +859,7 @@ test('creating purchase can be dismissed and reopened without losing its in-flig
   resolve(envelope(order)); await purchase;
   assert.match(view.render(), /支付二维码/);
   view.reset(JSON.stringify(['bob', 'client-2']));
-  assert.doesNotMatch(view.render(), /role="dialog"|data:image|2,000\.00/);
+  assert.doesNotMatch(view.render(), /role="dialog"|data:image|2,000/);
 });
 
 test('payment winning a cancellation immediately transitions to fulfillment instead of close pending', async () => {
@@ -887,7 +887,7 @@ test('credited purchase still retries a failed balance read without recharging a
   assert.match(view.render(), /data-action="credits-refresh"/);
   assert.equal(typeof retry, 'function');
   failBalance = false; retry(); await new Promise(resolve => setImmediate(resolve));
-  assert.match(view.render(), /3,998\.06/);
+  assert.match(view.render(), /3,998/);
   assert.equal(seen.filter(([action]) => action === 'wallet.createOrder').length, 1);
 });
 
@@ -902,7 +902,7 @@ test('penny product displays its own grant and recovers the same version after r
   await first.view.refresh(); await first.view.action('credits-open');
   assert.match(first.view.render(), /小额支付测试/);
   assert.match(first.view.render(), /¥0\.01/);
-  assert.match(first.view.render(), /0\.2/);
+  assert.match(first.view.render(), /不足 1 积分/);
   assert.doesNotMatch(first.view.render(), /1 元 = 20/);
   await first.view.action('credits-buy', { amount: 'penny' }); await first.view.action('credits-pay');
   const second = setup({ storage: store, request: async action => {
@@ -971,7 +971,7 @@ const remoteWallet = { account_id: 'alice', billing_backend: 'qeetoken', currenc
   balance_credit_atoms: '1999999999', balance_usd_atoms: '199999999940', spent_usd_atoms: '60',
   remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-18T02:00:00Z', pending_executions: 1 };
 
-test('QeeToken wallet displays exact balance, tiny consumption and server timezone with escaped metadata', async () => {
+test('QeeToken wallet displays integer balance, tiny consumption and server timezone with escaped metadata', async () => {
   const { view } = setup({ request: async action => {
     if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
     if (action === 'wallet.wallet') return envelope(remoteWallet);
@@ -980,8 +980,9 @@ test('QeeToken wallet displays exact balance, tiny consumption and server timezo
   } });
   await view.refresh();
   const html = view.render();
-  assert.match(html, /class="credits-total">1,999\.999999<span>/);
+  assert.match(html, /class="credits-total">2,000<span>/);
   assert.match(html, /1 USD = 1 积分/); assert.match(html, /1999\.99999940/); assert.match(html, /0\.00000060/);
+  assert.match(html, /<td>消耗不足 1 积分<\/td>/);
   assert.match(html, /10:00:00/); assert.match(html, /1 笔调用正在结算/);
   assert.match(html, /&lt;script&gt;box/); assert.doesNotMatch(html, /<script>/);
 });
@@ -1029,10 +1030,10 @@ test('v2 wallet requests a server quote before submitting a custom amount', asyn
   } });
   await view.refresh(); await view.action('credits-open'); await view.action('credits-custom-change', { amount: '11' });
   await view.action('credits-quote');
-  assert.match(view.render(), /支付 ¥11 · 到账 1,100\.00 积分/);
+  assert.match(view.render(), /支付 ¥11 · 到账 1,100 积分/);
   await view.action('credits-custom-buy'); await view.action('credits-confirm');
   assert.equal(seen.filter(([action]) => action === 'wallet.quote').length, 1);
-  assert.match(view.render(), /1,100\.00 点积分已记入当前账号/);
+  assert.match(view.render(), /1,100 点积分已记入当前账号/);
 });
 
 test('QR conversion failures are recorded as failed payment stages', async () => {
@@ -1073,7 +1074,7 @@ test('v2 custom quote remains usable while the background balance read is pendin
   const quoted = seen.some(([action]) => action === 'wallet.quote');
   resolveBalance(envelope(balance)); await refresh;
   assert.equal(quoted, true, 'clicking enabled quote must request the quote during balance polling');
-  assert.match(view.render(), /支付 ¥10 · 到账 1,000\.00 积分/);
+  assert.match(view.render(), /支付 ¥10 · 到账 1,000 积分/);
 });
 
 test('schema rejection releases an uncreated legacy purchase instead of retrying forever', async () => {

@@ -69,16 +69,15 @@ export function formatCreditAtoms(value) {
   const sign = amount < 0n ? "-" : "";
   const direction = amount < 0n ? "debt" : amount > 0n ? "credit" : "zero";
   const exact = `${sign}${magnitude / 1000000n}.${String(magnitude % 1000000n).padStart(6, "0")}`;
-  if (magnitude > 0n && magnitude < 10000n) return { text: "<0.01", direction, exact };
-  const cents = (magnitude + 5000n) / 10000n;
-  const whole = (cents / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return { text: `${sign}${whole}.${String(cents % 100n).padStart(2, "0")}`, direction, exact };
+  if (magnitude > 0n && magnitude < 1000000n) return { text: "<1", direction, exact };
+  const whole = ((magnitude + 500000n) / 1000000n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return { text: `${sign}${whole}`, direction, exact };
 }
 
 export function displayCreditAtoms(value, context = "balance") {
   const formatted = formatCreditAtoms(value);
-  if (formatted.text !== "<0.01") return formatted.text;
-  return `${formatted.direction === "debt" ? "欠费" : context === "consumption" ? "消耗" : "余额"}不足 0.01 积分`;
+  if (formatted.text !== "<1") return formatted.text;
+  return `${formatted.direction === "debt" ? "欠费" : context === "consumption" ? "消耗" : "余额"}不足 1 积分`;
 }
 
 export function validateCreditWallet(value, accountId) {
