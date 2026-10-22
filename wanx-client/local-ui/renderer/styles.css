@@ -534,7 +534,7 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 @media(max-width:650px) { .credits-overview { grid-template-columns:1fr; padding:20px; } .credits-recharge { text-align:left; } .credits-fields { grid-template-columns:1fr; } .credits-entry { padding:7px 10px; } .credits-breakdown > div { padding:0 10px; } }
 
 /* Account identity and local profile. */
-.nav-credit-balance { margin-left: 6px; font-size: 10px; color: var(--fn-color-brand); white-space: nowrap; }
+.profile-credit-balance { color: var(--fn-color-brand); white-space: nowrap; }
 .account-menu { position: relative; -webkit-app-region: no-drag; flex-shrink: 0; }
 .avatar-trigger { display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--fn-text-secondary); border-radius: 24px; padding: 3px; }
 .avatar-trigger:hover, .avatar-trigger[aria-expanded="true"] { background: var(--fn-bg-secondary); }
@@ -555,10 +555,13 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .profile-card form { display: grid; gap: 10px; }
 .profile-card form input { width: 100%; border: 1px solid var(--fn-border-input); border-radius: 8px; background: var(--fn-bg-primary); padding: 12px; color: inherit; }
 .profile-card form .button { justify-self: start; margin-top: 8px; }
+.profile-credits { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.profile-credits h3 { margin: 0; }
+.profile-credits p { margin: 10px 0 0; font-size: 24px; font-weight: 600; }
 .profile-account dl { display: grid; grid-template-columns: 110px 1fr; gap: 16px; margin: 20px 0; }
 .profile-account dt { color: var(--fn-text-tertiary); }
 .profile-account dd { margin: 0; }
-@media (max-width: 760px) { .topbar { gap: 10px; padding-left: 18px; padding-right: 18px; } .nav-item { min-width: 76px; padding-left: 10px; padding-right: 10px; } .nav-credit-balance { display: block; margin: 3px 0 0; } }
+@media (max-width: 760px) { .topbar { gap: 10px; padding-left: 18px; padding-right: 18px; } .nav-item { min-width: 76px; padding-left: 10px; padding-right: 10px; } }
 @media (max-width: 560px) { .brand-copy { display: none; } .profile-card { padding: 18px; } .profile-avatar-row { gap: 16px; } }
 
 /* Storefront: editorial feature cards and compact app shelves. */

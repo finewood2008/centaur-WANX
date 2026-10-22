@@ -74,6 +74,7 @@ async function rawState() {
 }
 
 const actions = {
+  ...Object.fromEntries(["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
   "wallet.quote": input => walletRequest("quote", input),
   "wallet.catalog": () => walletRequest("catalog"),
   "wallet.balance": () => walletRequest("balance"),
@@ -177,7 +178,8 @@ async function action(name, input = {}) {
   } catch (error) {
     const rawCode = errorCode(error);
     const clipboardCode = rawCode.match(/(?:^|Error: )((?:CLIPBOARD|SPACE|BOX|ACCOUNT|SECURE_STORAGE)_[A-Z0-9_]+)$/)?.[1];
-    return { ok: false, code: name.startsWith("clipboard.") ? clipboardCode || "CLIPBOARD_OPERATION_FAILED" : rawCode, state: await getLocalState(),
+    const dialogueCode = rawCode.match(/(?:^|Error: )([A-Z][A-Z0-9_]{1,80})$/)?.[1];
+    return { ok: false, code: name.startsWith("dialogue.") ? dialogueCode || "DIALOGUE_REQUEST_FAILED" : name.startsWith("clipboard.") ? clipboardCode || "CLIPBOARD_OPERATION_FAILED" : rawCode, state: await getLocalState(),
       ...(name.startsWith("wallet.") ? { request_id: error.request_id || null, details: error.details || {},
         retryable: error.retryable === true, status: error.status || null } : {}) };
   }
@@ -232,6 +234,11 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.on("wanx-client:state", receive);
       return () => ipcRenderer.removeListener("wanx-client:state", receive);
     },
+    onAIDialogue(listener) {
+      const receive = (_event, value) => listener(value);
+      ipcRenderer.on("wanx-client:ai-dialogue", receive);
+      return () => ipcRenderer.removeListener("wanx-client:ai-dialogue", receive);
+    },
     onSpaceContentChanged(listener) {
       const receive = () => listener();
       ipcRenderer.on("wanx-client:space-content-changed", receive);
@@ -244,7 +251,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "space" || page === "applications" || page === "boxes" || page === "settings" || page === "profile" || page === "credits") listener(page);
+        if (["applications", "ai-dialogue", "space", "boxes", "settings", "profile", "credits"].includes(page)) listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);

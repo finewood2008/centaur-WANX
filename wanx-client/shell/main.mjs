@@ -53,6 +53,7 @@ import { createDashboardGateway } from "../octop/gateway.mjs";
 import { createStaticAssetCache } from "../octop/static-cache.mjs";
 import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
+import { createAIDialogue } from "./ai-dialogue.mjs";
 import { createStartupSettings } from "./startup.mjs";
 import { createSpaceLinkBridge } from "./space-links.mjs";
 import {createSuperClipboard} from "./super-clipboard.mjs";
@@ -82,6 +83,7 @@ let control;
 let panel;
 let uiState;
 let broadcast;
+let aiDialogue;
 let client;
 let unsubscribe;
 let setupRuntime;
@@ -502,7 +504,11 @@ if (process.argv.includes("--wanx-managed-app")) {
         const code = error.code || "SPACE_LINK_START_FAILED";
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
+      aiDialogue = createAIDialogue({ client, preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+        if (!control.isDestroyed()) control.webContents.send("wanx-client:ai-dialogue", event);
+      } });
       registerControlActions({
+        aiDialogue,
         timings,
         spaceLinks,
         personalSpace,
@@ -570,6 +576,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         app,
         async closeApplications() {
           uiState.invalidateOpen();
+          aiDialogue?.close();
           await deliveryScheduler.close();
           await defaultApplications.close();
           marketSession?.close();

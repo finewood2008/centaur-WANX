@@ -3,6 +3,7 @@ import { displayCreditAtoms, validateCreditWallet } from "../account/credit-wall
 import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
+import { DIALOGUE_APPLICATION_ID } from "./ai-dialogue.mjs";
 
 // Electron IPC errors omit custom fields. Return only this locally generated
 // validation notice; all other errors retain their existing sanitization.
@@ -63,6 +64,7 @@ export function registerControlActions({
   credits,
   creditWallet,
   accountProfile,
+  aiDialogue,
   support,
   uiState,
   desktop,
@@ -89,7 +91,7 @@ export function registerControlActions({
         throw new Error("此页面无权操作万象连接。");
       // Keep validation synchronous; mutations also refresh both trusted windows.
       const result = action(argument);
-      if (reads.has(name)) return result;
+      if (reads.has(name) || name.startsWith("ai-dialogue-")) return result;
       return Promise.resolve(result).finally(() => publishState());
     });
   };
@@ -101,6 +103,10 @@ export function registerControlActions({
       throw error;
     }
   };
+  for (const method of ["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"]) register(`ai-dialogue-${method}`, input => {
+    if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
+    return aiDialogue.action(method, input);
+  });
   for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
@@ -361,7 +367,9 @@ export function registerControlActions({
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     const state = client.snapshot();
     requireConnectedBox(state);
-    return applications.launch(text(input?.applicationId, 64, "invalid_application_id"));
+    const id = text(input?.applicationId, 64, "invalid_application_id");
+    if (id === DIALOGUE_APPLICATION_ID) { desktop?.showManagement("ai-dialogue"); return { builtin: true }; }
+    return applications.launch(id);
   });
   register("applications-select-current", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
@@ -375,8 +383,13 @@ export function registerControlActions({
     return applications.stop(text(input?.applicationId, 64, "invalid_application_id"));
   });
   register("applications-request-open", (input) => {
+    const id = text(input?.applicationId, 64, "invalid_application_id");
+    if (id === DIALOGUE_APPLICATION_ID) {
+      if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      desktop?.showManagement("ai-dialogue"); return { builtin: true };
+    }
     if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
-    return uiState.requestOpen(text(input?.applicationId, 64, "invalid_application_id"));
+    return uiState.requestOpen(id);
   });
   register("applications-confirm-open", (input) => {
     if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
@@ -387,7 +400,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "space", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());

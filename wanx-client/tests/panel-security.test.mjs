@@ -54,6 +54,24 @@ function harness(overrides = {}) {
   };
 }
 
+test('AI browser opens through the original application path without a browser tab or surface IPC', async () => {
+  const h = harness();
+  for (const window of [h.control, h.panel]) await h.invoke('applications-request-open', { applicationId: 'centaurai.wanx.ai-browser' }, window);
+  await h.invoke('applications-launch', { applicationId: 'centaurai.wanx.ai-browser' });
+  assert.deepEqual(h.calls, [['requestOpen', 'centaurai.wanx.ai-browser'], ['requestOpen', 'centaurai.wanx.ai-browser'], ['launch', 'centaurai.wanx.ai-browser']]);
+  assert.equal(h.handlers.has('wanx-client:browser-surface'), false);
+  assert.throws(() => h.invoke('desktop-open', { page: 'browser' }), /invalid_page/);
+});
+
+test('AI dialogue requests are management-only and old 众见 opens route to its standard tab', async () => {
+  const requests = [], h = harness({ aiDialogue: { action: async (...args) => requests.push(args) } });
+  assert.throws(() => h.invoke('ai-dialogue-send', { prompt: 'untrusted' }, h.panel), denied);
+  await h.invoke('ai-dialogue-load');
+  for (const window of [h.control, h.panel]) await h.invoke('applications-request-open', { applicationId: 'centaurai.wanx.dialogue' }, window);
+  assert.deepEqual(h.calls, [['showManagement', 'ai-dialogue'], ['showManagement', 'ai-dialogue']]);
+  assert.deepEqual(requests, [['load', undefined]]);
+});
+
 for (const surface of ["control", "panel"]) {
   test(`${surface}: every control IPC rejects subframes, foreign contents, forged URLs, and closed windows`, () => {
     const h = harness(), window = h[surface], trusted = h.event(window);

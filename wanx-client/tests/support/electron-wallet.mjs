@@ -77,6 +77,8 @@ try {
   await window.webContents.insertCSS(await readFile(new URL('../../local-ui/renderer/styles.css', import.meta.url), 'utf8'));
   await js(source);
   await js(`(async () => {
+    await until(() => !!button('profile-menu'));
+    button('profile-menu').click();
     await until(() => !!button('show-credits'));
     button('show-credits').click();
     await until(() => !!button('credits-open') && document.querySelector('.credits-total')?.textContent === '0点');
@@ -229,6 +231,8 @@ try {
     snapshot = { ...snapshot, account: { ...snapshot.account, accountId: 'bob', clientId: 'client-2' } };
     publish(snapshot);
     check(!dialog() && !document.querySelector('.wallet-qr'), 'account change retained old purchase');
+    await until(() => !!button('profile-menu'));
+    button('profile-menu').click();
     await until(() => !!button('show-credits'));
     button('show-credits').click();
     await until(() => !!button('credits-open'));

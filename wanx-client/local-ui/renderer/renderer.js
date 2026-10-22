@@ -18,6 +18,14 @@ let page = "applications";
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
+const aiDialogueView = window.createAIDialogueView?.({
+  request: (action, input) => window.wanxClient.action(action, input),
+  onBoxes: () => { page = "boxes"; render(currentState); },
+});
+const dialogueModelSettings = window.createDialogueModelSettingsView?.({
+  request: (action, input) => window.wanxClient.action(action, input),
+  onSaved: () => aiDialogueView?.modelsChanged(),
+});
 const storeCarousel = window.createStoreCarousel();
 const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurai.wanx.centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
 const creditsView = window.createWalletView({ request: async (action, input) => {
@@ -345,9 +353,9 @@ function shellHeader(title) {
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["space", "空间"], ["boxes", "盒子"], ["credits", "积分"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["space", "空间"], ["boxes", "盒子"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
     <div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></header>`;
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></header>`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -357,6 +365,7 @@ function profileView() {
     ${notice ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="profile-card"><div class="profile-avatar-row"><button class="profile-avatar-button" data-action="profile-avatar" aria-label="上传头像" ${busy ? "disabled" : ""}>${profileAvatar(true)}<span>更换头像</span></button><div><h3>你的头像</h3><p class="muted">支持 JPG、PNG，最大 5 MB。图片将居中裁为方形。</p><div class="settings-actions"><button class="button small ${busyFor("profile.avatar") ? "activity-button" : ""}" data-action="profile-avatar" aria-busy="${busyFor("profile.avatar")}" ${busy ? "disabled" : ""}>${busyFor("profile.avatar") ? activityLabel("正在更新…") : "上传头像"}</button>${profile.avatarDataUrl ? `<button class="text-button ${busyFor("profile.avatar-remove") ? "activity-button" : ""}" data-action="profile-avatar-remove" aria-busy="${busyFor("profile.avatar-remove")}" ${busy ? "disabled" : ""}>${busyFor("profile.avatar-remove") ? activityLabel("正在恢复…") : "恢复默认"}</button>` : ""}</div></div></div>${avatarPending ? `<p class="muted activity-status" role="status">${activityLabel("正在更新头像…")}</p>` : ""}
     <form data-form="profile"><label for="profile-name">昵称</label><input id="profile-name" name="displayName" value="${escapeHTML(profile.displayName || "万象用户")}" maxlength="80" required autocomplete="nickname" /><p class="muted">最多 40 个字符，昵称不会改变登录账号。</p><button class="button primary ${busyFor("profile.save") ? "activity-button" : ""}" type="submit" aria-busy="${busyFor("profile.save")}" ${busy ? "disabled" : ""}>${busyFor("profile.save") ? activityLabel("正在保存…") : "保存资料"}</button></form></section>
+    <section class="profile-card profile-credits"><div><h3>积分</h3><p class="profile-credit-balance">${escapeHTML(creditsView.label())}</p></div><button class="button small" data-action="show-credits">查看积分明细<span aria-hidden="true"> ›</span></button></section>
     <section class="profile-card profile-account"><h3>万象账号</h3><dl><dt>绑定手机号</dt><dd>${escapeHTML(account.maskedPhone || "暂未提供")}</dd><dt>资料保存</dt><dd>当前电脑</dd></dl><p class="muted">头像和昵称仅保存在这台电脑，按万象账号分别保存。</p></section>
     </div></div>`;
 }
@@ -610,6 +619,7 @@ function settingsView() {
     <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small ${busyFor("auth.logout") ? "activity-button" : ""}" data-action="logout" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出当前账号"}</button></div></section>
     ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
     <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted ${busyFor("desktop.startup.set") ? "activity-status" : ""}" role="status">${busyFor("desktop.startup.set") ? activityLabel("正在保存设置…") : escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" aria-busy="${busyFor("desktop.startup.set")}" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
+    <section class="settings-panel"><div><h3>AI 对话模型</h3><p class="muted">选择在 AI 对话中显示的模型，按盒子分别记忆。</p></div><button class="button small" data-action="show-dialogue-models">配置模型</button></section>
     <section class="settings-panel"><div><h3>关于万象</h3><p class="muted">半人马AI-万象 · CentaurAI-WanX</p></div><button class="button small" data-action="desktop-about">关于</button></section>
     <div class="settings-foot"><p class="muted">关闭窗口后继续后台运行。完全退出请在万象菜单中选择“退出万象”。</p></div>
   </div></div>${confirmationView()}`;
@@ -894,6 +904,7 @@ function applicationPreparationStatus(item) {
   return item.resourcePreparation?.status === "pending" ? "打开时将检查盒端专家和技能包。" : "";
 }
 function applicationActions(item, installed) {
+  if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="application-actions"><button class="button primary small" data-action="show-ai-dialogue">打开AI对话</button></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
@@ -909,6 +920,7 @@ function applicationActions(item, installed) {
     : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${active ? "" : "primary"} small ${installing ? "activity-button" : ""}" data-action="market-install" data-application-id="${id}" aria-busy="${installing}" ${disabled}>${installing ? activityLabel(status || "正在安装…") : staged ? active ? "重试更新" : "继续安装" : active ? "更新" : "安装"}</button>` : ""}${active ? `<button class="button primary small ${opening ? "activity-button" : ""}" data-action="applications-launch" data-application-id="${id}" aria-busy="${opening}" ${disabled}>${opening ? activityLabel(status || "正在打开…") : operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
 }
 function applicationManagement(item, installed) {
+  if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="store-detail-body"><p class="store-full-description">AI对话已内置于万象，无需另外安装。通过顶部 AI对话进入，继续使用当前盒子上的原有对话记录。</p></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const availability = item.editorialOnly && !candidate ? "暂未提供可安装版本" : candidateLabel(candidate);
   const id = escapeHTML(item.applicationId);
@@ -982,7 +994,7 @@ function applicationDetailView() {
     <button class="store-back" data-action="store-back"><span aria-hidden="true">‹</span> 应用</button>
     ${item ? `<section class="app-detail-hero" data-application-detail="${escapeHTML(item.applicationId)}" data-tone="${applicationTone(item)}">${applicationIcon(item)}<div class="app-detail-identity"><p class="app-detail-category">${escapeHTML(metadata?.category || "万象应用")}</p><h2 class="app-detail-title" tabindex="-1">${escapeHTML(item.name)}</h2><p class="app-detail-tagline">${escapeHTML(metadata?.tagline || item.description || "在你的盒子上使用 AI 服务。")}</p>${applicationActions(item, Boolean(installedItem))}${item.editorialOnly ? '<p class="muted app-editorial-notice">产品介绍 · 暂未提供可安装版本</p>' : ""}</div></section>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}${status || preparation ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || preparation)}</p>` : ""}
-    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem?.installationState === "pending" ? "待安装版本" : installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${installedItem ? installedItem.selectionRequired ? "待选择当前版本" : installedItem.installationState === "pending" ? "待完成盒端准备" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
+    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem?.installationState === "pending" ? "待安装版本" : installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${selectedApplicationId === "centaurai.wanx.dialogue" ? "客户端内置" : installedItem ? installedItem.selectionRequired ? "待选择当前版本" : installedItem.installationState === "pending" ? "待完成盒端准备" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
     ${media.length ? `<section class="app-detail-section"><div class="section-heading"><h3>产品介绍</h3><span class="app-preview-hint">点击图片，放大查看</span></div><div class="app-poster-gallery ${media.length === 1 ? "single" : ""}" role="region" aria-label="${escapeHTML(item.name)}产品海报" tabindex="0">${media.map(([file, caption, context], index) => `<figure><button class="app-poster" data-action="poster-open" data-poster-index="${index}" aria-label="放大：${escapeHTML(caption)}"><img src="./assets/posters/${file}" alt="${escapeHTML(caption)}" decoding="async" /></button><figcaption><strong>${escapeHTML(caption)}</strong><span>${escapeHTML(context)}</span></figcaption></figure>`).join("")}</div></section>` : ""}
     <section class="app-detail-section app-detail-about"><p class="app-detail-category">为你的日常而设计</p><h3>关于${escapeHTML(item.name)}</h3><p>${escapeHTML(metadata?.introduction || item.description || "在你的盒子上使用 AI 服务。")}</p>${metadata ? `<div class="app-feature-grid">${metadata.features.map(([title, description], index) => `<article><span class="app-feature-number">0${index + 1}</span><h4>${escapeHTML(title)}</h4><p>${escapeHTML(description)}</p></article>`).join("")}</div>` : ""}</section>
     <section class="app-detail-section app-version-section"><h3>版本与管理</h3>${applicationManagement(item, Boolean(installedItem))}</section>
@@ -1287,6 +1299,10 @@ function render(state) {
   const previousAuth = app.querySelector?.('[data-form="auth"]');
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
+  aiDialogueView?.hostState(state);
+  aiDialogueView?.visible(!auth && page === "ai-dialogue");
+  dialogueModelSettings?.hostState(state);
+  dialogueModelSettings?.visible(!auth && page === "dialogue-models");
   window.wanxSpace?.activate(!auth && ["space", "boxes"].includes(page), page === "space");
   supportView.sync(auth || state.account?.phase !== "authenticated" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]), state.devices || []);
   supportView.visible(!auth && page === "boxes");
@@ -1294,9 +1310,11 @@ function render(state) {
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
+    : page === "ai-dialogue" ? `<div class="app-layout ai-dialogue-layout">${shellHeader("AI对话")}<div id="ai-dialogue-host"></div></div>`
+    : page === "dialogue-models" ? `<div class="app-layout">${shellHeader("AI 对话模型")}<div class="page-content dialogue-model-settings-page"><div id="dialogue-model-settings-host"></div></div></div>`
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
     : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
-  if (markup === renderedMarkup) { syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); return; }
+  if (markup === renderedMarkup) { if (page === "dialogue-models") dialogueModelSettings?.mount(app.querySelector?.("#dialogue-model-settings-host")); syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); if (page === "ai-dialogue") aiDialogueView?.mount(app.querySelector?.("#ai-dialogue-host")); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
   // selection and focus; network polling does not rebuild active setup forms.
@@ -1325,11 +1343,19 @@ function render(state) {
   const spaceFocus = spaceList?.contains?.(document.activeElement) ? document.activeElement.closest?.("[data-entry-id]")?.dataset.entryId || "" : null;
   const spaceSearch = page === "space" && document.activeElement?.id === "space-search" ? document.activeElement : null;
   const searchSelection = spaceSearch ? [spaceSearch.selectionStart, spaceSearch.selectionEnd] : null;
+  const aiHost = !auth && page === "ai-dialogue" ? app.querySelector?.("#ai-dialogue-host") : null;
+  const modelSettingsHost = !auth && page === "dialogue-models" ? app.querySelector?.("#dialogue-model-settings-host") : null;
+  const modelSettingsFocus = modelSettingsHost?.contains(document.activeElement) ? document.activeElement : null;
+  const aiFocus = aiHost?.contains(document.activeElement) ? document.activeElement : null;
   if (!auth && page === 'credits' && app.querySelector?.('.credits-page')) {
     const template = document.createElement('template');
     template.innerHTML = markup;
     updateCreditsDOM(app, template.content);
   } else app.innerHTML = markup;
+  if (modelSettingsHost) { app.querySelector?.("#dialogue-model-settings-host")?.replaceWith(modelSettingsHost); modelSettingsFocus?.focus({ preventScroll:true }); }
+  if (!auth && page === "dialogue-models") dialogueModelSettings?.mount(app.querySelector?.("#dialogue-model-settings-host"));
+  if (aiHost) { app.querySelector?.("#ai-dialogue-host")?.replaceWith(aiHost); aiFocus?.focus({ preventScroll: true }); }
+  if (!auth && page === "ai-dialogue") aiDialogueView?.mount(app.querySelector?.("#ai-dialogue-host"));
   if (spacePosition) {
     const replacement = app.querySelector?.(".space-file-list");
     if (replacement?.dataset.location === spacePosition.key) {
@@ -1804,7 +1830,7 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
-  if (["show-applications", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile"].includes(action)) {
+  if (["show-applications", "show-ai-dialogue", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile", "show-dialogue-models"].includes(action)) {
     if (page === "provisioning") return;
     page = action === "show-maintenance" ? "boxes" : action.slice(5);
     selectedApplicationId = null; posterPreview = null;
@@ -2239,9 +2265,10 @@ window.wanxBluetooth?.subscribe(state => {
   if (page === "provisioning" && currentState) render(currentState);
 });
 window.wanxClient.onLocalState(acceptRemoteState);
+window.wanxClient.onAIDialogue?.(value => aiDialogueView?.event(value));
 window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
-  if (!["applications", "space", "boxes", "settings", "credits", "profile"].includes(destination)) return;
+  if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile"].includes(destination)) return;
   profileMenuOpen = false;
   page = destination;
   if (page === "credits") void creditsView.refresh();
