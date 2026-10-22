@@ -38,7 +38,7 @@ rtk proxy ./wanx-client/package-client.sh --version 0.1.5 --arch arm64 \
 
 ## 固定制品、签名、登记和推广
 
-1. 将 ZIP 上传到受控、不可覆盖的 HTTPS 制品地址，保留验证报告。不要复用旧版本的路径或字节。
+1. 在 Admin **版本与升级 → 客户端安装包** 选择同次构建的 `verification-client.json` 和 ZIP（Windows 选 EXE），点击“上传并校验”，然后复制“固定文件地址”。服务端核验文件大小和摘要，保存不可覆盖的制品；单文件最大 2 GiB。保留本机验证报告与原安装包用于下方签名。DMG、`--local` 和隔离测试包也可上传供手动下载，但不能在该入口关联正式在线更新。
 2. 建立实测兼容表 `/release/support.json`。例中的范围只是格式示例，必须换成实际验证结果；已安装的每个本机应用均需匹配一条规则，否则更新会阻止。
 
 ```json
@@ -57,14 +57,16 @@ rtk proxy node wanx-client/tools/sign-client-release.mjs \
   --report /release/wanx-client-0.1.5-arm64/verification-client.json \
   --url https://artifacts.example.com/wanx-client/0.1.5/wanx-arm64.zip \
   --key-id production-release-key-id --private-key /secure/wanx-release-private.pem \
-  --release-id wanx-client-0.1.5-arm64 --sequence 1 \
+  --release-id wanx-client-0.1.5-arm64 --sequence 1 --channel stable \
   --support /release/support.json --expires-at 2026-11-14T00:00:00Z \
   --out /release/wanx-client-0.1.5-arm64.release.json
 ```
 
-`sequence` 必须按渠道和平台递增；过期时间必须晚于实际发布时刻。制品元数据过期后需新发行，不覆盖原签名。工具重新读取 ZIP 核验摘要，并将完整兼容表纳入签名。
+将示例 `--url` 换成上传页面的固定地址，不要使用“下载”按钮生成的 15 分钟临时链接。`sequence` 必须按渠道和平台递增；过期时间必须晚于实际发布时刻。制品元数据过期后需新发行，不覆盖原签名。工具重新读取 ZIP 核验摘要，并将完整兼容表纳入签名。
 
-4. Admin 配置 `WANX_UPGRADE_RELEASE_PUBLIC_KEYS` 为与客户端一致的 JSON 公钥映射。正式发布管理员登记；另一名拥有推广权限的管理员审核并推广。下列命令使用事先安全提供的令牌，不把令牌写入文件。将域名替换为实际 Admin 域名。
+`--channel` 可省略，默认使用验证报告中的构建渠道。正式包可对同一制品分别签署测试渠道与 stable 元数据，无需修改报告或重复上传；必须使用不同发行 ID 与相应渠道序号。它不改变安装包内渠道：验收用旧客户端须订阅测试渠道，升级后的目标包仍使用构建时固化的渠道。`--test-only` 的隔离测试包只允许其原有 `test-client-<test-run-id>` 渠道。
+
+4. Admin 配置 `WANX_UPGRADE_RELEASE_PUBLIC_KEYS` 为与客户端一致的 JSON 公钥映射。在上传页面点击“关联签名发行”导入 JSON，服务端核对受信签名与已上传制品，登记为草稿。到“发行目录”先完成同一制品的测试渠道验收，再关联 stable 发行并登记真实安装、重启及旧版本业务验收证据，最后由具有推广权限的管理员确认推广（可由登记人本人操作）。上传与关联都不会自动发布。下列直接 API 命令适用于已完成验收的发行，使用事先安全提供的令牌；默认线上域名的 API 前缀为 `https://boss.nexusaos.qitus.cn/prod-api`。
 
 ```sh
 rtk proxy curl --fail-with-body -X POST 'https://admin.example.com/nexus/upgrades/releases' \
@@ -90,7 +92,7 @@ PFX 模式将 `--certificate-sha1` 替换为 `--certificate-file C:\secure\windo
 
 正式入口强制 `forceCodeSigning`，生成当前用户级 NSIS 安装器，保留安装目录 ACL 检查，不允许自动跨为全机级安装。生成后验证安装器与 `WANX.exe` 的系统签名、发布者和时间戳，再核对包内版本、构建身份及网络组件，最后写 `verification-client.json` 和摘要。该命令只构建，不上传、不安装、不推广。`arm64` 应在对应正式支持系统上单独验证；系统版本仍使用 `os.release()`。
 
-随后使用上文相同的 `sign-client-release.mjs`，改为 Windows 验证报告、不可变 `.exe` URL、对应系统支持表及独立发行 ID。工具识别 `platform: windows`、`authenticodeVerified: true` 和 `installationScope: per-user`，生成 `platform.os: win32`、`kind: nsis` 的签名发行。登记和双人推广操作相同。
+随后使用上文相同的 `sign-client-release.mjs`，改为 Windows 验证报告、不可变 `.exe` URL、对应系统支持表及独立发行 ID。工具识别 `platform: windows`、`authenticodeVerified: true` 和 `installationScope: per-user`，生成 `platform.os: win32`、`kind: nsis` 的签名发行。上传、登记、验收和推广操作相同。
 
 原有 `shell/package-win.mjs` 保持未签名内部路径，包内标为 `unsigned-internal-only`；不能使用此包验证或宣称正式 Windows OTA 已上线。
 

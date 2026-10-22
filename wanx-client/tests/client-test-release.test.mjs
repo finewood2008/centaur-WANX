@@ -55,6 +55,8 @@ test("test release requires explicit mode, isolated metadata and test trust; for
     releaseId: "test-fixture-release", metadataSequence: 1, supportedOsVersions: [os.release()], compatibleApplications: [],
     now: Date.now(), expiresAt: new Date(Date.now() + 86400000).toISOString() };
   await assert.rejects(signClientRelease(input), /正式/);
+  for (const channel of ["stable", "test-client-other"])
+    await assert.rejects(signClientRelease({ ...input, testOnly: true, channel }), /专用测试渠道/);
   await signClientRelease({ ...input, testOnly: true });
   const envelope = JSON.parse(await readFile(outputPath));
   assert.equal(envelope.payload.sourceCommits, undefined);
