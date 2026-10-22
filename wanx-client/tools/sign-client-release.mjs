@@ -9,7 +9,7 @@ import { TEST_APP_ID, TEST_PRODUCT_NAME, TEST_EXTENSION, isTestClientIdentity } 
 import { canonicalJSON, secureURL, verifyRelease } from "../updates/contracts.mjs";
 
 export async function signClientRelease({ reportPath, artifactURL, keyId, privateKeyPath, releaseId,
-  metadataSequence, supportedOsVersions, compatibleApplications, expiresAt, outputPath, testOnly = false, now = Date.now() }) {
+  metadataSequence, supportedOsVersions, compatibleApplications, expiresAt, outputPath, channel, testOnly = false, now = Date.now() }) {
   const report = JSON.parse(await readFile(reportPath, "utf8"));
   const windows = report.platform === "windows";
   const testIdentity = { ...report.build, packaged: true };
@@ -25,6 +25,11 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
       report.build?.distributionClass !== distributionClass || !verifiedSource ||
       !["arm64", "x64"].includes(report.arch) || semver.valid(report.version) !== report.version)
     throw new Error(testOnly ? "只接受隔离测试包的真实系统签名与源码快照验证报告。" : "只接受已完成系统签名验证且包含构建身份的正式 macOS 或 Windows 客户端验证报告。");
+  const releaseChannel = channel ?? report.build.channel;
+  if (typeof releaseChannel !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(releaseChannel))
+    throw new Error("发行渠道无效。");
+  if (testOnly && releaseChannel !== testIdentity.channel)
+    throw new Error("隔离测试发行只能使用构建报告中的专用测试渠道。");
   const artifact = report.updateArtifact;
   const sha256 = createHash("sha256"), sha512 = createHash("sha512");
   for await (const chunk of createReadStream(artifact.path)) { sha256.update(chunk); sha512.update(chunk); }
@@ -45,7 +50,7 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
   if (!Object.hasOwn(report.updateTrust || {}, keyId) || report.updateTrust[keyId] !== signerFingerprint)
     throw new Error("发行签名密钥不在安装包已验证的更新信任根中，请检查 key-id 与公钥配置。");
   const payload = { schemaVersion: 1, purpose: "wanx.release.v1", releaseId, product: "wanx-client", version: report.version,
-    buildId: report.build.buildId, metadataSequence, securityEpoch: report.build.securityEpoch, channel: report.build.channel,
+    buildId: report.build.buildId, metadataSequence, securityEpoch: report.build.securityEpoch, channel: releaseChannel,
     ...(testOnly ? { sourceSnapshot: report.build.sourceSnapshot,
       testIsolation: { applicationId: TEST_APP_ID, testRunId: report.build.testRunId } } :
       { sourceCommits: { "wanx-client": { "centuarai-wanx": report.build.sourceCommit } } }),
@@ -63,12 +68,12 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({ options: { "test-only": { type: "boolean" }, ...Object.fromEntries(["report", "url", "key-id", "private-key", "release-id", "sequence", "support", "expires-at", "out"].map(key => [key, { type: "string" }])) } });
+    const { values } = parseArgs({ options: { "test-only": { type: "boolean" }, ...Object.fromEntries(["report", "url", "key-id", "private-key", "release-id", "sequence", "support", "expires-at", "out", "channel"].map(key => [key, { type: "string" }])) } });
     const support = JSON.parse(await readFile(values.support, "utf8"));
     const result = await signClientRelease({ reportPath: values.report, artifactURL: values.url, keyId: values["key-id"],
       privateKeyPath: values["private-key"], releaseId: values["release-id"], metadataSequence: Number(values.sequence),
       supportedOsVersions: support.supportedOsVersions, compatibleApplications: support.compatibleApplications,
-      expiresAt: values["expires-at"], outputPath: values.out, testOnly: values["test-only"] === true });
+      expiresAt: values["expires-at"], outputPath: values.out, channel: values.channel, testOnly: values["test-only"] === true });
     console.log(JSON.stringify(result));
   } catch (error) { console.error(error.code || error.message); process.exitCode = 1; }
 }
