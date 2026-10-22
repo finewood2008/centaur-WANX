@@ -90,3 +90,24 @@ test("credits error survives wire adaptation and an old account response is disc
   await assert.rejects(pending, error => error.code.startsWith("ACCOUNT_"));
   await account.close();
 });
+
+test('v2 wallet uses versioned catalog, quote, wallet and usage routes', async () => {
+  const { account, wallet, requests } = fixture(() => response({ schema_version: '1', request_id: 'v2', data: {} }));
+  await account.loginPassword({ phone: '13800138000', password: 'test-password', remember: false });
+  await wallet.catalog(); await wallet.quote({ amount_fen: 1100 }); await wallet.wallet(); await wallet.usage({ limit: 20 });
+  assert.deepEqual(requests.map(request => new URL(request.url).pathname.replace('/prod-api', '')), [
+    '/app-api/v1/credits/catalog/v2', '/app-api/v1/credits/quote/v2', '/app-api/v1/credits/wallet/v2', '/app-api/v1/credits/usage/v2',
+  ]);
+  assert.equal(new URL(requests[1].url).search, '?amount_fen=1100');
+  await account.close();
+});
+
+test('v2 custom orders carry only the quoted amount and currency rule', async () => {
+  const { account, wallet, requests } = fixture(() => response({ schema_version: '1', request_id: 'order', data: { order_id: 'order-1' } }, 202));
+  await account.loginPassword({ phone: '13800138000', password: 'test-password', remember: false });
+  await wallet.createOrder({ purchase_intent_id: 'v2-buy', amount_fen: 1100, currency_rule_id: 'usd-credit-100-v2' });
+  const body = JSON.parse(requests[0].body);
+  assert.deepEqual(body, { schema_version: '1', purchase_intent_id: 'v2-buy', amount_fen: 1100, currency_rule_id: 'usd-credit-100-v2' });
+  await assert.rejects(wallet.createOrder({ purchase_intent_id: 'v2-bad', amount_fen: 1100, currency_rule_id: 'usd-credit-100-v2', grant_credit_atoms: '1100000000' }), { code: 'CREDITS_INVALID_INPUT' });
+  await account.close();
+});

@@ -1,4 +1,4 @@
-import { creditAtoms, formatCreditAtoms } from '../../account/credit-wallet.mjs';
+import { creditAtoms, displayCreditAtoms, formatCreditAtoms, orderGrantCreditAtoms, validateCreditWallet } from '../../account/credit-wallet.mjs';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const pendingOrder = value => value && !['credited', 'closed'].includes(value.display_state);
@@ -10,7 +10,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
   let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
   let error = '', intent = null, qrImage = null, recoveryReady = false, recovering = false;
-  let checkingOrder = false, orderReadFailed = false, customAmount = '';
+  let checkingOrder = false, orderReadFailed = false, customAmount = '', customText = '', customQuote = null;
   let backgroundLoading = false, recoveryTask = null, confirmingPurchase = false;
   let cancellationAccepted = false;
   let selectedChannel = 'alipay', remote = null, usage = [], nextUsage = null, usageLoading = false;
@@ -21,7 +21,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     return response.data;
   };
   const read = async (name, input) => data(await request(`wallet.${name}`, input));
-  const amount = value => { const formatted = formatCreditAtoms(value); return `${formatted.direction === 'debt' && formatted.text === '<0.01' ? '-' : ''}${formatted.text}`; };
+  const amount = value => displayCreditAtoms(value);
   const exactPoints = value => {
     const [whole, fraction] = formatCreditAtoms(value).exact.split('.');
     const tail = fraction.replace(/0+$/, '');
@@ -61,6 +61,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       if (value && typeof value.purchase_intent_id === 'string' && (
         (typeof value.order_id === 'string' && typeof value.close_intent_id === 'string') ||
         (typeof value.product_id === 'string' && typeof value.product_version === 'string') ||
+        (value.currency_rule_id === 'usd-credit-100-v2' && Number.isSafeInteger(value.amount_fen) && value.amount_fen >= 1000 && value.amount_fen <= 100000 && value.amount_fen % 100 === 0) ||
         (Number.isSafeInteger(value.custom_amount_fen) && value.custom_amount_fen > 0 && typeof value.custom_recharge_version === 'string') ||
         [5000, 10000, 20000].includes(value.amount_fen)
       )) return value;
@@ -85,8 +86,9 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       return;
     }
     if (value.payment_channel) selectedChannel = value.payment_channel;
+    const grant = orderGrantCreditAtoms(value);
     if (intent) {
-      if (['credited', 'closed'].includes(value.display_state)) save(null);
+      if (value.display_state === 'closed' || (value.display_state === 'credited' && grant !== null)) save(null);
       else save({ ...intent, order_id: value.order_id });
     }
     const action = value.payment_action;
@@ -94,8 +96,9 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       let image = cachedImage;
       if (!image) {
         const qrStarted = monotonic();
-        try { image = await qr(action.payload); }
-        finally { timing('qr', qrStarted, { ready: Boolean(image) }); }
+        let outcome = 'failed';
+        try { image = await qr(action.payload); outcome = 'completed'; }
+        finally { timing('qr', qrStarted, { outcome, ready: Boolean(image) }); }
       }
       if (g === generation && order === value) {
         qrImage = image;
@@ -144,6 +147,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       value = intent.order_id ? await read('order', { order_id: intent.order_id }) :
         await read('createOrder', { purchase_intent_id: intent.purchase_intent_id,
           ...(intent.custom_recharge_version ? { custom_amount_fen: intent.custom_amount_fen, custom_recharge_version: intent.custom_recharge_version }
+            : intent.currency_rule_id ? { amount_fen: intent.amount_fen, currency_rule_id: intent.currency_rule_id }
             : intent.product_id ? { product_id: intent.product_id, product_version: intent.product_version } : { amount_fen: intent.amount_fen }),
           ...(intent.payment_channel ? { payment_channel: intent.payment_channel } : {}) });
     } else if (pendingOrder(order)) {
@@ -189,9 +193,14 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       if (!Number.isSafeInteger(b.ledger_sequence) || b.ledger_sequence < 0) throw new Error('CREDITS_INVALID_RESPONSE');
       let q = null, u = null;
       if (b.billing_backend === 'qeetoken') {
-        [q, u] = await Promise.all([read('wallet'), read('usage', { limit: 20 })]);
+        u = await read('usage', { limit: 20 });
         if (g !== generation) return;
-        validateWallet(q); validateUsage(u);
+        q = await read('wallet');
+        if (g !== generation) return;
+        validateUsage(u); if (q.view_version === '2') validateCreditWallet(q, account); else validateWalletLegacy(q);
+        if (q.view_version === '2' && q.sync_state !== 'pending' && BigInt(u.remote_sequence) > BigInt(q.remote_sequence)) {
+          q = { ...q, sync_state: 'stale' }; u = null;
+        }
       }
       if (!remote || !q || BigInt(q.remote_sequence) >= BigInt(remote.remote_sequence)) {
         remote = q;
@@ -207,7 +216,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       }
     }
   }
-  function validateWallet(q) {
+  function validateWalletLegacy(q) {
     if (q.account_id !== account || q.currency_rule_id !== 'usd-credit-1-v1' || q.currency !== 'USD' || q.currency_scale !== 8 || q.credit_scale !== 6 || q.usd_per_credit !== '1' ||
         !['pending', 'stale', 'synced'].includes(q.sync_state) || !Number.isSafeInteger(q.pending_executions) || q.pending_executions < 0 ||
         typeof q.remote_sequence !== 'string' || !/^(0|[1-9][0-9]*)$/.test(q.remote_sequence)) throw new Error('CREDITS_INVALID_RESPONSE');
@@ -219,17 +228,26 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     }
   }
   function validateUsage(value) {
-    if (!Array.isArray(value.items) || value.items.length > 100 || (value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence))) throw new Error('CREDITS_INVALID_RESPONSE');
+    if (value.view_version === undefined) {
+      if (!Array.isArray(value.items) || value.items.length > 100 || (value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence))) throw new Error('CREDITS_INVALID_RESPONSE');
+      for (const item of value.items) {
+        creditAtoms(item.debit_usd_atoms); creditAtoms(item.debit_credit_atoms);
+        if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence)) throw new Error('CREDITS_INVALID_RESPONSE');
+      }
+      return;
+    }
+    if (value.view_version !== '2' || value.account_id !== account || value.currency_rule_id !== 'usd-credit-100-v2' || value.credit_scale !== 6 ||
+        typeof value.remote_sequence !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value.remote_sequence) ||
+        !Array.isArray(value.items) || value.items.length > 100 || (value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence))) throw new Error('CREDITS_INVALID_RESPONSE');
+    let previous = BigInt(value.remote_sequence) + 1n;
     for (const item of value.items) {
-      creditAtoms(item.debit_usd_atoms); creditAtoms(item.debit_credit_atoms);
-      if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence)) throw new Error('CREDITS_INVALID_RESPONSE');
+      creditAtoms(item.debit_credit_atoms);
+      if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence) || BigInt(item.account_sequence) >= previous ||
+          typeof item.device_id !== 'string' || typeof item.model !== 'string') throw new Error('CREDITS_INVALID_RESPONSE');
+      previous = BigInt(item.account_sequence);
     }
   }
   const displayedBalance = () => remote ? remote.balance_credit_atoms : balance?.billing_backend === 'qeetoken' ? null : balance?.balance_credit_atoms;
-  const usd = value => {
-    const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
-    return `${atoms < 0n ? '-' : ''}${magnitude / 100000000n}.${String(magnitude % 100000000n).padStart(8, '0')}`;
-  };
   const date = value => new Intl.DateTimeFormat('zh-CN', { timeZone: catalog?.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value));
   async function loadUsage() {
     if (!identity || usageLoading || !nextUsage) return;
@@ -243,6 +261,18 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   }
   function remoteView() {
     if (!remote) return '';
+    if (remote.currency_rule_id === 'usd-credit-1-v1') return legacyRemoteView();
+    const state = remote.sync_state === 'pending' ? '余额初始化中' : remote.sync_state === 'stale' || error ? '显示上次同步余额' : '余额已同步';
+    return `<section aria-label="余额同步状态"><p>${esc(state)}${remote.synced_at ? ` · ${esc(date(remote.synced_at))}` : ''}</p>
+      ${registrationView()}
+      ${typeof remote.spent_credit_atoms === 'string' ? `<p class="muted">累计消耗 ${esc(displayCreditAtoms(remote.spent_credit_atoms, 'consumption'))} · 已纠正 ${esc(displayCreditAtoms(remote.correction_credit_atoms))} · 净消耗 ${esc(displayCreditAtoms(remote.net_spent_credit_atoms, 'consumption'))}</p>` : ''}
+      ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} 笔调用正在结算或核对，最终消耗以结算结果为准。</p>` : ''}</section>
+      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, 'consumption'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
+      ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? 'disabled' : ''}>查看更多</button>` : ''}</section>`;
+  }
+  const usd = value => { const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
+    return `${atoms < 0n ? '-' : ''}${magnitude / 100000000n}.${String(magnitude % 100000000n).padStart(8, '0')}`; };
+  function legacyRemoteView() {
     const state = remote.sync_state === 'pending' ? '余额初始化中' : remote.sync_state === 'stale' || error ? '显示上次同步余额' : '余额已同步';
     return `<section aria-label="余额同步状态"><p>${esc(state)}${remote.synced_at ? ` · ${esc(date(remote.synced_at))}` : ''}</p>
       <p class="muted">1 USD = 1 积分${remote.balance_usd_atoms !== null ? ` · 余额 $${esc(usd(remote.balance_usd_atoms))} · 累计消耗 $${esc(usd(remote.spent_usd_atoms))}` : ''}</p>
@@ -250,10 +280,24 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>输入 / 输出 tokens</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td title="账本变动 ${esc(exactPoints(item.debit_credit_atoms))} 积分">${esc(usd(item.debit_usd_atoms))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? 'disabled' : ''}>查看更多</button>` : ''}</section>`;
   }
+  function registrationView() {
+    const grant = remote?.registration_grant;
+    if (!grant) return '';
+    const labels = { queued: '注册赠送待到账', running: '注册赠送处理中', retry_wait: '注册赠送正在重试',
+      review_required: '注册赠送待核对', credited: '注册赠送已到账', historical_received: '历史注册赠送已领取',
+      waiting_migration: '注册赠送资格已核实，等待处理' };
+    return `<p role="status">${esc(labels[grant.state] || grant.state)}${grant.credit_display ? ` · ${esc(amount(grant.credit_display.grant_credit_atoms))} 新积分` : ''}</p>`;
+  }
   const products = () => catalog?.products?.length ? catalog.products : (catalog?.tiers || []);
   const productKey = product => product.product_id || String(product.amount_fen);
   const locked = () => writing || confirmingPurchase || Boolean(pendingOrder(order) || intent);
   const customRule = () => {
+    const v2 = catalog?.custom_amount;
+    if (v2 === true) return { enabled: true, version: 'usd-credit-100-v2', min_amount_fen: 1000, max_amount_fen: 100000, points_per_yuan: '100' };
+    if (v2 && typeof v2 === 'object' && Number.isSafeInteger(v2.min_fen) && Number.isSafeInteger(v2.max_fen) &&
+        Number.isSafeInteger(v2.step_fen) && v2.min_fen >= 1000 && v2.max_fen >= v2.min_fen && v2.step_fen > 0) {
+      return { enabled: true, version: 'usd-credit-100-v2', min_amount_fen: v2.min_fen, max_amount_fen: v2.max_fen, step_fen: v2.step_fen, points_per_yuan: '100' };
+    }
     const rule = catalog?.custom_recharge;
     return rule?.enabled && rule.points_per_yuan === '100' && typeof rule.version === 'string' &&
       Number.isSafeInteger(rule.min_amount_fen) && rule.min_amount_fen >= 1 &&
@@ -265,8 +309,27 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     const fen = Number(BigInt(match[1]) * 100n + BigInt((match[2] || '').padEnd(2, '0')));
     return fen >= rule.min_amount_fen && fen <= rule.max_amount_fen ? fen : null;
   };
+  async function quoteCustom(value) {
+    const rule = customRule();
+    if (!identity || writing || loading || pendingOrder(order) || intent || !catalog?.recharge_enabled || !rule || catalog?.currency_rule_id !== 'usd-credit-100-v2') return;
+    customText = String(value); customAmount = customText; customQuote = null; selectedAmount = 'custom'; error = '';
+    const amountFen = Number(customText) * 100;
+    if (!/^[1-9][0-9]{1,3}$/.test(customText) || amountFen < rule.min_amount_fen || amountFen > rule.max_amount_fen || amountFen % rule.step_fen !== 0) {
+      error = message({ code: 'VALIDATION_ERROR' }); notify(); return;
+    }
+    const g = generation, requested = amountFen;
+    writing = true; notify();
+    try {
+      const value = await read('quote', { amount_fen: requested });
+      if (g !== generation || value.view_version !== '2' || value.currency_rule_id !== 'usd-credit-100-v2' || typeof value.rule_id !== 'string' || value.credit_scale !== 6 ||
+          value.amount_fen !== requested || creditAtoms(value.grant_credit_atoms) <= 0n) throw new Error('CREDITS_INVALID_RESPONSE');
+      customQuote = value;
+    } catch (cause) { if (g === generation) error = message(cause); }
+    finally { if (g === generation) { writing = false; notify(); } }
+  }
   const draft = () => {
     if (selectedAmount === 'custom') {
+      if (customQuote) return { ...customQuote, target: { amount_fen: customQuote.amount_fen, currency_rule_id: 'usd-credit-100-v2' } };
       const fen = customFen();
       return fen === null ? null : { amount_fen: fen, grant_credit_atoms: (BigInt(fen) * 1000000n).toString(),
         target: { custom_amount_fen: fen, custom_recharge_version: customRule().version } };
@@ -334,6 +397,8 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     const expired = order && (now() >= Date.parse(order.expires_at) ||
       (order.payment_action && now() >= Date.parse(order.payment_action.expires_at)));
     const selection = draft();
+    const grant = order ? orderGrantCreditAtoms(order) : selection?.grant_credit_atoms;
+    const grantText = grant == null ? '' : order?.credit_display === undefined ? exactPoints(grant) : amount(grant);
     let title = selection ? '确认购买' : '选择充值金额', description = selection
       ? `应付 ¥${selection.amount_fen / 100} · 到账 ${exactPoints(selection.grant_credit_atoms)} 点积分`
       : '选择商品或输入自定义金额，再点击“立即支付”生成付款码。', success = false;
@@ -341,7 +406,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       title = '支付结果待核对';
       description = `${order.payment_state === 'paid' ? '已支付。' : '付款结果尚待核实。'}${order.fulfillment_state === 'credited' ? '积分已到账。' : '积分到账情况正在核对。'}请勿重复支付。`;
     } else if (state === 'credited') {
-      title = '积分已到账'; description = `${amount(order.grant_credit_atoms)} 点积分已记入当前账号。`; success = true;
+      title = '积分已到账'; description = grant === null ? '到账积分待核对，请稍后刷新。' : `${grantText} 点积分已记入当前账号。`; success = grant !== null;
     } else if (order?.payment_state === 'paid') {
       title = '支付成功，积分到账中'; description = '正在更新积分余额，请勿重复支付。关闭弹框后仍会继续确认到账。';
     } else if (state === 'closed') {
@@ -350,9 +415,11 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       title = '关闭确认中'; description = '正在确认原付款码已失效，确认后即可重新选择。请勿继续支付原付款码。';
     } else if (expired) {
       title = '付款码已到期'; description = '正在确认支付或关闭结果，确认前请勿重复购买。';
+    } else if (order && grant === null) {
+      title = '到账积分待核对'; description = '本次购买的积分数额正在核对，请稍后刷新或取消本次购买。';
     } else if (paymentImage()) {
       const wechat = order.payment_action.payload.startsWith('weixin://');
-      title = wechat ? '微信扫码支付' : '支付宝扫码支付'; description = `应付 ¥${order.amount_fen / 100} · 到账 ${exactPoints(order.grant_credit_atoms)} 点积分`;
+      title = wechat ? '微信扫码支付' : '支付宝扫码支付'; description = `应付 ¥${order.amount_fen / 100} · 到账 ${grantText} 点积分`;
     } else if (confirmingPurchase) {
       title = '正在确认购买'; description = '正在确认当前订单状态，请稍候。';
     } else if (order?.payment_state === 'creating' || writing) {
@@ -380,7 +447,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
   }
   function dialog() {
     if (!dialogOpen) return '';
-    const selected = pendingOrder(order) ? intent?.custom_recharge_version ? 'custom' : intent?.product_id || String(order.amount_fen) : selectedAmount;
+    const selected = pendingOrder(order) ? (intent?.custom_recharge_version || intent?.currency_rule_id) ? 'custom' : intent?.product_id || String(order.amount_fen) : selectedAmount;
     const rule = customRule();
     const invalidAmount = selectedAmount === 'custom' && customAmount !== '' && customFen() === null;
     return `<div class="wallet-modal"><section class="wallet-purchase-dialog" role="dialog" aria-modal="true" aria-labelledby="wallet-purchase-title" tabindex="-1">
@@ -388,11 +455,16 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       <div class="wallet-payment-actions wallet-channel-picker" aria-label="支付方式">${channels().map(channel => `<button class="button ${selectedChannel === channel ? 'primary' : ''}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? 'disabled' : ''}>${channel === 'wechat' ? '微信支付' : '支付宝'}</button>`).join('')}</div>
       <div class="wallet-products" aria-label="积分商品">${products().map(tier => `<button class="wallet-product" data-action="credits-buy" data-amount="${esc(productKey(tier))}" aria-pressed="${selected === productKey(tier)}" ${!catalog?.recharge_enabled || tier.enabled === false || locked() ? 'disabled' : ''}>
         ${tier.name ? `<span>${esc(tier.name)}</span>` : ''}<span class="wallet-product-points">${esc(exactPoints(tier.grant_credit_atoms))}<small>点积分</small></span><strong>¥${tier.amount_fen / 100}</strong><span class="wallet-product-selection">${selected === productKey(tier) ? '已选择' : '选择商品'}</span></button>`).join('')}</div>
-      <div class="wallet-custom" data-selected="${selected === 'custom'}">
+      ${catalog?.custom_amount ? `<div class="wallet-custom" data-selected="${selected === 'custom'}">
+        <label for="wallet-custom-amount">自定义金额（10～1000 整数元）</label>
+        <input id="wallet-custom-amount" data-wallet-input="custom-amount" inputmode="numeric" autocomplete="off" maxlength="4" value="${esc(customText)}" ${locked() ? 'disabled' : ''}>
+        <button class="button" data-action="credits-quote" ${!catalog.recharge_enabled || locked() ? 'disabled' : ''}>获取报价</button>
+        ${customQuote ? `<p>支付 ¥${customQuote.amount_fen / 100} · 到账 ${esc(amount(customQuote.grant_credit_atoms))} 积分</p><button class="button" data-action="credits-custom-buy" aria-pressed="${selected === 'custom'}" ${locked() ? 'disabled' : ''}>${selected === 'custom' ? '已选择自定义金额' : '选择此金额'}</button>` : ''}
+      </div>` : `<div class="wallet-custom" data-selected="${selected === 'custom'}">
         <button class="text-button" data-action="credits-custom" aria-pressed="${selected === 'custom'}" ${!catalog?.recharge_enabled || !rule || locked() ? 'disabled' : ''}>自定义金额</button>
         <label for="wallet-custom-amount">¥ <input id="wallet-custom-amount" type="text" inputmode="decimal" autocomplete="off" maxlength="12" placeholder="输入金额（元）" aria-label="自定义充值金额（元）" aria-describedby="wallet-custom-hint" aria-invalid="${invalidAmount}" value="${esc(customAmount)}" ${!catalog?.recharge_enabled || !rule || locked() ? 'disabled' : ''}></label>
         <p id="wallet-custom-hint" ${invalidAmount ? 'role="status"' : ''}>${!rule ? '自定义充值暂不可用' : invalidAmount ? `请输入 ¥${rule.min_amount_fen / 100} 至 ¥${rule.max_amount_fen / 100} 的金额，最多两位小数。` : `1 元兑换 100 积分${selectedAmount === 'custom' && customFen() !== null ? ` · 可得 ${exactPoints((BigInt(customFen()) * 1000000n).toString())} 点积分` : ''}`}</p>
-      </div>
+      </div>`}
       ${paymentView()}
     </section></div>`;
   }
@@ -405,18 +477,19 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       identity = value; generation++; account = value ? JSON.parse(value)[0] : null;
       catalog = balance = order = qrImage = selectedAmount = remote = null;
       usage = []; nextUsage = null; usageLoading = false;
-      dialogOpen = loading = writing = recoveryReady = recovering = checkingOrder = orderReadFailed = false; error = ''; timer = null; customAmount = '';
+      dialogOpen = loading = writing = recoveryReady = recovering = checkingOrder = orderReadFailed = false; error = ''; timer = null; customAmount = ''; customText = ''; customQuote = null;
       backgroundLoading = confirmingPurchase = cancellationAccepted = false; recoveryTask = null;
       selectedChannel = 'alipay';
       intent = account ? load() : null;
       if (intent?.payment_channel) selectedChannel = intent.payment_channel;
       if (intent?.custom_recharge_version) { selectedAmount = 'custom'; customAmount = String(intent.custom_amount_fen / 100); }
+      if (intent?.currency_rule_id) { selectedAmount = 'custom'; customText = String(intent.amount_fen / 100); }
       return true;
     },
     refresh,
     paymentImage,
     isOpen: () => dialogOpen,
-    label: () => displayedBalance() != null ? `${amount(displayedBalance())} 点` : visibleLoading() ? '读取中…' : '暂不可用',
+    label: () => displayedBalance() != null ? `${remote?.currency_rule_id === 'usd-credit-1-v1' ? formatCreditAtoms(displayedBalance()).text : amount(displayedBalance())} 点` : visibleLoading() ? '读取中…' : '暂不可用',
     async action(action, dataset = {}) {
       if (action === 'credits-open') { dialogOpen = true; notify(); return; }
       if (action === 'credits-dismiss') { dialogOpen = false; notify(); return; }
@@ -430,7 +503,11 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       }
       if (action === 'credits-buy' && products().some(item => productKey(item) === String(dataset.amount) && item.enabled !== false)) return select(String(dataset.amount));
       if (action === 'credits-custom' && customRule()) return select('custom');
+      if (action === 'credits-custom-change') { if (!locked()) { customText = String(dataset.amount ?? dataset.value); customAmount = customText; customQuote = null; notify(); } return; }
+      if (action === 'credits-quote') return quoteCustom(dataset.amount ?? customText);
+      if (action === 'credits-custom-buy' && customQuote) return select('custom');
       if (action === 'credits-amount' && customRule() && !locked()) { customAmount = String(dataset.value).slice(0, 12); return select('custom'); }
+      if (action === 'credits-confirm') action = 'credits-pay';
       if (action === 'credits-pay' || action === 'credits-close-order') {
         const g = generation;
         if (action === 'credits-pay' && backgroundLoading && recoveryTask) {
@@ -453,7 +530,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       return `<div class="page-content credits-page" ${dialogOpen ? 'inert' : ''}>
         <div class="page-heading"><div><h2>账号积分</h2><p class="muted">查看账号余额，购买的积分长期有效。</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? ' 当前显示上次读取的余额。' : ''}</div>` : ''}
-        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${displayedBalance() != null ? esc(remote ? exactPoints(displayedBalance()) : amount(displayedBalance())) : '—'}<span>点</span></div>
+        <section class="credits-overview"><div><p class="eyebrow">积分余额</p><div class="credits-total">${displayedBalance() != null ? esc(remote?.currency_rule_id === 'usd-credit-1-v1' ? exactPoints(displayedBalance()) : amount(displayedBalance())) : '—'}<span>点</span></div>
         <p class="muted">积分归当前万象账号所有，跨设备共享。</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">购买积分</button>${pendingOrder(order) || intent ? '<p>有一笔购买正在处理中，点击继续查看。</p>' : ''}</div></section>
         ${remoteView()}

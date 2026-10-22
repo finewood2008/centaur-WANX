@@ -1,4 +1,4 @@
-import { formatCreditAtoms } from "../account/credit-wallet.mjs";
+import { displayCreditAtoms, validateCreditWallet } from "../account/credit-wallet.mjs";
 
 import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
@@ -190,8 +190,8 @@ export function registerControlActions({
     if (creditWallet) {
       const summary = (await creditWallet.balance()).data;
       const wallet = summary.billing_backend === "qeetoken" ? (await creditWallet.wallet()).data : summary;
-      const formatted = wallet.balance_credit_atoms == null ? null : formatCreditAtoms(wallet.balance_credit_atoms);
-      return { available_text: formatted ? (formatted.direction === "debt" && formatted.text === "<0.01" ? "-<0.01" : formatted.text) : null,
+      if (summary.billing_backend === "qeetoken") validateCreditWallet(wallet, client.snapshot().account.accountId);
+      return { available_text: wallet.balance_credit_atoms == null ? null : displayCreditAtoms(wallet.balance_credit_atoms),
         sync_state: wallet.sync_state || "synced" };
     }
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
@@ -204,7 +204,7 @@ export function registerControlActions({
       return credits[method](input);
     }));
   }
-  for (const method of ["catalog", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+  for (const method of ["catalog", "quote", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
     if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
     register(`wallet-${method}`, async input => {
       try {

@@ -1009,3 +1009,35 @@ test('account switch discards in-flight QeeToken wallet and consumption', async 
   view.reset(JSON.stringify(['bob', 'client-2'])); release(); await refresh;
   assert.doesNotMatch(view.render(), /1999\.99999940|余额已同步/);
 });
+
+test('v2 wallet requests a server quote before submitting a custom amount', async () => {
+  const wallet = { view_version: '2', account_id: 'alice', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6,
+    balance_credit_atoms: '1876000000', spent_credit_atoms: '0', correction_credit_atoms: '0', net_spent_credit_atoms: '0',
+    remote_sequence: '9', sync_state: 'synced', synced_at: '2026-10-18T02:00:00Z', pending_executions: 0 };
+  const usage = { view_version: '2', account_id: 'alice', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6,
+    remote_sequence: '9', items: [], next_before_sequence: null };
+  const quotedOrder = { ...order, amount_fen: 1100, credit_display: { currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, grant_credit_atoms: '1100000000' },
+    grant_credit_atoms: '1100000000', display_state: 'credited', payment_state: 'paid', fulfillment_state: 'credited', payment_action: null };
+  const { view, seen } = setup({ request: async (action, input) => {
+    if (action === 'wallet.catalog') return envelope({ view_version: '2', currency_rule_id: 'usd-credit-100-v2', recharge_enabled: true, custom_amount: { min_fen: 1000, max_fen: 100000, step_fen: 100 }, payment_channels: ['alipay'] });
+    if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
+    if (action === 'wallet.wallet') return envelope(wallet);
+    if (action === 'wallet.usage') return envelope(usage);
+    if (action === 'wallet.quote') { assert.deepEqual(input, { amount_fen: 1100 }); return envelope({ view_version: '2', currency_rule_id: 'usd-credit-100-v2', rule_id: 'usd-credit-100-v2', credit_scale: 6, amount_fen: 1100, grant_credit_atoms: '1100000000' }); }
+    if (action === 'wallet.createOrder') { assert.equal(input.currency_rule_id, 'usd-credit-100-v2'); assert.equal(input.amount_fen, 1100); assert.equal('grant_credit_atoms' in input, false); return envelope(quotedOrder); }
+  } });
+  await view.refresh(); await view.action('credits-open'); await view.action('credits-custom-change', { amount: '11' });
+  await view.action('credits-quote');
+  assert.match(view.render(), /支付 ¥11 · 到账 1,100\.00 积分/);
+  await view.action('credits-custom-buy'); await view.action('credits-confirm');
+  assert.equal(seen.filter(([action]) => action === 'wallet.quote').length, 1);
+  assert.match(view.render(), /1,100\.00 点积分已记入当前账号/);
+});
+
+test('QR conversion failures are recorded as failed payment stages', async () => {
+  const events = [];
+  const { view } = setup({ onTiming: event => events.push(event), qr: async () => { throw new Error('QR_FAILED'); } });
+  await view.refresh(); await view.action('credits-open'); await view.action('credits-buy', { amount: '10000' }); await view.action('credits-pay');
+  const qr = events.find(event => event.stage === 'qr');
+  assert.deepEqual({ outcome: qr.outcome, ready: qr.ready }, { outcome: 'failed', ready: false });
+});

@@ -10,7 +10,7 @@
 
 | 端 | 必须交付 | 保持现有边界 |
 | --- | --- | --- |
-| WANX 客户端 | 固定五档及整数自定义充值；新钱包协议；余额、消费、详情只显示积分；两位小数及微小值文案；新旧订单恢复 | 不自行决定到账额度，不直接入账，不判断注册赠送资格，不另算模型费用 |
+| WANX 客户端 | 固定四档及整数自定义充值；新钱包协议；余额、消费、详情只显示积分；两位小数及微小值文案；新旧订单恢复 | 不自行决定到账额度，不直接入账，不判断注册赠送资格，不另算模型费用 |
 | Admin 后端与管理端 | 新面值投影；订单冻结与旧单履约；赠送资格及持久发放任务；来源追踪；旧资产盘点、迁移和补发编排；管理查询及对账 | QeeToken 是消费余额权威；不另建模型定价入口，不增加退款或人工补偿功能 |
 | QeeToken | 明确的注册赠送入账；单次发放去重；迁移来源承接；同事务记录赠送优先消费归属；事件与余额一致；WANX 原生充值限制 | USD 账本单位、原计费结果、原纠错机制及欠费准入不重写；其他原生用户不受 WANX 限制影响 |
 | 管理员与上线执行 | 按实际采购成本核算 30% 模型毛利并手调价格/倍率；数据盘点；切换核对；迁移后补发 | 不创建自动调价，不假设官方美元价格可直接乘固定倍率；本次不执行任何配置操作 |
@@ -90,7 +90,7 @@ Admin 在本地事务中保存唯一领取资格/发放意图与恢复状态；�
 | 编号 | 文件/模块 | 改动内容 | 依赖与完成标准 |
 | --- | --- | --- | --- |
 | W1 | [account/credit-wallet.mjs](../wanx-client/account/credit-wallet.mjs) | 扩展明确的自定义金额请求与新合同验证，取消把任意 amount 请求当旧三档的分支；保留购买意图、账户隔离与十进制整数校验 | 依赖 Admin 新 catalog/订单协议；客户端只提交人民币金额或商品选择，不提交到账积分 |
-| W2 | [wallet-view.mjs](../wanx-client/local-ui/renderer/wallet-view.mjs) | 五个固定档位 + 自定义金额选择；限制整数元 10～1000；错误提示、服务端报价、支付恢复与渠道选择 | 服务端仍为最终校验者；改变金额应形成新的已持久化购买意图，不覆盖在途订单 |
+| W2 | [wallet-view.mjs](../wanx-client/local-ui/renderer/wallet-view.mjs) | 四个固定档位 + 自定义金额选择；限制整数元 10～1000；错误提示、服务端报价、支付恢复与渠道选择 | 服务端仍为最终校验者；改变金额应形成新的已持久化购买意图，不覆盖在途订单 |
 | W3 | 同上 `load/recover/createOrder` 流程 | 兼容原本地存储购买意图和旧订单状态；关闭旧未支付单后清理本地意图并允许按新规则购买 | 切换不删除已支付/结果未知订单，不为恢复生成新充值 ID |
 | W4 | 同上 `validateWallet/validateUsage/remoteView` | 支持新响应版本；余额和消费均读取当前口径的 credit atoms；删去 USD、美元符号、Token 列、比例说明及 tooltip 中相关信息 | 0.01 USD 实际消费正确显示 1.00 积分，不能继续把八位 USD 字符串贴在积分列 |
 | W5 | [credit-wallet.mjs](../wanx-client/account/credit-wallet.mjs)、[shell/control.mjs](../wanx-client/shell/control.mjs)、钱包 renderer | 复用 BigInt 四舍五入；统一主钱包、详情、快捷面板、订单到账文案；微小余额/消费/欠费按上下文分别显示 | 不把 `.exact` 六位精度作为用户显示；0.009999 先判微小值，负普通值保留负号 |
@@ -106,8 +106,8 @@ Admin 在本地事务中保存唯一领取资格/发放意图与恢复状态；�
 | 编号 | 文件/模块 | 必须修改或新增的责任 |
 | --- | --- | --- |
 | A1 | [nexus_qeetoken_accounting.py](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_qeetoken_accounting.py) | 分离新充值换算、旧期初承接和原订单解释；新增当前规则版本投影；余额、消费、累计消费及管理查询一致，不覆盖原 USD 事件 |
-| A2 | [nexus_credit_order_service.py](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_credit_order_service.py)、[nexus_credit_vo.py](../../nexusaos-admin/admin-backend/module_nexus/entity/vo/nexus_credit_vo.py) | 自定义人民币分必须在 1000～100000 且整除 100；固定五档由服务端目录提供；冻结金额、规则版本、额度与履约目标。履约和入账核对按冻结快照，不按当前常量重算 |
-| A3 | [nexus_credit_configuration_service.py](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_credit_configuration_service.py)、商品配置 DTO、catalog | 发布无优惠/加赠的五档商品与自定义约束；避免旧兼容 20 分/元分支被新请求触发。约束非法价额组合，不能只依赖管理员手填正确 |
+| A2 | [nexus_credit_order_service.py](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_credit_order_service.py)、[nexus_credit_vo.py](../../nexusaos-admin/admin-backend/module_nexus/entity/vo/nexus_credit_vo.py) | 自定义人民币分必须在 1000～100000 且整除 100；固定四档由服务端目录提供；冻结金额、规则版本、额度与履约目标。履约和入账核对按冻结快照，不按当前常量重算 |
+| A3 | [nexus_credit_configuration_service.py](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_credit_configuration_service.py)、商品配置 DTO、catalog | 发布无优惠/加赠的四档商品与自定义约束；避免旧兼容 20 分/元分支被新请求触发。约束非法价额组合，不能只依赖管理员手填正确 |
 | A4 | [nexus_qeetoken_wallet_vo.py](../../nexusaos-admin/admin-backend/module_nexus/entity/vo/nexus_qeetoken_wallet_vo.py)、[Consumer 路由](../../nexusaos-admin/admin-backend/module_nexus/controller/nexus_consumer_credit_controller.py) | 版本化钱包、消费和订单展示协议；只交付用户展示需要的积分字段，原始 USD/Token 留管理查询；提供明确同步状态和当前面值标识 |
 | A5 | [认证服务](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_consumer_auth_service.py)、[用户创建服务](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_consumer_user_service.py)、[开户编排](../../nexusaos-admin/admin-backend/module_nexus/service/nexus_qeetoken_service.py) | 注册和后台创建提交时持久化一次领取意图；开户成功后异步发放，无首充/绑定条件；历史账号须经过迁移与领取记录核对。不能把所有 `ensure_account()`、登录或配对当新注册 |
 | A6 | [QeeToken 数据模型](../../nexusaos-admin/admin-backend/module_nexus/entity/do/nexus_qeetoken_do.py)、[积分模型](../../nexusaos-admin/admin-backend/module_nexus/entity/do/nexus_credit_do.py)、后续 SQL 迁移 | 新增领取记录、来源分量、规则版本、切换基准、迁移批次/来源映射、执行状态及唯一约束；既有原始订单/事件保持可追溯。变更脚本不靠运行时 `create_all` 隐式完成 |
@@ -124,7 +124,7 @@ Admin 在本地事务中保存唯一领取资格/发放意图与恢复状态；�
 涉及：[QeeTokenAdmin.vue](../../nexusaos-admin/admin-frontend/src/views/nexus/credits/QeeTokenAdmin.vue)、[credits/index.vue](../../nexusaos-admin/admin-frontend/src/views/nexus/credits/index.vue)、[qeetoken API](../../nexusaos-admin/admin-frontend/src/api/nexus/qeetoken.js)、[协议工具](../../nexusaos-admin/admin-frontend/src/utils/qeetokenProtocol.js)。
 
 - 修正“1 USD = 1 积分”的管理说明和金额解释，按版本显示原始与当前额度；管理后台允许保留精确 USD/Token 对账信息，不与 WANX 客户端只展示积分混淆。
-- 商品维护展示五档及自定义约束，不能将加赠商品误发布到首期规则。
+- 商品维护展示四档及自定义约束，不能将加赠商品误发布到首期规则。
 - 增加赠送来源、领取状态、原事件凭证、迁移批次及失败原因的查询/导出；恢复动作仅重放原业务意图。可复用管理任务页，不新增任意金额赠送入口或模型调价入口。
 - 新批量任务须有权限、原因、账号范围、批次与执行结果审计；支持先预演、后执行及原任务重试。实际脚本/页面形式在实现阶段选最小方案，不要求新建完整运营平台。
 
@@ -169,7 +169,7 @@ QeeToken 不需要因新积分展示把已有 USD 余额乘 100，也不需要�
 4. **迁移/重建投影**：已有 QeeToken 余额只初始化来源与重建当前积分投影，不新增余额；未迁移账号以稳定 `migration:<account_id>` 单笔承接总额及来源分量，满足远端零余额/零序号条件。各账号记录完成状态后再推进，异常账号不可强行置零。
 5. **完成原订单履约并追平事件**：未开户或未迁移账号的补单必须在其期初迁移后入账；其他账号按已有规则恢复。核对回调晚到、重复同步、事件分页和切换期间新事实。原则是“先核对订单、后迁移资产”，并非要求对尚待迁移账号提前执行补单破坏期初条件。
 6. **批量注册补发**：在账号迁移完成且领取资格核实后执行原发放意图；500 积分只发一次；失败重排原任务，不以换批次 ID 重新领取。上线窗口新创建账号走相同队列，不与旧账号扫描重复。
-7. **验账并开放新规则**：确认五档、自定义、客户端协议和模型倍率已一致；开放新下单和正常调用，继续履约/事件恢复。新账号发放无需盒子或登录操作。切换过程中不对用户展示混合单位。
+7. **验账并开放新规则**：确认四档、自定义、客户端协议和模型倍率已一致；开放新下单和正常调用，继续履约/事件恢复。新账号发放无需盒子或登录操作。切换过程中不对用户展示混合单位。
 
 异常恢复：以原操作 ID、原 source、原事件序号继续完成，不能修改金额后重放同一 ID，也不能换 ID 绕过去重。已经产生 v2 财务事件后，不回退旧换算代码或切回 legacy 扣款；优先暂停受影响入口并向前修复。备份不能用来抹去已核实的外部支付事实。
 
@@ -179,7 +179,7 @@ QeeToken 不需要因新积分展示把已有 USD 余额乘 100，也不需要�
 
 | 编号 | 场景 | 预期结果 | 主责 |
 | --- | --- | --- | --- |
-| T01 | 五个固定档位逐档充值 | 10/50/100/200/500 元分别到账 1000/5000/10000/20000/50000 积分，无加赠 | W/A |
+| T01 | 四个固定档位逐档充值 | 50/100/200/500 元分别到账 5000/10000/20000/50000 积分，无加赠 | W/A |
 | T02 | 自定义 10、11、1000 与 9、1001、10.50；伪造到账积分/混传 product 与金额 | 合法值成功，非法值在 Admin 被拒；1000 元到账 100000 积分 | W/A |
 | T03 | 改商品版本、重复下单、切账号、断网重启 | 旧订单快照不变；重复意图返回原单；不同账号不串订单或余额 | W/A |
 | T04 | 支付成功但远端超时、本地投影失败、重复回调与补单 | 订单只到账一次；后台恢复到 credited；用户看见待到账而非误报成功 | A/Q/W |

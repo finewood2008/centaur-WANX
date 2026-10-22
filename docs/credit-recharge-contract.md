@@ -20,9 +20,9 @@
 
 | 接口 | 合同 |
 | --- | --- |
-| `GET /app-api/v1/credits/catalog/v2` | 五档 products、payment_channels、recharge_enabled、timezone；`currency_rule_id=usd-credit-100-v2`、points_per_yuan=100、`custom_amount={min_fen:1000,max_fen:100000,step_fen:100}`。停用或账号未完成展示基准时不允许购买 |
+| `GET /app-api/v1/credits/catalog/v2` | 四档 products、payment_channels、recharge_enabled、timezone；`currency_rule_id=usd-credit-100-v2`、points_per_yuan=100、`custom_amount={min_fen:1000,max_fen:100000,step_fen:100}`。停用或账号未完成展示基准时不允许购买 |
 | `GET /app-api/v1/credits/quote/v2?amount_fen=1100` | 返回 `view_version=2`、currency_rule_id、credit_scale、rule_id、amount_fen=1100、grant_credit_atoms=`1100000000`；重复或额外查询字段拒绝 |
-| `POST /app-api/v1/credits/orders` | 原路径，新增可选 `currency_rule_id=usd-credit-100-v2` 购买能力标识；五档传 product_id + product_version，自定义传 amount_fen。两种输入互斥，禁止客户端提交到账积分 |
+| `POST /app-api/v1/credits/orders` | 原路径，新增可选 `currency_rule_id=usd-credit-100-v2` 购买能力标识；四档传 product_id + product_version，自定义传 amount_fen。两种输入互斥，禁止客户端提交到账积分 |
 
 自定义请求示例（Header `Idempotency-Key` 必须与 purchase_intent_id 相同）：
 
@@ -36,7 +36,7 @@
 }
 ```
 
-报价是只读预览，不锁定可售状态；下单再次检查账号展示基准、已发布规则、启停、活动订单及渠道。五档同时检查商品版本。订单保存支付金额、积分、规则、渠道商户和 USD 冻结快照，付款后按该快照履约，不能从当前商品反算。
+报价是只读预览，不锁定可售状态；下单再次检查账号展示基准、已发布规则、启停、活动订单及渠道。四档同时检查商品版本。订单保存支付金额、积分、规则、渠道商户和 USD 冻结快照，付款后按该快照履约，不能从当前商品反算。
 
 客户端先选商品（自定义金额先获取服务端报价），再进入支付方式确认页。选择商品、返回更换商品和切换渠道均只修改本地选择，不建单或关单。点击“确定支付”时先持久保存原意图、金额/商品版本、渠道和能力标识，再发起一次建单；支付渠道可用时，建单响应应直接带回 `payment_action`，客户端立即显示独立的二维码支付视图。网关超时或暂不可用时仍返回可恢复的 `creating` 订单，由后台恢复器继续处理；不保存或提交客户端计算的到账积分。重启重发完全相同的原请求。输入金额修改会清除报价；付款处理中隐藏商品和渠道选择，避免改动原购买意图。
 
@@ -52,15 +52,15 @@
 
 ## 管理发布与恢复
 
-`POST /nexus/credits/config/recharge-v2` 需 `credits:config`、Idempotency-Key，以及 `schema_version/operation_id/expected_revision/reason`；没有可传金额、积分或规则的字段。QeeToken billing 必须启用。操作在配置行锁内递增 revision、记录审计与幂等回执，生成五档及固定新规则，**总是将 recharge_enabled 置 false**。原状态已 published 时同时插入新不可变规则；草稿在随后首次启用时发布。原规则、订单、回执保留。
+`POST /nexus/credits/config/recharge-v2` 需 `credits:config`、Idempotency-Key，以及 `schema_version/operation_id/expected_revision/reason`；没有可传金额、积分或规则的字段。QeeToken billing 必须启用。操作在配置行锁内递增 revision、记录审计与幂等回执，生成四档及固定新规则，**总是将 recharge_enabled 置 false**。原状态已 published 时同时插入新不可变规则；草稿在随后首次启用时发布。原规则、订单、回执保留。
 
-发布原操作的重放返回原结果；新的重复发布被拒绝。即使仍为草稿，v2 规则也不能被旧 initial 接口覆盖。v2 商品只允许编辑名称、上架状态；金额、积分、五档身份固定。管理订单表区分原单冻结积分与带规则 ID 的当前面值积分，不能将原始字段当新积分汇总。
+发布原操作的重放返回原结果；新的重复发布被拒绝。即使仍为草稿，v2 规则也不能被旧 initial 接口覆盖。v2 商品只允许编辑名称、上架状态；金额、积分、四档身份固定。管理订单表区分原单冻结积分与带规则 ID 的当前面值积分，不能将原始字段当新积分汇总。
 
 部署/启用顺序：
 
 1. 确认 TB02–TB05 迁移及兼容服务已部署，支付配置已通过原渠道验收；保持新充值关闭。TB06 无新增 SQL，也不修改现有 SQL。
 2. 发布具有 v2 钱包、报价与恢复能力的客户端。按 TB05 完成账号来源核实和展示基准；不允许通过新充值接口绕过基准门槛。
-3. 读取当前配置 revision，使用持久 operation_id 和原因执行 recharge-v2；核对五档、停用状态与审计。丢失响应恢复同一操作。
+3. 读取当前配置 revision，使用持久 operation_id 和原因执行 recharge-v2；核对四档、停用状态与审计。丢失响应恢复同一操作。
 4. 单独通过原 availability 操作启用新充值，仍需部署材料验证。只有账号基准和发布规则均就绪的新客户端可下单。
 5. 异常时关闭新购买并继续原订单核验/恢复；不得删除已发布规则、展示基准或已冻结订单以回退。
 

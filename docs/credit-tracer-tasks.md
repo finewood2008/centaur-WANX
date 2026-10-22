@@ -20,7 +20,7 @@ WANX、Admin、QeeToken 外层及 `sub2api` 均使用 `codex/credit-v2-tracer-20
 | TB03 | 注册/后台创建 → 唯一资格 → 开户恢复 → 500 积分一次赠送 → 事件投影 | [注册赠送合同](credit-registration-contract.md) |
 | TB04 | 原生实际扣费 → 赠送优先分摊 → 不可变事件 → 消费投影及撤销 | [消费合同](credit-consumption-contract.md) |
 | TB05 | 完整 USD 快照 → 账号展示基准 → v2 钱包/消费 → 精度及同步状态 | [展示合同](credit-display-contract.md) |
-| TB06 | 五档/整数自定义报价 → 冻结订单 → 支付核验 → 唯一入账 → 积分展示 | [充值合同](credit-recharge-contract.md) |
+| TB06 | 四档/整数自定义报价 → 冻结订单 → 支付核验 → 唯一入账 → 积分展示 | [充值合同](credit-recharge-contract.md) |
 | TB07 | 只读盘点 → 来源/领取核对 → 唯一期初或来源重分类 → 展示切换 → 原任务恢复 | [迁移合同](credit-migration-contract.md) |
 | TB08 | 已迁移旧账号 → 原资格审批 → 批量排队 → 唯一赠送 → 逐账号审计/恢复 | [补发合同](credit-registration-batch-contract.md) |
 | TB09 | 查询/关单竞争 → 原单履约 → 事件追平 → 迁移/补发门控 → 切换预演 | [切换合同](credit-cutover-contract.md)、[原始预演 JSON](credit-cutover-rehearsal-sample.json) |

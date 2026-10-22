@@ -24,7 +24,7 @@ E1 是真实业务服务与数据库的测试夹具组合：HTTP 身份部分使
 
 | 编号 | 本地事实与入口 | 状态/未覆盖部分 |
 | --- | --- | --- |
-| T01 | E1/E2 `test_credit_recharge_v2`：五档全额、原事件与客户端显示 | 本地通过；真实收款待验收 |
+| T01 | E1/E2 `test_credit_recharge_v2`：四档全额、原事件与客户端显示 | 本地通过；真实收款待验收 |
 | T02 | 同文件：10/11/1000、非法小数/越界/混传/伪造额度；Electron 自定义 11 元 | 本地通过 |
 | T03 | 原冻结订单、重复意图、配置版本变化、账号切换；wallet 与 recovery tests | 本地通过；发行包升级/Windows 待验收 |
 | T04 | TB01/TB06/TB09 丢响应/本地事务故障/重复通知，Electron paid_pending | 本地通过；真实通知待验收 |
@@ -80,7 +80,7 @@ E1 是真实业务服务与数据库的测试夹具组合：HTTP 身份部分使
 以下图片来自 TB10 当次 macOS 测试 fixture；购买交互最新画面见上节。临时 HTML 不加载产品品牌图片，截图不是发行安装包截图；390px 仅检查组件滚动，支持的最小桌面宽度为 760px。
 
 - [760px 最小桌面钱包](credit-release-evidence/wallet-minimum-desktop.png)
-- [v2 五档与自定义充值](credit-release-evidence/recharge-v2.png)
+- [v2 四档与自定义充值](credit-release-evidence/recharge-v2.png)
 - [窄组件自定义 11 元报价](credit-release-evidence/recharge-v2-narrow-quote.png)
 - [Admin 原订单恢复页面](credit-release-evidence/admin-narrow.png)
 

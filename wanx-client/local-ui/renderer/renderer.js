@@ -2000,7 +2000,7 @@ function selectWifi(key) {
   updateWifiPicker();
 }
 app.addEventListener("input", event => {
-  if (event.target.id === "wallet-custom-amount") void creditsView.action("credits-amount", { value: event.target.value });
+  if (event.target.id === "wallet-custom-amount") void creditsView.action("credits-custom-change", { amount: event.target.value, value: event.target.value });
 });
 app.addEventListener("change", async (event) => {
   if (event.target.name === "remember" && !event.target.checked && !busy) {
