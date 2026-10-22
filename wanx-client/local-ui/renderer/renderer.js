@@ -1,4 +1,18 @@
 const app = document.querySelector("#app");
+let walletCountdownTimer = null;
+function syncWalletCountdown() {
+  clearInterval(walletCountdownTimer);
+  walletCountdownTimer = null;
+  const clock = app.querySelector('[data-wallet-deadline]');
+  if (!clock) return;
+  const tick = () => {
+    const seconds = Math.max(0, Math.ceil((Number(clock.dataset.walletDeadline) - Date.now()) / 1000));
+    clock.textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+    if (!seconds || !clock.isConnected) { clearInterval(walletCountdownTimer); walletCountdownTimer = null; }
+  };
+  tick();
+  walletCountdownTimer = setInterval(tick, 1000);
+}
 let currentState;
 let page = "applications";
 let selectedApplicationId = null;
@@ -1300,7 +1314,7 @@ function render(state) {
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
   // Detached dialog nodes lose their scroll offsets when innerHTML is replaced.
-  const walletScroll = walletDialog ? { top: walletDialog.scrollTop, left: walletDialog.scrollLeft } : null;
+  const walletScroll = walletDialog ? { top: walletDialog.scrollTop, left: walletDialog.scrollLeft, step: walletDialog.dataset.step } : null;
   const walletFocus = walletDialog?.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
   const walletInput = walletDialog && document.activeElement?.id === 'wallet-custom-amount' ? document.activeElement : null;
   const walletSelection = walletInput ? [walletInput.selectionStart, walletInput.selectionEnd] : null;
@@ -1378,13 +1392,17 @@ function render(state) {
       (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
     }
     if (walletSelection && previous) previous.setSelectionRange(...walletSelection);
-    if (walletScroll) {
+    if (walletScroll && walletScroll.step !== nextWalletDialog.dataset.step) {
+      nextWalletDialog.scrollTop = 0;
+      nextWalletDialog.focus({ preventScroll: true });
+    } else if (walletScroll) {
       nextWalletDialog.scrollTop = walletScroll.top;
       nextWalletDialog.scrollLeft = walletScroll.left;
     }
   } else if (walletDialog && page === 'credits' && !auth) {
     app.querySelector?.('[data-action="credits-open"]')?.focus({ preventScroll: true });
   }
+  syncWalletCountdown();
   syncFormState();
   // Reattaching a focused form must not pull the user back after they scroll away.
   if (scroll) {

@@ -80,3 +80,12 @@ test('v2 custom recharge uses the quoted integer amount and cannot accept client
     currency_rule_id: 'usd-credit-100-v2', custom_recharge_version: 'cny-100-v1' }), { code: 'CREDITS_INVALID_INPUT' });
   assert.equal(sent.length, 1);
 });
+
+test('v2 product purchase keeps server-owned product pricing and the denomination marker', async () => {
+  const sent = [];
+  const wallet = createCreditWallet({ request: async value => { sent.push(value); return {}; } });
+  const purchase = { purchase_intent_id: 'product-v2', product_id: 'p50', product_version: 'v2', currency_rule_id: 'usd-credit-100-v2', payment_channel: 'alipay' };
+  await wallet.createOrder(purchase);
+  assert.deepEqual(sent[0].body, { schema_version: '1', ...purchase });
+  await assert.rejects(wallet.createOrder({ ...purchase, amount_fen: 5000 }), { code: 'CREDITS_INVALID_INPUT' });
+});

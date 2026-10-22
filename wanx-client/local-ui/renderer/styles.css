@@ -884,10 +884,10 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wallet-dialog-close { flex-shrink:0; width:32px; height:32px; border:0; border-radius:50%; background:var(--fn-bg-secondary); color:var(--fn-text-secondary); font-size:23px; line-height:1; }
 .wallet-custom { display:grid; gap:10px; margin-top:18px; padding-top:18px; border-top:1px solid var(--fn-border-primary); }
 .wallet-custom input { min-width:0; width:100%; padding:10px; font:inherit; }
-.wallet-products { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-.wallet-product { display:flex; flex-direction:column; align-items:center; padding:22px 10px 14px; border:1px solid var(--fn-border-primary); border-radius:12px; background:var(--fn-bg-elevated); color:var(--fn-text-primary); }
+.wallet-products { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.wallet-product { display:flex; flex-direction:column; align-items:center; padding:18px 10px 14px; border:1px solid var(--fn-border-primary); border-radius:12px; background:var(--fn-bg-elevated); color:var(--fn-text-primary); }
 .wallet-product:not(:disabled):hover { border-color:var(--fn-color-brand); background:var(--fn-color-brand-bg); }
-.wallet-product[aria-pressed="true"] { border:2px solid var(--fn-color-brand); padding:21px 9px 13px; background:var(--fn-color-brand-bg); opacity:1; }
+.wallet-product[aria-pressed="true"] { border:2px solid var(--fn-color-brand); padding:17px 9px 13px; background:var(--fn-color-brand-bg); opacity:1; }
 .wallet-product-points { font-size:24px; font-weight:600; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
 .wallet-product-points small { display:block; margin:4px 0 18px; font-size:12px; font-weight:400; color:var(--fn-text-secondary); letter-spacing:0; }
 .wallet-product strong { font-size:18px; font-weight:500; }
@@ -905,7 +905,33 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .wallet-payment-mark { display:grid; place-items:center; width:48px; height:48px; border-radius:50%; background:var(--fn-bg-secondary); color:var(--fn-text-secondary); font-size:28px; }
 .wallet-payment.is-success .wallet-payment-mark { background:var(--fn-bg-success); color:var(--fn-text-success); }
 .wallet-payment-actions { display:flex; justify-content:center; flex-wrap:wrap; gap:16px; margin-top:16px; }
-.wallet-channel-picker { margin-bottom:16px; }
+.wallet-channel-section { margin-top:24px; }
+.wallet-channel-section h3 { font-size:13px; font-weight:500; color:var(--fn-text-secondary); }
+.wallet-channel-picker { justify-content:flex-start; margin:12px 0 0; gap:12px; }
+.wallet-channel-picker .button { flex:1; min-height:44px; border:1px solid var(--fn-border-primary); }
+.wallet-channel-picker [aria-pressed="true"] { color:var(--fn-color-brand); background:var(--fn-color-brand-bg); border-color:var(--fn-color-brand); }
+.wallet-checkout-total { display:flex; justify-content:space-between; align-items:center; width:100%; gap:16px; text-align:left; font-size:12px; color:var(--fn-text-secondary); }
+.wallet-checkout-total strong { margin-left:12px; font-size:26px; font-weight:600; color:var(--fn-text-primary); font-variant-numeric:tabular-nums; }
+.wallet-payment.is-selection { padding:20px 0 0; }
+.wallet-payment.is-selection > .wallet-payment-actions { width:100%; }
+.wallet-payment.is-selection .wallet-pay { width:100%; }
+.wallet-purchase-dialog[data-step="payment"], .wallet-purchase-dialog[data-step="result"] { width:min(480px,100%); }
+.wallet-purchase-dialog:not([data-step="selection"]) .wallet-payment { margin-top:0; padding:0; border:0; }
+.wallet-payment-status { display:flex; flex-direction:column; align-items:center; }
+.wallet-payment-status h3 { font-size:20px; margin-top:0; }
+.wallet-payment-status .wallet-payment-mark { width:64px; height:64px; margin:18px 0 20px; font-size:32px; }
+.wallet-qr-frame { margin-top:24px; padding:12px; border:1px solid var(--fn-border-primary); border-radius:16px; background:#fff; }
+.wallet-qr-frame[data-channel="wechat"] { border-color:#36a968; }
+.wallet-qr-frame[data-channel="alipay"] { border-color:#498bd8; }
+.wallet-payment-clock { display:grid; gap:6px; width:100%; margin-top:24px; padding:16px; border-radius:12px; background:var(--fn-bg-secondary); }
+.wallet-payment-clock span { font-size:12px; color:var(--fn-text-secondary); }
+.wallet-payment-clock strong { font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; }
+.wallet-payment .wallet-cancel { width:100%; border:1px solid var(--fn-border-primary); }
+.wallet-purchase-dialog[data-step="payment"] .wallet-payment-actions { width:100%; }
+.wallet-purchase-dialog[data-step="result"] .wallet-payment { padding-bottom:20px; }
+.wallet-purchase-dialog[data-step="result"] .wallet-payment-actions .button { min-width:120px; }
+.wallet-purchase-dialog[data-step="selection"] .wallet-custom input { flex:1; width:120px; }
+.wallet-purchase-dialog[data-step="selection"] .wallet-custom > label:first-child { flex-basis:100%; font-size:12px; color:var(--fn-text-secondary); }
 .wallet-step-title { font-size:14px; font-weight:600; margin-bottom:12px; }
 .wallet-order-summary { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:20px; margin-bottom:24px; border-radius:12px; background:var(--fn-bg-secondary); }
 .wallet-order-summary p { line-height:1.8; font-variant-numeric:tabular-nums; }
@@ -1103,3 +1129,5 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .clipboard-note-transfer button { font-size: 10px; border: 0; background: none; color: #a56343; }
 .clipboard-note-transfer progress { grid-column: 1 / -1; width: 100%; height: 3px; accent-color: #ac7957; }
 .clipboard-note-modal section > .text-button { display: block; margin-top: 10px; max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+
+@media(max-width:650px) { .wallet-qr-frame { margin-top:16px; } .wallet-qr-frame .wallet-qr { width:200px; height:200px; } .wallet-payment-clock { margin-top:16px; padding:12px; } .wallet-checkout-total { flex-wrap:wrap; gap:8px; } }

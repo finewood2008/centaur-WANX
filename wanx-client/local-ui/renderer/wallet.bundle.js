@@ -2175,7 +2175,7 @@
     let error = "", intent = null, qrImage = null, recoveryReady = false, recovering = false;
     let checkingOrder = false, orderReadFailed = false, customAmount = "", customText = "", customQuote = null;
     let backgroundLoading = false, recoveryTask = null, confirmingPurchase = false;
-    let cancellationAccepted = false;
+    let cancellationAccepted = false, cancellationClosed = false;
     let selectedChannel = "alipay", remote = null, usage = [], nextUsage = null, usageLoading = false;
     const channels = () => catalog?.payment_channels?.filter((name) => ["alipay", "wechat"].includes(name)) ?? ["alipay"];
     const key = () => `wanx.credit.purchase.v1:${account}`;
@@ -2208,6 +2208,7 @@
         QEETOKEN_SYNC_PENDING: "\u6D88\u8D39\u6D41\u6C34\u6B63\u5728\u540C\u6B65\uFF0C\u8BF7\u7A0D\u5019\u3002",
         CREDITS_SERVICE_UNAVAILABLE: "\u79EF\u5206\u63A5\u53E3\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u68C0\u67E5\u670D\u52A1\u90E8\u7F72\u3002",
         REVISION_CONFLICT: "\u5546\u54C1\u5DF2\u8C03\u6574\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u65B0\u9009\u62E9\u3002",
+        UNSUPPORTED_SCHEMA: "\u79EF\u5206\u8D2D\u4E70\u89C4\u5219\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u5546\u54C1\u6216\u83B7\u53D6\u62A5\u4EF7\u3002",
         VALIDATION_ERROR: "\u8D2D\u4E70\u91D1\u989D\u6216\u5546\u54C1\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u3002",
         ORDER_IN_PROGRESS: "\u8D26\u53F7\u5DF2\u6709\u8D2D\u4E70\u6D41\u7A0B\uFF0C\u6B63\u5728\u6062\u590D\u539F\u8BA2\u5355\u3002",
         ORDER_ALREADY_PAID: "\u8BA2\u5355\u5DF2\u652F\u4ED8\uFF0C\u8BF7\u7B49\u5F85\u5230\u8D26\u3002",
@@ -2236,7 +2237,7 @@
       return null;
     }
     function discardRejectedIntent(cause) {
-      if (intent && !intent.order_id && !pendingOrder(order) && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR"].includes(cause?.code || cause?.message)) save(null);
+      if (intent && !intent.order_id && !pendingOrder(order) && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR", "UNSUPPORTED_SCHEMA"].includes(cause?.code || cause?.message)) save(null);
     }
     async function acceptOrder(value, g) {
       if (g !== generation) return;
@@ -2249,8 +2250,10 @@
         if (intent) save(null);
         order = null;
         cancellationAccepted = true;
+        cancellationClosed = value.payment_state === "closed";
         return;
       }
+      cancellationAccepted = cancellationClosed = false;
       if (value.payment_channel) selectedChannel = value.payment_channel;
       const grant = orderGrantCreditAtoms(value);
       if (intent) {
@@ -2333,7 +2336,8 @@
       } else if (intent) {
         value = intent.order_id ? await read("order", { order_id: intent.order_id }) : await read("createOrder", {
           purchase_intent_id: intent.purchase_intent_id,
-          ...intent.custom_recharge_version ? { custom_amount_fen: intent.custom_amount_fen, custom_recharge_version: intent.custom_recharge_version } : intent.currency_rule_id ? { amount_fen: intent.amount_fen, currency_rule_id: intent.currency_rule_id } : intent.product_id ? { product_id: intent.product_id, product_version: intent.product_version } : { amount_fen: intent.amount_fen },
+          ...intent.custom_recharge_version ? { custom_amount_fen: intent.custom_amount_fen, custom_recharge_version: intent.custom_recharge_version } : intent.product_id ? { product_id: intent.product_id, product_version: intent.product_version } : { amount_fen: intent.amount_fen },
+          ...intent.currency_rule_id ? { currency_rule_id: intent.currency_rule_id } : {},
           ...intent.payment_channel ? { payment_channel: intent.payment_channel } : {}
         });
       } else if (pendingOrder(order)) {
@@ -2529,7 +2533,7 @@
     };
     async function quoteCustom(value) {
       const rule = customRule();
-      if (!identity || writing || loading || pendingOrder(order) || intent || !catalog?.recharge_enabled || !rule || catalog?.currency_rule_id !== "usd-credit-100-v2") return;
+      if (!identity || locked() || visibleLoading() || !catalog?.recharge_enabled || !rule || catalog?.currency_rule_id !== "usd-credit-100-v2") return;
       customText = String(value);
       customAmount = customText;
       customQuote = null;
@@ -2560,6 +2564,7 @@
     const draft = () => {
       if (selectedAmount === "custom") {
         if (customQuote) return { ...customQuote, target: { amount_fen: customQuote.amount_fen, currency_rule_id: "usd-credit-100-v2" } };
+        if (catalog?.currency_rule_id === "usd-credit-100-v2") return null;
         const fen = customFen();
         return fen === null ? null : {
           amount_fen: fen,
@@ -2568,12 +2573,13 @@
         };
       }
       const product = products().find((item) => productKey(item) === selectedAmount && item.enabled !== false);
-      return product ? { ...product, target: product.product_id ? { product_id: product.product_id, product_version: product.version } : { amount_fen: product.amount_fen } } : null;
+      return product ? { ...product, target: product.product_id ? { product_id: product.product_id, product_version: product.version, ...catalog.currency_rule_id ? { currency_rule_id: catalog.currency_rule_id } : {} } : { amount_fen: product.amount_fen, ...catalog.currency_rule_id ? { currency_rule_id: catalog.currency_rule_id } : {} } } : null;
     };
     function select(value) {
       if (locked()) return;
       selectedAmount = value;
       order = null;
+      cancellationAccepted = cancellationClosed = false;
       error = "";
       dialogOpen = true;
       notify();
@@ -2600,7 +2606,7 @@
       } catch (cause) {
         if (g !== generation) return;
         error = message(cause);
-        if (!order && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR"].includes(cause?.code || cause?.message)) {
+        if (!order && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR", "UNSUPPORTED_SCHEMA"].includes(cause?.code || cause?.message)) {
           discardRejectedIntent(cause);
           try {
             const value = await read("catalog");
@@ -2655,14 +2661,21 @@
       }
     }
     const paymentImage = () => qrImage && order && !intent?.close_intent_id && order.payment_state === "pending" && now() < Date.parse(order.expires_at) && now() < Date.parse(order.payment_action?.expires_at) ? qrImage : null;
+    const checkoutStep = () => {
+      if (order?.review_state === "open" || order?.display_state === "credited" && orderGrantCreditAtoms(order) === null) return "payment";
+      return cancellationAccepted || ["credited", "closed"].includes(order?.display_state) ? "result" : order || intent || confirmingPurchase ? "payment" : "selection";
+    };
     function paymentView() {
       const state = order?.display_state;
       const expired = order && (now() >= Date.parse(order.expires_at) || order.payment_action && now() >= Date.parse(order.payment_action.expires_at));
       const selection = draft();
       const grant = order ? orderGrantCreditAtoms(order) : selection?.grant_credit_atoms;
       const grantText = grant == null ? "" : order?.credit_display === void 0 ? exactPoints(grant) : amount(grant);
-      let title = selection ? "\u786E\u8BA4\u8D2D\u4E70" : "\u9009\u62E9\u5145\u503C\u91D1\u989D", description = selection ? `\u5E94\u4ED8 \xA5${selection.amount_fen / 100} \xB7 \u5230\u8D26 ${exactPoints(selection.grant_credit_atoms)} \u70B9\u79EF\u5206` : "\u9009\u62E9\u5546\u54C1\u6216\u8F93\u5165\u81EA\u5B9A\u4E49\u91D1\u989D\uFF0C\u518D\u70B9\u51FB\u201C\u7ACB\u5373\u652F\u4ED8\u201D\u751F\u6210\u4ED8\u6B3E\u7801\u3002", success = false;
-      if (order?.review_state === "open") {
+      let title = selection ? "\u786E\u8BA4\u8D2D\u4E70" : "\u9009\u62E9\u5145\u503C\u91D1\u989D", description = selection ? `\u5E94\u4ED8 \xA5${selection.amount_fen / 100} \xB7 \u5230\u8D26 ${exactPoints(selection.grant_credit_atoms)} \u70B9\u79EF\u5206` : "\u9009\u62E9\u5546\u54C1\u6216\u8F93\u5165\u81EA\u5B9A\u4E49\u91D1\u989D\uFF0C\u9009\u62E9\u652F\u4ED8\u65B9\u5F0F\u540E\u786E\u8BA4\u8D2D\u4E70\u3002", success = false;
+      if (cancellationAccepted) {
+        title = cancellationClosed ? "\u8BA2\u5355\u5DF2\u53D6\u6D88" : "\u53D6\u6D88\u8BF7\u6C42\u5DF2\u53D7\u7406";
+        description = cancellationClosed ? "\u60A8\u5DF2\u53D6\u6D88\u672C\u6B21\u652F\u4ED8\uFF0C\u53EF\u91CD\u65B0\u9009\u62E9\u5145\u503C\u5546\u54C1\u3002" : "\u8BF7\u52FF\u7EE7\u7EED\u652F\u4ED8\u539F\u4ED8\u6B3E\u7801\uFF1B\u5982\u5DF2\u4ED8\u6B3E\uFF0C\u6211\u4EEC\u4F1A\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002";
+      } else if (order?.review_state === "open") {
         title = "\u652F\u4ED8\u7ED3\u679C\u5F85\u6838\u5BF9";
         description = `${order.payment_state === "paid" ? "\u5DF2\u652F\u4ED8\u3002" : "\u4ED8\u6B3E\u7ED3\u679C\u5C1A\u5F85\u6838\u5B9E\u3002"}${order.fulfillment_state === "credited" ? "\u79EF\u5206\u5DF2\u5230\u8D26\u3002" : "\u79EF\u5206\u5230\u8D26\u60C5\u51B5\u6B63\u5728\u6838\u5BF9\u3002"}\u8BF7\u52FF\u91CD\u590D\u652F\u4ED8\u3002`;
       } else if (state === "credited") {
@@ -2673,7 +2686,7 @@
         title = "\u652F\u4ED8\u6210\u529F\uFF0C\u79EF\u5206\u5230\u8D26\u4E2D";
         description = "\u6B63\u5728\u66F4\u65B0\u79EF\u5206\u4F59\u989D\uFF0C\u8BF7\u52FF\u91CD\u590D\u652F\u4ED8\u3002\u5173\u95ED\u5F39\u6846\u540E\u4ECD\u4F1A\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002";
       } else if (state === "closed") {
-        title = "\u672C\u6B21\u8D2D\u4E70\u5DF2\u5173\u95ED";
+        title = "\u8BA2\u5355\u5DF2\u53D6\u6D88";
         description = "\u53EF\u4EE5\u91CD\u65B0\u9009\u62E9\u79EF\u5206\u5546\u54C1\uFF0C\u751F\u6210\u65B0\u7684\u4ED8\u6B3E\u7801\u3002";
       } else if (intent?.close_intent_id || order?.payment_state === "close_pending") {
         title = "\u5173\u95ED\u786E\u8BA4\u4E2D";
@@ -2704,28 +2717,36 @@
         title = visibleLoading() ? "\u6B63\u5728\u8BFB\u53D6\u5546\u54C1" : "\u8D2D\u4E70\u6682\u4E0D\u53EF\u7528";
         description = visibleLoading() ? "\u8BF7\u7A0D\u5019\u3002" : "\u79EF\u5206\u8D2D\u4E70\u6682\u672A\u5F00\u653E\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002";
       }
-      return `<section class="wallet-payment ${success ? "is-success" : ""}" aria-label="\u652F\u4ED8\u8FDB\u5EA6">
-      ${paymentImage() ? `<img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}">` : order || intent || writing ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : state === "closed" || expired ? "\u2014" : "\xB7"}</div>` : ""}
-      <div role="status" aria-live="polite"><h3>${esc(title)}</h3><p>${esc(description)}</p></div>
-      ${cancellationAccepted ? '<p class="wallet-payment-footnote" role="status">\u53D6\u6D88\u8BF7\u6C42\u5DF2\u53D7\u7406\uFF0C\u53EF\u91CD\u65B0\u9009\u62E9\u3002\u8BF7\u52FF\u7EE7\u7EED\u652F\u4ED8\u539F\u4ED8\u6B3E\u7801\uFF1B\u5982\u5DF2\u4ED8\u6B3E\uFF0C\u5C06\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002</p>' : ""}
+      const step = checkoutStep(), payable = paymentImage();
+      const deadline = payable ? Math.min(Date.parse(order.expires_at), Date.parse(order.payment_action.expires_at)) : null;
+      const seconds = deadline === null ? 0 : Math.max(0, Math.ceil((deadline - now()) / 1e3));
+      const countdown = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+      const cancelled = cancellationAccepted || state === "closed";
+      return `<section class="wallet-payment ${success ? "is-success" : ""} ${step === "selection" ? "is-selection" : ""}" aria-label="\u652F\u4ED8\u8FDB\u5EA6">
+      ${step === "selection" && catalog?.recharge_enabled && (products().length || customRule()) ? "" : `<div class="wallet-payment-status" role="status" aria-live="polite">${!payable && step !== "selection" ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : cancelled ? "\xD7" : "\u2026"}</div>` : ""}<h3>${esc(title)}</h3><p>${esc(description)}</p></div>`}
+      ${payable ? `<div class="wallet-qr-frame" data-channel="${selectedChannel}"><img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}"></div>
+        <p class="wallet-scan-hint">\u8BF7\u4F7F\u7528\u624B\u673A${selectedChannel === "wechat" ? "\u5FAE\u4FE1" : "\u652F\u4ED8\u5B9D"}\u626B\u7801\u5B8C\u6210\u652F\u4ED8</p>
+        <div class="wallet-payment-clock"><span>\u5269\u4F59\u652F\u4ED8\u65F6\u95F4</span><strong data-wallet-deadline="${deadline}" role="timer" aria-live="off">${countdown}</strong><span>\u7B49\u5F85\u652F\u4ED8\uFF0C\u4ED8\u6B3E\u540E\u81EA\u52A8\u66F4\u65B0</span></div>` : ""}
       ${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}
+      ${step === "selection" ? `<div class="wallet-checkout-total"><span>\u5E94\u4ED8\u91D1\u989D<strong>${selection ? `\xA5${selection.amount_fen / 100}` : "\u2014"}</strong></span><span>${selection ? `\u5230\u8D26 ${esc(exactPoints(selection.grant_credit_atoms))} \u79EF\u5206` : "\u8BF7\u9009\u62E9\u5546\u54C1\u6216\u83B7\u53D6\u81EA\u5B9A\u4E49\u62A5\u4EF7"}</span></div>` : ""}
       <div class="wallet-payment-actions">
-        ${!locked() && !order ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? "disabled" : ""}>\u7ACB\u5373\u652F\u4ED8</button>` : ""}
-        ${(order || intent || error) && (!success || error) ? `<button class="text-button" data-action="credits-refresh" ${visibleLoading() || writing || checkingOrder ? "disabled" : ""}>${visibleLoading() ? "\u6B63\u5728\u786E\u8BA4\u2026" : "\u5237\u65B0\u652F\u4ED8\u72B6\u6001"}</button>` : ""}
-        ${order && ["creating", "pending"].includes(order.payment_state) && !intent?.close_intent_id ? `<button class="text-button" data-action="credits-close-order" ${visibleRecovery() || checkingOrder || writing ? "disabled" : ""}>\u53D6\u6D88\u5E76\u91CD\u65B0\u9009\u62E9</button>` : ""}
-        ${success ? '<button class="button primary" data-action="credits-dismiss">\u5B8C\u6210</button>' : ""}
+        ${step === "selection" ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || locked() || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? "disabled" : ""}>\u786E\u8BA4\u8D2D\u4E70</button>` : ""}
+        ${step === "payment" && (order || intent || error) || error ? `<button class="text-button" data-action="credits-refresh" ${visibleLoading() || writing || checkingOrder ? "disabled" : ""}>${visibleLoading() ? "\u6B63\u5728\u786E\u8BA4\u2026" : "\u5237\u65B0\u652F\u4ED8\u72B6\u6001"}</button>` : ""}
+        ${step === "payment" && order && ["creating", "pending"].includes(order.payment_state) && !intent?.close_intent_id ? `<button class="button wallet-cancel" data-action="credits-close-order" ${visibleRecovery() || checkingOrder || writing ? "disabled" : ""}>\u53D6\u6D88\u8BA2\u5355</button>` : ""}
+        ${step === "result" ? `<button class="button primary" data-action="credits-result-confirm">${success ? "\u5B8C\u6210" : "\u786E\u8BA4"}</button>` : ""}
       </div>
-      ${pendingOrder(order) || intent ? '<p class="wallet-payment-footnote">\u6536\u8D77\u5F39\u6846\u4E0D\u4F1A\u53D6\u6D88\u652F\u4ED8\uFF0C\u6211\u4EEC\u4F1A\u7EE7\u7EED\u786E\u8BA4\u7ED3\u679C\u3002</p>' : ""}
+      ${pendingOrder(order) || intent ? '<p class="wallet-payment-footnote">\u5173\u95ED\u7A97\u53E3\u540E\u4ECD\u53EF\u7EE7\u7EED\u67E5\u770B\u652F\u4ED8\u7ED3\u679C</p>' : ""}
     </section>`;
     }
     function dialog() {
       if (!dialogOpen) return "";
-      const selected = pendingOrder(order) ? intent?.custom_recharge_version || intent?.currency_rule_id ? "custom" : intent?.product_id || String(order.amount_fen) : selectedAmount;
+      const step = checkoutStep();
+      const selected = pendingOrder(order) ? intent?.custom_recharge_version || intent?.currency_rule_id && !intent?.product_id ? "custom" : intent?.product_id || String(order.amount_fen) : selectedAmount;
       const rule = customRule();
       const invalidAmount = selectedAmount === "custom" && customAmount !== "" && customFen() === null;
-      return `<div class="wallet-modal"><section class="wallet-purchase-dialog" role="dialog" aria-modal="true" aria-labelledby="wallet-purchase-title" tabindex="-1">
-      <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">\u8D2D\u4E70\u79EF\u5206</h2><p>\u9009\u62E9\u91D1\u989D\u548C\u652F\u4ED8\u65B9\u5F0F\uFF0C\u786E\u8BA4\u540E\u751F\u6210\u4ED8\u6B3E\u7801 \xB7 \u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="\u5173\u95ED\u8D2D\u4E70\u5F39\u6846">\xD7</button></header>
-      <div class="wallet-payment-actions wallet-channel-picker" aria-label="\u652F\u4ED8\u65B9\u5F0F">${channels().map((channel) => `<button class="button ${selectedChannel === channel ? "primary" : ""}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? "disabled" : ""}>${channel === "wechat" ? "\u5FAE\u4FE1\u652F\u4ED8" : "\u652F\u4ED8\u5B9D"}</button>`).join("")}</div>
+      return `<div class="wallet-modal"><section class="wallet-purchase-dialog" data-step="${step}" role="dialog" aria-modal="true" aria-labelledby="wallet-purchase-title" tabindex="-1">
+      <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">${step === "selection" ? "\u8D2D\u4E70\u79EF\u5206" : step === "payment" ? "\u8BA2\u5355\u652F\u4ED8" : "\u8BA2\u5355\u7ED3\u679C"}</h2><p>${step === "selection" ? "\u9009\u62E9\u5145\u503C\u91D1\u989D\u4E0E\u652F\u4ED8\u65B9\u5F0F\uFF0C\u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548" : step === "payment" ? "\u8BF7\u6838\u5BF9\u91D1\u989D\u540E\u626B\u7801\u652F\u4ED8" : "\u672C\u6B21\u8D2D\u4E70\u7684\u5904\u7406\u7ED3\u679C"}</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="\u5173\u95ED\u8D2D\u4E70\u5F39\u6846">\xD7</button></header>
+      ${step === "selection" ? `
       <div class="wallet-products" aria-label="\u79EF\u5206\u5546\u54C1">${products().map((tier) => `<button class="wallet-product" data-action="credits-buy" data-amount="${esc(productKey(tier))}" aria-pressed="${selected === productKey(tier)}" ${!catalog?.recharge_enabled || tier.enabled === false || locked() ? "disabled" : ""}>
         ${tier.name ? `<span>${esc(tier.name)}</span>` : ""}<span class="wallet-product-points">${esc(exactPoints(tier.grant_credit_atoms))}<small>\u70B9\u79EF\u5206</small></span><strong>\xA5${tier.amount_fen / 100}</strong><span class="wallet-product-selection">${selected === productKey(tier) ? "\u5DF2\u9009\u62E9" : "\u9009\u62E9\u5546\u54C1"}</span></button>`).join("")}</div>
       ${catalog?.custom_amount ? `<div class="wallet-custom" data-selected="${selected === "custom"}">
@@ -2738,6 +2759,7 @@
         <label for="wallet-custom-amount">\xA5 <input id="wallet-custom-amount" type="text" inputmode="decimal" autocomplete="off" maxlength="12" placeholder="\u8F93\u5165\u91D1\u989D\uFF08\u5143\uFF09" aria-label="\u81EA\u5B9A\u4E49\u5145\u503C\u91D1\u989D\uFF08\u5143\uFF09" aria-describedby="wallet-custom-hint" aria-invalid="${invalidAmount}" value="${esc(customAmount)}" ${!catalog?.recharge_enabled || !rule || locked() ? "disabled" : ""}></label>
         <p id="wallet-custom-hint" ${invalidAmount ? 'role="status"' : ""}>${!rule ? "\u81EA\u5B9A\u4E49\u5145\u503C\u6682\u4E0D\u53EF\u7528" : invalidAmount ? `\u8BF7\u8F93\u5165 \xA5${rule.min_amount_fen / 100} \u81F3 \xA5${rule.max_amount_fen / 100} \u7684\u91D1\u989D\uFF0C\u6700\u591A\u4E24\u4F4D\u5C0F\u6570\u3002` : `1 \u5143\u5151\u6362 100 \u79EF\u5206${selectedAmount === "custom" && customFen() !== null ? ` \xB7 \u53EF\u5F97 ${exactPoints((BigInt(customFen()) * 1000000n).toString())} \u70B9\u79EF\u5206` : ""}`}</p>
       </div>`}
+      <div class="wallet-channel-section"><h3>\u652F\u4ED8\u65B9\u5F0F</h3>      <div class="wallet-payment-actions wallet-channel-picker" aria-label="\u652F\u4ED8\u65B9\u5F0F">${channels().map((channel) => `<button class="button ${selectedChannel === channel ? "primary" : ""}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? "disabled" : ""}>${channel === "wechat" ? "\u5FAE\u4FE1\u652F\u4ED8" : "\u652F\u4ED8\u5B9D"}</button>`).join("")}</div></div>` : ""}
       ${paymentView()}
     </section></div>`;
     }
@@ -2760,7 +2782,7 @@
         customAmount = "";
         customText = "";
         customQuote = null;
-        backgroundLoading = confirmingPurchase = cancellationAccepted = false;
+        backgroundLoading = confirmingPurchase = cancellationAccepted = cancellationClosed = false;
         recoveryTask = null;
         selectedChannel = "alipay";
         intent = account ? load() : null;
@@ -2769,7 +2791,7 @@
           selectedAmount = "custom";
           customAmount = String(intent.custom_amount_fen / 100);
         }
-        if (intent?.currency_rule_id) {
+        if (intent?.currency_rule_id && !intent?.product_id) {
           selectedAmount = "custom";
           customText = String(intent.amount_fen / 100);
         }
@@ -2787,6 +2809,17 @@
         }
         if (action === "credits-dismiss") {
           dialogOpen = false;
+          if (checkoutStep() === "result" && !pendingOrder(order)) {
+            order = null;
+            cancellationAccepted = cancellationClosed = false;
+          }
+          notify();
+          return;
+        }
+        if (action === "credits-result-confirm" && checkoutStep() === "result" && !pendingOrder(order)) {
+          order = null;
+          cancellationAccepted = cancellationClosed = false;
+          error = "";
           notify();
           return;
         }

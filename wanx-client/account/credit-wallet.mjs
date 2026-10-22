@@ -154,7 +154,7 @@ export function createCreditWallet({ request }) {
       if (value.currency_rule_id !== undefined && value.currency_rule_id !== "usd-credit-100-v2") throw fail("CREDITS_INVALID_INPUT");
       const validAmount = value.currency_rule_id ? Number.isSafeInteger(value.amount_fen) && value.amount_fen >= 1000 && value.amount_fen <= 100000 && value.amount_fen % 100 === 0 : [5000, 10000, 20000].includes(value.amount_fen);
       if (!id(value.purchase_intent_id) || (product
-        ? !id(value.product_id) || !id(value.product_version) || value.amount_fen !== undefined || value.currency_rule_id !== undefined
+        ? !id(value.product_id) || !id(value.product_version) || value.amount_fen !== undefined
         : value.product_version !== undefined || !validAmount)) throw fail("CREDITS_INVALID_INPUT");
       const target = product ? { product_id: value.product_id, product_version: value.product_version } : { amount_fen: value.amount_fen };
       return request({ method: "POST", path: `${PREFIX}/orders`, idempotencyKey: value.purchase_intent_id,
