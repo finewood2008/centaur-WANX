@@ -366,7 +366,8 @@ test("box management has its own top-level tab and exposes no console action", a
   const h = await harness();
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
   assert.match(header, /<nav/);
-  for (const page of ["applications", "space", "boxes", "credits"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  for (const page of ["applications", "space", "boxes"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  assert.doesNotMatch(header, /data-action="show-credits"/);
   assert.match(header, />空间<\/button>/);
   assert.match(header, />盒子<\/button>/);
   assert.ok(!header.includes('data-action="show-settings"'));
@@ -588,10 +589,10 @@ test("discovery shows loading and retry states without bundled application cards
 });
 
 test("unlisted official apps stay installed but do not reappear in discovery after uninstall or restart", async () => {
-  const dialogue = { applicationId: "centaurai.wanx.dialogue", name: "众见", version: "0.3.3" };
+  const dialogue = { applicationId: "centaurai.wanx.superadvisors", name: "个人议事厅", version: "0.3.3" };
   const options = { list: async () => ({ items: [] }), candidate: async () => ({ status: "unavailable", reason: "application_unlisted" }) };
   const h = await harness(state(), [dialogue], options);
-  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
+  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.superadvisors"/);
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
   await h.click("market-uninstall", { applicationId: dialogue.applicationId });
   await h.click("market-confirm");
@@ -599,8 +600,8 @@ test("unlisted official apps stay installed but do not reappear in discovery aft
   assert.doesNotMatch(h.app.innerHTML, /class="application-card" data-application=/);
   assert.match(h.app.innerHTML, /暂无已上架应用/);
   await h.click("store-details", { applicationId: dialogue.applicationId });
-  assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.dialogue"/);
-  assert.match(h.app.innerHTML, /dialogue-product-v1.png/);
+  assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.superadvisors"/);
+  assert.match(h.app.innerHTML, /council-product-v1.png/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"|data-action="applications-launch"/);
   await h.click("market-install", { applicationId: dialogue.applicationId });
   assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
@@ -2509,6 +2510,7 @@ test("wallet entry reads the versioned account ledger through real IPC without a
     calls: async () => envelope({ items: [], next_cursor: null }),
     summary: async () => envelope({ gross_consumed_credit_atoms: "0", correction_credit_atoms: "0", net_consumed_credit_atoms: "0", pending_call_count: 0, ledger_sequence: 1 }),
   } });
+  await h.click("profile-menu");
   assert.match(h.app.innerHTML, /1,250 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
@@ -2548,23 +2550,25 @@ test("box maintenance opens the current box terminal and desktop through trusted
   h.update({ account: { phase: "signed_out" } });
   assert.doesNotMatch(h.app.innerHTML, /aria-label="盒子运维工具"/);
 });
-test("avatar menu owns profile and settings; credits is a primary tab", async () => {
+test("avatar menu and personal profile own credits outside the primary tabs", async () => {
   const initial = state();
   initial.account = { ...initial.account, maskedPhone: "138****8000", profile: { displayName: '<小万>', avatarDataUrl: null } };
   const h = await harness(initial);
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
-  assert.match(header, /data-action="show-credits"/);
+  assert.doesNotMatch(header, /data-action="show-credits"/);
   assert.doesNotMatch(header, /data-action="show-settings"/);
   await h.click("profile-menu");
   assert.match(h.app.innerHTML, /&lt;小万&gt;/);
   assert.match(h.app.innerHTML, /138\*\*\*\*8000/);
   assert.match(h.app.innerHTML, /data-action="show-settings"/);
+  assert.match(h.app.innerHTML, /data-action="show-credits"/);
   h.keydown("Escape");
   assert.doesNotMatch(h.app.innerHTML, /id="profile-menu"/);
   await h.click("profile-menu"); await h.click("show-profile");
   assert.match(h.app.innerHTML, /data-form="profile"/);
   assert.match(h.app.innerHTML, /仅保存在这台电脑/);
   assert.match(h.app.innerHTML, /data-action="profile-avatar"/);
+  assert.match(h.app.innerHTML, /data-action="show-credits"/);
   const form = h.form("profile"); form.values.displayName = "正在编辑";
   h.update({ ...initial, phase: "connecting" });
   assert.equal(h.form("profile"), form);
@@ -2657,9 +2661,15 @@ test("catalog product pages have bundled icons, product posters and a safe back 
     assert.ok(h.app.innerHTML.includes(`data-application-detail="${applicationId}"`));
     assert.ok(h.app.innerHTML.includes(info.introduction));
     assert.doesNotMatch(h.app.innerHTML, /assets\/screenshots\/|界面预览|界面截图/);
-    assert.match(h.app.innerHTML, /data-action="applications-launch"/);
-    assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
-    assert.match(h.app.innerHTML, /恢复上一版本/);
+    if (applicationId === "centaurai.wanx.dialogue") {
+      assert.match(h.app.innerHTML, /data-action="show-ai-dialogue"/);
+      assert.match(h.app.innerHTML, /客户端内置/);
+      assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"|data-action="market-uninstall"/);
+    } else {
+      assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+      assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
+      assert.match(h.app.innerHTML, /恢复上一版本/);
+    }
     assert.match(h.app.innerHTML, /aria-current="page"[^>]*>应用/);
     assert.match(h.app.innerHTML, /data-action="poster-open"/);
     await h.click("poster-open", { posterIndex: "0" });
@@ -2896,4 +2906,19 @@ test("pending network cleanup explains server recovery instead of blaming the lo
   assert.match(h.app.innerHTML, /网络会话清理中/);
   assert.match(h.app.innerHTML, /完成后将自动重连/);
   assert.doesNotMatch(h.app.innerHTML, /请检查本机网络后重试连接/);
+});
+
+test('AI dialogue is a standard tab beside applications and the browser remains independent', async () => {
+  const h = await harness();
+  const nav = h.app.innerHTML.match(/<nav class="main-nav"[\s\S]*?<\/nav>/)[0];
+  assert.deepEqual([...nav.matchAll(/data-action="show-([a-z-]+)"/g)].map(match => match[1]), ['applications', 'ai-dialogue', 'space', 'boxes']);
+  assert.doesNotMatch(h.app.innerHTML, /browser-host|show-browser/);
+  await h.click('show-ai-dialogue');
+  assert.match(h.app.innerHTML, /id="ai-dialogue-host"/);
+  assert.equal(h.launches.length, 0);
+  await h.click('show-settings');
+  assert.match(h.app.innerHTML, /AI 对话模型/);
+  await h.click('show-dialogue-models');
+  assert.match(h.app.innerHTML, /id="dialogue-model-settings-host"/);
+  assert.equal(h.launches.length, 0);
 });
