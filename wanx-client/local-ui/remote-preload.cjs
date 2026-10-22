@@ -74,6 +74,7 @@ async function rawState() {
 }
 
 const actions = {
+  "wallet.quote": input => walletRequest("quote", input),
   "wallet.catalog": () => walletRequest("catalog"),
   "wallet.balance": () => walletRequest("balance"),
   "wallet.wallet": () => walletRequest("wallet"),
@@ -191,6 +192,7 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     getLocalState,
     getRememberedLogin: () => ipcRenderer.invoke("wanx-client:remembered-login-get"),
+    recordPaymentTiming: (input) => ipcRenderer.invoke("wanx-client:credit-payment-timing", input),
     action,
     async uploadDroppedFiles(files, input = {}) {
       try {

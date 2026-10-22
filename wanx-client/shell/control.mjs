@@ -1,4 +1,4 @@
-import { formatCreditAtoms } from "../account/credit-wallet.mjs";
+import { displayCreditAtoms, validateCreditWallet } from "../account/credit-wallet.mjs";
 
 import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
@@ -73,6 +73,7 @@ export function registerControlActions({
   showAbout,
   quit,
   allowDevelopmentInstall = false,
+  timings = null,
 }) {
   const panelActions = new Set([
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
@@ -80,7 +81,7 @@ export function registerControlActions({
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
-  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize", "credit-payment-timing"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -189,8 +190,8 @@ export function registerControlActions({
     if (creditWallet) {
       const summary = (await creditWallet.balance()).data;
       const wallet = summary.billing_backend === "qeetoken" ? (await creditWallet.wallet()).data : summary;
-      const formatted = wallet.balance_credit_atoms == null ? null : formatCreditAtoms(wallet.balance_credit_atoms);
-      return { available_text: formatted ? (formatted.direction === "debt" && formatted.text === "<0.01" ? "-<0.01" : formatted.text) : null,
+      if (summary.billing_backend === "qeetoken") validateCreditWallet(wallet, client.snapshot().account.accountId);
+      return { available_text: wallet.balance_credit_atoms == null ? null : displayCreditAtoms(wallet.balance_credit_atoms),
         sync_state: wallet.sync_state || "synced" };
     }
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
@@ -203,7 +204,7 @@ export function registerControlActions({
       return credits[method](input);
     }));
   }
-  for (const method of ["catalog", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+  for (const method of ["catalog", "quote", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
     if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
     register(`wallet-${method}`, async input => {
       try {
@@ -223,6 +224,7 @@ export function registerControlActions({
       }
     });
   }
+  register("credit-payment-timing", input => timings?.creditPayment(input));
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {
       if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");

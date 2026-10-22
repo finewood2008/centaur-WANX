@@ -23,6 +23,7 @@ const errorCodes = new Set([
   "network_disabled", "netbird_peer_disconnected", "netbird_peer_unknown",
 ]);
 const phases = new Set(["idle", "disabled", "checking", "enrolling", "authorizing", "ready", "recovering", "unavailable", "auth_required"]);
+const paymentStages = new Set(["confirm", "qr", "close"]);
 const safeCode = code => errorCodes.has(code) ? code : "UNKNOWN_ERROR";
 
 // Bounded local diagnostics never serialize request/response data or error objects.
@@ -95,6 +96,14 @@ export function createTimingRecorder({
       if (previousStates.get(component) === key) return;
       previousStates.set(component, key);
       record(`${component}.state`, "changed", undefined, state);
+    },
+    creditPayment(value = {}) {
+      if (!paymentStages.has(value.stage) || !Number.isFinite(value.durationMs) || value.durationMs < 0) return;
+      const details = {};
+      if (typeof value.qrReady === "boolean") details.qrReady = value.qrReady;
+      if (typeof value.ready === "boolean") details.qrReady = value.ready;
+      record(`credit.payment.${value.stage}`, value.outcome === "failed" ? "failed" : "completed",
+        Math.round(value.durationMs), details);
     },
     async run(step, operation) {
       const start = performance.now();

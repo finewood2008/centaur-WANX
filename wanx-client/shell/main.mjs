@@ -503,6 +503,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
       registerControlActions({
+        timings,
         spaceLinks,
         personalSpace,
         superClipboard,

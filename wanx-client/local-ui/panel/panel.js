@@ -116,7 +116,7 @@
   function renderBalance() {
     const points = balance == null ? "—" : escape(balance.toLocaleString("zh-CN"));
     const label = !signedIn() ? "登录后查看" : balancePhase === "loading" ? "正在读取…" : balancePhase === "error" ? "暂不可用" : balancePhase === "stale" ? "上次同步余额" : balancePhase === "pending" ? "余额同步中" : "查看消耗明细";
-    return `<button class="balance-card" data-page="${signedIn() ? "credits" : "applications"}" aria-label="${signedIn() ? "积分，" + (balance == null ? label : points + "点，查看消耗明细") : "登录查看积分"}" ${balancePhase === "loading" ? 'aria-busy="true"' : ""}><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">${points}<small>点</small></span><span class="card-caption">${label}<span aria-hidden="true">↗</span></span></button>`;
+    return `<button class="balance-card" data-page="${signedIn() ? "credits" : "applications"}" aria-label="${signedIn() ? "积分，" + (balance == null ? label : points + "点，查看消耗明细") : "登录查看积分"}" ${balancePhase === "loading" ? 'aria-busy="true"' : ""}><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">${points}${typeof balance === 'string' && balance.includes('积分') ? '' : '<small>点</small>'}</span><span class="card-caption">${label}<span aria-hidden="true">↗</span></span></button>`;
   }
   const sameSpace = () => space.scope && space.accountId === state.account?.accountId && space.boxId === state.connection?.deviceId;
   function dropProblem() {
@@ -206,14 +206,16 @@
     const request = Promise.resolve().then(() => api.getBalance()).then(value => {
       if (generation !== sessionGeneration) return;
       if (Object.hasOwn(value || {}, "available_text")) {
-        if (!["synced", "pending", "stale"].includes(value.sync_state) || (value.available_text !== null && (typeof value.available_text !== "string" || !/^-?(?:<0\.01|[0-9,]+\.[0-9]{2})$/.test(value.available_text)))) throw new Error("invalid_balance");
-        balance = value.available_text; balancePhase = value.sync_state === "synced" ? "ready" : value.sync_state; return;
+        if (!["synced", "pending", "stale"].includes(value.sync_state) || (value.available_text !== null && (typeof value.available_text !== "string" || !/^(?:-?[0-9,]+\.[0-9]{2}|(?:余额|欠费)不足 0\.01 积分)$/.test(value.available_text)))) throw new Error("invalid_balance");
+        if (value.available_text !== null) balance = value.available_text;
+        balancePhase = value.sync_state === "synced" ? "ready" : balance !== null ? "stale" : value.sync_state; return;
       }
       if (!Number.isSafeInteger(value?.available) || value.available < 0) throw new Error("invalid_balance");
       balance = value.available; balancePhase = "ready";
     }).catch(() => {
       if (generation !== sessionGeneration) return;
-      balance = null; balancePhase = "error";
+      if (typeof balance === "string") balancePhase = "stale";
+      else { balance = null; balancePhase = "error"; }
     }).finally(() => {
       if (generation !== sessionGeneration || balanceRequest !== request) return;
       balanceRequest = null; render();

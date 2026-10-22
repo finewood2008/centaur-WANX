@@ -218,7 +218,7 @@ async function harness(initial = state(), installed = [application], options = {
     discoveryTest.after(() => window.wanxDeviceSetupTransport.dispose());
   }
   vm.runInNewContext(source, {
-    window, setInterval() {},
+    window, setInterval() {}, clearInterval() {},
     Date, crypto: globalThis.crypto,
     setTimeout, clearTimeout, TextEncoder, queueMicrotask,
     document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },

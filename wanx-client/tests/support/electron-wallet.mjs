@@ -151,17 +151,23 @@ try {
     await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
     button('credits-pay').click(); button('credits-pay')?.click();
     await until(() => document.body.textContent.includes('正在生成付款码'));
-    product('product-200').click();
+    check(!product('product-200'), 'product choices leaked into payment');
     check(createCount === 1, 'duplicate product selection created another purchase');
     check(activeOrder.payment_channel === 'wechat', 'selected channel did not reach order');
-    check(document.querySelector('[data-action="credits-channel"][data-channel="alipay"]').disabled, 'pending channel was not locked');
+    check(!document.querySelector('[data-action="credits-channel"]'), 'channel choices leaked into payment');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     check(!dialog() && document.activeElement === button('credits-open'), 'Escape did not restore purchase entry focus');
     check(!requests.some(row => row.action === 'wallet.closeOrder'), 'dismiss unexpectedly cancelled payment');
     button('credits-open').click(); resolveCreate();
     await until(() => !!document.querySelector('.wallet-qr'));
     check(dialog().textContent.includes('微信扫码'), 'Native payment label missing');
-    check(product('product-1').getAttribute('aria-pressed') === 'true' && product('product-200').disabled, 'active product not locked');
+    check(!product('product-1') && dialog().dataset.step === 'payment', 'payment was not isolated');
+    check(!!document.querySelector('[data-wallet-deadline]'), 'payment countdown missing');
+    const countdown = document.querySelector('[data-wallet-deadline]');
+    const beforeCountdown = countdown.textContent;
+    await new Promise(resolve => realTimeout(resolve, 1100));
+    check(countdown.textContent !== beforeCountdown, 'countdown did not tick');
+    check(dialog().scrollTop === 0, 'payment step retained selection scroll');
     const stableDialog = dialog(), stableQR = document.querySelector('.wallet-qr');
     const balanceReads = requests.filter(row => row.action === 'wallet.balance').length;
     walletPoll();
@@ -192,10 +198,10 @@ try {
     activeOrder = { ...activeOrder, payment_state: 'paid', fulfillment_state: 'pending', display_state: 'paid_pending', payment_action: null };
     walletPoll();
     await until(() => document.body.textContent.includes('支付成功，积分到账中'));
-    check(!document.querySelector('.wallet-qr') && product('product-200').disabled, 'paid purchase remained payable');
+    check(!document.querySelector('.wallet-qr') && !product('product-200'), 'paid purchase remained payable');
     activeOrder = { ...activeOrder, fulfillment_state: 'credited', display_state: 'credited' };
     walletPoll();
-    await until(() => document.body.textContent.includes('积分已到账') && !product('product-100').disabled);
+    await until(() => document.body.textContent.includes('积分已到账') && !!button('credits-result-confirm'));
     check(document.querySelector('.credits-total').textContent.includes('0.20'), 'credited balance did not refresh');
     button('credits-dismiss').click();
     check(!dialog() && document.activeElement === button('credits-open'), 'complete did not close dialog');
@@ -206,9 +212,11 @@ try {
     await until(() => !!document.querySelector('.wallet-qr'));
     button('credits-close-order').click();
     await until(() => document.body.textContent.includes('关闭确认中'));
-    check(!document.querySelector('.wallet-qr') && product('product-200').disabled, 'close-pending purchase allowed a replacement');
+    check(!document.querySelector('.wallet-qr') && !product('product-200'), 'close-pending purchase allowed a replacement');
     activeOrder = { ...activeOrder, payment_state: 'closed', display_state: 'closed' }; walletPoll();
-    await until(() => !product('product-200').disabled);
+    await until(() => !!button('credits-result-confirm'));
+    check(dialog().dataset.step === 'result' && !product('product-200'), 'cancellation result not isolated');
+    button('credits-result-confirm').click();
     product('product-200').click();
     check(createCount === 2, 'choosing after cancellation submitted payment');
     await until(() => !!button('credits-pay') && !button('credits-pay').disabled);
@@ -236,7 +244,9 @@ try {
     check(dialog().textContent.includes('1,234') && dialog().textContent.includes('微信扫码'), 'custom payment summary missing');
     window.releaseOnClose = true;
     button('credits-close-order').click();
-    await until(() => !product('product-100').disabled);
+    await until(() => !!button('credits-result-confirm'));
+    check(dialog().textContent.includes('取消请求已受理') && !dialog().textContent.includes('订单已取消'), 'release was falsely shown as confirmed channel closure');
+    button('credits-result-confirm').click();
     check(!document.querySelector('.wallet-qr') && !dialog().textContent.includes('关闭确认中'), 'accepted cancellation kept the old payment locked');
     check(cancelledOrder.payment_state === 'close_pending', 'cancellation must not pretend the channel has closed');
     const previousIntent = cancelledOrder.purchase_intent_id;
@@ -272,6 +282,11 @@ try {
     await js('new Promise(resolve => realTimeout(resolve, 50))');
     await js(`check(document.querySelector('.wallet-usage-scroll').getBoundingClientRect().right <= innerWidth, 'usage table overflows screen')`);
     await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'qeetoken-wallet-narrow.png'), (await window.webContents.capturePage()).toPNG());
+  }
+  if (process.env.WALLET_SCREENSHOT_DIR) {
+    window.setSize(1280, 900);
+    await js(`(async () => { button('credits-open').click(); activeOrder = { ...activeOrder, payment_state: 'closed', display_state: 'closed', payment_action: null }; walletPoll(); await until(() => dialog()?.dataset.step === 'result'); })()`);
+    await writeFile(join(process.env.WALLET_SCREENSHOT_DIR, 'purchase-cancelled.png'), (await window.webContents.capturePage()).toPNG());
   }
   console.log('WALLET_ELECTRON_PASS');
 } catch (error) {

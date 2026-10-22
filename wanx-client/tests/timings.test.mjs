@@ -104,3 +104,17 @@ test('transfer diagnostics retain correlation and retry evidence without paths o
   assert.equal(rows.length, 2); assert.equal(rows[0].taskId, 'a'.repeat(32)); assert.equal(rows[0].errorCode, 'ECONNRESET');
   assert.equal(rows[1].durationMs, 180); assert.equal(rows[1].errorCode, 'UNKNOWN_ERROR');
 });
+
+test('payment diagnostics retain only safe stage timing and QR readiness', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wanx-payment-timings-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'connection.jsonl'), recorder = createTimingRecorder({ filePath });
+  recorder.creditPayment({ stage: 'confirm', durationMs: 42, outcome: 'completed', qrReady: true, payload: 'secret' });
+  recorder.creditPayment({ stage: 'qr', durationMs: 7, ready: true, payload: 'secret' });
+  recorder.creditPayment({ stage: 'unknown', durationMs: 9, payload: 'secret' });
+  await recorder.flush();
+  const rows = (await readFile(filePath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map(row => row.step), ['credit.payment.confirm', 'credit.payment.qr']);
+  assert.equal(rows[0].durationMs, 42); assert.equal(rows[0].qrReady, true);
+  assert.doesNotMatch(JSON.stringify(rows), /secret|payload/);
+});

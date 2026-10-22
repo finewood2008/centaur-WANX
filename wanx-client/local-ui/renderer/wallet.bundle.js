@@ -2108,6 +2108,7 @@
 
   // account/credit-wallet.mjs
   var MAX_ATOMS = 9223372036854775807n;
+  var object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   var fail = (code, status = 422) => Object.assign(new Error(code), { code, status });
   var invalid = () => fail("CREDITS_INVALID_RESPONSE", 502);
   function creditAtoms(value) {
@@ -2115,6 +2116,16 @@
     const amount = BigInt(value);
     if (amount < -MAX_ATOMS || amount > MAX_ATOMS) throw invalid();
     return amount;
+  }
+  function orderGrantCreditAtoms(order) {
+    const display = order.credit_display;
+    if (display === null) return null;
+    if (display === void 0) {
+      if (creditAtoms(order.grant_credit_atoms) <= 0n) throw invalid();
+      return order.grant_credit_atoms;
+    }
+    if (!object(display) || !["usd-credit-1-v1", "usd-credit-100-v2"].includes(display.currency_rule_id) || display.credit_scale !== 6 || creditAtoms(display.grant_credit_atoms) <= 0n) throw invalid();
+    return display.grant_credit_atoms;
   }
   function formatCreditAtoms(value) {
     const amount = creditAtoms(value);
@@ -2126,6 +2137,21 @@
     const cents = (magnitude + 5000n) / 10000n;
     const whole = (cents / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
     return { text: `${sign}${whole}.${String(cents % 100n).padStart(2, "0")}`, direction, exact };
+  }
+  function displayCreditAtoms(value, context = "balance") {
+    const formatted = formatCreditAtoms(value);
+    if (formatted.text !== "<0.01") return formatted.text;
+    return `${formatted.direction === "debt" ? "\u6B20\u8D39" : context === "consumption" ? "\u6D88\u8017" : "\u4F59\u989D"}\u4E0D\u8DB3 0.01 \u79EF\u5206`;
+  }
+  function validateCreditWallet(value, accountId) {
+    if (!object(value) || value.view_version !== "2" || value.currency_rule_id !== "usd-credit-100-v2" || value.credit_scale !== 6 || typeof value.account_id !== "string" || accountId && value.account_id !== accountId || !["pending", "stale", "synced"].includes(value.sync_state) || !Number.isSafeInteger(value.pending_executions) || value.pending_executions < 0 || creditAtoms(value.remote_sequence) < 0n) throw invalid();
+    for (const field of ["balance_credit_atoms", "spent_credit_atoms", "correction_credit_atoms", "net_spent_credit_atoms"]) {
+      if (value.sync_state === "pending") {
+        if (value[field] !== null) throw invalid();
+      } else creditAtoms(value[field]);
+    }
+    if (value.sync_state !== "pending" && (!Number.isFinite(Date.parse(value.synced_at)) || creditAtoms(value.spent_credit_atoms) < 0n || creditAtoms(value.correction_credit_atoms) < 0n || creditAtoms(value.spent_credit_atoms) - creditAtoms(value.correction_credit_atoms) !== creditAtoms(value.net_spent_credit_atoms))) throw invalid();
+    return value;
   }
 
   // local-ui/renderer/wallet-view.mjs
@@ -2139,14 +2165,17 @@
     now = () => Date.now(),
     schedule = (fn, ms) => setTimeout(fn, ms),
     cancel = (timer) => clearTimeout(timer),
-    qr
+    qr,
+    onTiming = () => {
+    },
+    monotonic = () => globalThis.performance?.now?.() ?? now()
   }) {
     let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
     let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
     let error = "", intent = null, qrImage = null, recoveryReady = false, recovering = false;
-    let checkingOrder = false, orderReadFailed = false, customAmount = "";
+    let checkingOrder = false, orderReadFailed = false, customAmount = "", customText = "", customQuote = null;
     let backgroundLoading = false, recoveryTask = null, confirmingPurchase = false;
-    let cancellationAccepted = false;
+    let cancellationAccepted = false, cancellationClosed = false;
     let selectedChannel = "alipay", remote = null, usage = [], nextUsage = null, usageLoading = false;
     const channels = () => catalog?.payment_channels?.filter((name) => ["alipay", "wechat"].includes(name)) ?? ["alipay"];
     const key = () => `wanx.credit.purchase.v1:${account}`;
@@ -2155,16 +2184,19 @@
       return response.data;
     };
     const read = async (name, input) => data(await request(`wallet.${name}`, input));
-    const amount = (value) => {
-      const formatted = formatCreditAtoms(value);
-      return `${formatted.direction === "debt" && formatted.text === "<0.01" ? "-" : ""}${formatted.text}`;
-    };
+    const amount = (value) => displayCreditAtoms(value);
     const exactPoints = (value) => {
       const [whole, fraction] = formatCreditAtoms(value).exact.split(".");
       const tail = fraction.replace(/0+$/, "");
       return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (tail ? `.${tail}` : "");
     };
     const notify = () => changed();
+    const timing = (stage, started, details = {}) => {
+      try {
+        onTiming({ stage, durationMs: Math.max(0, Math.round(monotonic() - started)), ...details });
+      } catch {
+      }
+    };
     const visibleLoading = () => loading && !backgroundLoading;
     const visibleRecovery = () => recovering && !backgroundLoading;
     function message(cause, fallback = "\u6682\u65F6\u65E0\u6CD5\u8FDE\u63A5\u79EF\u5206\u670D\u52A1\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002") {
@@ -2176,6 +2208,7 @@
         QEETOKEN_SYNC_PENDING: "\u6D88\u8D39\u6D41\u6C34\u6B63\u5728\u540C\u6B65\uFF0C\u8BF7\u7A0D\u5019\u3002",
         CREDITS_SERVICE_UNAVAILABLE: "\u79EF\u5206\u63A5\u53E3\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u68C0\u67E5\u670D\u52A1\u90E8\u7F72\u3002",
         REVISION_CONFLICT: "\u5546\u54C1\u5DF2\u8C03\u6574\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u65B0\u9009\u62E9\u3002",
+        UNSUPPORTED_SCHEMA: "\u79EF\u5206\u8D2D\u4E70\u89C4\u5219\u5DF2\u66F4\u65B0\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u5546\u54C1\u6216\u83B7\u53D6\u62A5\u4EF7\u3002",
         VALIDATION_ERROR: "\u8D2D\u4E70\u91D1\u989D\u6216\u5546\u54C1\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u3002",
         ORDER_IN_PROGRESS: "\u8D26\u53F7\u5DF2\u6709\u8D2D\u4E70\u6D41\u7A0B\uFF0C\u6B63\u5728\u6062\u590D\u539F\u8BA2\u5355\u3002",
         ORDER_ALREADY_PAID: "\u8BA2\u5355\u5DF2\u652F\u4ED8\uFF0C\u8BF7\u7B49\u5F85\u5230\u8D26\u3002",
@@ -2198,13 +2231,13 @@
     function load() {
       try {
         const value = JSON.parse(storage.getItem(key()) || "null");
-        if (value && typeof value.purchase_intent_id === "string" && (typeof value.order_id === "string" && typeof value.close_intent_id === "string" || typeof value.product_id === "string" && typeof value.product_version === "string" || Number.isSafeInteger(value.custom_amount_fen) && value.custom_amount_fen > 0 && typeof value.custom_recharge_version === "string" || [5e3, 1e4, 2e4].includes(value.amount_fen))) return value;
+        if (value && typeof value.purchase_intent_id === "string" && (typeof value.order_id === "string" && typeof value.close_intent_id === "string" || typeof value.product_id === "string" && typeof value.product_version === "string" || value.currency_rule_id === "usd-credit-100-v2" && Number.isSafeInteger(value.amount_fen) && value.amount_fen >= 1e3 && value.amount_fen <= 1e5 && value.amount_fen % 100 === 0 || Number.isSafeInteger(value.custom_amount_fen) && value.custom_amount_fen > 0 && typeof value.custom_recharge_version === "string" || [5e3, 1e4, 2e4].includes(value.amount_fen))) return value;
       } catch {
       }
       return null;
     }
     function discardRejectedIntent(cause) {
-      if (intent && !intent.order_id && !pendingOrder(order) && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR"].includes(cause?.code || cause?.message)) save(null);
+      if (intent && !intent.order_id && !pendingOrder(order) && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR", "UNSUPPORTED_SCHEMA"].includes(cause?.code || cause?.message)) save(null);
     }
     async function acceptOrder(value, g) {
       if (g !== generation) return;
@@ -2217,16 +2250,29 @@
         if (intent) save(null);
         order = null;
         cancellationAccepted = true;
+        cancellationClosed = value.payment_state === "closed";
         return;
       }
+      cancellationAccepted = cancellationClosed = false;
       if (value.payment_channel) selectedChannel = value.payment_channel;
+      const grant = orderGrantCreditAtoms(value);
       if (intent) {
-        if (["credited", "closed"].includes(value.display_state)) save(null);
+        if (value.display_state === "closed" || value.display_state === "credited" && grant !== null) save(null);
         else save({ ...intent, order_id: value.order_id });
       }
       const action = value.payment_action;
       if (!intent?.close_intent_id && action?.type === "qr" && value.payment_state === "pending" && now() < Date.parse(value.expires_at) && now() < Date.parse(action.expires_at) && qr) {
-        const image = cachedImage || await qr(action.payload);
+        let image = cachedImage;
+        if (!image) {
+          const qrStarted = monotonic();
+          let outcome = "failed";
+          try {
+            image = await qr(action.payload);
+            outcome = "completed";
+          } finally {
+            timing("qr", qrStarted, { outcome, ready: Boolean(image) });
+          }
+        }
         if (g === generation && order === value) {
           qrImage = image;
           const remaining = Math.min(Date.parse(value.expires_at), Date.parse(action.expires_at)) - now();
@@ -2291,6 +2337,7 @@
         value = intent.order_id ? await read("order", { order_id: intent.order_id }) : await read("createOrder", {
           purchase_intent_id: intent.purchase_intent_id,
           ...intent.custom_recharge_version ? { custom_amount_fen: intent.custom_amount_fen, custom_recharge_version: intent.custom_recharge_version } : intent.product_id ? { product_id: intent.product_id, product_version: intent.product_version } : { amount_fen: intent.amount_fen },
+          ...intent.currency_rule_id ? { currency_rule_id: intent.currency_rule_id } : {},
           ...intent.payment_channel ? { payment_channel: intent.payment_channel } : {}
         });
       } else if (pendingOrder(order)) {
@@ -2346,10 +2393,17 @@
         if (!Number.isSafeInteger(b.ledger_sequence) || b.ledger_sequence < 0) throw new Error("CREDITS_INVALID_RESPONSE");
         let q = null, u = null;
         if (b.billing_backend === "qeetoken") {
-          [q, u] = await Promise.all([read("wallet"), read("usage", { limit: 20 })]);
+          u = await read("usage", { limit: 20 });
           if (g !== generation) return;
-          validateWallet(q);
+          q = await read("wallet");
+          if (g !== generation) return;
           validateUsage(u);
+          if (q.view_version === "2") validateCreditWallet(q, account);
+          else validateWalletLegacy(q);
+          if (q.view_version === "2" && q.sync_state !== "pending" && BigInt(u.remote_sequence) > BigInt(q.remote_sequence)) {
+            q = { ...q, sync_state: "stale" };
+            u = null;
+          }
         }
         if (!remote || !q || BigInt(q.remote_sequence) >= BigInt(remote.remote_sequence)) {
           remote = q;
@@ -2372,7 +2426,7 @@
         }
       }
     }
-    function validateWallet(q) {
+    function validateWalletLegacy(q) {
       if (q.account_id !== account || q.currency_rule_id !== "usd-credit-1-v1" || q.currency !== "USD" || q.currency_scale !== 8 || q.credit_scale !== 6 || q.usd_per_credit !== "1" || !["pending", "stale", "synced"].includes(q.sync_state) || !Number.isSafeInteger(q.pending_executions) || q.pending_executions < 0 || typeof q.remote_sequence !== "string" || !/^(0|[1-9][0-9]*)$/.test(q.remote_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
       if (q.sync_state === "pending") {
         if (q.balance_credit_atoms !== null || q.balance_usd_atoms !== null) throw new Error("CREDITS_INVALID_RESPONSE");
@@ -2384,18 +2438,24 @@
       }
     }
     function validateUsage(value) {
-      if (!Array.isArray(value.items) || value.items.length > 100 || value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+      if (value.view_version === void 0) {
+        if (!Array.isArray(value.items) || value.items.length > 100 || value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+        for (const item of value.items) {
+          creditAtoms(item.debit_usd_atoms);
+          creditAtoms(item.debit_credit_atoms);
+          if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+        }
+        return;
+      }
+      if (value.view_version !== "2" || value.account_id !== account || value.currency_rule_id !== "usd-credit-100-v2" || value.credit_scale !== 6 || typeof value.remote_sequence !== "string" || !/^(0|[1-9][0-9]*)$/.test(value.remote_sequence) || !Array.isArray(value.items) || value.items.length > 100 || value.next_before_sequence !== null && !/^[1-9][0-9]*$/.test(value.next_before_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+      let previous = BigInt(value.remote_sequence) + 1n;
       for (const item of value.items) {
-        creditAtoms(item.debit_usd_atoms);
         creditAtoms(item.debit_credit_atoms);
-        if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence)) throw new Error("CREDITS_INVALID_RESPONSE");
+        if (!Number.isFinite(Date.parse(item.occurred_at)) || !/^[1-9][0-9]*$/.test(item.account_sequence) || BigInt(item.account_sequence) >= previous || typeof item.device_id !== "string" || typeof item.model !== "string") throw new Error("CREDITS_INVALID_RESPONSE");
+        previous = BigInt(item.account_sequence);
       }
     }
     const displayedBalance = () => remote ? remote.balance_credit_atoms : balance?.billing_backend === "qeetoken" ? null : balance?.balance_credit_atoms;
-    const usd = (value) => {
-      const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
-      return `${atoms < 0n ? "-" : ""}${magnitude / 100000000n}.${String(magnitude % 100000000n).padStart(8, "0")}`;
-    };
     const date = (value) => new Intl.DateTimeFormat("zh-CN", { timeZone: catalog?.timezone || "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(value));
     async function loadUsage() {
       if (!identity || usageLoading || !nextUsage) return;
@@ -2418,6 +2478,20 @@
     }
     function remoteView() {
       if (!remote) return "";
+      if (remote.currency_rule_id === "usd-credit-1-v1") return legacyRemoteView();
+      const state = remote.sync_state === "pending" ? "\u4F59\u989D\u521D\u59CB\u5316\u4E2D" : remote.sync_state === "stale" || error ? "\u663E\u793A\u4E0A\u6B21\u540C\u6B65\u4F59\u989D" : "\u4F59\u989D\u5DF2\u540C\u6B65";
+      return `<section aria-label="\u4F59\u989D\u540C\u6B65\u72B6\u6001"><p>${esc(state)}${remote.synced_at ? ` \xB7 ${esc(date(remote.synced_at))}` : ""}</p>
+      ${registrationView()}
+      ${typeof remote.spent_credit_atoms === "string" ? `<p class="muted">\u7D2F\u8BA1\u6D88\u8017 ${esc(displayCreditAtoms(remote.spent_credit_atoms, "consumption"))} \xB7 \u5DF2\u7EA0\u6B63 ${esc(displayCreditAtoms(remote.correction_credit_atoms))} \xB7 \u51C0\u6D88\u8017 ${esc(displayCreditAtoms(remote.net_spent_credit_atoms, "consumption"))}</p>` : ""}
+      ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} \u7B14\u8C03\u7528\u6B63\u5728\u7ED3\u7B97\u6216\u6838\u5BF9\uFF0C\u6700\u7EC8\u6D88\u8017\u4EE5\u7ED3\u7B97\u7ED3\u679C\u4E3A\u51C6\u3002</p>` : ""}</section>
+      <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, "consumption"))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
+      ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? "disabled" : ""}>\u67E5\u770B\u66F4\u591A</button>` : ""}</section>`;
+    }
+    const usd = (value) => {
+      const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
+      return `${atoms < 0n ? "-" : ""}${magnitude / 100000000n}.${String(magnitude % 100000000n).padStart(8, "0")}`;
+    };
+    function legacyRemoteView() {
       const state = remote.sync_state === "pending" ? "\u4F59\u989D\u521D\u59CB\u5316\u4E2D" : remote.sync_state === "stale" || error ? "\u663E\u793A\u4E0A\u6B21\u540C\u6B65\u4F59\u989D" : "\u4F59\u989D\u5DF2\u540C\u6B65";
       return `<section aria-label="\u4F59\u989D\u540C\u6B65\u72B6\u6001"><p>${esc(state)}${remote.synced_at ? ` \xB7 ${esc(date(remote.synced_at))}` : ""}</p>
       <p class="muted">1 USD = 1 \u79EF\u5206${remote.balance_usd_atoms !== null ? ` \xB7 \u4F59\u989D $${esc(usd(remote.balance_usd_atoms))} \xB7 \u7D2F\u8BA1\u6D88\u8017 $${esc(usd(remote.spent_usd_atoms))}` : ""}</p>
@@ -2425,10 +2499,29 @@
       <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u8F93\u5165 / \u8F93\u51FA tokens</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td title="\u8D26\u672C\u53D8\u52A8 ${esc(exactPoints(item.debit_credit_atoms))} \u79EF\u5206">${esc(usd(item.debit_usd_atoms))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? "disabled" : ""}>\u67E5\u770B\u66F4\u591A</button>` : ""}</section>`;
     }
+    function registrationView() {
+      const grant = remote?.registration_grant;
+      if (!grant) return "";
+      const labels = {
+        queued: "\u6CE8\u518C\u8D60\u9001\u5F85\u5230\u8D26",
+        running: "\u6CE8\u518C\u8D60\u9001\u5904\u7406\u4E2D",
+        retry_wait: "\u6CE8\u518C\u8D60\u9001\u6B63\u5728\u91CD\u8BD5",
+        review_required: "\u6CE8\u518C\u8D60\u9001\u5F85\u6838\u5BF9",
+        credited: "\u6CE8\u518C\u8D60\u9001\u5DF2\u5230\u8D26",
+        historical_received: "\u5386\u53F2\u6CE8\u518C\u8D60\u9001\u5DF2\u9886\u53D6",
+        waiting_migration: "\u6CE8\u518C\u8D60\u9001\u8D44\u683C\u5DF2\u6838\u5B9E\uFF0C\u7B49\u5F85\u5904\u7406"
+      };
+      return `<p role="status">${esc(labels[grant.state] || grant.state)}${grant.credit_display ? ` \xB7 ${esc(amount(grant.credit_display.grant_credit_atoms))} \u65B0\u79EF\u5206` : ""}</p>`;
+    }
     const products = () => catalog?.products?.length ? catalog.products : catalog?.tiers || [];
     const productKey = (product) => product.product_id || String(product.amount_fen);
     const locked = () => writing || confirmingPurchase || Boolean(pendingOrder(order) || intent);
     const customRule = () => {
+      const v2 = catalog?.custom_amount;
+      if (v2 === true) return { enabled: true, version: "usd-credit-100-v2", min_amount_fen: 1e3, max_amount_fen: 1e5, points_per_yuan: "100" };
+      if (v2 && typeof v2 === "object" && Number.isSafeInteger(v2.min_fen) && Number.isSafeInteger(v2.max_fen) && Number.isSafeInteger(v2.step_fen) && v2.min_fen >= 1e3 && v2.max_fen >= v2.min_fen && v2.step_fen > 0) {
+        return { enabled: true, version: "usd-credit-100-v2", min_amount_fen: v2.min_fen, max_amount_fen: v2.max_fen, step_fen: v2.step_fen, points_per_yuan: "100" };
+      }
       const rule = catalog?.custom_recharge;
       return rule?.enabled && rule.points_per_yuan === "100" && typeof rule.version === "string" && Number.isSafeInteger(rule.min_amount_fen) && rule.min_amount_fen >= 1 && Number.isSafeInteger(rule.max_amount_fen) && rule.max_amount_fen >= rule.min_amount_fen && rule.max_amount_fen <= 1e10 ? rule : null;
     };
@@ -2438,8 +2531,40 @@
       const fen = Number(BigInt(match[1]) * 100n + BigInt((match[2] || "").padEnd(2, "0")));
       return fen >= rule.min_amount_fen && fen <= rule.max_amount_fen ? fen : null;
     };
+    async function quoteCustom(value) {
+      const rule = customRule();
+      if (!identity || locked() || visibleLoading() || !catalog?.recharge_enabled || !rule || catalog?.currency_rule_id !== "usd-credit-100-v2") return;
+      customText = String(value);
+      customAmount = customText;
+      customQuote = null;
+      selectedAmount = "custom";
+      error = "";
+      const amountFen = Number(customText) * 100;
+      if (!/^[1-9][0-9]{1,3}$/.test(customText) || amountFen < rule.min_amount_fen || amountFen > rule.max_amount_fen || amountFen % rule.step_fen !== 0) {
+        error = message({ code: "VALIDATION_ERROR" });
+        notify();
+        return;
+      }
+      const g = generation, requested = amountFen;
+      writing = true;
+      notify();
+      try {
+        const value2 = await read("quote", { amount_fen: requested });
+        if (g !== generation || value2.view_version !== "2" || value2.currency_rule_id !== "usd-credit-100-v2" || typeof value2.rule_id !== "string" || value2.credit_scale !== 6 || value2.amount_fen !== requested || creditAtoms(value2.grant_credit_atoms) <= 0n) throw new Error("CREDITS_INVALID_RESPONSE");
+        customQuote = value2;
+      } catch (cause) {
+        if (g === generation) error = message(cause);
+      } finally {
+        if (g === generation) {
+          writing = false;
+          notify();
+        }
+      }
+    }
     const draft = () => {
       if (selectedAmount === "custom") {
+        if (customQuote) return { ...customQuote, target: { amount_fen: customQuote.amount_fen, currency_rule_id: "usd-credit-100-v2" } };
+        if (catalog?.currency_rule_id === "usd-credit-100-v2") return null;
         const fen = customFen();
         return fen === null ? null : {
           amount_fen: fen,
@@ -2448,12 +2573,13 @@
         };
       }
       const product = products().find((item) => productKey(item) === selectedAmount && item.enabled !== false);
-      return product ? { ...product, target: product.product_id ? { product_id: product.product_id, product_version: product.version } : { amount_fen: product.amount_fen } } : null;
+      return product ? { ...product, target: product.product_id ? { product_id: product.product_id, product_version: product.version, ...catalog.currency_rule_id ? { currency_rule_id: catalog.currency_rule_id } : {} } : { amount_fen: product.amount_fen, ...catalog.currency_rule_id ? { currency_rule_id: catalog.currency_rule_id } : {} } } : null;
     };
     function select(value) {
       if (locked()) return;
       selectedAmount = value;
       order = null;
+      cancellationAccepted = cancellationClosed = false;
       error = "";
       dialogOpen = true;
       notify();
@@ -2467,6 +2593,8 @@
       order = null;
       cancellationAccepted = false;
       notify();
+      const confirmStarted = monotonic();
+      let outcome = "failed";
       try {
         if (!intent) save({
           purchase_intent_id: uuid(),
@@ -2474,10 +2602,11 @@
           ...catalog.payment_channels ? { payment_channel: channel } : {}
         });
         await recover(g);
+        outcome = "completed";
       } catch (cause) {
         if (g !== generation) return;
         error = message(cause);
-        if (!order && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR"].includes(cause?.code || cause?.message)) {
+        if (!order && ["REVISION_CONFLICT", "CONTRACT_NOT_CONFIGURED", "VALIDATION_ERROR", "UNSUPPORTED_SCHEMA"].includes(cause?.code || cause?.message)) {
           discardRejectedIntent(cause);
           try {
             const value = await read("catalog");
@@ -2495,6 +2624,7 @@
         }
       } finally {
         if (g === generation) {
+          timing("confirm", confirmStarted, { outcome, qrReady: Boolean(paymentImage()) });
           writing = false;
           notify();
           poll();
@@ -2508,6 +2638,8 @@
       error = "";
       qrImage = null;
       notify();
+      const closeStarted = monotonic();
+      let outcome = "failed";
       try {
         const value = {
           ...intent || { purchase_intent_id: order.purchase_intent_id, amount_fen: order.amount_fen },
@@ -2516,10 +2648,12 @@
         };
         save(value);
         await recover(g);
+        outcome = "completed";
       } catch (cause) {
         if (g === generation) error = message(cause);
       } finally {
         if (g === generation) {
+          timing("close", closeStarted, { outcome });
           writing = false;
           notify();
           poll();
@@ -2527,23 +2661,32 @@
       }
     }
     const paymentImage = () => qrImage && order && !intent?.close_intent_id && order.payment_state === "pending" && now() < Date.parse(order.expires_at) && now() < Date.parse(order.payment_action?.expires_at) ? qrImage : null;
+    const checkoutStep = () => {
+      if (order?.review_state === "open" || order?.display_state === "credited" && orderGrantCreditAtoms(order) === null) return "payment";
+      return cancellationAccepted || ["credited", "closed"].includes(order?.display_state) ? "result" : order || intent || confirmingPurchase ? "payment" : "selection";
+    };
     function paymentView() {
       const state = order?.display_state;
       const expired = order && (now() >= Date.parse(order.expires_at) || order.payment_action && now() >= Date.parse(order.payment_action.expires_at));
       const selection = draft();
-      let title = selection ? "\u786E\u8BA4\u8D2D\u4E70" : "\u9009\u62E9\u5145\u503C\u91D1\u989D", description = selection ? `\u5E94\u4ED8 \xA5${selection.amount_fen / 100} \xB7 \u5230\u8D26 ${exactPoints(selection.grant_credit_atoms)} \u70B9\u79EF\u5206` : "\u9009\u62E9\u5546\u54C1\u6216\u8F93\u5165\u81EA\u5B9A\u4E49\u91D1\u989D\uFF0C\u518D\u70B9\u51FB\u201C\u7ACB\u5373\u652F\u4ED8\u201D\u751F\u6210\u4ED8\u6B3E\u7801\u3002", success = false;
-      if (order?.review_state === "open") {
+      const grant = order ? orderGrantCreditAtoms(order) : selection?.grant_credit_atoms;
+      const grantText = grant == null ? "" : order?.credit_display === void 0 ? exactPoints(grant) : amount(grant);
+      let title = selection ? "\u786E\u8BA4\u8D2D\u4E70" : "\u9009\u62E9\u5145\u503C\u91D1\u989D", description = selection ? `\u5E94\u4ED8 \xA5${selection.amount_fen / 100} \xB7 \u5230\u8D26 ${exactPoints(selection.grant_credit_atoms)} \u70B9\u79EF\u5206` : "\u9009\u62E9\u5546\u54C1\u6216\u8F93\u5165\u81EA\u5B9A\u4E49\u91D1\u989D\uFF0C\u9009\u62E9\u652F\u4ED8\u65B9\u5F0F\u540E\u786E\u8BA4\u8D2D\u4E70\u3002", success = false;
+      if (cancellationAccepted) {
+        title = cancellationClosed ? "\u8BA2\u5355\u5DF2\u53D6\u6D88" : "\u53D6\u6D88\u8BF7\u6C42\u5DF2\u53D7\u7406";
+        description = cancellationClosed ? "\u60A8\u5DF2\u53D6\u6D88\u672C\u6B21\u652F\u4ED8\uFF0C\u53EF\u91CD\u65B0\u9009\u62E9\u5145\u503C\u5546\u54C1\u3002" : "\u8BF7\u52FF\u7EE7\u7EED\u652F\u4ED8\u539F\u4ED8\u6B3E\u7801\uFF1B\u5982\u5DF2\u4ED8\u6B3E\uFF0C\u6211\u4EEC\u4F1A\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002";
+      } else if (order?.review_state === "open") {
         title = "\u652F\u4ED8\u7ED3\u679C\u5F85\u6838\u5BF9";
         description = `${order.payment_state === "paid" ? "\u5DF2\u652F\u4ED8\u3002" : "\u4ED8\u6B3E\u7ED3\u679C\u5C1A\u5F85\u6838\u5B9E\u3002"}${order.fulfillment_state === "credited" ? "\u79EF\u5206\u5DF2\u5230\u8D26\u3002" : "\u79EF\u5206\u5230\u8D26\u60C5\u51B5\u6B63\u5728\u6838\u5BF9\u3002"}\u8BF7\u52FF\u91CD\u590D\u652F\u4ED8\u3002`;
       } else if (state === "credited") {
         title = "\u79EF\u5206\u5DF2\u5230\u8D26";
-        description = `${amount(order.grant_credit_atoms)} \u70B9\u79EF\u5206\u5DF2\u8BB0\u5165\u5F53\u524D\u8D26\u53F7\u3002`;
-        success = true;
+        description = grant === null ? "\u5230\u8D26\u79EF\u5206\u5F85\u6838\u5BF9\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0\u3002" : `${grantText} \u70B9\u79EF\u5206\u5DF2\u8BB0\u5165\u5F53\u524D\u8D26\u53F7\u3002`;
+        success = grant !== null;
       } else if (order?.payment_state === "paid") {
         title = "\u652F\u4ED8\u6210\u529F\uFF0C\u79EF\u5206\u5230\u8D26\u4E2D";
         description = "\u6B63\u5728\u66F4\u65B0\u79EF\u5206\u4F59\u989D\uFF0C\u8BF7\u52FF\u91CD\u590D\u652F\u4ED8\u3002\u5173\u95ED\u5F39\u6846\u540E\u4ECD\u4F1A\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002";
       } else if (state === "closed") {
-        title = "\u672C\u6B21\u8D2D\u4E70\u5DF2\u5173\u95ED";
+        title = "\u8BA2\u5355\u5DF2\u53D6\u6D88";
         description = "\u53EF\u4EE5\u91CD\u65B0\u9009\u62E9\u79EF\u5206\u5546\u54C1\uFF0C\u751F\u6210\u65B0\u7684\u4ED8\u6B3E\u7801\u3002";
       } else if (intent?.close_intent_id || order?.payment_state === "close_pending") {
         title = "\u5173\u95ED\u786E\u8BA4\u4E2D";
@@ -2551,10 +2694,13 @@
       } else if (expired) {
         title = "\u4ED8\u6B3E\u7801\u5DF2\u5230\u671F";
         description = "\u6B63\u5728\u786E\u8BA4\u652F\u4ED8\u6216\u5173\u95ED\u7ED3\u679C\uFF0C\u786E\u8BA4\u524D\u8BF7\u52FF\u91CD\u590D\u8D2D\u4E70\u3002";
+      } else if (order && grant === null) {
+        title = "\u5230\u8D26\u79EF\u5206\u5F85\u6838\u5BF9";
+        description = "\u672C\u6B21\u8D2D\u4E70\u7684\u79EF\u5206\u6570\u989D\u6B63\u5728\u6838\u5BF9\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0\u6216\u53D6\u6D88\u672C\u6B21\u8D2D\u4E70\u3002";
       } else if (paymentImage()) {
         const wechat = order.payment_action.payload.startsWith("weixin://");
         title = wechat ? "\u5FAE\u4FE1\u626B\u7801\u652F\u4ED8" : "\u652F\u4ED8\u5B9D\u626B\u7801\u652F\u4ED8";
-        description = `\u5E94\u4ED8 \xA5${order.amount_fen / 100} \xB7 \u5230\u8D26 ${exactPoints(order.grant_credit_atoms)} \u70B9\u79EF\u5206`;
+        description = `\u5E94\u4ED8 \xA5${order.amount_fen / 100} \xB7 \u5230\u8D26 ${grantText} \u70B9\u79EF\u5206`;
       } else if (confirmingPurchase) {
         title = "\u6B63\u5728\u786E\u8BA4\u8D2D\u4E70";
         description = "\u6B63\u5728\u786E\u8BA4\u5F53\u524D\u8BA2\u5355\u72B6\u6001\uFF0C\u8BF7\u7A0D\u5019\u3002";
@@ -2571,35 +2717,49 @@
         title = visibleLoading() ? "\u6B63\u5728\u8BFB\u53D6\u5546\u54C1" : "\u8D2D\u4E70\u6682\u4E0D\u53EF\u7528";
         description = visibleLoading() ? "\u8BF7\u7A0D\u5019\u3002" : "\u79EF\u5206\u8D2D\u4E70\u6682\u672A\u5F00\u653E\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5\u3002";
       }
-      return `<section class="wallet-payment ${success ? "is-success" : ""}" aria-label="\u652F\u4ED8\u8FDB\u5EA6">
-      ${paymentImage() ? `<img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}">` : order || intent || writing ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : state === "closed" || expired ? "\u2014" : "\xB7"}</div>` : ""}
-      <div role="status" aria-live="polite"><h3>${esc(title)}</h3><p>${esc(description)}</p></div>
-      ${cancellationAccepted ? '<p class="wallet-payment-footnote" role="status">\u53D6\u6D88\u8BF7\u6C42\u5DF2\u53D7\u7406\uFF0C\u53EF\u91CD\u65B0\u9009\u62E9\u3002\u8BF7\u52FF\u7EE7\u7EED\u652F\u4ED8\u539F\u4ED8\u6B3E\u7801\uFF1B\u5982\u5DF2\u4ED8\u6B3E\uFF0C\u5C06\u7EE7\u7EED\u786E\u8BA4\u5230\u8D26\u3002</p>' : ""}
+      const step = checkoutStep(), payable = paymentImage();
+      const deadline = payable ? Math.min(Date.parse(order.expires_at), Date.parse(order.payment_action.expires_at)) : null;
+      const seconds = deadline === null ? 0 : Math.max(0, Math.ceil((deadline - now()) / 1e3));
+      const countdown = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+      const cancelled = cancellationAccepted || state === "closed";
+      return `<section class="wallet-payment ${success ? "is-success" : ""} ${step === "selection" ? "is-selection" : ""}" aria-label="\u652F\u4ED8\u8FDB\u5EA6">
+      ${step === "selection" && catalog?.recharge_enabled && (products().length || customRule()) ? "" : `<div class="wallet-payment-status" role="status" aria-live="polite">${!payable && step !== "selection" ? `<div class="wallet-payment-mark" aria-hidden="true">${success ? "\u2713" : cancelled ? "\xD7" : "\u2026"}</div>` : ""}<h3>${esc(title)}</h3><p>${esc(description)}</p></div>`}
+      ${payable ? `<div class="wallet-qr-frame" data-channel="${selectedChannel}"><img class="wallet-qr" alt="\u79EF\u5206\u652F\u4ED8\u4E8C\u7EF4\u7801" src="${esc(qrImage)}"></div>
+        <p class="wallet-scan-hint">\u8BF7\u4F7F\u7528\u624B\u673A${selectedChannel === "wechat" ? "\u5FAE\u4FE1" : "\u652F\u4ED8\u5B9D"}\u626B\u7801\u5B8C\u6210\u652F\u4ED8</p>
+        <div class="wallet-payment-clock"><span>\u5269\u4F59\u652F\u4ED8\u65F6\u95F4</span><strong data-wallet-deadline="${deadline}" role="timer" aria-live="off">${countdown}</strong><span>\u7B49\u5F85\u652F\u4ED8\uFF0C\u4ED8\u6B3E\u540E\u81EA\u52A8\u66F4\u65B0</span></div>` : ""}
       ${error ? `<p class="notice" role="alert">${esc(error)}</p>` : ""}
+      ${step === "selection" ? `<div class="wallet-checkout-total"><span>\u5E94\u4ED8\u91D1\u989D<strong>${selection ? `\xA5${selection.amount_fen / 100}` : "\u2014"}</strong></span><span>${selection ? `\u5230\u8D26 ${esc(exactPoints(selection.grant_credit_atoms))} \u79EF\u5206` : "\u8BF7\u9009\u62E9\u5546\u54C1\u6216\u83B7\u53D6\u81EA\u5B9A\u4E49\u62A5\u4EF7"}</span></div>` : ""}
       <div class="wallet-payment-actions">
-        ${!locked() && !order ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? "disabled" : ""}>\u7ACB\u5373\u652F\u4ED8</button>` : ""}
-        ${(order || intent || error) && (!success || error) ? `<button class="text-button" data-action="credits-refresh" ${visibleLoading() || writing || checkingOrder ? "disabled" : ""}>${visibleLoading() ? "\u6B63\u5728\u786E\u8BA4\u2026" : "\u5237\u65B0\u652F\u4ED8\u72B6\u6001"}</button>` : ""}
-        ${order && ["creating", "pending"].includes(order.payment_state) && !intent?.close_intent_id ? `<button class="text-button" data-action="credits-close-order" ${visibleRecovery() || checkingOrder || writing ? "disabled" : ""}>\u53D6\u6D88\u5E76\u91CD\u65B0\u9009\u62E9</button>` : ""}
-        ${success ? '<button class="button primary" data-action="credits-dismiss">\u5B8C\u6210</button>' : ""}
+        ${step === "selection" ? `<button class="button primary wallet-pay" data-action="credits-pay" ${!selection || locked() || !catalog?.recharge_enabled || !recoveryReady || visibleRecovery() || checkingOrder || !channels().includes(selectedChannel) ? "disabled" : ""}>\u786E\u8BA4\u8D2D\u4E70</button>` : ""}
+        ${step === "payment" && (order || intent || error) || error ? `<button class="text-button" data-action="credits-refresh" ${visibleLoading() || writing || checkingOrder ? "disabled" : ""}>${visibleLoading() ? "\u6B63\u5728\u786E\u8BA4\u2026" : "\u5237\u65B0\u652F\u4ED8\u72B6\u6001"}</button>` : ""}
+        ${step === "payment" && order && ["creating", "pending"].includes(order.payment_state) && !intent?.close_intent_id ? `<button class="button wallet-cancel" data-action="credits-close-order" ${visibleRecovery() || checkingOrder || writing ? "disabled" : ""}>\u53D6\u6D88\u8BA2\u5355</button>` : ""}
+        ${step === "result" ? `<button class="button primary" data-action="credits-result-confirm">${success ? "\u5B8C\u6210" : "\u786E\u8BA4"}</button>` : ""}
       </div>
-      ${pendingOrder(order) || intent ? '<p class="wallet-payment-footnote">\u6536\u8D77\u5F39\u6846\u4E0D\u4F1A\u53D6\u6D88\u652F\u4ED8\uFF0C\u6211\u4EEC\u4F1A\u7EE7\u7EED\u786E\u8BA4\u7ED3\u679C\u3002</p>' : ""}
+      ${pendingOrder(order) || intent ? '<p class="wallet-payment-footnote">\u5173\u95ED\u7A97\u53E3\u540E\u4ECD\u53EF\u7EE7\u7EED\u67E5\u770B\u652F\u4ED8\u7ED3\u679C</p>' : ""}
     </section>`;
     }
     function dialog() {
       if (!dialogOpen) return "";
-      const selected = pendingOrder(order) ? intent?.custom_recharge_version ? "custom" : intent?.product_id || String(order.amount_fen) : selectedAmount;
+      const step = checkoutStep();
+      const selected = pendingOrder(order) ? intent?.custom_recharge_version || intent?.currency_rule_id && !intent?.product_id ? "custom" : intent?.product_id || String(order.amount_fen) : selectedAmount;
       const rule = customRule();
       const invalidAmount = selectedAmount === "custom" && customAmount !== "" && customFen() === null;
-      return `<div class="wallet-modal"><section class="wallet-purchase-dialog" role="dialog" aria-modal="true" aria-labelledby="wallet-purchase-title" tabindex="-1">
-      <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">\u8D2D\u4E70\u79EF\u5206</h2><p>\u9009\u62E9\u91D1\u989D\u548C\u652F\u4ED8\u65B9\u5F0F\uFF0C\u786E\u8BA4\u540E\u751F\u6210\u4ED8\u6B3E\u7801 \xB7 \u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="\u5173\u95ED\u8D2D\u4E70\u5F39\u6846">\xD7</button></header>
-      <div class="wallet-payment-actions wallet-channel-picker" aria-label="\u652F\u4ED8\u65B9\u5F0F">${channels().map((channel) => `<button class="button ${selectedChannel === channel ? "primary" : ""}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? "disabled" : ""}>${channel === "wechat" ? "\u5FAE\u4FE1\u652F\u4ED8" : "\u652F\u4ED8\u5B9D"}</button>`).join("")}</div>
+      return `<div class="wallet-modal"><section class="wallet-purchase-dialog" data-step="${step}" role="dialog" aria-modal="true" aria-labelledby="wallet-purchase-title" tabindex="-1">
+      <header class="wallet-purchase-heading"><div><h2 id="wallet-purchase-title">${step === "selection" ? "\u8D2D\u4E70\u79EF\u5206" : step === "payment" ? "\u8BA2\u5355\u652F\u4ED8" : "\u8BA2\u5355\u7ED3\u679C"}</h2><p>${step === "selection" ? "\u9009\u62E9\u5145\u503C\u91D1\u989D\u4E0E\u652F\u4ED8\u65B9\u5F0F\uFF0C\u5145\u503C\u79EF\u5206\u957F\u671F\u6709\u6548" : step === "payment" ? "\u8BF7\u6838\u5BF9\u91D1\u989D\u540E\u626B\u7801\u652F\u4ED8" : "\u672C\u6B21\u8D2D\u4E70\u7684\u5904\u7406\u7ED3\u679C"}</p></div><button class="wallet-dialog-close" data-action="credits-dismiss" aria-label="\u5173\u95ED\u8D2D\u4E70\u5F39\u6846">\xD7</button></header>
+      ${step === "selection" ? `
       <div class="wallet-products" aria-label="\u79EF\u5206\u5546\u54C1">${products().map((tier) => `<button class="wallet-product" data-action="credits-buy" data-amount="${esc(productKey(tier))}" aria-pressed="${selected === productKey(tier)}" ${!catalog?.recharge_enabled || tier.enabled === false || locked() ? "disabled" : ""}>
         ${tier.name ? `<span>${esc(tier.name)}</span>` : ""}<span class="wallet-product-points">${esc(exactPoints(tier.grant_credit_atoms))}<small>\u70B9\u79EF\u5206</small></span><strong>\xA5${tier.amount_fen / 100}</strong><span class="wallet-product-selection">${selected === productKey(tier) ? "\u5DF2\u9009\u62E9" : "\u9009\u62E9\u5546\u54C1"}</span></button>`).join("")}</div>
-      <div class="wallet-custom" data-selected="${selected === "custom"}">
+      ${catalog?.custom_amount ? `<div class="wallet-custom" data-selected="${selected === "custom"}">
+        <label for="wallet-custom-amount">\u81EA\u5B9A\u4E49\u91D1\u989D\uFF0810\uFF5E1000 \u6574\u6570\u5143\uFF09</label>
+        <input id="wallet-custom-amount" data-wallet-input="custom-amount" inputmode="numeric" autocomplete="off" maxlength="4" value="${esc(customText)}" ${locked() ? "disabled" : ""}>
+        <button class="button" data-action="credits-quote" ${!catalog.recharge_enabled || locked() ? "disabled" : ""}>\u83B7\u53D6\u62A5\u4EF7</button>
+        ${customQuote ? `<p>\u652F\u4ED8 \xA5${customQuote.amount_fen / 100} \xB7 \u5230\u8D26 ${esc(amount(customQuote.grant_credit_atoms))} \u79EF\u5206</p><button class="button" data-action="credits-custom-buy" aria-pressed="${selected === "custom"}" ${locked() ? "disabled" : ""}>${selected === "custom" ? "\u5DF2\u9009\u62E9\u81EA\u5B9A\u4E49\u91D1\u989D" : "\u9009\u62E9\u6B64\u91D1\u989D"}</button>` : ""}
+      </div>` : `<div class="wallet-custom" data-selected="${selected === "custom"}">
         <button class="text-button" data-action="credits-custom" aria-pressed="${selected === "custom"}" ${!catalog?.recharge_enabled || !rule || locked() ? "disabled" : ""}>\u81EA\u5B9A\u4E49\u91D1\u989D</button>
         <label for="wallet-custom-amount">\xA5 <input id="wallet-custom-amount" type="text" inputmode="decimal" autocomplete="off" maxlength="12" placeholder="\u8F93\u5165\u91D1\u989D\uFF08\u5143\uFF09" aria-label="\u81EA\u5B9A\u4E49\u5145\u503C\u91D1\u989D\uFF08\u5143\uFF09" aria-describedby="wallet-custom-hint" aria-invalid="${invalidAmount}" value="${esc(customAmount)}" ${!catalog?.recharge_enabled || !rule || locked() ? "disabled" : ""}></label>
         <p id="wallet-custom-hint" ${invalidAmount ? 'role="status"' : ""}>${!rule ? "\u81EA\u5B9A\u4E49\u5145\u503C\u6682\u4E0D\u53EF\u7528" : invalidAmount ? `\u8BF7\u8F93\u5165 \xA5${rule.min_amount_fen / 100} \u81F3 \xA5${rule.max_amount_fen / 100} \u7684\u91D1\u989D\uFF0C\u6700\u591A\u4E24\u4F4D\u5C0F\u6570\u3002` : `1 \u5143\u5151\u6362 100 \u79EF\u5206${selectedAmount === "custom" && customFen() !== null ? ` \xB7 \u53EF\u5F97 ${exactPoints((BigInt(customFen()) * 1000000n).toString())} \u70B9\u79EF\u5206` : ""}`}</p>
-      </div>
+      </div>`}
+      <div class="wallet-channel-section"><h3>\u652F\u4ED8\u65B9\u5F0F</h3>      <div class="wallet-payment-actions wallet-channel-picker" aria-label="\u652F\u4ED8\u65B9\u5F0F">${channels().map((channel) => `<button class="button ${selectedChannel === channel ? "primary" : ""}" data-action="credits-channel" data-channel="${channel}" aria-pressed="${selectedChannel === channel}" ${locked() ? "disabled" : ""}>${channel === "wechat" ? "\u5FAE\u4FE1\u652F\u4ED8" : "\u652F\u4ED8\u5B9D"}</button>`).join("")}</div></div>` : ""}
       ${paymentView()}
     </section></div>`;
     }
@@ -2620,7 +2780,9 @@
         error = "";
         timer = null;
         customAmount = "";
-        backgroundLoading = confirmingPurchase = cancellationAccepted = false;
+        customText = "";
+        customQuote = null;
+        backgroundLoading = confirmingPurchase = cancellationAccepted = cancellationClosed = false;
         recoveryTask = null;
         selectedChannel = "alipay";
         intent = account ? load() : null;
@@ -2629,12 +2791,16 @@
           selectedAmount = "custom";
           customAmount = String(intent.custom_amount_fen / 100);
         }
+        if (intent?.currency_rule_id && !intent?.product_id) {
+          selectedAmount = "custom";
+          customText = String(intent.amount_fen / 100);
+        }
         return true;
       },
       refresh,
       paymentImage,
       isOpen: () => dialogOpen,
-      label: () => displayedBalance() != null ? `${amount(displayedBalance())} \u70B9` : visibleLoading() ? "\u8BFB\u53D6\u4E2D\u2026" : "\u6682\u4E0D\u53EF\u7528",
+      label: () => displayedBalance() != null ? `${remote?.currency_rule_id === "usd-credit-1-v1" ? formatCreditAtoms(displayedBalance()).text : amount(displayedBalance())} \u70B9` : visibleLoading() ? "\u8BFB\u53D6\u4E2D\u2026" : "\u6682\u4E0D\u53EF\u7528",
       async action(action, dataset = {}) {
         if (action === "credits-open") {
           dialogOpen = true;
@@ -2643,6 +2809,17 @@
         }
         if (action === "credits-dismiss") {
           dialogOpen = false;
+          if (checkoutStep() === "result" && !pendingOrder(order)) {
+            order = null;
+            cancellationAccepted = cancellationClosed = false;
+          }
+          notify();
+          return;
+        }
+        if (action === "credits-result-confirm" && checkoutStep() === "result" && !pendingOrder(order)) {
+          order = null;
+          cancellationAccepted = cancellationClosed = false;
+          error = "";
           notify();
           return;
         }
@@ -2657,10 +2834,22 @@
         }
         if (action === "credits-buy" && products().some((item) => productKey(item) === String(dataset.amount) && item.enabled !== false)) return select(String(dataset.amount));
         if (action === "credits-custom" && customRule()) return select("custom");
+        if (action === "credits-custom-change") {
+          if (!locked()) {
+            customText = String(dataset.amount ?? dataset.value);
+            customAmount = customText;
+            customQuote = null;
+            notify();
+          }
+          return;
+        }
+        if (action === "credits-quote") return quoteCustom(dataset.amount ?? customText);
+        if (action === "credits-custom-buy" && customQuote) return select("custom");
         if (action === "credits-amount" && customRule() && !locked()) {
           customAmount = String(dataset.value).slice(0, 12);
           return select("custom");
         }
+        if (action === "credits-confirm") action = "credits-pay";
         if (action === "credits-pay" || action === "credits-close-order") {
           const g = generation;
           if (action === "credits-pay" && backgroundLoading && recoveryTask) {
@@ -2689,7 +2878,7 @@
         return `<div class="page-content credits-page" ${dialogOpen ? "inert" : ""}>
         <div class="page-heading"><div><h2>\u8D26\u53F7\u79EF\u5206</h2><p class="muted">\u67E5\u770B\u8D26\u53F7\u4F59\u989D\uFF0C\u8D2D\u4E70\u7684\u79EF\u5206\u957F\u671F\u6709\u6548\u3002</p></div></div>
         ${error && !dialogOpen ? `<div class="notice" role="status">${esc(error)}${balance ? " \u5F53\u524D\u663E\u793A\u4E0A\u6B21\u8BFB\u53D6\u7684\u4F59\u989D\u3002" : ""}</div>` : ""}
-        <section class="credits-overview"><div><p class="eyebrow">\u79EF\u5206\u4F59\u989D</p><div class="credits-total">${displayedBalance() != null ? esc(remote ? exactPoints(displayedBalance()) : amount(displayedBalance())) : "\u2014"}<span>\u70B9</span></div>
+        <section class="credits-overview"><div><p class="eyebrow">\u79EF\u5206\u4F59\u989D</p><div class="credits-total">${displayedBalance() != null ? esc(remote?.currency_rule_id === "usd-credit-1-v1" ? exactPoints(displayedBalance()) : amount(displayedBalance())) : "\u2014"}<span>\u70B9</span></div>
         <p class="muted">\u79EF\u5206\u5F52\u5F53\u524D\u4E07\u8C61\u8D26\u53F7\u6240\u6709\uFF0C\u8DE8\u8BBE\u5907\u5171\u4EAB\u3002</p></div>
         <div class="credits-recharge"><button class="button primary" data-action="credits-open">\u8D2D\u4E70\u79EF\u5206</button>${pendingOrder(order) || intent ? "<p>\u6709\u4E00\u7B14\u8D2D\u4E70\u6B63\u5728\u5904\u7406\u4E2D\uFF0C\u70B9\u51FB\u7EE7\u7EED\u67E5\u770B\u3002</p>" : ""}</div></section>
         ${remoteView()}
