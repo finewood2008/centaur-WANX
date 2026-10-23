@@ -35,7 +35,7 @@ export function preflight() {
     throw new Error("GO_1_26_WINDOWS_AMD64_REQUIRED");
   for (const name of ["installer.nsh", "installer-ui.nsh", "windows-install-acl.ps1", "windows-private-acl.ps1", "electron-builder-win-x64.json", "verify-unsigned.ps1", "entry.mjs"])
     if (!existsSync(path.join(root, "shell", name))) throw new Error(`PACKAGE_INPUT_MISSING:${name}`);
-  for (const name of ["resources/icon.ico", "local-ui/renderer/index.html", "local-ui/renderer/device-setup.bundle.js", "local-ui/panel/index.html", "local-ui/panel/panel.js", "local-ui/panel-preload.cjs", "shell/provisioning-trust.json"])
+  for (const name of ["resources/icon.ico", "local-ui/renderer/index.html", "local-ui/panel/index.html", "local-ui/panel/panel.js", "local-ui/panel-preload.cjs", "shell/provisioning-trust.json"])
     if (!existsSync(path.join(root, name))) throw new Error(`PACKAGE_INPUT_MISSING:${name}`);
   for (const name of ["header", "sidebar", "feature-1", "feature-2", "feature-3", "overview"])
     if (!existsSync(path.join(root, "resources", "installer", `${name}.bmp`)))

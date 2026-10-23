@@ -161,7 +161,7 @@ async function main() {
     config: {
       extends: path.join(root, "shell", "electron-builder-win-x64.json"),
       appId: "ai.centuarai.wanx.client",
-      productName: "万象",
+      productName: "万象个人版",
       extraMetadata: { wanxBuild: { schemaVersion: 1, buildId: `${stamp}-${input.sourceCommit.slice(0, 12)}`,
         sourceCommit: input.sourceCommit, channel: "internal", securityEpoch: 0, distributionClass: "unsigned-internal-only" } },
       electronVersion: input.electron,
@@ -191,7 +191,7 @@ async function main() {
         requestedExecutionLevel: "asInvoker",
         extraResources: [],
         target: [{ target: "nsis", arch: ["x64"] }],
-        artifactName: "WANX-UNSIGNED-${version}-win-${arch}.${ext}",
+        artifactName: "WanX-Mini-UNSIGNED-${version}-win-${arch}.${ext}",
       },
       nsis: {
         include: path.join(root, "shell", "installer.nsh"),
@@ -263,7 +263,7 @@ async function main() {
       await delay(5000 * attempt);
     }
   }
-  const filename = `WANX-UNSIGNED-${input.version}-win-x64.exe`;
+  const filename = `WanX-Mini-UNSIGNED-${input.version}-win-x64.exe`;
   const installer = artifacts.find((candidate) => path.basename(candidate) === filename);
   if (!installer || !existsSync(installer)) throw new Error("INSTALLER_MISSING");
   for (const file of [installer, path.join(output, "win-unpacked", "WANX.exe")])
