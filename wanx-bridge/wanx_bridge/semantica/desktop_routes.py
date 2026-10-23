@@ -95,6 +95,7 @@ def create_desktop_router(
     octop_url: str,
     client: httpx.AsyncClient,
     authorize: Callable,
+    forward: Callable,
     watch: Callable,
     assert_live: Callable,
 ) -> APIRouter:
@@ -113,6 +114,25 @@ def create_desktop_router(
     )
     async def desktop(request: Request, path: str = "") -> Response:
         session = await authorize(request)
+        if request.headers.get("x-wanx-data-context", "personal") != "personal":
+            # Core owns team administrator checks and stores issued warehouse keys
+            # for Builder. Do not turn a team request into a personal grant here.
+            try:
+                resolve(request.method, "/" + path)
+            except DesktopError as exc:
+                return JSONResponse(
+                    {"code": exc.code, "message": exc.message},
+                    status_code=exc.status,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return await forward(
+                request,
+                path="/api/semantica" + ("/" + path if path else ""),
+                target_origin=octop_url,
+                session=session,
+                token=field(session, "upstream_token"),
+                guard_resources=False,
+            )
         drained = asyncio.Event()
 
         async def execute():

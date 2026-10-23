@@ -22,6 +22,10 @@ window.createTeamDataView=({request,changed})=>{
     if(c==='TEAM_DATA_KEY_REVOKED')return '此 Key 已撤销或到期，无法继续复制或查看。';
     if(c==='TEAM_DATA_SHARE_INVALID')return '请填写用途名称，并选择 1 至 365 天的有效期。';
     if(c==='TEAM_CLIPBOARD_UNAVAILABLE')return '系统剪贴板暂不可用，请稍后重试。';
+    if(c==='SEMANTICA_SERVICE_AUTH_FAILED')return '盒子与星图服务的接入鉴权失败，请管理员检查服务凭据及团队接入版本。';
+    if(c==='SEMANTICA_RESOURCE_FORBIDDEN')return '星图服务拒绝访问当前团队数据，请管理员检查团队数据权限与接入配置。';
+    if(c==='SEMANTICA_RESOURCE_NOT_FOUND')return '星图服务未找到所请求的资源，请刷新重试；如持续出现，请管理员检查盒端接入版本。';
+    if(c==='SEMANTICA_INVALID_REQUEST')return '星图服务未接受当前请求，请管理员检查团队客户端与盒端接入版本是否兼容。';
     return ({SEMANTICA_NOT_CONFIGURED:'当前盒子尚未配置星图服务。',SEMANTICA_SERVICE_UNAVAILABLE:'星图服务暂时不可用，请检查盒子服务后重试。',SEMANTICA_UPGRADE_REQUIRED:'当前盒子需要升级星图接入。',TEAM_STARLINK_NOT_INSTALLED:'尚未安装星图，请到“应用”中安装星图后重试。',APPLICATION_INSTALL_FAILED:'星图安装未完成，请检查应用目录权限后重试。',TEAM_STARLINK_PACKAGE_INVALID:'内置星图安装文件不完整，请重新安装团队客户端。',TEAM_STARLINK_UPGRADE_REQUIRED:'当前星图不支持数据仓定位，请更新星图。',TEAM_STARLINK_OPEN_TIMEOUT:'星图未确认打开目标页面，请检查星图中的连接状态后重试。',TEAM_ADMIN_REQUIRED:'管理员权限已失效，请重新核验团队身份。',SEMANTICA_ADMIN_REQUIRED:'当前账号没有团队数据管理权限。',HOST_SESSION_EXPIRED:'账号或盒子连接已变化，请重新打开数据页。',TEAM_SESSION_CHANGED:'账号或盒子连接已变化，请重新操作。',SPACE_UPGRADE_REQUIRED:'当前盒子不支持空间读取，请升级服务或从本地导入。',SPACE_REMOTE_FILE_CHANGED:'所选空间文件已变化，请重新选择。',MODEL_CLOUD_CONFIRMATION_REQUIRED:'请先在星图的“模型与处理”中确认在线模型使用范围。',WAREHOUSE_BUSY:'数据仓正在迁移或清理，请等待操作完成。'}[c]||'操作未完成，请检查连接、处理任务或星图配置后重试。');
   };
   const call=(action,input={})=>request('data.'+action,input);
@@ -36,7 +40,7 @@ window.createTeamDataView=({request,changed})=>{
     if(next!==scope){reset();scope=next}
   }
   async function refresh(){
-    if(!scope||loading)return;clearTimeout(refreshTimer);const version=epoch;loading=true;error='';changed();
+    if(!scope||loading)return;clearTimeout(refreshTimer);const version=epoch;loading=true;error='';errorCode='';changed();
     try{
       const listing=await call('warehouses');if(version!==epoch)return;
       if(!Array.isArray(listing?.items))throw Error('TEAM_DATA_RESPONSE_INVALID');
@@ -60,7 +64,7 @@ window.createTeamDataView=({request,changed})=>{
         try{const value=await call('share-details',{warehouseId:shareWid});if(version!==epoch)return;if(typeof value?.hostBase!=='string'||!Array.isArray(value.keys))throw Error('TEAM_DATA_RESPONSE_INVALID');sharePreview={...value,warehouseId:shareWid};shareError=''}
         catch(e){if(version!==epoch)return;if(/ADMIN_REQUIRED|SESSION/.test(code(e)))throw e;sharePreview=null;shareError=message(e)}
       }else{sharePreview=null;shareError=''}
-    }catch(e){if(version===epoch){error=message(e);if(/ADMIN_REQUIRED|SESSION/.test(code(e))){warehouses=[];documents=[];jobs=[];results=[];clearGraph();sharePreview=null;shareError='';warehouseId=null;overviewWarehouseId=null}}}
+    }catch(e){if(version===epoch){error=message(e);errorCode=code(e);if(/ADMIN_REQUIRED|SESSION/.test(code(e))){warehouses=[];documents=[];jobs=[];results=[];clearGraph();sharePreview=null;shareError='';warehouseId=null;overviewWarehouseId=null}}}
     finally{if(version===epoch){loading=false;changed();if(!error&&warehouses.some(w=>w.active_jobs>0))refreshTimer=setTimeout(()=>void refresh(),3000)}}
   }
   function btn(label,action,extra='',primary=false){return `<button class="button ${primary?'primary':''}" data-data-action="${action}" ${extra} ${busy?'disabled':''}>${label}</button>`}
@@ -154,7 +158,7 @@ window.createTeamDataView=({request,changed})=>{
     }
     if(name==='create'){dialog('新建团队数据仓','<label>名称<input name="name" required maxlength="60" placeholder="如：产品与客户资料"></label><label>说明<textarea name="description" maxlength="500" placeholder="这个数据仓存放哪些资料？"></textarea></label>',async f=>call('create-warehouse',{name:f.get('name'),description:f.get('description')}));return}
     if(name==='select'||name==='overview'||name==='tab'){
-      epoch++;loading=false;documents=[];jobs=[];results=[];clearGraph();sharePreview=null;shareError='';shareNotice='';error='';query='';offset=0;total=0;
+      epoch++;loading=false;documents=[];jobs=[];results=[];clearGraph();sharePreview=null;shareError='';shareNotice='';error='';errorCode='';query='';offset=0;total=0;
       if(name==='select'){warehouseId=data.id;tab=data.tab==='tasks'?'tasks':'materials'}else if(name==='overview')warehouseId=null;else tab=data.tab;
       await call('select-warehouse');changed();await refresh();return;
     }
@@ -166,12 +170,12 @@ window.createTeamDataView=({request,changed})=>{
     if(name==='graph-fit'){zoom=1;changed();return}
     if(name==='refresh'){await refresh();return}
     if(name==='previous'||name==='next'){offset=Math.max(0,offset+(name==='next'?100:-100));await refresh();return}
-    if(name==='source'){try{await source(data.id,data.warehouseId||warehouseId)}catch(e){error=message(e);changed()}return}
+    if(name==='source'){try{await source(data.id,data.warehouseId||warehouseId)}catch(e){error=message(e);errorCode=code(e);changed()}return}
     if(name==='reprocess-failed'){
       if(busy)return;
       const version=epoch,wid=warehouseId,ids=new Set(failedExtractions().map(j=>j.document_id));
       if(!wid||!ids.size)return;
-      busy=true;error='';changed();
+      busy=true;error='';errorCode='';changed();
       try{
         const processing=await call('processing',{warehouseId:wid});
         const listing=await call('documents',{warehouseId:wid,offset:0});
@@ -187,7 +191,7 @@ window.createTeamDataView=({request,changed})=>{
       return;
     }
     if(busy)return;
-    const version=epoch;busy=true;error='';changed();
+    const version=epoch;busy=true;error='';errorCode='';changed();
     try{
       if(name==='share'||name==='share-create'){const w=current();if(!w||data.warehouseId&&data.warehouseId!==w.id)return;await openDataShare({warehouse:w,request,isCurrent:()=>version===epoch&&warehouseId===w.id&&Boolean(scope)&&admin,message,startCreate:name==='share-create',onChanged:()=>{if(version===epoch&&warehouseId===w.id&&scope&&admin)void refresh()}})}
       else if(name==='copy-home-interface'){const wid=data.warehouseId||warehouseId||overviewWarehouseId;if(wid!==graphWarehouse()?.id)return;const value=await call('copy-share-value',{warehouseId:wid,kind:'mcp-url'});if(version===epoch)shareNotice=value.copied?'星图 MCP 地址已复制。':'讨论原型：实际客户端将复制星图 MCP 地址。'}
@@ -209,7 +213,7 @@ window.createTeamDataView=({request,changed})=>{
     if(kind==='filter'){filter=form.get('filter')||'';changed();return}
     if(kind==='search'){
       query=String(form.get('query')||'').trim();if(!scope||!query)return;
-      const version=epoch;loading=true;results=[];error='';changed();
+      const version=epoch;loading=true;results=[];error='';errorCode='';changed();
       try{const v=await call('search',{warehouseId,query});if(version===epoch)results=v.items||v.results||[]}
       catch(e){if(version===epoch){error=message(e);errorCode=code(e)}}finally{if(version===epoch){loading=false;changed()}}
     }

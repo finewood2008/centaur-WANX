@@ -11,7 +11,7 @@ export function createSecureAccountStore({ filePath, safeStorage }) {
     )
       throw new Error("SECURE_STORAGE_UNAVAILABLE");
   };
-  return {
+  const store = {
     async load() {
       // A new/unused store has nothing to decrypt. Do not open Keychain for it.
       let encrypted;
@@ -22,11 +22,14 @@ export function createSecureAccountStore({ filePath, safeStorage }) {
         throw new Error("SECURE_STORAGE_READ_FAILED");
       }
       check();
+      let value;
       try {
-        return JSON.parse(safeStorage.decryptString(encrypted));
+        value = JSON.parse(safeStorage.decryptString(encrypted));
       } catch {
         throw new Error("SECURE_STORAGE_READ_FAILED");
       }
+      if (safeStorage.needsMigration?.(encrypted)) await store.save(value);
+      return value;
     },
     async save(value) {
       check();
@@ -53,4 +56,5 @@ export function createSecureAccountStore({ filePath, safeStorage }) {
       }
     },
   };
+  return store;
 }

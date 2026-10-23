@@ -8,10 +8,11 @@ import {randomBytes,randomUUID,createCipheriv,createDecipheriv} from 'node:crypt
 const header=Buffer.from('WANXLOCAL1');
 const fail=()=>new Error('LOCAL_ENCRYPTION_UNAVAILABLE');
 export function isLocalCiphertext(bytes){return Buffer.isBuffer(bytes)&&bytes.subarray(0,header.length).equals(header)}
+const isLegacyCiphertext=bytes=>Buffer.isBuffer(bytes)&&bytes.subarray(0,3).equals(Buffer.from('v10'));
 
 // The user explicitly chose a private local key instead of macOS Keychain.
 // Keep this adapter in the main process; never send its key to a renderer.
-export function createLocalEncryption({directory}){
+export function createLocalEncryption({directory,legacyStorage}){
   const keyDirectory=path.join(directory,'local-credentials');
   const keyFile=path.join(keyDirectory,'master.key');
   let cachedKey;
@@ -51,6 +52,7 @@ export function createLocalEncryption({directory}){
   return Object.freeze({
     isEncryptionAvailable:()=>true,
     getSelectedStorageBackend:()=>'local_file',
+    needsMigration:isLegacyCiphertext,
     encryptString(value){
       if(typeof value!=='string')throw fail();
       const nonce=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key(true),nonce);
@@ -59,6 +61,12 @@ export function createLocalEncryption({directory}){
       return Buffer.concat([header,nonce,cipher.getAuthTag(),ciphertext]);
     },
     decryptString(bytes){
+      // Read the old macOS format once; the store atomically rewrites valid JSON
+      // with the local key. Never retry damaged local ciphertext with Keychain.
+      if(isLegacyCiphertext(bytes)){
+        if(!legacyStorage?.isEncryptionAvailable())throw fail();
+        return legacyStorage.decryptString(bytes);
+      }
       if(!isLocalCiphertext(bytes)||bytes.length<header.length+28)throw fail();
       try{
         const offset=header.length,decipher=createDecipheriv('aes-256-gcm',key(false),bytes.subarray(offset,offset+12));

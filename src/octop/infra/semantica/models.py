@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from functools import partial
@@ -170,6 +171,8 @@ async def internal(
         team = actor == "team:wanx"
         if team:
             actor = body.get("actor_id", "")
+            if not isinstance(actor, str) or not re.fullmatch(r"wanx:[1-9][0-9]*", actor):
+                raise SemanticaError("MODEL_AUTH_REQUIRED", 403)
         app_id, user_id = actor.rsplit(":", 1)
         if app_id not in {"wanx", "semantica", "centaurai.wanx.semantica"} or not user_id.isdigit():
             raise SemanticaError("MODEL_AUTH_REQUIRED", 403)
@@ -208,7 +211,7 @@ async def internal(
             if body.get("purpose") not in {"extraction", "sensitive"}:
                 raise SemanticaError("MODEL_PURPOSE_DENIED", 403)
             service = SemanticaClient(config, int(user_id), app_id, team=team)
-            await service.request(
+            grant = await service.request(
                 "POST",
                 "/processing/authorize",
                 payload={
@@ -219,6 +222,8 @@ async def internal(
                     "model_revision": selection["revision"],
                 },
             )
+            if grant.get("authorized") is not True:
+                raise SemanticaError("MODEL_TASK_REVOKED", 403)
             text = body["text"]
             schema = body["schema"]
             if (
@@ -268,7 +273,7 @@ async def internal(
                 raise SemanticaError("MODEL_CONFIG_CHANGED", 409)
             # Re-check authorization after waiting for a capacity slot.
             if action == "infer":
-                await service.request(
+                grant = await service.request(
                     "POST",
                     "/processing/authorize",
                     payload={
@@ -279,6 +284,8 @@ async def internal(
                         "model_revision": selection["revision"],
                     },
                 )
+                if grant.get("authorized") is not True:
+                    raise SemanticaError("MODEL_TASK_REVOKED", 403)
             task = asyncio.create_task(
                 _generate(
                     rows[selection["provider_id"]],

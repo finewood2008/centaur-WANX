@@ -1123,6 +1123,23 @@ test("invalid login credentials receive an account-specific recovery message", a
   assert.doesNotMatch(h.app.innerHTML, /应用市场操作/);
 });
 
+test("login storage failures explain local credential recovery without exposing details", async () => {
+  for (const [code, expected] of [
+    ["SECURE_STORAGE_READ_FAILED", /无法读取本机保存的登录凭据/],
+    ["SECURE_STORAGE_WRITE_FAILED", /无法保存本机登录凭据/],
+    ["SECURE_STORAGE_UNAVAILABLE", /本机加密服务暂不可用/],
+  ]) {
+    const h = await harness({ account: { phase: "signed_out" } }, [], {
+      loginFailure: `Error invoking remote method 'wanx-client:login-password': Error: ${code} /private/credential-file secret-key`,
+    });
+    await h.submit("auth", { username: "13800000000", password: "example-password" });
+    assert.match(h.app.innerHTML, expected);
+    assert.doesNotMatch(h.app.innerHTML, /应用市场操作|credential-file|secret-key|\/private\//);
+    assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
+    if (code === "SECURE_STORAGE_READ_FAILED") assert.match(h.app.innerHTML, /访问旧版凭据/);
+  }
+});
+
 
 test("ordinary signed-out broadcasts preserve the login form and typed credentials only in its nodes", async () => {
   const h = await harness({ account: { phase: "signed_out" } }, []);

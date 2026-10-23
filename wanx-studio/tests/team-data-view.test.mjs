@@ -16,6 +16,28 @@ test('late warehouse responses cannot fill another account',async()=>{
 test('server failure stays visible and does not create a demonstration warehouse',async()=>{
  const view=make(async()=>{throw Error('SEMANTICA_NOT_CONFIGURED')});view.sync(state,true);await view.refresh();assert.match(view.render(),/尚未配置/);assert.doesNotMatch(view.render(),/客户知识仓/);
 });
+test('refresh replaces the previous Starlink installation action with the current service error',async()=>{
+ for(const openCode of ['TEAM_STARLINK_NOT_INSTALLED','TEAM_STARLINK_UPGRADE_REQUIRED']){
+  const view=make(async name=>{const code=name==='data.open-starlink'?openCode:'SEMANTICA_SERVICE_AUTH_FAILED';throw Object.assign(Error(code),{code})});
+  view.sync(state,true);await view.action('open',{view:'warehouses'});
+  assert.match(view.render(),/data-data-action="install-starlink"/);
+  await view.refresh();const html=view.render();
+  assert.doesNotMatch(html,/data-data-action="install-starlink"/);
+  assert.match(html,/接入鉴权失败/);assert.match(html,/服务凭据及团队接入版本/);
+  assert.match(html,/data-data-action="refresh"[^>]*>重试/);
+ }
+});
+test('team service failures explain the relevant access or compatibility problem',async()=>{
+ for(const [code,message] of [
+  ['SEMANTICA_SERVICE_AUTH_FAILED',/接入鉴权失败/],
+  ['SEMANTICA_RESOURCE_FORBIDDEN',/拒绝访问当前团队数据/],
+  ['SEMANTICA_RESOURCE_NOT_FOUND',/未找到所请求的资源/],
+  ['SEMANTICA_INVALID_REQUEST',/未接受当前请求/],
+ ]){
+  const view=make(async()=>{throw Object.assign(Error(code),{code})});view.sync(state,true);await view.refresh();
+  assert.match(view.render(),message);assert.doesNotMatch(view.render(),/操作未完成|data-data-action="install-starlink"/);
+ }
+});
 test('invalid IPC response is shown as a failure without breaking the shell',async()=>{
  const view=make(async()=>({ok:true,value:{items:[]}}));view.sync(state,true);await view.refresh();assert.doesNotThrow(()=>view.render());assert.match(view.render(),/操作未完成/);
 });

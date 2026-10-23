@@ -151,7 +151,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       const nativePaths = nativeBinaryPaths({ appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath, packaged: app.isPackaged });
       const userData = app.getPath("userData");
-      const safeStorage = process.platform === "darwin" ? createLocalEncryption({directory:userData}) : osSafeStorage;
+      const safeStorage = process.platform === "darwin" ? createLocalEncryption({directory:userData,legacyStorage:osSafeStorage}) : osSafeStorage;
       await protectPrivateDirectory(userData, { packaged: app.isPackaged });
       if (process.argv.includes("--wanx-smoke-safe-storage")) {
         const smokeFile = path.join(userData, "smoke-account.enc");

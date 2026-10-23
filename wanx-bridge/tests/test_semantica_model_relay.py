@@ -19,6 +19,7 @@ from wanx_bridge.semantica.model_relay import ModelRelay
 
 PATH = "/internal/starklink/models"
 OWNER = json.dumps([CONFIG["box_id"], CONFIG["application_id"], "wanx:7"])
+TEAM_OWNER = json.dumps([CONFIG["box_id"], CONFIG["application_id"], "team:wanx"])
 SCHEMA = {"type": "object", "properties": {"ok": {"const": True}}, "required": ["ok"]}
 
 
@@ -68,6 +69,8 @@ async def relay(tmp_path):
     )
 
     class Admin:
+        base_url = "http://127.0.0.1:18444"
+
         async def _admin(self, method, path):
             assert method == "GET"
             data = {
@@ -80,6 +83,10 @@ async def relay(tmp_path):
     async def handle(request):
         state.calls.append(request)
         assert "cookie" not in request.headers
+        if request.url == "http://127.0.0.1:18444/internal/starklink/models":
+            if state.handler:
+                return await state.handler(request)
+            return httpx.Response(state.core_status, json=state.core_result)
         if request.url.host == "semantica":
             assert request.url.path == "/api/integration/processing/authorize"
             if "x-semantica-signature" in request.headers:
@@ -360,3 +367,118 @@ async def test_long_request_cancelled_on_revocation(relay, revoke):
 
 async def test_private_callback_excluded_from_docs(relay):
     assert PATH not in relay.app.openapi()["paths"]
+
+
+@pytest.mark.parametrize("status", [200, 403, 409])
+@pytest.mark.parametrize("action", ["catalog", "check", "infer"])
+async def test_team_callback_preserves_signed_body_and_core_authority(relay, status, action):
+    relay.core_status = status
+    relay.core_result = {"items": []} if status == 200 else {"code": "MODEL_AUTH_REQUIRED"}
+    body = {"owner": TEAM_OWNER, "actor_id": "wanx:7", "action": action}
+    if action != "catalog":
+        body["selection"] = {"id": "core:model", "revision": "core-revision"}
+    if action == "infer":
+        body.update(job_id="team-job", purpose="extraction", text="synthetic", schema=SCHEMA)
+    request = signed(body)
+    # Preserve bytes, including whitespace, because the core verifies this signature.
+    request["content"] += b"\n"
+    headers = request["headers"]
+    headers["x-starklink-signature"] = hmac.new(
+        CONFIG["service_token"].encode(),
+        headers["x-starklink-time"].encode()
+        + b"."
+        + headers["x-starklink-nonce"].encode()
+        + b"."
+        + request["content"],
+        hashlib.sha256,
+    ).hexdigest()
+    headers.update({"cookie": "browser=secret", "authorization": "Bearer must-not-forward"})
+    response = await relay.client.post(PATH, **request)
+    assert response.status_code == status, response.text
+    assert response.json() == relay.core_result
+    assert response.headers["cache-control"] == "no-store"
+    assert len(relay.calls) == 1
+    forwarded = relay.calls[0]
+    assert forwarded.content == request["content"]
+    assert json.loads(forwarded.content)["actor_id"] == "wanx:7"
+    for name in ("x-starklink-time", "x-starklink-nonce", "x-starklink-signature"):
+        assert forwarded.headers[name] == headers[name]
+    assert "authorization" not in forwarded.headers
+    assert "cookie" not in forwarded.headers
+
+
+async def test_team_callback_does_not_forward_previous_core_cookies(relay):
+    relay.callback.client.cookies.set("session", "private", domain="127.0.0.1", path="/")
+    relay.core_status, relay.core_result = 200, {"items": []}
+    response = await relay.client.post(
+        PATH, **signed({"owner": TEAM_OWNER, "actor_id": "wanx:7", "action": "catalog"})
+    )
+    assert response.status_code == 200, response.text
+    assert "cookie" not in relay.calls[0].headers
+
+
+@pytest.mark.parametrize("invalid", ["unsigned", "signature", "origin", "non_loopback"])
+async def test_team_callback_rejects_untrusted_requests_before_core(relay, invalid):
+    request = signed({"owner": TEAM_OWNER, "actor_id": "wanx:7", "action": "catalog"})
+    if invalid == "unsigned":
+        del request["headers"]["x-starklink-signature"]
+    elif invalid == "signature":
+        request["headers"]["x-starklink-signature"] = "0" * 64
+    elif invalid == "origin":
+        request["headers"]["origin"] = "http://localhost"
+    peer = ("192.0.2.1", 1000) if invalid == "non_loopback" else ("127.0.0.1", 1000)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=relay.app, client=peer), base_url="http://private"
+    ) as client:
+        response = await client.post(PATH, **request)
+    assert response.status_code == 403
+    assert relay.calls == []
+
+
+async def test_team_callback_disconnect_cancels_core_request(relay):
+    started, cancelled, disconnected = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def handle(request):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    relay.handler = handle
+    signed_request = signed({"owner": TEAM_OWNER, "actor_id": "wanx:7", "action": "catalog"})
+    body_delivered = False
+
+    async def receive():
+        nonlocal body_delivered
+        if not body_delivered:
+            body_delivered = True
+            return {"type": "http.request", "body": signed_request["content"], "more_body": False}
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": PATH,
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(k.encode(), v.encode()) for k, v in signed_request["headers"].items()],
+        "client": ("127.0.0.1", 1),
+        "server": ("private", 80),
+    }
+    task = asyncio.create_task(relay.app(scope, receive, send))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        disconnected.set()
+        await asyncio.wait_for(cancelled.wait(), 2)
+        await asyncio.wait_for(task, 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
