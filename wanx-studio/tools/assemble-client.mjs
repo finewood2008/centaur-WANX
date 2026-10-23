@@ -12,7 +12,7 @@ if (edition === 'personal') process.exit(0);
 const client = path.resolve(root, '../wanx-team-client');
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 for (const script of ['build', 'package']) {
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script], { cwd: root, stdio: 'inherit' });
+  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
 }
 await mkdir(path.join(client, 'studio'), { recursive: true });
 await cp(path.join(root, 'dist/runtime'), path.join(client, 'applications/studio-runtime'), { recursive: true });

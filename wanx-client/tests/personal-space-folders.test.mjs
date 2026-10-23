@@ -61,7 +61,7 @@ test('same-name user destination survives; repeated active drops reuse their bat
 });
 test('oversized and symlink sources skip individually; retry rescans repaired sources',async t=>{
  const f=await fixture(t),folder=await samples(f,2),big=path.join(folder,'超限.bin'),h=await open(big,'w');await h.truncate(MAX_UPLOAD_BYTES+1);await h.close();
- await symlink(folder,path.join(folder,'循环链接'));await f.service.uploads('',[folder]);await f.done();assert.equal(f.uploads.size,2);assert.equal(f.service.snapshot().imports[0].failed,2);assert.ok(f.service.snapshot().tasks.some(t=>t.error==='SPACE_SOURCE_LINK'));
+ await symlink(folder,path.join(folder,'循环链接'),process.platform==='win32'?'junction':'dir');await f.service.uploads('',[folder]);await f.done();assert.equal(f.uploads.size,2);assert.equal(f.service.snapshot().imports[0].failed,2);assert.ok(f.service.snapshot().tasks.some(t=>t.error==='SPACE_SOURCE_LINK'));
  await rm(path.join(folder,'循环链接'));await writeFile(big,'变小后重试');await f.service.transfer('retry-batch',f.service.snapshot().imports[0].id);await f.done();assert.equal(f.uploads.size,3);assert.equal(f.service.snapshot().imports[0].failed,0);assert.equal([...f.entries.values()].filter(e=>e.kind==='folder').length,4);
 });
 test('bounded buffer, durable batch pause and restart preserve scanning and stable IDs',async t=>{
