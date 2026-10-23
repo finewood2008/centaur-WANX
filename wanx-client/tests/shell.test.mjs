@@ -348,3 +348,61 @@ test("maintenance tools bootstrap their fixed routes in separate reusable window
   assert.ok(h.windows.every(window => window.destroyed));
   await h.controller.close();
 });
+
+
+test("terminal Dashboard shortcut opens and reuses a separate bootstrapped window", async () => {
+  const h = harness();
+  const state = h.ready(41000);
+  state.connection.gatewayURL += "/__wanx_session/test";
+  await h.controller.open(state, "terminal");
+  const terminal = h.windows[0];
+  const terminalURL = terminal.url;
+  assert.equal(terminal.openHandler({ url: "http://127.0.0.1:41000/" }).action, "deny");
+  assert.equal(h.windows.length, 2);
+  assert.equal(h.windows[1].url, state.connection.gatewayURL);
+  assert.notEqual(h.sessions[0], h.sessions[1]);
+  assert.equal(h.windows[1].options.webPreferences.preload, undefined);
+  assert.equal(terminal.destroyed, false);
+  assert.equal(terminal.url, terminalURL);
+  terminal.openHandler({ url: "http://127.0.0.1:41000/" });
+  assert.equal(h.windows.length, 2);
+  assert.equal(h.windows[1].focused, 1);
+  assert.deepEqual(h.external, []);
+  h.controller.sync(h.ready(42000));
+  assert.ok(h.windows.every(window => window.destroyed));
+  terminal.openHandler({ url: "http://127.0.0.1:41000/" });
+  assert.equal(h.windows.length, 2, "stale terminals cannot reopen old box credentials");
+  await h.controller.close();
+});
+
+for (const change of [
+  { phase: "recovering" },
+  { phase: "disconnected", connection: null },
+  { account: { phase: "signed_out" } },
+  { network: { enabled: false } },
+]) {
+  test(`terminal Dashboard shortcut stops after context changes: ${JSON.stringify(change)}`, async () => {
+    const h = harness();
+    await h.controller.open(h.ready(41000), "terminal");
+    h.controller.sync({ ...h.ready(41000), ...change });
+    h.windows[0].openHandler({ url: "http://127.0.0.1:41000/" });
+    assert.equal(h.windows.length, 1);
+    await h.controller.close();
+  });
+}
+
+test("Dashboard shortcut does not widen maintenance navigation or desktop access", async () => {
+  const h = harness();
+  await h.controller.open(h.ready(41000), "terminal");
+  await h.controller.open(h.ready(41000), "desktop");
+  for (const suffix of ["/chat", "/?redirect=/chat", "/#chat"]) {
+    assert.equal(h.windows[0].openHandler({ url: `http://127.0.0.1:41000${suffix}` }).action, "deny");
+  }
+  assert.equal(h.windows[1].openHandler({ url: "http://127.0.0.1:41000/" }).action, "deny");
+  let prevented = false;
+  h.windows[0].webContents.emit("will-navigate", { preventDefault() { prevented = true; } }, "http://127.0.0.1:41000/");
+  assert.equal(prevented, true);
+  assert.equal(h.windows.length, 2);
+  assert.deepEqual(h.external, []);
+  await h.controller.close();
+});

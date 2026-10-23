@@ -4308,6 +4308,7 @@
       "noTerminal": "请先打开一个终端连接",
       "inputPlaceholder": "问运维专家...",
       "send": "发送",
+      "openDashboard": "在新窗口打开当前盒子的 Dashboard",
       "modeAssist": "辅助模式",
       "modeAutopilot": "全托管",
       "execBtn": "执行到终端",

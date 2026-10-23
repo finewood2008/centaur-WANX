@@ -333,6 +333,17 @@ export default function AiPanel({
           {t("terminal.ai.togglePanel")}
         </span>
         <div className={styles.headerActions}>
+          <Tooltip title={t("terminal.ai.openDashboard")}>
+            <Button
+              type="text"
+              size="small"
+              href="/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Dashboard
+            </Button>
+          </Tooltip>
           {opsAgent && (
             <Segmented
               size="small"
