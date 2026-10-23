@@ -1,3 +1,4 @@
+import {createLocalEncryption} from "../account/local-encryption.mjs";
 import {panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { readAvatar } from "./avatar.mjs";
@@ -10,7 +11,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
-  safeStorage,
+  safeStorage as osSafeStorage,
   clipboard,
   powerMonitor,
   session,
@@ -53,6 +54,7 @@ import { createDashboardGateway } from "../octop/gateway.mjs";
 import { createStaticAssetCache } from "../octop/static-cache.mjs";
 import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
+import { createNotificationCenter } from "./notification-center.mjs";
 import { createAIDialogue } from "./ai-dialogue.mjs";
 import { createStartupSettings } from "./startup.mjs";
 import { createSpaceLinkBridge } from "./space-links.mjs";
@@ -83,6 +85,7 @@ let control;
 let panel;
 let uiState;
 let broadcast;
+let notifications;
 let aiDialogue;
 let client;
 let unsubscribe;
@@ -148,6 +151,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       const nativePaths = nativeBinaryPaths({ appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath, packaged: app.isPackaged });
       const userData = app.getPath("userData");
+      const safeStorage = process.platform === "darwin" ? createLocalEncryption({directory:userData}) : osSafeStorage;
       await protectPrivateDirectory(userData, { packaged: app.isPackaged });
       if (process.argv.includes("--wanx-smoke-safe-storage")) {
         const smokeFile = path.join(userData, "smoke-account.enc");
@@ -344,7 +348,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           deviceId: client.snapshot().connection?.deviceId || null }),
       });
       updates = { client: clientUpdates, box: boxUpdates };
-      const updateListeners = [clientUpdates.subscribe(() => { void broadcast?.publish(); }),
+      const updateListeners = [clientUpdates.subscribe(() => { notifications?.update(clientUpdates.snapshot()); void broadcast?.publish(); }),
         boxUpdates.subscribe(() => { desktop?.sync(client.snapshot()); void broadcast?.publish(); })];
       let updateAccount = JSON.stringify(account.getIdentity());
       const unsubscribeUpdateAccount = account.subscribe(state => {
@@ -357,11 +361,17 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
       try { startup.initializeDefault(); } catch (error) { reportError(error); }
+      notifications = await createNotificationCenter({
+        client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        store: createSecureAccountStore({ filePath: path.join(userData, "notification-center.enc"), safeStorage }),
+        onChanged: () => { void broadcast?.publish(); },
+      });
       uiState = await createUIState({
         client, account, applications,
         preferenceFile: path.join(userData, "ui-preferences.json"),
         serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onChanged: () => { void broadcast?.publish(); },
+        onOperation: event => notifications.operation(event),
         onOpened: ({ applicationId }) => {
           desktop?.hidePanel();
           applications.activate(applicationId);
@@ -408,7 +418,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         window.webContents.on("will-attach-webview", event => event.preventDefault());
       }
       broadcast = createUIBroadcast({
-        client, applications, uiState, startup, updates, defaultApplications, windows: () => [control, panel], onError: reportError,
+        client, applications, uiState, startup, updates, defaultApplications, notifications, windows: () => [control, panel], onError: reportError,
       });
       let quitPrompt;
       const requestQuit = () => {
@@ -510,6 +520,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       registerControlActions({
         aiDialogue,
         timings,
+        notifications,
         spaceLinks,
         personalSpace,
         superClipboard,
@@ -585,6 +596,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
         },
         async closeHost() {
+          await notifications?.close();
           support.close();
           unsubscribeUpdateAccount();
           for (const remove of updateListeners) remove();

@@ -1,0 +1,1026 @@
+<!doctype html>
+<html lang="zh-CN" data-palette="centaur">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>星图 STARLINK · 本地知识数据仓</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <aside class="sidebar" aria-label="应用导航">
+        <div class="brand">
+          <img
+            class="brand-symbol brand-image"
+            src="../resources/icon.png"
+            alt="星图"
+          />
+          <div>
+            <div class="brand-name">星图 <span class="brand-english">STARLINK</span></div>
+            <div class="brand-sub">本地知识数据仓</div>
+          </div>
+          <button
+            class="icon-btn mobile-close"
+            data-action="nav"
+            aria-label="收起导航"
+            data-icon="close"
+          ></button>
+        </div>
+        <button class="warehouse-home" data-view="warehouses">
+          <span class="warehouse-home-icon" data-icon="folder"></span>
+          <span><strong>数据仓</strong><small>选择与管理知识空间</small></span>
+          <span id="warehouse-count" class="count">0</span>
+        </button>
+        <section class="warehouse-switcher" aria-label="当前数据仓">
+          <div class="warehouse-current-caption"><span>当前使用</span><span id="current-warehouse-status" class="warehouse-state">等待连接</span></div>
+          <h2 id="workspace-name">正在连接…</h2>
+          <p id="workspace-summary">按项目或主题组织你的知识</p>
+          <div id="current-warehouse-stats" class="warehouse-current-stats"></div>
+          <button class="warehouse-switch-button" id="warehouse-switch-trigger" data-action="choose-warehouse"><span data-icon="list"></span>切换数据仓<span data-icon="chevron"></span></button>
+        </section>
+        <p class="nav-group-label">当前仓的知识</p>
+        <nav class="nav-list">
+          <button class="nav-item" data-view="graph" aria-current="page">
+            <span data-icon="network"></span>知识图谱<span
+              class="count"
+              id="network-count"
+              >0</span
+            >
+          </button>
+          <button class="nav-item" data-view="materials">
+            <span data-icon="files"></span>材料与校对<span
+              class="count"
+              id="material-count"
+              >0</span
+            >
+          </button>
+          <button class="nav-item" data-view="search">
+            <span data-icon="search"></span>证据检索
+          </button>
+          <button class="nav-item" data-view="reasoning"><span data-icon="network"></span>推理与调用</button>
+        </nav>
+        <div class="nav-secondary">
+          <p class="nav-group-label">管理</p>
+          <nav class="nav-list">
+            <button class="nav-item" data-view="skills"><span data-icon="files"></span>Skill 管理</button>
+            <button class="nav-item" data-view="models"><span data-icon="activity"></span>模型与处理</button>
+            <button class="nav-item" data-view="api">
+              <span data-icon="external"></span>接口开放
+            </button>
+            <button class="nav-item" data-view="data">
+              <span data-icon="folder"></span>数据管理
+            </button>
+            <button class="nav-item" data-view="tasks">
+              <span data-icon="activity"></span>任务中心<span
+                class="count"
+                id="task-count"
+                >0</span
+              ></button
+            ><button class="nav-item" data-view="sensitive">
+              <span data-icon="shield"></span>脱敏设置
+            </button>
+          </nav>
+        </div>
+        <div class="sidebar-bottom">
+          <div class="demo-box">
+            <strong
+              ><span class="dot" id="connection-dot"></span
+              ><span id="connection-title">正在连接万象</span></strong
+            >
+            <p id="connection-description">复用万象账号与当前盒子连接。</p>
+          </div>
+          <div class="signature">
+            <b>半人马AI</b><span>Powered by WANX</span>
+          </div>
+        </div>
+      </aside>
+      <main class="main" id="content">
+        <header class="topbar">
+          <div class="crumb">
+            <button
+              class="icon-btn mobile-toggle"
+              data-action="nav"
+              aria-label="展开导航"
+              data-icon="menu"
+            ></button
+            ><span data-icon="folder"></span
+            ><button id="crumb-warehouse" data-action="choose-warehouse">我的数据仓</button><span id="crumb-separator">/</span
+            ><strong id="crumb-current">知识图谱</strong>
+          </div>
+          <div class="top-actions">
+            <span class="preview-label"
+              ><span class="dot"></span
+              ><span id="connection-label">连接中</span></span
+            ><button
+              class="icon-btn"
+              data-action="help"
+              aria-label="使用说明"
+              data-icon="help"
+            ></button
+            ><span class="avatar" id="user-avatar" title="当前万象用户"
+              >我</span
+            >
+          </div>
+        </header>
+        <div class="page-scroll">
+          <div class="page-content">
+            <div
+              class="connection-notice"
+              id="connection-notice"
+              role="status"
+              hidden
+            ></div>
+            <div class="page-heading">
+              <div>
+                <p class="page-kicker" id="page-kicker">
+                  EXPLORE YOUR KNOWLEDGE
+                </p>
+                <h1 id="page-title">知识图谱</h1>
+                <p class="description" id="page-description">
+                  把你的资料，连成可追溯、可调用的知识。
+                </p>
+              </div>
+              <div class="heading-actions">
+                <button
+                  class="btn btn-secondary secondary-heading"
+                  id="page-secondary"
+                  data-action="reset-graph"
+                >
+                  <span data-icon="expand"></span>返回全图</button
+                ><button class="btn btn-secondary" id="warehouse-import-heading" data-action="import-warehouse" hidden><span data-icon="upload"></span>迁入数据仓</button><button class="btn btn-primary" id="page-primary" data-action="import">
+                  <span data-icon="plus"></span>导入材料
+                </button>
+              </div>
+            </div>
+            <section class="view" id="view-warehouses" hidden aria-label="数据仓总览">
+              <div class="warehouse-directory-summary" id="warehouse-directory-summary"></div>
+              <div class="warehouse-directory-toolbar">
+                <div><h2>你的数据仓 <span id="warehouse-directory-count" class="mono">0</span></h2><p>资料、图谱与应用授权，各自独立。</p></div>
+                <div class="warehouse-directory-tools"><label class="warehouse-find"><span data-icon="search"></span><input id="warehouse-query" type="search" placeholder="搜索仓名或说明" aria-label="搜索数据仓" /></label><button class="icon-btn" data-action="refresh" aria-label="刷新数据仓" data-icon="activity"></button></div>
+              </div>
+              <div id="warehouse-directory" class="warehouse-directory-grid"></div>
+              <div class="warehouse-directory-empty" id="warehouse-directory-empty" hidden></div>
+            </section>
+            <section
+              class="view"
+              id="view-graph"
+              data-od-id="knowledge-network"
+              aria-label="知识图谱"
+            >
+              <div class="product-story">
+                <div class="story-lead">
+                  <span class="eyebrow">YOUR KNOWLEDGE, CONNECTED</span>
+                  <h2>让资料相连，让应用有据。</h2>
+                  <p>
+                    星图是你的本地知识数据仓。用图谱看见资料之间的联系，让其他应用通过接口用上你的知识。
+                  </p>
+                </div>
+                <ol class="journey">
+                  <li>
+                    <b>01</b><strong>建立数据仓</strong
+                    ><span>按项目或主题独立管理</span>
+                  </li>
+                  <li>
+                    <b>02</b><strong>导入你的资料</strong
+                    ><span>文档、图片、表格与录音</span>
+                  </li>
+                  <li>
+                    <b>03</b><strong>模型整理</strong
+                    ><span>提取实体、关系与来源</span>
+                  </li>
+                  <li>
+                    <b>04</b><strong>授权应用使用</strong
+                    ><span>按仓开放，随时撤销</span>
+                  </li>
+                </ol>
+              </div>
+              <div class="graph-context">
+                <div>
+                  <span class="live-indicator"></span
+                  ><strong id="graph-warehouse">知识图谱</strong
+                  ><span id="graph-model" class="muted"
+                    >按配置处理 · 来源可查</span
+                  >
+                </div>
+                <button class="text-link" data-view="models">配置处理模型</button>
+                <button class="text-link" data-view="api">
+                  让应用用上这些知识 <span data-icon="external"></span>
+                </button>
+              </div>
+              <div class="network-layout">
+                <div class="panel network-panel">
+                  <div class="graph-toolbar">
+                    <div class="segmented" aria-label="网络呈现方式">
+                      <button
+                        class="active"
+                        data-mode="graph"
+                        aria-pressed="true"
+                      >
+                        <span data-icon="network"></span>关系图</button
+                      ><button data-mode="list" aria-pressed="false">
+                        <span data-icon="list"></span>关系列表
+                      </button>
+                    </div>
+                    <label class="graph-search"
+                      ><span data-icon="search"></span
+                      ><input
+                        id="graph-query"
+                        aria-label="查找实体"
+                        placeholder="查找实体…"
+                        autocomplete="off"
+                      /><kbd
+                        class="mono small"
+                        style="color: var(--muted); font-size: 9px"
+                        >⌘ K</kbd
+                      ></label
+                    >
+                  </div>
+                  <div class="graph-lens-bar">
+                    <div class="graph-density segmented" aria-label="图谱显示范围">
+                      <button data-graph-density="overview" class="active" aria-pressed="true">知识概览</button>
+                      <button data-graph-density="all" aria-pressed="false">全部实体</button>
+                    </div>
+                    <span id="graph-scope-summary" aria-live="polite">知识概览</span>
+                    <button class="text-link" id="graph-focus-back" data-action="reset-graph" hidden>返回全图 <span data-icon="arrow"></span></button>
+                  </div>
+                  <div
+                    class="graph-filters"
+                    id="graph-filters"
+                    aria-label="实体类型筛选"
+                  ></div>
+                  <div class="graph-reference-note" id="graph-reference-note" hidden>概览已收起 <span id="graph-reference-count">0</span> 个原文编号节点，搜索或切换“全部实体”可查看。</div>
+                  <div class="graph-space" id="graph-space">
+                    <svg
+                      id="graph-svg"
+                      class="graph-svg"
+                      viewBox="0 0 800 540"
+                      aria-label="可交互知识关系图"
+                    >
+                      <defs>
+                        <pattern
+                          id="dots"
+                          width="22"
+                          height="22"
+                          patternUnits="userSpaceOnUse"
+                        >
+                          <circle
+                            cx="1"
+                            cy="1"
+                            r=".65"
+                            fill="var(--border)"
+                            opacity=".7"
+                          />
+                        </pattern>
+                        <marker
+                          id="arrow"
+                          markerWidth="7"
+                          markerHeight="7"
+                          refX="6"
+                          refY="3.5"
+                          orient="auto"
+                        >
+                          <path
+                            d="M1 1 L5 3.5 L1 6"
+                            fill="none"
+                            stroke="var(--muted)"
+                            stroke-width=".7"
+                          />
+                        </marker>
+                        <marker
+                          id="arrow-selected"
+                          markerWidth="7"
+                          markerHeight="7"
+                          refX="6"
+                          refY="3.5"
+                          orient="auto"
+                        >
+                          <path
+                            d="M1 1 L5 3.5 L1 6"
+                            fill="none"
+                            stroke="var(--accent)"
+                            stroke-width="1"
+                          />
+                        </marker>
+                      </defs>
+                      <rect width="100%" height="100%" fill="url(#dots)" />
+                      <g id="graph-scene"></g>
+                    </svg>
+                    <div class="graph-no-results" id="graph-empty" hidden>
+                      没有找到匹配的实体
+                    </div>
+                    <div class="graph-tools">
+                      <button
+                        class="icon-btn"
+                        data-action="zoom-in"
+                        aria-label="放大关系图"
+                        data-icon="plus"
+                      ></button
+                      ><output id="zoom-label">100%</output
+                      ><button
+                        class="icon-btn"
+                        data-action="zoom-out"
+                        aria-label="缩小关系图"
+                        data-icon="minus"
+                      ></button
+                      ><span class="tool-sep"></span
+                      ><button
+                        class="icon-btn"
+                        data-action="fit"
+                        aria-label="适应画布"
+                        data-icon="expand"
+                      ></button>
+                    </div>
+                    <span class="graph-hint"
+                      >拖动画布 · 点击实体聚焦关联 · 点击连线查看来源</span
+                    >
+                  </div>
+                  <div class="relation-list" id="relation-list" hidden></div>
+                  <div class="graph-footer">
+                    <div class="tally">
+                      <span><b class="mono" id="nodes-total">0</b> 个实体</span
+                      ><span><b class="mono" id="edges-total">0</b> 条关系</span
+                      ><span
+                        ><b class="mono" id="source-count">0</b> 份材料</span
+                      >
+                    </div>
+                    <span>当前画布</span>
+                  </div>
+                </div>
+                <aside
+                  class="panel detail-panel"
+                  id="graph-details"
+                  aria-label="实体关系与来源"
+                ></aside>
+              </div>
+              <div class="page-footnote">
+                <span
+                  ><span data-icon="info"></span
+                  >关系来自材料中的明确陈述，可逐条回到来源核对。</span
+                ><span>最多显示 120 条关系</span>
+              </div>
+            </section>
+            <section
+              class="view"
+              id="view-api"
+              hidden
+              aria-label="星图开放接口说明"
+            >
+              <div class="api-hero">
+                <div>
+                  <p class="eyebrow">STARLINK OPEN API / V1</p>
+                  <h2>让你的应用，<br />拥有一座知识仓。</h2>
+                  <p>
+                    为当前数据仓创建一个统一知识 Key，即可调用图谱、检索、证据、材料信息与 Skill／推理资料接口。
+                  </p>
+                  <div class="api-tags">
+                    <span>一个 Key，全部知识能力</span><span>单仓授权</span
+                    ><span>到期或随时撤销</span>
+                  </div>
+                </div>
+                <div class="api-architecture">
+                  <span>你的资料</span><i>↓ 按配置处理</i
+                  ><strong>星图数据仓</strong><i>↓ 统一知识 Key</i
+                  ><span>你的应用 / Agent / 工作流</span>
+                </div>
+              </div>
+              <div class="api-columns">
+                <article class="panel api-doc">
+                  <div class="section-caption">
+                    <span>01 / 接口说明</span><span>v1</span>
+                  </div>
+                  <h2>从一条有依据的检索开始</h2>
+                  <p>
+                    在调用方的服务端或主进程保存凭证。将基础地址设为星图服务的
+                    <code>/api/open/v1</code>，并通过 Bearer 认证访问。
+                  </p>
+                  <div class="api-base">
+                    <small>当前服务的本机地址</small
+                    ><code id="api-base">连接后读取</code>
+                    <p>
+                      若服务运行在盒子上，此地址指向盒子本机。万象应用可沿用
+                      Host 连接，无需暴露服务端口。
+                    </p>
+                  </div>
+                  <pre><code>curl "$STARLINK_BASE_URL/search" \
+  -H "Authorization: Bearer $STARLINK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"项目有哪些关键结论？","limit":5}'</code></pre>
+                  <div class="api-endpoints">
+                    <div>
+                      <b>GET</b><code>/warehouse</code><span>数据仓概况</span>
+                    </div>
+                    <div>
+                      <b>GET</b><code>/documents</code><span>材料元信息</span>
+                    </div>
+                    <div>
+                      <b>GET</b><code>/graph</code><span>图谱与来源</span>
+                    </div>
+                    <div>
+                      <b>POST</b><code>/search</code><span>可追溯证据检索</span>
+                    </div>
+                    <div>
+                      <b>GET</b><code>/evidence/{id}</code
+                      ><span>证据位置与摘录</span>
+                    </div>
+                    <div>
+                      <b>POST</b><code>/reasoning/…</code><span>Skill 方法、引用与固定资料读取</span>
+                    </div>
+                  </div>
+                  <p>以上接口共用同一个 Key。推理资料的八项操作及参数见「推理与调用」。</p>
+                  <details>
+                    <summary>在万象应用中调用</summary>
+                    <p>
+                      使用 Host SDK 请求
+                      <code>/api/semantica/open/v1/search</code>，在
+                      <code>X-Xingtu-Key</code>
+                      中传入访问凭证。账号与盒子连接沿用万象，访问范围以凭证为准。
+                    </p>
+                    <pre><code>await host.request("/api/semantica/open/v1/search", {
+  method: "POST",
+  headers: { "X-Xingtu-Key": token },
+  body: { query: "项目有哪些关键结论？", limit: 5 }
+});</code></pre>
+                  </details>
+                  <details>
+                    <summary>参数、返回与错误说明</summary>
+                    <p>
+                      <code>search</code> 接收 query（1–2000
+                      字符）、limit（1–50）、document_ids 与
+                      entity_types。documents 使用 limit（1–200）与 offset
+                      分页；graph 使用 limit（1–500）与可选 entity_id。
+                    </p>
+                    <p>
+                      检索返回 items，包含
+                      text、document_id、document_version_id、locator 与
+                      channels；图谱返回 nodes 和 edges，每条关系保留
+                      evidence。内容按当前保护规则交付，检测未完成的片段暂缓返回。
+                    </p>
+                    <p>
+                      401：凭证无效或到期；403：未授权的权限；409：内容变化或尚未就绪。Host
+                      下凭证无效返回 403。接口不提供原件下载、写入、迁移或清空。
+                    </p>
+                    <p>
+                      独立网页说明：<code>/api/open/v1/docs</code>；OpenAPI：<code>/api/open/v1/openapi.json</code>。
+                    </p>
+                  </details>
+                </article>
+                <aside class="panel access-panel">
+                  <div class="section-caption">
+                    <span>02 / 访问授权</span
+                    ><span id="key-count">0 个有效凭证</span>
+                  </div>
+                  <h2>谁可以使用这个仓</h2>
+                  <p>
+                    一个 Key 覆盖本仓全部对外知识能力，无需为不同接口分别授权。资料按当前脱敏规则交付；导入、模型设置和删除等管理操作仍在星图内完成。
+                  </p>
+                  <button class="btn btn-primary" data-action="new-key">
+                    <span data-icon="plus"></span>创建统一知识 Key
+                  </button>
+                  <button type="button" class="btn" id="team-app-grant" hidden>授权内部应用</button><div id="access-keys"></div>
+                  <p class="detail-note">
+                    Key 明文只显示一次。旧版 Key 保留原权限；需要完整能力时，请创建统一知识 Key 后替换调用方配置。迁移包不携带 Key，清空或删除仓会撤销全部 Key。
+                  </p>
+                </aside>
+              </div>
+            </section>
+            <section class="view" id="view-skills" hidden aria-label="Skill 管理">
+              <div class="panel skill-intro"><p class="eyebrow">METHODS FOR YOUR KNOWLEDGE</p><h2>把好方法，放进你的数据仓。</h2><p>导入 Skill ZIP，保留方法和引用文件的完整结构。星图负责保管与授权，其他 AI 应用按需读取并执行分析。</p><p class="muted">仅属于当前账号、当前设备的这个数据仓。每包一个 Skill，最多 4 MiB；脚本仅保存为文本，不会执行。</p><button class="btn btn-primary" id="skill-import">导入 Skill ZIP</button><span id="skill-notice" role="status"></span></div>
+              <div class="native-skills-layout"><aside class="panel"><form id="skill-filter"><label>查找 Skill<input id="skill-keyword" placeholder="名称或说明" /></label><button class="btn btn-secondary">查找</button></form><div id="skill-list"></div><div class="native-pager"><button class="text-link" id="skill-prev">上一页</button><span id="skill-total"></span><button class="text-link" id="skill-next">下一页</button></div></aside><article class="panel" id="skill-detail"><p class="detail-empty">选择方法，查看文件目录与内容。</p></article></div>
+            </section>
+            <section class="view" id="view-reasoning" hidden aria-label="推理与调用">
+              <div class="panel skill-intro"><p class="eyebrow">YOUR METHODS, THEIR REASONING</p><h2>方法交给 AI，结论回到依据。</h2><p>星图提供推理方法、固定版本的材料和可追溯的证据。分析由你授权的其他 AI 应用执行，星图不会在后台自动生成结论。</p><div class="api-tags"><span>当前数据仓</span><span>按凭证授权</span><span>到期或随时撤销</span></div><button class="btn btn-secondary" data-view="api">创建统一知识 Key</button><button class="text-link" data-view="skills">管理当前仓的 Skill →</button></div>
+              <div class="native-reason-columns"><article class="panel"><p class="eyebrow">01 / 接入你的应用</p><h3>先发现方法，再固定材料范围</h3><p>基础地址与 Key 均沿用“接口开放”。统一知识 Key 同时支持材料信息、图谱、检索和推理资料接口，无需另建推理凭证。旧版 Key 保留原权限，需要完整能力时请新建统一知识 Key。</p><pre class="skill-source">POST /reasoning/discover
+{"arguments":{}}
+
+POST /reasoning/prepare
+{"arguments":{"skill_id":"你的方法ID",
+ "idempotency_key":"同次重试保持一致",
+ "document_ids":["当前仓材料ID"],
+ "detect":true}}
+
+Authorization: Bearer &lt;单仓访问凭证&gt;</pre><p>准备响应返回 preparation_id。之后用它读取引用、在固定范围检索和按页读取正文；方法、材料或权限变化后需重新准备。</p><dl class="reason-endpoints"><dt>/reference</dt><dd>读取方法声明的引用文件</dd><dt>/scope</dt><dd>查看固定的材料版本</dd><dt>/search · /evidence</dt><dd>范围内检索与读取证据</dd><dt>/read-document · /coverage</dt><dd>按页读取正文与查看覆盖</dd></dl><p class="muted">以上均为 POST /reasoning/…，正文为 arguments 对象。接口不允许导入、修改或删除方法。返回内容执行当前仓脱敏规则，不开放原文确认绕过。</p><p class="muted">detect:true 仅检查当前对象，可能由本仓已确认的在线检测模型处理未经脱敏的文本并产生用量；不会自动扫描全部资料。失败后应明确重试。</p></article>
+              <article class="panel"><p class="eyebrow">02 / 准备与试读</p><h3>检查方法与材料是否准备好</h3><p>使用当前万象账号试读受保护的接口响应，不会生成分析结论。</p><label>当前仓的 Skill<select id="reason-skill"></select></label><label>固定资料范围</label><div id="reason-documents" class="reason-documents"></div><button class="btn btn-primary" id="reason-prepare">准备并试读</button><button class="btn btn-secondary" id="reason-detect" hidden>检测当前方法并重试</button><p id="reason-status" role="status"></p><div id="reason-links"></div><form id="reason-search" hidden><label>在固定材料范围内检索<input id="reason-query" placeholder="输入关键词或问题" maxlength="2000" required /></label><button class="btn btn-secondary">检索证据</button></form><pre id="reason-result" class="skill-source">选择方法和资料后，查看固定版本与交付结果。</pre></article></div>
+            </section>
+            <dialog id="skill-delete-dialog"><h2>删除当前 Skill</h2><p id="skill-delete-description"></p><p>方法文件与发布版本将删除，相关准备记录立即失效。材料不会删除。</p><label>输入完整方法名称确认<input id="skill-delete-name" autocomplete="off" /></label><label><input id="skill-delete-dependents" type="checkbox" />同时允许本仓依赖此方法的其他 Skill 失效</label><div class="modal-actions"><button class="btn btn-secondary" id="skill-delete-cancel">取消</button><button class="btn btn-primary" id="skill-delete-confirm" disabled>确认删除 Skill</button></div></dialog>
+            <section class="view" id="view-models" hidden aria-label="模型与处理">
+              <div class="model-intro panel"><p class="eyebrow">STARLINK PROCESSING</p><h2>每一份知识，都知道由谁整理。</h2><p>查看处理模型、运行位置与实际记录。模型连接由万象统一管理，星图按数据仓使用。</p><p id="model-context" class="muted"></p></div>
+              <div id="model-status" role="status" class="model-status"></div>
+              <div id="model-stages" class="model-stages"></div>
+              <div class="panel model-editor"><h2>处理模型配置</h2>
+                <label>配置范围<select id="model-scope"><option value="warehouse">当前数据仓</option><option value="default">星图默认配置</option></select></label>
+                <label id="model-inherit-label"><input type="checkbox" id="model-inherit">继承星图默认配置</label>
+                <div id="model-selectors"><label>知识抽取与脱敏模型<select id="model-extraction"></select></label></div>
+                <p class="detail-note">知识抽取与脱敏检测共用同一个模型，选择一次，两项同时生效。</p>
+                <p id="model-impact" class="detail-note"></p>
+                <p class="detail-note">保存前使用合成文本检查连通性和 JSON 输出能力。新设置仅影响新任务；已有任务与重试保留原配置。</p>
+                <div class="actions"><button class="btn btn-primary" id="model-save">检查并保存</button><button class="btn btn-secondary" id="model-refresh">刷新模型</button><button class="text-link" id="model-manage">在万象管理模型 ↗</button></div>
+              </div>
+              <div class="panel model-editor"><h2>用当前模型重新处理</h2><p>已有结果继续可用，每份材料成功后再替换知识关系。失败或取消会保留原结果。</p><button class="btn btn-secondary" id="model-reprocess-all">重新处理当前仓全部材料</button></div>
+            </section>
+            <section class="view" id="view-data" hidden aria-label="数据仓管理">
+              <div class="warehouse-overview panel">
+                <div>
+                  <p class="eyebrow">YOUR LOCAL KNOWLEDGE WAREHOUSE</p>
+                  <h2 id="manage-name">数据仓</h2>
+                  <p id="manage-status" class="modal-warning" hidden></p>
+                  <p id="manage-description">
+                    你的原始资料、正文版本与知识来源，属于同一个数据仓。
+                  </p>
+                </div>
+                <div class="warehouse-stats" id="warehouse-stats"></div>
+              </div>
+              <div class="management-grid">
+                <article class="panel manage-card">
+                  <span class="manage-icon" data-icon="folder"></span>
+                  <p class="eyebrow">PORTABLE BY DESIGN</p>
+                  <h2>带着知识，去下一处。</h2>
+                  <p>
+                    导出 .xingtu
+                    迁移包，保留原始材料、正文版本、图谱关系与证据位置。可在另一台运行星图的本机或盒子迁入。
+                  </p>
+                  <div class="manage-actions">
+                    <button
+                      class="btn btn-primary"
+                      data-action="export-warehouse"
+                    >
+                      导出当前数据仓</button
+                    ><button
+                      class="btn btn-secondary"
+                      data-action="import-warehouse"
+                    >
+                      迁入数据仓
+                    </button>
+                  </div>
+                  <small
+                    >迁入会新建数据仓，并重新建立本地索引。迁移包包含原始资料，请妥善保管；不包含账号、模型或访问凭证。Skill 请在 Skill 管理单独下载 ZIP 迁移，不包含推理准备记录。</small
+                  >
+                </article>
+                <article class="panel manage-card">
+                  <span class="manage-icon" data-icon="activity"></span>
+                  <p class="eyebrow">PROCESSING MODELS</p>
+                  <h2>模型可见，处理可控。</h2>
+                  <p>
+                    资料通过万象当前连接传入本机或盒子，按当前配置抽取知识，并使用检索向量模型建立索引。
+                  </p>
+                  <button class="text-link" data-view="models">查看与配置处理模型 →</button>
+                  <div id="runtime-summary" class="runtime-summary">
+                    正在读取处理模型配置
+                  </div>
+                  <button class="text-link" data-view="tasks">
+                    查看处理任务 →
+                  </button>
+                  <p class="detail-note">
+                    历史资料保留其原有处理记录，新导入资料使用当前配置。
+                  </p>
+                </article>
+              </div>
+              <div class="panel transfer-panel" id="transfer-panel" hidden>
+                <div class="section-caption">
+                  <span>迁移进度</span
+                  ><button class="text-link" data-action="refresh-transfer">
+                    刷新
+                  </button>
+                </div>
+                <div id="transfer-state"></div>
+              </div>
+              <div class="danger-zone">
+                <div>
+                  <p class="eyebrow">CLEAR THIS WAREHOUSE</p>
+                  <h2>清空数据仓</h2>
+                  <p>
+                    移除当前仓内的全部材料、正文、知识关系和检索索引，并撤销其访问凭证。数据仓本身会保留，可重新导入资料。
+                  </p>
+                </div>
+                <button
+                  class="btn btn-danger-outline"
+                  data-action="prepare-clear"
+                >
+                  清空当前数据仓
+                </button>
+              </div>
+              <div class="danger-zone">
+                <div>
+                  <p class="eyebrow">DELETE THIS WAREHOUSE</p>
+                  <h2>删除数据仓</h2>
+                  <p>永久移除当前数据仓及仓内全部资料、知识和索引，并撤销访问凭证。删除后将从数据仓列表移除，其他数据仓不受影响。</p>
+                </div>
+                <button class="btn btn-danger-outline" data-action="prepare-delete">删除当前数据仓</button>
+              </div>
+            </section>
+            <section
+              class="view"
+              id="view-materials"
+              data-od-id="materials"
+              hidden
+            >
+              <div class="panel">
+                <div class="table-toolbar">
+                  <span style="font-size: 12px"
+                    >全部材料
+                    <span class="muted mono" id="documents-label">0</span></span
+                  ><label class="search-field"
+                    ><span data-icon="search"></span
+                    ><input
+                      id="document-query"
+                      placeholder="搜索本页材料"
+                      aria-label="搜索本页材料"
+                  /></label>
+                </div>
+                <div style="overflow: auto">
+                  <table class="document-table">
+                    <thead>
+                      <tr>
+                        <th>材料名称</th>
+                        <th>处理状态</th>
+                        <th class="optional">来源片段</th>
+                        <th class="mobile-hide">导入时间</th>
+                        <th style="width: 75px">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="documents-body"></tbody>
+                  </table>
+                </div>
+                <div class="list-pager" id="documents-pager" hidden></div>
+              </div>
+              <div class="upload-callout">
+                <div>
+                  <h2>每一份材料，都是知识的起点</h2>
+                  <p>
+                    支持文字、文档、图像与音频。解析后可校对正文，并保留原始来源位置。
+                  </p>
+                </div>
+                <button class="btn btn-secondary" data-action="import">
+                  <span data-icon="upload"></span>选择材料
+                </button>
+              </div>
+              <div class="page-footnote">
+                <span
+                  >材料通过万象当前连接传输，按当前数据仓的模型配置处理。</span
+                >
+              </div>
+            </section>
+            <section
+              class="view search-home"
+              id="view-search"
+              data-od-id="evidence-search"
+              hidden
+            >
+              <form id="search-form" class="query-box">
+                <textarea
+                  id="search-query"
+                  aria-label="检索问题"
+                  placeholder="输入问题或关键词，查找材料里有依据的信息…"
+                  required
+                  maxlength="2000"
+                ></textarea>
+                <div class="query-bottom">
+                  <span class="row" style="gap: 5px"
+                    ><span data-icon="shield"></span
+                    >检索材料与来源，保留证据位置</span
+                  ><button class="btn btn-primary" type="submit">
+                    <span data-icon="search"></span>检索证据
+                  </button>
+                </div>
+              </form>
+              <div
+                class="search-index-state muted small"
+                id="search-index-state"
+              >
+                正在读取检索索引状态
+              </div>
+              <div id="search-results" aria-live="polite">
+                <div class="empty" style="padding-top: 65px">
+                  <span
+                    data-icon="search"
+                    style="
+                      display: grid;
+                      place-items: center;
+                      margin-bottom: 14px;
+                    "
+                  ></span
+                  >从一个具体的问题开始<br /><span class="small"
+                    >找到相关片段，再查看它来自哪份材料。</span
+                  >
+                </div>
+              </div>
+            </section>
+            <section
+              class="view"
+              id="view-tasks"
+              data-od-id="processing-tasks"
+              hidden
+            >
+              <div class="panel">
+                <div class="table-toolbar">
+                  <span style="font-size: 12px"
+                    >最近任务
+                    <span class="muted mono" id="jobs-label">0</span></span
+                  ><button class="text-link" data-action="refresh">
+                    刷新任务
+                  </button>
+                </div>
+                <div id="tasks-body"></div>
+                <div class="list-pager" id="jobs-pager" hidden></div>
+              </div>
+              <div class="page-footnote">
+                <span
+                  ><span data-icon="info"></span
+                  >任务状态区分正文、索引和入图结果；正文可检索不等于图谱已就绪。</span
+                >
+              </div>
+            </section>
+            <section
+              class="view"
+              id="view-sensitive"
+              data-od-id="delivery-protection"
+              hidden
+            >
+              <div class="settings-grid">
+                <div class="panel settings-body">
+                  <h2>交付保护</h2>
+                  <div class="setting-row">
+                    <div>
+                      <strong>启用交付脱敏</strong>
+                      <p>
+                        在证据检索与对外知识调用中，根据规则处理敏感内容。本人浏览数据仓图谱时显示真实实体与来源。
+                      </p>
+                    </div>
+                    <button
+                      class="switch"
+                      role="switch"
+                      aria-checked="true"
+                      aria-label="启用交付脱敏"
+                      data-setting="protection"
+                    ></button>
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <strong>使用 LLM 识别语义敏感信息</strong>
+                      <p>与知识抽取共用模型连接。检测未完成的内容暂缓交付。</p>
+                    </div>
+                    <button
+                      class="switch"
+                      role="switch"
+                      aria-checked="true"
+                      aria-label="使用LLM识别语义敏感信息"
+                      data-setting="semantic"
+                    ></button>
+                  </div>
+                  <div id="sensitive-rules"></div>
+                  <div class="section-caption" hidden style="margin-top: 25px">
+                    <span>当前工作空间规则</span
+                    ><span class="muted">命中后自动处理</span>
+                  </div>
+                  <p class="modal-warning">
+                    开关保存后由盒端安排检测。检测未完成或失败的内容不会被当作已安全交付。
+                  </p>
+                </div>
+                <aside class="settings-note">
+                  <p class="eyebrow">KNOWLEDGE, WITH BOUNDARIES</p>
+                  <h3>让知识流动，也保留边界</h3>
+                  <p>先完成材料处理和敏感识别，再交付符合规则的知识与证据。</p>
+                  <div class="flow-list">
+                    <div class="flow-item">
+                      <span>01</span><span>解析材料与来源</span>
+                    </div>
+                    <div class="flow-item">
+                      <span>02</span><span>检测需要保护的内容</span>
+                    </div>
+                    <div class="flow-item">
+                      <span>03</span><span>按规则交付结果</span>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+    <dialog id="import-dialog" aria-labelledby="import-title">
+      <div class="modal-head">
+        <h2 id="import-title">导入材料</h2>
+        <button
+          class="icon-btn"
+          data-close="import-dialog"
+          aria-label="关闭导入"
+          data-icon="close"
+        ></button>
+      </div>
+      <p class="modal-intro">
+        材料将导入当前数据仓，按所选模型配置整理为可追溯的知识。
+      </p>
+      <div class="import-context" id="import-context"></div>
+      <div class="import-tabs" role="group" aria-label="材料来源">
+        <button class="btn btn-secondary active" id="source-space" aria-pressed="true">从万象空间选择</button>
+        <button class="btn btn-secondary" id="source-computer" aria-pressed="false">从电脑选择</button>
+      </div>
+      <section id="space-browser" aria-label="万象空间文件选择">
+        <div class="space-toolbar">
+          <nav id="space-breadcrumbs" aria-label="万象空间文件夹"></nav>
+          <button class="text-link" id="space-refresh">刷新</button>
+        </div>
+        <input id="space-query" class="space-query" type="search" placeholder="搜索当前文件夹…" aria-label="搜索当前文件夹" />
+        <div id="space-status" role="status" aria-live="polite"></div>
+        <div id="space-entries" class="space-entries" aria-label="万象空间文件"></div>
+      </section>
+      <div class="drop-zone" id="computer-browser" hidden>
+        <span data-icon="upload"></span>
+        <p><button class="text-link" id="choose-files">选择电脑文件</button></p>
+        <small>文件将复制到当前数据仓，原文件保持不变。</small>
+      </div>
+      <p id="import-formats" class="import-formats">正在读取支持的格式与大小限制</p>
+      <div class="import-selection-heading"><strong id="import-selection-count">已选 0 份材料</strong><span>可跨文件夹选择</span></div>
+      <div class="import-model"><p id="import-model-summary" class="muted">正在读取处理模型…</p><button class="text-link" id="import-model-config" type="button">配置模型与处理 ↗</button></div>
+      <div class="file-list" id="file-list" aria-live="polite"></div>
+      <p class="modal-warning">
+        点击“导入并处理”后读取文件副本，由模型整理。万象空间原文件保持不变；后续修改不会自动同步。
+      </p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" data-close="import-dialog">
+          取消</button
+        ><button class="btn btn-primary" id="confirm-import" disabled>
+          导入并处理
+        </button>
+      </div>
+    </dialog>
+    <dialog
+      class="source-modal"
+      id="source-dialog"
+      aria-labelledby="source-title"
+    >
+      <div class="modal-head">
+        <h2 id="source-title">材料来源</h2>
+        <button
+          class="icon-btn"
+          data-close="source-dialog"
+          aria-label="关闭来源"
+          data-icon="close"
+        ></button>
+      </div>
+      <div id="source-body"></div>
+      <div class="modal-actions" id="source-actions"></div>
+    </dialog>
+    <dialog id="help-dialog" aria-labelledby="help-title">
+      <div class="modal-head">
+        <h2 id="help-title">从材料到有据可查的知识</h2>
+        <button
+          class="icon-btn"
+          data-close="help-dialog"
+          aria-label="关闭说明"
+          data-icon="close"
+        ></button>
+      </div>
+      <p class="modal-intro">半人马·星图 STARLINK · 本地知识数据仓</p>
+      <p class="modal-intro">让知识相连，让发现有据。</p>
+      <div class="help-grid">
+        <div class="help-item">
+          01 &nbsp; 材料与校对
+          <p>导入材料，查看解析正文及来源位置；校对后保留新版本。</p>
+        </div>
+        <div class="help-item">
+          02 &nbsp; 知识图谱
+          <p>
+            点击节点查看相关关系，点击连线查看来源。可筛选、搜索、缩放与拖动画布。
+          </p>
+        </div>
+        <div class="help-item">
+          03 &nbsp; 证据检索
+          <p>组合向量、关键词和知识关系查找证据，打开来源核对。</p>
+        </div>
+      </div>
+      <p class="modal-warning">
+        账号与盒子连接由万象管理。切换盒子、断开或退出账号后，本应用会清空当前页面，请从万象重新打开。
+      </p>
+    </dialog>
+    <dialog id="warehouse-picker" class="warehouse-picker" aria-labelledby="warehouse-picker-title">
+      <div class="modal-head"><div><p class="eyebrow">YOUR KNOWLEDGE SPACES</p><h2 id="warehouse-picker-title">切换数据仓</h2></div><button class="icon-btn" data-close="warehouse-picker" aria-label="关闭数据仓切换" data-icon="close"></button></div>
+      <p class="modal-intro">选择一座数据仓，继续探索它的资料与知识。</p>
+      <label class="warehouse-find"><span data-icon="search"></span><input id="warehouse-picker-query" type="search" placeholder="输入仓名或说明，快速找到它" aria-label="搜索要切换的数据仓" /></label>
+      <div id="warehouse-picker-list" class="warehouse-picker-list"></div>
+      <p class="warehouse-picker-empty" id="warehouse-picker-empty" hidden>没有找到匹配的数据仓。</p>
+      <div class="warehouse-picker-footer"><button class="text-link" data-action="all-warehouses">查看全部数据仓<span data-icon="arrow"></span></button><button class="btn btn-secondary" data-action="new-warehouse"><span data-icon="plus"></span>新建数据仓</button></div>
+    </dialog>
+    <dialog id="warehouse-dialog" aria-labelledby="warehouse-title">
+      <div class="modal-head">
+        <h2 id="warehouse-title">建立你的数据仓</h2>
+        <button
+          class="icon-btn"
+          data-close="warehouse-dialog"
+          aria-label="关闭新建数据仓"
+          data-icon="close"
+        ></button>
+      </div>
+      <p class="modal-intro">
+        以一个项目、主题或知识领域为起点。各个数据仓的资料、图谱与授权彼此独立。
+      </p>
+      <form id="warehouse-form">
+        <label class="field-label" for="warehouse-name">数据仓名称</label
+        ><input
+          class="form-input"
+          id="warehouse-name"
+          placeholder="例如：产品研究"
+          maxlength="60"
+          required
+        /><label class="field-label" for="warehouse-description"
+          >一句话说明（选填）</label
+        ><textarea
+          class="form-input"
+          id="warehouse-description"
+          placeholder="这个仓中将保存哪些知识？"
+          maxlength="500"
+        ></textarea>
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            data-close="warehouse-dialog"
+          >
+            取消</button
+          ><button class="btn btn-primary" type="submit">创建数据仓</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="key-dialog" aria-labelledby="key-title">
+      <div class="modal-head">
+        <h2 id="key-title">创建统一知识 Key</h2>
+        <button
+          class="icon-btn"
+          data-close="key-dialog"
+          aria-label="关闭访问凭证"
+          data-icon="close"
+        ></button>
+      </div>
+      <p class="modal-intro" id="key-context">一个 Key 可调用当前仓全部对外知识能力，凭证明文只显示一次。</p>
+      <form id="key-form">
+        <label class="field-label" for="key-name">使用方名称</label
+        ><input
+          class="form-input"
+          id="key-name"
+          placeholder="例如：我的研究助手"
+          maxlength="60"
+          required
+        />
+        <div class="modal-intro">
+          <strong>已包含全部对外知识能力</strong>
+          <p>材料信息与仓概况 · 知识图谱 · 证据检索与详情 · Skill 方法与引用 · 固定版本正文与覆盖记录。</p>
+          <p>资料遵循本仓脱敏规则。显式请求内容检测时，可能将未经脱敏的片段发送至本仓已确认的模型并产生用量。Key 不提供跨仓访问、导入、删除或模型管理权限。</p>
+        </div>
+        <label class="field-label" for="key-days">有效期</label
+        ><select class="form-input" id="key-days">
+          <option value="30">30 天</option>
+          <option value="7">7 天</option>
+          <option value="90">90 天</option>
+          <option value="365">365 天</option>
+        </select>
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            data-close="key-dialog"
+          >
+            取消</button
+          ><button class="btn btn-primary" type="submit">创建统一知识 Key</button>
+        </div>
+      </form>
+      <div id="new-key-secret" hidden></div>
+    </dialog>
+    <dialog id="clear-dialog" aria-labelledby="clear-title">
+      <div class="modal-head">
+        <h2 id="clear-title">清空当前数据仓？</h2>
+        <button
+          class="icon-btn"
+          data-close="clear-dialog"
+          aria-label="取消清空"
+          data-icon="close"
+        ></button>
+      </div>
+      <div id="clear-scope"></div>
+      <div id="clear-second" hidden>
+        <label class="field-label" for="clear-name"
+          >请输入完整数据仓名称以确认</label
+        ><input
+          class="form-input"
+          id="clear-name"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p class="danger-copy">
+          此操作无法撤销。确认前请先导出需要保留的资料。
+        </p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" data-close="clear-dialog">
+          保留数据</button
+        ><button class="btn btn-danger" id="clear-next">继续确认</button>
+      </div>
+    </dialog>
+    <div class="toast" id="toast" role="status" hidden></div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

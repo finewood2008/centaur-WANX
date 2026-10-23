@@ -1,0 +1,4 @@
+import{test}from'node:test';import assert from'node:assert/strict';import{createRecoveryState}from'../ui/recovery-state.mjs';
+test('only an actual renderer failure arms one-time restoration of the current project',()=>{const r=createRecoveryState();r.note('account/box','project');assert.equal(r.consume('account/box'),null);r.arm();assert.equal(r.consume('account/box'),'project');assert.equal(r.consume('account/box'),null)});
+test('a changed account or box must never restore the old project',()=>{const r=createRecoveryState();r.note('old-account/box','private-project');r.arm();assert.equal(r.consume('other-account/box'),null);r.arm();assert.equal(r.consume('old-account/box'),null)});
+test('logout and explicit new project clear previous recovery intentions',()=>{const r=createRecoveryState();r.note('scope','old');r.clear();r.arm();assert.equal(r.consume('scope'),null);r.note('scope',null);r.arm();assert.equal(r.consume('scope'),null)});

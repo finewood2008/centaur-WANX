@@ -1,0 +1,45 @@
+{
+  "note": "Test-only public key. Private key discarded. Never configure as production trust.",
+  "trustedKeys": {
+    "fixture-only": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAOTd5vUok8vN9mr1TDQSGIcPCAdFRoWiAqn6MqhJNf00=\n-----END PUBLIC KEY-----\n"
+  },
+  "envelope": {
+    "keyId": "fixture-only",
+    "descriptorBase64": "eyJzY2hlbWFWZXJzaW9uIjoxLCJhcnRpZmFjdElkIjoiODkwYWQ1MTEtNjc3OC00M2E0LWFmNTYtMjJmNWExYmE4YzJkIiwiaG9zdFByb3RvY29sIjoxLCJtaW5XYW54VmVyc2lvbiI6IjAuMS4wIiwiYXBwbGljYXRpb25JZCI6ImV4YW1wbGUubWFya2V0LWZpeHR1cmUiLCJ2ZXJzaW9uIjoiMS4yLjMiLCJvcyI6Im1hY29zIiwiYXJjaCI6ImFybTY0IiwicGFja2FnZVR5cGUiOiJ3YW54YXBwIiwiZmlsZU5hbWUiOiJleGFtcGxlLm1hcmtldC1maXh0dXJlLTEuMi4zLW1hY29zLWFybTY0LndhbnhhcHAiLCJtYW5pZmVzdCI6eyJhcHBsaWNhdGlvbklkIjoiZXhhbXBsZS5tYXJrZXQtZml4dHVyZSIsIm5hbWUiOiJNYXJrZXQgZml4dHVyZSIsInZlcnNpb24iOiIxLjIuMyIsInByb3RvY29sVmVyc2lvbiI6MSwicnVudGltZSI6ImVsZWN0cm9uIiwiZW50cnlwb2ludCI6Im1haW4ubWpzIiwiY2FwYWJpbGl0aWVzIjpbImlkZW50aXR5LnJlYWQiXSwiZGVzY3JpcHRpb24iOiIifSwic2hhMjU2IjoiMDE2ZWNlYWQxZGZlY2JiYzNkOTZkYjUxY2JmOWNiZWUzZTc3MGNmN2IwMzc4NTRiNTVjODI0YmQ3YzhhYzEyMCIsInNpemUiOjQzN30=",
+    "signatureBase64": "7IVwHgD9fRulDMR8nwTdUO87jtOBqENU4KdX03ZRkjmtqmGl0AwrZvBFxUDOpYS+RvyzfZ5Ad41Jhi5MjNacBA=="
+  },
+  "archiveBase64": "UEsDBBQACAgIAABAIVAAAAAAAAAAAAAAAAAIAAAAbWFpbi5tanNLrSjILypRSM7PKy5RSMusKCktSlWwVSgpKk215gIAUEsHCID81FAfAAAAHQAAAFBLAwQUAAAICADWakxd1f1lxJwAAADwAAAADQAAAHdhbngtYXBwLmpzb25Vzj0KAjEQhuHeU4TUGljtvIGFrY1YjMkIo/ljMiu7iHc3yYpg+z5fhrxWSmnI2ZMFoRQPTu+VxglC9mgC8ANlc6NJRka9buMIAdvm2E392RO51CONB7M1u6VmTpJs8qefDr3zGIWWY+jRClfrgFF4zomiNAtA0YR7WcxChit5EsJS9VxbreTqG5LZMILTtV362GGxTFm+f9Kr9wdQSwECPwMUAAgICAAAQCFQgPzUUB8AAAAdAAAACAAJAAAAAAAAAAAApIEAAAAAbWFpbi5tanNVVAUAAwDhC15QSwECPwMUAAAICADWakxd1f1lxJwAAADwAAAADQAJAAAAAAAAAAAAtIFVAAAAd2FueC1hcHAuanNvblVUBQADpW7MalBLBQYAAAAAAgACAIMAAAAcAQAAAAA=",
+  "versionComparisons": [
+    [
+      "1.9.0",
+      "1.10.0",
+      -1
+    ],
+    [
+      "1.0.0-rc.1",
+      "1.0.0",
+      -1
+    ],
+    [
+      "1.0.0+build.9",
+      "1.0.0+build.10",
+      0
+    ],
+    [
+      "2.0.0",
+      "1.99.99",
+      1
+    ],
+    [
+      "1.0.0-beta.2",
+      "1.0.0-beta.11",
+      -1
+    ]
+  ],
+  "invalidVersions": [
+    "v1.0.0",
+    "1.0",
+    "01.0.0",
+    "1.0.0-01"
+  ]
+}

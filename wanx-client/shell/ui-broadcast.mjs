@@ -1,7 +1,7 @@
 // Account and connection state must reach the UI without waiting for disk reads
 // or an app installation. Installed apps refresh in the background and publish
 // separately; reads from a previous account/connection can never replace them.
-export function createUIBroadcast({ client, applications, uiState, startup, updates, defaultApplications, windows, onError = () => {} }) {
+export function createUIBroadcast({ client, applications, uiState, startup, updates, defaultApplications, notifications, windows, onError = () => {} }) {
   let closed = false, scope, installed = [], reading = null, refreshAgain = false;
   function snapshot() {
     const state = client.snapshot();
@@ -14,6 +14,7 @@ export function createUIBroadcast({ client, applications, uiState, startup, upda
       refreshAgain = false;
     }
     return { ...state, applications: structuredClone(installed), ui: uiState.snapshot(), desktopStartup: startup.get(),
+      ...(notifications ? { notifications: notifications.snapshot() } : {}),
       ...(defaultApplications ? { defaultApplications: defaultApplications.snapshot() } : {}),
       ...(updates ? { upgrades: { client: updates.client.snapshot(), box: updates.box.snapshot() } } : {}) };
   }

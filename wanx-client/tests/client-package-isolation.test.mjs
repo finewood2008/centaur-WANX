@@ -23,7 +23,7 @@ test("source manifest retains the production entry, build configuration and upda
   const snapshot = await readSourceClientManifest(root);
   assert.equal(snapshot.pkg.name, "centuarai-wanx-client");
   assert.equal(snapshot.pkg.main, "shell/entry.mjs");
-  assert.equal(snapshot.pkg.build.productName, "万象");
+  assert.equal(snapshot.pkg.build.productName, "万象个人版");
   assert.equal(snapshot.pkg.dependencies["electron-updater"], "6.8.9");
   assert.ok(snapshot.pkg.build.files.includes("updates/**"));
   await assertSourceClientManifestUnchanged(snapshot);

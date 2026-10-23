@@ -126,6 +126,20 @@ class ApplicationService:
         self.get(user, application_id)
         product = self._response(application_id)
         self._validate_bindings(product, body)
+        if "studio_team_data" in body.configuration:
+            from octop.infra.semantica.client import SemanticaError
+            from octop.infra.semantica.team_data import store_bindings
+
+            try:
+                body = body.model_copy(
+                    update={
+                        "configuration": store_bindings(
+                            self.services, user, application_id, body.configuration
+                        )
+                    }
+                )
+            except SemanticaError as exc:
+                raise OctopError(ErrorCode.APPLICATION_INVALID, exc.code) from None
         row = self.repo.put_deployment(application_id, body.model_dump())
         self._audit(user, "application.deployment.update", application_id)
         return DeploymentResponse.model_validate(row)
