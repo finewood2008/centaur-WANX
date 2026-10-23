@@ -134,17 +134,23 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     return raw ? { bytes, headers: response.headers } : value;
   }
   async function refresh() {
-    const connection = await connect(), epoch = generation;
-    phase = "loading"; error = null; notify();
+    sync();
+    const epoch = generation, current = () => epoch === generation && !closed;
     try {
+      const connection = await connect();
+      if (!current()) return snapshot();
+      phase = "loading"; error = null; notify();
       const result = await request(connection, "/overview");
+      if (!current()) return snapshot();
       if (result?.protocolVersion !== 1) throw fail("SPACE_UPGRADE_REQUIRED");
-      if (epoch !== generation) throw fail("SPACE_CONTEXT_CHANGED");
       overview = result; phase = "ready";
     } catch (cause) {
-      if (epoch === generation) { phase = cause.code === "SPACE_UPGRADE_REQUIRED" ? "unsupported" : "error"; error = cause.code || "SPACE_REQUEST_FAILED"; }
+      // A superseded read is canceled, including same-box network recovery.
+      // Keep the connection/write guards strict; never publish its stale result.
+      if (!current()) return snapshot();
+      phase = cause.code === "SPACE_UPGRADE_REQUIRED" ? "unsupported" : "error"; error = cause.code || "SPACE_REQUEST_FAILED";
       throw cause;
-    } finally { notify(); }
+    } finally { if (current()) notify(); }
     return snapshot();
   }
   async function operation(action, input = {}) {
