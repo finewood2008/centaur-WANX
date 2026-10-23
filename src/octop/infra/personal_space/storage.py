@@ -153,6 +153,15 @@ def cleanup(service: Any, paths: list[Path]) -> int:
                     "SELECT 1 FROM entries WHERE COALESCE(blob,id)=? OR previous_blob=? UNION SELECT 1 FROM uploads WHERE id=? AND state='pending'",
                     (blob, blob, blob),
                 ).fetchone()
+                if (
+                    not referenced
+                    and db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='space_sync_records'"
+                    ).fetchone()
+                ):
+                    referenced = db.execute(
+                        "SELECT 1 FROM space_sync_records WHERE blob=?", (blob,)
+                    ).fetchone()
                 # A second migration may have moved this object back after our commit.
                 if referenced and service._object(blob, path.suffix == ".part") == path:
                     continue
@@ -181,6 +190,12 @@ def set_storage(service: Any, space_id: str, base: str) -> dict[str, Any]:
                         row["previous_digest"] or "",
                     )
             blobs = set(required)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='space_sync_records'").fetchone():
+                for record in db.execute(
+                    "SELECT blob,size,digest FROM space_sync_records WHERE space_id=?", (space_id,)
+                ):
+                    required[record["blob"]] = (record["size"], record["digest"])
+                blobs.update(required)
             blobs.update(
                 r[0]
                 for r in db.execute(

@@ -62,6 +62,7 @@ export function consumerSignature({
 }
 
 const ownershipId = (value) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(value);
+const claimDeviceId = (value) => typeof value === "string" && /^[A-Za-z0-9._-]{1,36}$/.test(value) && ![".", ".."].includes(value);
 function transferView(value) {
   if (!value || !ownershipId(value.transferId) || !ownershipId(value.deviceId) ||
       !["incoming", "outgoing"].includes(value.direction) ||
@@ -94,6 +95,7 @@ export function createAccount({
   platform = process.platform,
   deviceModel = "万象连接",
   now = Date.now,
+  measure = (_step, operation) => operation(),
 } = {}) {
   let base;
   try {
@@ -311,7 +313,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         if (missingNetworkRoute)
@@ -320,7 +322,7 @@ export function createAccount({
           throw failure("MARKET_SERVICE_NOT_DEPLOYED", 404);
         if (missingUpgradeRoute)
           throw failure("UPDATE_SERVICE_NOT_DEPLOYED", 404);
-        throw failure("ACCOUNT_INVALID_RESPONSE");
+        throw failure(response.ok ? "ACCOUNT_INVALID_RESPONSE" : response.status === 401 ? "ACCOUNT_SESSION_EXPIRED" : response.status === 403 ? "ACCOUNT_ACCESS_DENIED" : "ACCOUNT_REQUEST_FAILED", response.ok ? undefined : response.status);
       }
       checkGeneration();
       let metadata;
@@ -372,6 +374,8 @@ export function createAccount({
         const explicitSupportCode = supportRoute && ["OWNER_REQUIRED", "OWNER_CHANGED", "DEVICE_NOT_FOUND", "DEVICE_DISABLED",
           "SUPPORT_REQUEST_NOT_FOUND", "REQUEST_DIGEST_MISMATCH", "REQUEST_EXPIRED", "DECISION_CONFLICT", "SUPPORT_NOT_ACTIVE",
           "SUPPORT_AUTHORIZATION_BUSY"].includes(remoteCode);
+        const explicitConsoleClaimCode = path === "/app-api/device-console-claims/redeem" &&
+          typeof remoteCode === "string" && /^(CONSOLE_CLAIM_[A-Z0-9_]{1,64}|OWNER_ALREADY_CHANGED|IDEMPOTENCY_CONFLICT)$/.test(remoteCode);
         const explicitNetworkCode =
           typeof remoteCode === "string" &&
           /^NETWORK_[A-Z0-9_]{1,64}$/.test(remoteCode);
@@ -385,7 +389,8 @@ export function createAccount({
           "EVENT_SEQUENCE_INVALID", "RELEASE_UNAVAILABLE", "UPDATE_NOT_CONFIGURED",
         ].includes(remoteCode);
         const code =
-          explicitSupportCode ? remoteCode
+          explicitConsoleClaimCode ? remoteCode
+            : explicitSupportCode ? remoteCode
             : explicitUpgradeCode ? remoteCode
             : missingUpgradeRoute ? "UPDATE_SERVICE_NOT_DEPLOYED"
             : path === "/app-api/auth/sms/send" && payload.code === 602
@@ -498,18 +503,28 @@ export function createAccount({
       if (generation === epoch) refreshPromise = null;
     }
   }
+  function measureCreditRequest(input, operation) {
+    const path = input?.path || '';
+    if (!path.startsWith('/app-api/v1/credits/')) return operation();
+    let step = 'credit.payment.status';
+    if (input.method === 'POST' && path === '/app-api/v1/credits/orders') step = 'credit.payment.create';
+    else if (input.method === 'POST' && /\/orders\/[^/]+\/close$/.test(path)) step = 'credit.payment.close';
+    else if (path.endsWith('/catalog') || path.endsWith('/catalog/v2')) step = 'credit.checkout.catalog';
+    return measure(step, operation);
+  }
+
   async function request(input) {
     const generation = epoch;
     if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
     if (record.session.expiresAt <= now() + 30000) await refresh();
     assert(generation);
     try {
-      return await wire({ ...input, authenticated: true }, generation);
+      return await measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
     } catch (error) {
       if (error.status !== 401) throw error;
       await refresh();
       assert(generation);
-      return wire({ ...input, authenticated: true }, generation);
+      return measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
     }
   }
   async function login(input, mode) {
@@ -531,20 +546,25 @@ export function createAccount({
     // Logout revokes every server session for this client. Never let its late
     // response invalidate a freshly issued session for the same identity.
     const beforeCleanup = epoch;
-    await logoutCleanup;
-    await passwordUpdate?.catch(() => {});
+    await measure("account.login.cleanup", async () => {
+      await logoutCleanup;
+      await passwordUpdate?.catch(() => {});
+    });
     assert(beforeCleanup);
     cancel();
     const generation = epoch;
     publish({ phase: "authenticating", reason: null });
     try {
-      await loadVault(generation);
-      const identity = vault.accounts[input.phone]?.identity || newIdentity();
-      if (!vault.accounts[input.phone]) {
-        await persist({ phone: input.phone, identity, session: null });
-        assert(generation);
-      }
-      const data = await wire(
+      const identity = await measure("account.login.local", async () => {
+        await loadVault(generation);
+        const value = vault.accounts[input.phone]?.identity || newIdentity();
+        if (!vault.accounts[input.phone]) {
+          await persist({ phone: input.phone, identity: value, session: null });
+          assert(generation);
+        }
+        return value;
+      });
+      const data = await measure("account.login.request", () => wire(
         {
           method: "POST",
           path: mode === "register" ? "/app-api/auth/password/register" : `/app-api/auth/${mode}/login`,
@@ -567,17 +587,17 @@ export function createAccount({
           },
         },
         generation,
-      );
+      ));
       const next = {
         phone: input.phone,
         identity,
         session: sessionFrom(data, identity),
       };
-      await persist(next, mode === "password" ? {
+      await measure("account.login.persist", () => persist(next, mode === "password" ? {
         rememberedLogin: input.remember === true
           ? { remember: true, phone: input.phone, password: input.password }
           : { remember: false },
-      } : {});
+      } : {}));
       assert(generation);
       record = next;
       return publish({
@@ -771,6 +791,47 @@ export function createAccount({
       );
       return { expiresIn: Number(result?.expiresIn) || 300 };
     },
+    async redeemConsoleClaim({ claimCode, clientAttemptId, expectedDeviceId, signal } = {}) {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (typeof claimCode !== "string" || !/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(claimCode) ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(clientAttemptId || "") ||
+          (expectedDeviceId !== undefined && !claimDeviceId(expectedDeviceId)))
+        throw failure("ACCOUNT_INVALID_INPUT");
+      signal?.throwIfAborted();
+      const data = await request({ method: "POST", path: "/app-api/device-console-claims/redeem",
+        body: { claimCode, clientAttemptId, ...(expectedDeviceId === undefined ? {} : { expectedDeviceId }) },
+        idempotencyKey: clientAttemptId, signal });
+      signal?.throwIfAborted();
+      if (!claimDeviceId(data?.deviceId) || data.ownership !== "claimed" ||
+          (expectedDeviceId !== undefined && data.deviceId !== expectedDeviceId) ||
+          (data.authorizationState !== undefined && !["deviceAckPending", "ready", "blocked"].includes(data.authorizationState)))
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      return { deviceId: data.deviceId, ownership: data.ownership,
+        authorizationState: data.authorizationState ?? "deviceAckPending" };
+    },
+    async getConsoleClaimAuthorization(deviceId, signal) {
+      if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      if (!claimDeviceId(deviceId)) throw failure("ACCOUNT_INVALID_INPUT");
+      const generation = epoch, accountId = record.session.accountId, clientId = record.identity.clientId;
+      signal?.throwIfAborted();
+      const result = await request({ path: "/app-api/v1/sync/bootstrap", signal, responseMetadata: true });
+      assert(generation);
+      signal?.throwIfAborted();
+      const data = result.data, currentClient = data?.account?.currentClient;
+      if (data?.account?.accountId !== accountId || currentClient?.clientId !== clientId ||
+          currentClient.isCurrent !== true || data.account.accountStatus !== "active" ||
+          currentClient.clientStatus !== "active" || currentClient.hasActiveSession !== true || !Array.isArray(data.devices))
+        throw failure("ACCOUNT_INVALID_RESPONSE");
+      const matching = data.devices.filter(device => device?.deviceId === deviceId);
+      if (matching.length > 1) throw failure("ACCOUNT_INVALID_RESPONSE");
+      const device = matching[0];
+      let authorizationState = "deviceAckPending";
+      if (device?.accessStatus === "blocked" || ["disabled", "quarantined"].includes(device?.securityStatus) ||
+          device?.ownershipStatus === "releasePending") authorizationState = "blocked";
+      else if (device?.accessStatus === "ready" && device.ownershipStatus === "active" &&
+          device.securityStatus === "normal" && device.capabilities?.canConnect?.enabled === true) authorizationState = "ready";
+      return { deviceId, authorizationState };
+    },
     async listOwnershipTransfers() {
       const data = await request({ path: "/app-api/ownership/transfers" });
       if (!Array.isArray(data)) throw failure("ACCOUNT_INVALID_RESPONSE");
@@ -901,7 +962,7 @@ export function createAccount({
         throw error;
       }
     },
-    async logout({ revokeNetwork = false } = {}) {
+    async logout() {
       const previous = record;
       cancel();
       const generation = epoch;
@@ -911,17 +972,12 @@ export function createAccount({
       // the old credentials; new logins wait for it before issuing requests.
       const cleared = persist(null);
       if (previous?.session) {
-        const requests = [
-          ...(revokeNetwork ? [{ method: "DELETE", path: "/app-api/network/current" }] : []),
-          { method: "POST", path: "/app-api/auth/logout", body: { refreshToken: previous.session.refreshToken } },
-        ];
-        const cleanup = (async () => {
-          // Network revocation needs the old authentication to remain valid.
-          // Attempt logout even if network cleanup fails or times out.
-          for (const input of requests) {
-            await wire(input, generation, previous, true).catch(() => {});
-          }
-        })().then(() => {
+        // Auth logout advances the server client-session version, invalidating
+        // its network enrollment too. The server reconciler removes old peers;
+        // waiting for network/current here would block account login on P2P.
+        const cleanup = wire({ method: "POST", path: "/app-api/auth/logout",
+          body: { refreshToken: previous.session.refreshToken } }, generation, previous, true)
+          .catch(() => {}).then(() => {
           if (!closed && logoutCleanup === cleanup) publish({ logoutPending: false });
         });
         logoutCleanup = cleanup;

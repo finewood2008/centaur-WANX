@@ -722,7 +722,7 @@ test("network 404 distinguishes an undeployed API from a missing enrollment", as
 });
 
 
-test("logout clears local credentials immediately and drains old revocations before a new login", async t => {
+test("logout clears local credentials immediately and drains auth revocation before a new login", async t => {
   const store = memoryStore();
   const calls = [], releases = new Map();
   let loginCount = 0;
@@ -741,12 +741,13 @@ test("logout clears local credentials immediately and drains old revocations bef
     await account.close();
   });
   await account.loginPassword({ phone: "13800138000", password: "password-test" });
-  await account.logout({ revokeNetwork: true });
+  await account.logout();
   assert.equal(account.snapshot().phase, "signed_out");
   assert.equal(account.snapshot().logoutPending, true);
   assert.equal(account.getIdentity(), null);
   assert.equal((await store.load()).active, null);
-  assert.deepEqual(calls.slice(1).map(call => call.options.method), ["DELETE"]);
+  assert.deepEqual(calls.slice(1).map(call => call.options.method), ["POST"]);
+  assert.equal(calls[1].url.endsWith("/auth/logout"), true);
   assert.equal(calls[1].options.headers.Authorization, "Bearer access-1");
   assert.ok(calls[1].options.headers["X-Nexus-Signature"]);
   await account.logout(); // A repeated logout must not abort the captured cleanup.
@@ -754,12 +755,7 @@ test("logout clears local credentials immediately and drains old revocations bef
   const login = account.loginPassword({ phone: "13800138000", password: "password-test" });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(loginCount, 1, "a late server logout can revoke a newly created session");
-  releases.get("/prod-api/app-api/network/current")(reply({}, 503));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(loginCount, 1, "authentication revocation must finish before issuing a new session");
-  assert.equal(calls[2].options.headers.Authorization, "Bearer access-1");
-  assert.ok(calls[2].options.headers["X-Nexus-Signature"]);
-  assert.equal(calls[2].body.refreshToken, "refresh-1");
+  assert.equal(calls[1].body.refreshToken, "refresh-1");
   releases.get("/prod-api/app-api/auth/logout")(reply({}));
   await login;
   assert.equal(account.snapshot().logoutPending, false);
@@ -958,4 +954,21 @@ test("switching between two platform accounts restores only each account's local
   await login('13800138000');
   assert.equal(account.snapshot().profile.displayName, '账号甲');
   assert.equal(account.snapshot().profile.avatarDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+});
+
+test('cloud HTML or malformed errors retain HTTP status without leaking response text', async () => {
+  const store=memoryStore(),setup=fixture({store});
+  await setup.account.loginSMS({phone:'13800138000',code:'123456'});
+  let status=503,body='<html>private upstream detail</html>';
+  const account=createAccount({store,fetch:async url=>{
+    if(url.endsWith('/auth/refresh')){const saved=await store.load();return reply({...saved.active.session,expiresIn:3600});}
+    return new Response(body,{status});
+  }});
+  await account.restore();
+  for(status of [429,502,503,504,401,403]) for(body of ['<html>private upstream detail</html>','null','[]']) {
+    await assert.rejects(account.request({path:'/app-api/network/restore'}),error=>{
+      assert.equal(error.status,status);assert.equal(error.code,status===401?'ACCOUNT_SESSION_EXPIRED':status===403?'ACCOUNT_ACCESS_DENIED':'ACCOUNT_REQUEST_FAILED');
+      assert.ok(!error.message.includes('private'));return true;
+    });
+  }
 });

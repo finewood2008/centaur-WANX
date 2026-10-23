@@ -39,8 +39,23 @@ test("Agent MCP advertises directory destinations and observed-version recycle r
   assert.match(tool.inputSchema.properties.parent.description, /mkdir.*alias/);
   assert.match(tool.inputSchema.properties.expected.description, /trash returns the updated version/);
   assert.match(tool.description, /stat.*recycled/);
+  assert.ok(tools.find(t => t.name === 'clipboard_list'));
+  assert.ok(tools.find(t => t.name === 'clipboard_read'));
+  assert.ok(!tools.some(t => /^clipboard_(write|delete|pin|manage)$/.test(t.name)));
+  assert.match(init.instructions, /read-only shared clipboard/);
   const stat = await rpc("tools/call", { name: "space", arguments: { action: "stat", target: "file" } });
   const entry = JSON.parse(stat.content[0].text);
   await rpc("tools/call", { name: "space", arguments: { action: "restore", target: entry.id, expected: entry.version } });
   assert.deepEqual(calls, [{ action: "stat", target: "file" }, { action: "restore", target: "file", expected: 7 }]);
+  await rpc('tools/call', {name:'clipboard_list', arguments:{task_id:'own-task',policy_revision:1}});
+  assert.deepEqual(calls.at(-1), {length:1048576,task_id:'own-task',policy_revision:1,action:'clipboard-list'});
+  const refused = await rpc('tools/call', {name:'clipboard_delete', arguments:{target:'clip'}});
+  assert.equal(refused.isError,true);
+});
+
+test('task tools advertise owner-selected synchronization and preserve file binding through text writes',async()=>{
+ const calls=[];
+ await callTool('space_write_text',{task_id:'task',policy_revision:3,progress:'save result',operation_id:'same-op',text:'x'},async args=>{calls.push(args);return {};});
+ assert.equal(calls.length,3);
+ for(const call of calls){assert.equal(call.task_id,'task');assert.equal(call.policy_revision,3);assert.equal(call.operation_id,'same-op');assert.equal(call.progress,'save result');}
 });

@@ -39,6 +39,7 @@ WANX_PLATFORM_PUBLIC_KEY_FILE=/run/wanx-platform/platform-public.pem
 WANX_BRIDGE_UPSTREAM_URL=http://127.0.0.1:18088
 WANX_BRIDGE_BIND_HOST=<盒子的 P2P IP>
 WANX_BRIDGE_PORT=8088
+WANX_BRIDGE_CLIPBOARD_URL=http://127.0.0.1:8092
 WANX_BRIDGE_OIDC_HOST=127.0.0.1
 WANX_BRIDGE_OIDC_PORT=18089
 WANX_BRIDGE_STATE_DIR=/data/wanx-bridge
@@ -46,6 +47,8 @@ WANX_BRIDGE_ADMIN_CREDENTIAL_FILE=/data/.octop/credential.json
 ```
 
 Octop 本身使用 `OCTOP_BIND_HOST=127.0.0.1`、`OCTOP_PORT=18088`。仅公开 bridge 的端口，OIDC listener 必须保持 loopback。进程初始化成功前公开健康检查不能报告 `ok=true`；任一必要进程意外退出时，监督入口停止另一方。
+
+`/api/clipboard/v1` 是独立便签业务的部署转发，目标仅允许回环 HTTP 地址（默认 8092，空配置禁用）。它复用平台租约，不转给原始核心；业务服务以同一租约回调当前 bridge 的既有用户和空间接口，因此每次存储操作仍检查权限。业务服务需要单独启动，且上游应指向该 bridge 实际绑定的地址，不能绕过 bridge 直接使用原始核心端口。独立业务故障不影响其他路由，客户端按可重试错误保存草稿。此路由不提供 WebSocket，不把上游 JWT 或 cookie 返回客户端。
 
 盒端 Ed25519 公钥须已通过真实设备证书证明登记；平台公钥须通过可信渠道分发。私钥只读挂载并由服务 UID 可读。原生管理凭据文件格式是 `{"username":"…","password":"…"}`，POSIX 上必须属于当前运行 UID 且权限 `0600`。bridge 只用其调用登录与管理 API，凭据不会返回给客户端。已有数据但缺少有效凭据时停止初始化，不自动重置账号。
 

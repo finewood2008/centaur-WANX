@@ -127,3 +127,19 @@ zhijun-lan-test/
 
 # Built from dashboard/src/maintenance via npm run build:maintenance.
 wanx-client/local-ui/maintenance/
+
+# Isolated local client profiles
+.local/
+
+# WANX 1.0 source-only submissions
+.runtime/
+verification/
+videos/
+*.app/
+*.asar
+*.dmg
+*.exe
+*.mp4
+*.mov
+*.keychain*
+*.enc

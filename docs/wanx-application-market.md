@@ -42,9 +42,38 @@ Admin 管理应用资料、发行版本、通用应用包与各平台原生制�
 
 知君和超级参谋团的市场清单仍为协议 1，统一脚本会拒绝打包。须先将各自市场清单升级到协议 3，并验证新版盒端准备接口、现有用户数据的版本兼容与回退限制，再以新版本号打包。半人马环已升级到协议 3；其盒端仍须提供新版 Bridge 准备与就绪接口，以及 Loop 业务接口。旧版安装留下的 Electron 数据需要实机验证升级兼容性。
 
-也可以在仓库外的本机配置文件（例如 `~/.config/wanx-release/zhongjian.json`）写入 `{"version":"0.3.5"}`，调用时加 `--config <文件>`。可选字段为 `out`、`key`、`key-id`、`os`、`arch`；命令行参数优先。未指定 `--config` 时读取应用工程根目录的 `market-release.local.json`（若存在；请确保该文件被 Git 忽略）。版本号来自命令行或本机配置，不改应用源码。默认从 `~/.config/wanx-release/release-private.pem` 读取 Ed25519 私钥，使用 `release-2026` 公钥 ID，输出到忽略 Git 的 `wanx-client/release/market/`。生成同名 `.wanxapp` 和 `.wanxapp.release.json` 后会立即验签并校验哈希；把这两个文件上传到 Admin 对应应用、版本的草稿。同名本地产物会在新包构建并完成归档校验后成对替换，此脚本不上传或上架应用。Admin 中已校验的制品不能覆盖；同一版本的相同平台与架构目标也不能再上传另一份制品。修复或升级发行协议时须创建更高的新版本草稿、重新打包和上传。
+也可以在仓库外的本机配置文件（例如 `~/.config/wanx-release/zhongjian.json`）写入 `{"version":"0.3.5"}`，调用时加 `--config <文件>`。可选字段为 `out`、`key`、`key-id`、`os`、`arch`、`dependency-config`；命令行参数优先。未指定 `--config` 时读取应用工程根目录的 `market-release.local.json`（若存在；请确保该文件被 Git 忽略）。版本号来自命令行或本机配置，不改应用源码。默认从 `~/.config/wanx-release/release-private.pem` 读取 Ed25519 私钥，使用 `release-2026` 公钥 ID，输出到忽略 Git 的 `wanx-client/release/market/`。生成同名 `.wanxapp` 和 `.wanxapp.release.json` 后会立即验签并校验哈希；把这两个文件上传到 Admin 对应应用、版本的草稿。同名本地产物会在新包构建并完成归档校验后成对替换，此脚本不上传或上架应用。Admin 中已校验的制品不能覆盖；同一版本的相同平台与架构目标也不能再上传另一份制品。修复或升级发行协议时须创建更高的新版本草稿、重新打包和上传。
 
 统一市场应用约定：工程根目录提供 `market/wanx-app.json`，`package.json` 提供 `build:market-source` 脚本。统一打包器以 `WANX_MARKET_VERSION=<发行版本>` 运行该脚本，读取工程生成的 `dist/application/`，要求其中包含实际入口、运行依赖、`application.manifest.json` 和 `package.json`，且产物版本与发行版本一致。统一打包器随后写入签名市场清单，不按应用 ID 特判目录。新市场发行包的清单必须使用协议 3 并声明 `releaseAccess: "account"`；仅遵守目录约定、但仍使用协议 1/2 的工程须先升级清单。未设置平台与架构限制的共享运行时应用生成通用包。众见的客户端包只包含桌面应用，其盒端业务接口仍需先集成到万象底座。
+
+### 在 Admin 选择专家与技能依赖
+
+在 Admin 的应用版本草稿中选择所需专家、技能包和最低版本，导出依赖配置，再将该文件交给本地发行工具：
+
+```sh
+./wanx-client/package-app.sh --project ../centuarai-wanx-ai-browser --version 0.1.2 \
+  --dependency-config ~/Downloads/application-dependencies.json
+```
+
+依赖配置只包含以下字段，`applicationId` 和 `version` 必须与本次应用及发行版本完全一致；资源编号请使用 Admin 选择器导出的值，不按显示名称匹配：
+
+```json
+{
+  "schemaVersion": 1,
+  "applicationId": "example.research",
+  "version": "1.0.0",
+  "resourceDependencies": [
+    { "kind": "expert", "resourceId": "researcher", "minVersion": "1.2.3" },
+    { "kind": "skill-package", "resourceId": "research-tools", "minVersion": "2.0.0" }
+  ]
+}
+```
+
+该文件是构建输入，不能代替已签名应用清单。只支持协议 3；非空资源依赖要求应用原本使用 `backendProductId: "wanx"`，工具不会转换专用产品。每项依赖都必须满足，最多 64 项，版本仅允许稳定三段 SemVer。空数组表示明确清空本次包的资源依赖；不传 `--dependency-config` 则保留源清单的依赖。
+
+打包先验证原构建产物与项目市场清单一致，再仅在临时目录同步修改 `application.manifest.json` 和 `wanx-app.json` 的资源依赖，最后生成完整包与签名描述。源代码清单及 `dist/application` 的原依赖保持不变，其他兼容字段、产品标识、账号许可和平台限制保留。可在本机发行配置中设置 `"dependency-config": "./application-dependencies.json"`；配置文件中的相对路径以该配置文件目录为准，命令行相对路径以当前终端目录为准。
+
+将新生成的 `.wanxapp` 和 `.wanxapp.release.json` 上传到对应草稿，核对实际包内依赖后灰度验证、发布。已有已校验制品不能通过重新导出配置改变依赖，需创建新版本重新打包。资源发布状态和完整依赖图仍由 Admin 在发布应用时校验；进入灰度名单也不会自动替换客户已有兼容专家及其数据。
 
 已有独立构建产物目录也可以直接使用下述低层 `package:application` 命令签名。
 上架交付必须携带应用图标、产品 Logo、3–8 张真实产品截图、1–3 张产品介绍海报、介绍文案与素材索引。目录、规格、真实性与脱敏要求见 [WANX 应用上架素材规范](wanx-marketplace-submission-assets.md)。这是提交方和市场人工审核的必交要求；现有打包器／Admin 尚未自动校验或导入素材索引。

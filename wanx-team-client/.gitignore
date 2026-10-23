@@ -1,0 +1,13 @@
+# Rebuilt from wanx-studio source and the renderer entrypoints.
+/studio/
+/applications/studio-runtime/
+/applications/studio.mjs
+/shell/team-service.mjs
+/shell/team-data-service.mjs
+/shell/wanx-mcp-bridge.mjs
+/local-ui/renderer/data-view.js
+/local-ui/renderer/*.bundle.js
+/local-ui/maintenance/
+/node_modules/
+/release/
+/native/bin/

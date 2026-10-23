@@ -53,6 +53,13 @@ def _safe_file(path: Path, *, missing: bool = False) -> None:
         if missing:
             return
         raise SpaceError("SPACE_NOT_FOUND", 404) from None
+    # SQLite can unlink a journal while lstat is resolving its directory entry.
+    # Recheck only an unlinked regular file, never a link or another unsafe type.
+    if missing and stat.S_ISREG(info.st_mode) and info.st_nlink == 0:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise SpaceError("SPACE_UNSAFE_STORAGE", 409)
 
@@ -520,6 +527,11 @@ class PersonalSpace:
             pending = db.execute(
                 "SELECT COALESCE(SUM(offset),0) FROM uploads WHERE state='pending'"
             ).fetchone()[0]
+            sync_bytes = 0
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='space_sync_records'").fetchone():
+                sync_bytes = db.execute(
+                    "SELECT COALESCE(SUM(size),0) FROM space_sync_records"
+                ).fetchone()[0]
         disk = shutil.disk_usage(self.objects)
         # Container measurements are not advertised as whole-box memory.
         container = (
@@ -545,6 +557,7 @@ class PersonalSpace:
             "chunkSize": CHUNK_SIZE,
             "collectedAt": time.time(),
             "filesBytes": used,
+            "syncBytes": sync_bytes,
             "pendingBytes": pending,
             "volume": {
                 "scope": "personal-files-volume",

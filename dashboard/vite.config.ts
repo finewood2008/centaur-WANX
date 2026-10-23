@@ -4,6 +4,7 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
+import { existsSync } from "node:fs";
 
 // serialize-javascript@7 (pulled in by vite-plugin-pwa → @rollup/plugin-terser)
 // expects Web Crypto globals during `vite build`. Node <19 does not define them.
@@ -53,7 +54,17 @@ function suppressViteDisconnectReload(): Plugin {
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
+  if (
+    command === "build" &&
+    [".env.local", `.env.${mode}.local`].some((file) =>
+      existsSync(path.resolve(process.cwd(), file)),
+    )
+  ) {
+    throw new Error(
+      "LOCAL_ENV_IN_RELEASE_BUILD: build from a clean checkout without local env overrides",
+    );
+  }
   const env = loadEnv(mode, process.cwd(), "");
   // Empty = same-origin; frontend and backend served together, no hardcoded host.
   const apiBaseUrl = env.BASE_URL ?? "";

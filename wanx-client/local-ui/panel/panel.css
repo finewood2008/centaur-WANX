@@ -24,6 +24,10 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 .brand strong { font-size: 15px; font-weight: 650; white-space: nowrap; letter-spacing: .1px; }
 .brand small { font-size: 10px; letter-spacing: .4px; color: var(--muted); }
 .box-button { display: flex; align-items: center; gap: 5px; padding: 7px 8px; color: #7b6d61; font-size: 11px; }
+.panel-header-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.panel-notification-button { position: relative; display: grid; place-items: center; width: 32px; height: 32px; padding: 6px; color: #7b6d61; }
+.panel-notification-button svg { width: 20px; height: 20px; }
+.panel-notification-badge { position: absolute; top: -3px; right: -4px; min-width: 16px; padding: 1px 3px; border: 2px solid #faf8f4; border-radius: 10px; background: #c44435; color: #fff; font-size: 9px; font-weight: 650; line-height: 12px; text-align: center; }
 .summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; flex-shrink: 0; }
 .box-status, .balance-card { display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; min-width: 0; height: 106px; padding: 13px 14px; border-radius: 14px; border: 1px solid var(--line); text-align: left; }
 .box-status { background: #f3f0ea; }
@@ -96,6 +100,10 @@ h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: .3px; color: 
 .transfer-heading { color: #796a5e; font-size: 11px; margin-bottom: 8px; }
 .transfer-heading strong { font-weight: 550; }
 .panel-transfer { margin-top: 8px; }
+.panel-import { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px 8px; margin: 8px 0; padding: 7px 8px; border-radius: 7px; background: #a9715109; }
+.panel-import strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-import small { grid-column: 1; color: #8d7b6b; font-size: 10px; }
+.panel-import button { grid-column: 2; grid-row: 1 / 3; font-size: 10px; padding: 4px 7px; }
 .transfer-label > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .transfer-label small { flex-shrink: 0; color: #96816e; font-size: 10px; }
 .transfer-controls { margin-top: 4px; min-height: 24px; }
@@ -104,3 +112,26 @@ h2 { font-size: 12px; font-weight: 600; margin: 0; letter-spacing: .3px; color: 
 .transfer-controls progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
 .transfer-controls button { padding: 3px 7px; font-size: 11px; color: var(--accent); }
 .panel-transfer p { margin: 4px 0; font-size: 10px; }
+
+/* Two quiet destinations keep the footer compact. */
+.dual-footer { padding-top: 9px; margin-top: 8px; }
+.panel-destinations { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; }
+.panel-destinations > button { display:flex;align-items:center;gap:8px;min-width:0;min-height:49px;width:100%;padding:7px 8px;text-align:left;border:1px solid #e8dfd3;border-radius:10px;background:#f7f3ed; }
+.panel-destinations > button:hover { background:#f0e8dd;border-color:#dcc8b4; }
+.destination-icon { display:grid;place-items:center;flex-shrink:0;width:28px;height:30px;border-radius:8px;background:#eee5d7;color:#a27c56; }
+.destination-icon svg { width:19px;height:19px; }
+.destination-copy { display:grid;gap:3px;flex:1;min-width:0; }
+.destination-copy strong { font-size:12px;font-weight:600;color:#786655; }
+.destination-copy small { font-size:10px;color:#a19282;overflow:hidden;white-space:nowrap;text-overflow:ellipsis; }
+.destination-upload { width:13px;height:13px;flex-shrink:0;color:#aa8868; }
+.destination-arrow { color:#a38a72;font-size:18px;line-height:1; }
+.panel-destinations .dot { width:5px;height:5px; }
+
+/* Shared masthead: the product name stays constant; the edition is a badge. */
+.brand-copy > strong {display:flex;align-items:center;gap:8px;line-height:1.4;letter-spacing:0}
+.brand-edition {display:inline-flex;align-items:center;flex-shrink:0;font-size:10px;font-weight:600;line-height:1.3;padding:2px 5px;border:1px solid #d9cec2;border-radius:5px;color:#6c655c;letter-spacing:0}
+.brand-copy small {letter-spacing:.4px}
+@media(max-width:1100px){.topbar{gap:16px}.topbar .main-nav .nav-item{min-width:70px;padding-inline:12px}.topbar .team-role-badge{display:none}.topbar .header-personal{gap:10px}.topbar .account-menu{gap:8px}}
+@media(max-width:760px){.topbar .brand-copy{display:grid}.topbar .brand-copy strong{font-size:14px}.topbar .brand-copy small{display:block;font-size:9px}.topbar .brand-edition{font-size:9px}.topbar{gap:10px}}
+
+#panel .brand-edition{font-size:9px}

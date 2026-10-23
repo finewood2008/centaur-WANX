@@ -232,13 +232,28 @@ test('cancellation is idempotent and isolates saved late callbacks from the next
   assert.doesNotThrow(() => h.child.stdout.emit('error', Error('late stream error')));
 });
 
-test('the 13 second deadline stops helpers and discards a late completion', (t) => {
+test('the 31 second deadline stops helpers and discards a late completion', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const h = harness(); t.after(h.unsubscribe);
   const stale = h.child.stdout.listeners('data')[0];
-  t.mock.timers.tick(12999); assert.equal(h.child.kills.length, 0);
+  t.mock.timers.tick(30999); assert.equal(h.child.kills.length, 0);
   t.mock.timers.tick(1); assert.deepEqual(h.child.kills, ['SIGTERM']);
   stale(bytes(record())); assert.deepEqual(h.events, []);
+});
+
+test('macOS accepts a retried public identity after the original 13 second deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const registryId = 'centauros-727f68e96c972c5bcf000fe1';
+  const h = harness({ lookupName: async () => 'CentaurAI-AMD-102' });
+  t.after(h.unsubscribe);
+  h.send(record({ advertisedName: 'CentaurOS-Setup-000FE1' }));
+  t.mock.timers.tick(14000);
+  h.send(record({ advertisedName: 'CentaurOS-Setup-000FE1',
+    displayIdentity: { deviceId: registryId, displayName: 'CentaurAI Box' } }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.events.at(-1).displayIdentity?.displayName, 'CentaurAI-AMD-102');
+  assert.equal(h.events.at(-1).displayIdentity?.deviceId, registryId);
+  assert.deepEqual(h.child.kills, []);
 });
 
 test('Windows helper remains available through the extended scan window', (t) => {

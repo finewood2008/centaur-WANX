@@ -1,16 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCreditAtoms, sumCreditAtoms, createCreditWallet, decodeCreditEnvelope } from "../account/credit-wallet.mjs";
+import { formatCreditAtoms, displayCreditAtoms, sumCreditAtoms, createCreditWallet, decodeCreditEnvelope } from "../account/credit-wallet.mjs";
 
 test("six-place accounting displays tiny debt, true zero and half-up totals exactly", () => {
-  assert.deepEqual(formatCreditAtoms("4000"), { text: "<0.01", direction: "credit", exact: "0.004000" });
-  assert.deepEqual(formatCreditAtoms("-4000"), { text: "<0.01", direction: "debt", exact: "-0.004000" });
-  assert.deepEqual(formatCreditAtoms("0"), { text: "0.00", direction: "zero", exact: "0.000000" });
-  assert.equal(formatCreditAtoms("15000").text, "0.02");
-  assert.equal(formatCreditAtoms("-15000").text, "-0.02");
-  assert.equal(formatCreditAtoms("1998060000").text, "1,998.06");
-  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("4000"))).text, "0.40");
-  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("6000"))).text, "0.60");
+  assert.deepEqual(formatCreditAtoms("4000"), { text: "<1", direction: "credit", exact: "0.004000" });
+  assert.deepEqual(formatCreditAtoms("-4000"), { text: "<1", direction: "debt", exact: "-0.004000" });
+  assert.deepEqual(formatCreditAtoms("0"), { text: "0", direction: "zero", exact: "0.000000" });
+  assert.equal(formatCreditAtoms("15000").text, "<1");
+  assert.equal(formatCreditAtoms("-15000").text, "<1");
+  assert.equal(formatCreditAtoms("1998060000").text, "1,998");
+  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("4000"))).text, "<1");
+  assert.equal(formatCreditAtoms(sumCreditAtoms(Array(100).fill("6000"))).text, "<1");
+  for (const [value, text] of [['999999', '<1'], ['-999999', '<1'], ['1000000', '1'],
+    ['-1000000', '-1'], ['1499999', '1'], ['1500000', '2'], ['-1500000', '-2'],
+    ['999500000', '1,000'], ['9223372036854775807', '9,223,372,036,855']]) {
+    assert.equal(formatCreditAtoms(value).text, text);
+  }
+  assert.equal(displayCreditAtoms('1'), '余额不足 1 积分');
+  assert.equal(displayCreditAtoms('-1'), '欠费不足 1 积分');
+  assert.equal(displayCreditAtoms('1', 'consumption'), '消耗不足 1 积分');
   for (const value of ["-0", "01", "1.0", 1, "9223372036854775808"]) {
     assert.throws(() => formatCreditAtoms(value), { code: "CREDITS_INVALID_RESPONSE" });
   }
@@ -59,4 +67,33 @@ test('product purchase sends only the selected ID and version; amount and credit
     await assert.rejects(() => wallet.createOrder({ purchase_intent_id: 'penny-buy', product_id: 'penny', product_version: 'v1', ...extra }), { code: 'CREDITS_INVALID_INPUT' });
   }
   assert.equal(sent.length, 1);
+});
+
+test('v2 custom recharge uses the quoted integer amount and cannot accept client grants', async () => {
+  const sent = [];
+  const wallet = createCreditWallet({ request: async value => { sent.push(value); return {}; } });
+  const purchase = { purchase_intent_id: 'custom-buy', amount_fen: 1200,
+    currency_rule_id: 'usd-credit-100-v2', payment_channel: 'wechat' };
+  await wallet.createOrder(purchase);
+  assert.deepEqual(sent[0], { method: 'POST', path: '/app-api/v1/credits/orders',
+    idempotencyKey: purchase.purchase_intent_id, body: { schema_version: '1', ...purchase } });
+  for (const extra of [
+    { grant_credit_atoms: '1234000000' }, { product_id: 'product', product_version: 'v1' },
+    { currency_rule_id: 'cny-100-v1' },
+    ...[0, 1101, 100100, 1.5, '1200'].map(amount_fen => ({ amount_fen })),
+  ]) {
+    await assert.rejects(wallet.createOrder({ ...purchase, ...extra }), { code: 'CREDITS_INVALID_INPUT' });
+  }
+  await assert.rejects(wallet.createOrder({ purchase_intent_id: 'old', amount_fen: 1200,
+    currency_rule_id: 'usd-credit-100-v2', custom_recharge_version: 'cny-100-v1' }), { code: 'CREDITS_INVALID_INPUT' });
+  assert.equal(sent.length, 1);
+});
+
+test('v2 product purchase keeps server-owned product pricing and the denomination marker', async () => {
+  const sent = [];
+  const wallet = createCreditWallet({ request: async value => { sent.push(value); return {}; } });
+  const purchase = { purchase_intent_id: 'product-v2', product_id: 'p50', product_version: 'v2', currency_rule_id: 'usd-credit-100-v2', payment_channel: 'alipay' };
+  await wallet.createOrder(purchase);
+  assert.deepEqual(sent[0].body, { schema_version: '1', ...purchase });
+  await assert.rejects(wallet.createOrder({ ...purchase, amount_fen: 5000 }), { code: 'CREDITS_INVALID_INPUT' });
 });

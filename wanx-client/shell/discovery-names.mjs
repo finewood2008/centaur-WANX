@@ -70,7 +70,7 @@ export function createAdvertisementNames({
       let active = true, pending = Buffer.alloc(0), totalBytes = 0, stderrBytes = 0, records = 0;
       const peripherals = new Map(), blocked = new Set(), lastMetadata = new Map(), revocations = new Set();
       const lookedUp = new Set(), resolvedNames = new Map();
-      const timer = setTimeout(() => stop(true), platform === 'win32' ? 61000 : 13000);
+      const timer = setTimeout(() => stop(true), platform === 'win32' ? 61000 : 31000);
       timer.unref?.();
       let resolveClosed;
       const helper = {

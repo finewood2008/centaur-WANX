@@ -1,13 +1,17 @@
 import type { ClaimCoordinatorSnapshot } from "@nexusaos/local-provisioning-core";
 import type { SelectedDiscoveryCandidate } from "@nexusaos/local-provisioning-contracts";
 
-export type SetupSnapshot = ClaimCoordinatorSnapshot;
+export type SetupSnapshot = Omit<ClaimCoordinatorSnapshot, "state"> & {
+  mode?: "claim" | "wifi" | "console";
+  state: ClaimCoordinatorSnapshot["state"] | "awaitingCodeClaim";
+};
 export interface SetupBridge {
   state(): Promise<SetupSnapshot>;
-  begin(candidate: SelectedDiscoveryCandidate): Promise<SetupSnapshot>;
+  begin(candidate: SelectedDiscoveryCandidate & { mode?: "claim" | "wifi" | "console"; expectedDeviceId?: string; claimCode?: string }): Promise<SetupSnapshot>;
   resume(input?: { deviceId?: string; pairingSessionId?: string }): Promise<SetupSnapshot>;
-  redeemClaimCode?(code: string): Promise<{
+  redeemClaimCode?(input: string | { claimCode: string; clientAttemptId?: string }): Promise<{
     deviceId: string;
+    ownership: "claimed";
     authorizationState: string;
   }>;
   confirmPhysical(): Promise<SetupSnapshot>;
@@ -48,6 +52,7 @@ export interface SetupTransportBridge {
     ok: boolean;
     value?: unknown;
     code?: string;
+    diagnostic?: { stage?: string; errorName?: string };
   }): void;
   status(connectionId: string, frame: number[]): void;
 }

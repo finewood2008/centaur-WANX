@@ -49,7 +49,70 @@ class Adapter:
             return httpx.Response(self.create_status, json=self.created)
         if (method, path) == ("GET", f"/api/agents/{AID}"):
             return httpx.Response(200, json=self.created)
+        if (method, path) == ("PUT", f"/api/agents/{AID}/zhijun-profile"):
+            assert kwargs["json"] == {"version": 1}
+            self.created["zhijun_primary"] = True
+            return httpx.Response(200, json={"agent_id": AID, "primary": True})
         raise AssertionError(f"Unexpected API call: {method} {path}")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_modern_companion_binds_primary_once_and_preserves_configuration(existing):
+    row = expert(zhijun_primary=False, default_model="own/chosen-model")
+    adapter = Adapter(rows=[row] if existing else [], created=row)
+    await ensure_private_expert(adapter, "user-session", UID)
+    await ensure_private_expert(adapter, "user-session", UID)
+    writes = [call for call in adapter.calls if call[0] == "PUT"]
+    assert len(writes) == 1
+    assert writes[0][1] == f"/api/agents/{AID}/zhijun-profile"
+    assert writes[0][2]["json"] == {"version": 1}
+    assert row["default_model"] == "own/chosen-model"
+
+
+async def test_existing_primary_precedes_name_matches_and_is_never_replaced():
+    selected = expert(agent_id="selected-primary", name="私人空间", zhijun_primary=True)
+    unbound = expert(zhijun_primary=False)
+    adapter = Adapter(rows=[unbound, selected])
+    await ensure_private_expert(adapter, "user-session", UID)
+    assert [(method, path) for method, path, _ in adapter.calls] == [
+        ("GET", "/api/agents?scope=mine")
+    ]
+    assert unbound["zhijun_primary"] is False
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 409, 500])
+async def test_modern_binding_failure_does_not_claim_ready_or_fallback(status):
+    adapter = Adapter(created=expert(zhijun_primary=False))
+    original = adapter._request
+
+    async def failing_bind(method, path, **kwargs):
+        if method == "PUT":
+            adapter.calls.append((method, path, kwargs))
+            return httpx.Response(status, json={"error": {"code": "NOT_FOUND"}})
+        return await original(method, path, **kwargs)
+
+    adapter._request = failing_bind
+    with pytest.raises(BridgeUpstreamError, match="BOX_ZHIJUN_INITIALIZATION_FAILED"):
+        await ensure_private_expert(adapter, "user-session", UID)
+    assert adapter.calls[-1][:2] == ("PUT", f"/api/agents/{AID}/zhijun-profile")
+    assert not any(method in {"PATCH", "DELETE"} for method, _, _ in adapter.calls)
+
+
+@pytest.mark.parametrize(
+    "bound", [{"agent_id": "other", "primary": True}, {"agent_id": AID, "primary": False}, {}]
+)
+async def test_binding_response_must_confirm_same_primary(bound):
+    adapter = Adapter(created=expert(zhijun_primary=False))
+    original = adapter._request
+
+    async def invalid_bind(method, path, **kwargs):
+        if method == "PUT":
+            return httpx.Response(200, json=bound)
+        return await original(method, path, **kwargs)
+
+    adapter._request = invalid_bind
+    with pytest.raises(BridgeUpstreamError, match="BOX_UPSTREAM_PROTOCOL_INVALID"):
+        await ensure_private_expert(adapter, "user-session", UID)
 
 
 async def test_creates_private_companion_with_current_model_and_repeated_login_is_idempotent():

@@ -18,10 +18,10 @@ import httpx
 
 _NAMESPACE = uuid.UUID("8ae54f40-4054-4bba-a2e2-06e1c43d7514")
 _READ = re.compile(
-    r"^/(?:status|capabilities|documents|jobs|graph|owner/graph|retrieval/status|sensitive/settings|documents/[a-zA-Z0-9_-]{1,128}(?:/(?:text|blob))?|jobs/[a-zA-Z0-9_-]{1,128}|evidence/[a-zA-Z0-9_-]{1,128}|operations/[a-zA-Z0-9_-]{1,128})$"
+    r"^/(?:skills(?:/[a-z][a-z0-9-]{0,119}(?:/download)?)?|processing(?:/catalog)?|status|capabilities|documents|jobs|graph|owner/graph|retrieval/status|sensitive/settings|documents/[a-zA-Z0-9_-]{1,128}(?:/(?:text|blob))?|jobs/[a-zA-Z0-9_-]{1,128}|evidence/[a-zA-Z0-9_-]{1,128}|operations/[a-zA-Z0-9_-]{1,128})$"
 )
 _WRITE = re.compile(
-    r"^/(?:imports(?:/[a-zA-Z0-9_-]{1,128}(?:/commit)?)?|retrieval/indexes|documents/[a-zA-Z0-9_-]{1,128}/(?:correction|extraction)|jobs/[a-zA-Z0-9_-]{1,128}/(?:retry|cancel)|sensitive/settings)$"
+    r"^/(?:skills/(?:import|[a-z][a-z0-9-]{0,119}/delete)|reasoning/(?:discover|prepare|reference|scope|search|evidence|read-document|coverage)|processing(?:/check|/authorize|/reprocess)?|imports(?:/[a-zA-Z0-9_-]{1,128}(?:/commit)?)?|retrieval/indexes|documents/[a-zA-Z0-9_-]{1,128}/(?:correction|extraction)|jobs/[a-zA-Z0-9_-]{1,128}/(?:retry|cancel)|sensitive/settings)$"
 )
 _UUID = r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
 _MANAGE_READ = re.compile(
@@ -41,7 +41,9 @@ _MANAGE_WRITE = re.compile(
     + r"/revoke)?))?$"
 )
 _SCOPED = re.compile(r"^/warehouses/(?P<warehouse>" + _UUID + r")(?P<path>/.*)$")
-_PUBLIC = re.compile(r"^/(?:warehouse|documents|graph|search|evidence/[a-zA-Z0-9_-]{1,128})$")
+_PUBLIC = re.compile(
+    r"^/(?:warehouse|documents|graph|search|evidence/[a-zA-Z0-9_-]{1,128}|reasoning/(?:discover|prepare|reference|scope|search|evidence|read-document|coverage))$"
+)
 
 
 class SemanticaError(Exception):
@@ -51,7 +53,14 @@ class SemanticaError(Exception):
 
 
 class SemanticaClient:
-    def __init__(self, config: dict[str, Any], actor_id: int, application_id: str = "wanx"):
+    def __init__(
+        self,
+        config: dict[str, Any],
+        actor_id: int,
+        application_id: str = "wanx",
+        *,
+        team: bool = False,
+    ):
         self.config = config
         address = urlsplit(str(config.get("service_url", "")))
         try:
@@ -79,21 +88,24 @@ class SemanticaClient:
             raise SemanticaError("SEMANTICA_CONFIG_INVALID")
         self.base_url = str(config["service_url"]).rstrip("/")
         self.actor = f"{application_id}:{actor_id}"
-        self.resource = f"personal:{self.actor}"
+        self.team = team
+        self.resource = "team:wanx" if team else f"personal:{self.actor}"
         identity = json.dumps(
             [config["box_id"], config["application_id"], self.resource], separators=(",", ":")
         )
         self.workspace = str(uuid.uuid5(_NAMESPACE, identity))
 
     @classmethod
-    def from_file(cls, path: Path, actor_id: int, application_id: str = "wanx") -> SemanticaClient:
+    def from_file(
+        cls, path: Path, actor_id: int, application_id: str = "wanx", *, team: bool = False
+    ) -> SemanticaClient:
         try:
             if path.stat().st_size > 16384:
                 raise ValueError("invalid config")
             config = json.loads(path.read_text())
         except (OSError, ValueError):
             raise SemanticaError("SEMANTICA_NOT_CONFIGURED") from None
-        return cls(config, actor_id, application_id)
+        return cls(config, actor_id, application_id, team=team)
 
     def headers(
         self,
@@ -129,6 +141,8 @@ class SemanticaClient:
             "operation_id": operation_id,
             "expires_at": int(time.time()) + 120,
         }
+        if self.team:
+            claims["resource_owner"] = "team:wanx"
         encoded = (
             base64.urlsafe_b64encode(
                 json.dumps(
@@ -187,6 +201,9 @@ class SemanticaClient:
             "expected_sha256",
             "expected_origin_revision",
             "expected_version_id",
+            "warehouse_id",
+            "keyword",
+            "path",
         }
         if set(query or {}) - allowed_query:
             raise SemanticaError("SEMANTICA_QUERY_NOT_ALLOWED", 422)
@@ -200,7 +217,13 @@ class SemanticaClient:
             body.pop("operation_id")
         try:
             async with httpx.AsyncClient(
-                timeout=90 if searching else 45, follow_redirects=False, trust_env=False
+                timeout=320
+                if path.startswith(("/processing", "/reasoning"))
+                else 90
+                if searching
+                else 45,
+                follow_redirects=False,
+                trust_env=False,
             ) as client:
                 response = await client.request(
                     method,
@@ -229,23 +252,29 @@ class SemanticaClient:
     ) -> dict[str, Any]:
         if (
             not _PUBLIC.fullmatch(path)
-            or method != ("POST" if path == "/search" else "GET")
+            or method != ("POST" if path == "/search" or path.startswith("/reasoning/") else "GET")
             or not isinstance(token, str)
             or not re.fullmatch(r"xg_[A-Za-z0-9_-]{30,80}", token)
         ):
             raise SemanticaError("ACCESS_KEY_INVALID", 403)
         if set(query or {}) - {"limit", "offset", "entity_id"}:
             raise SemanticaError("SEMANTICA_QUERY_NOT_ALLOWED", 422)
-        if payload is not None and set(payload) - {
-            "query",
-            "document_ids",
-            "entity_types",
-            "limit",
-        }:
+        if payload is not None and set(payload) - (
+            {"arguments"}
+            if path.startswith("/reasoning/")
+            else {
+                "query",
+                "document_ids",
+                "entity_types",
+                "limit",
+            }
+        ):
             raise SemanticaError("SEMANTICA_QUERY_NOT_ALLOWED", 422)
         try:
             async with httpx.AsyncClient(
-                timeout=90, follow_redirects=False, trust_env=False
+                timeout=320 if path.startswith("/reasoning/") else 90,
+                follow_redirects=False,
+                trust_env=False,
             ) as client:
                 response = await client.request(
                     method,
@@ -268,8 +297,12 @@ class SemanticaClient:
         if response.status_code >= 400 or 300 <= response.status_code < 400:
             try:
                 error = response.json()
+                detail = error.get("detail")
+                error = detail if isinstance(detail, dict) else error
                 code = error.get("code", "")
-                if re.fullmatch(r"(?:WAREHOUSE|MIGRATION|ACCESS_KEY)_[A-Z_]+", code):
+                if re.fullmatch(
+                    r"(?:WAREHOUSE|MIGRATION|ACCESS_KEY|MODEL|SKILL|REASONING)_[A-Z_]+", code
+                ):
                     message = error.get("message")
                     raise SemanticaError(
                         code,

@@ -1,0 +1,1500 @@
+{
+  "date": "2026-10-21",
+  "timezone": "Asia/Shanghai",
+  "release_decision": "NO-GO",
+  "environment": {
+    "mysql": "disposable mysql:8",
+    "postgres": "disposable postgres:16",
+    "payment": "simulated",
+    "provider_usage": "simulated",
+    "production_executed": false,
+    "disposable_databases_removed": true
+  },
+  "versions": [
+    {
+      "repository": "centaur-WANX",
+      "branch": "codex/credit-v2-tracer-20261020",
+      "head": "cc28a58e7a59fb7228c3f45be5b19ef990fabaff",
+      "uncommitted": true
+    },
+    {
+      "repository": "nexusaos-admin",
+      "branch": "codex/credit-v2-tracer-20261020",
+      "head": "0d7e36787fac5ea3b754e9fa5302914f99c1a049",
+      "uncommitted": true
+    },
+    {
+      "repository": "nexusaos-qeetoken",
+      "branch": "codex/credit-v2-tracer-20261020",
+      "head": "cd4a00dff5ad80d20ca8c7004b666a1107592e3c",
+      "uncommitted": true
+    },
+    {
+      "repository": "nexusaos-qeetoken/sub2api",
+      "branch": "codex/credit-v2-tracer-20261020",
+      "head": "fb9480c5bbbc52d442ebab5e50d87632c3e82787",
+      "uncommitted": true
+    }
+  ],
+  "source_files": [
+    {
+      "repository": "nexusaos-admin",
+      "path": "admin-backend/tests/module_nexus/test_credit_release_rehearsal.py",
+      "sha256": "f2a401ff9a950d580d3e7f82924b0c262274dd6760ee9bd0ece421abc83c5000"
+    },
+    {
+      "repository": "nexusaos-admin",
+      "path": "admin-backend/tests/module_nexus/test_credit_multiprocess.py",
+      "sha256": "2157a6323c91236ffa06b4f0eb286b90855cfa222cb47a13624ec969627a909b"
+    },
+    {
+      "repository": "nexusaos-qeetoken/sub2api",
+      "path": "backend/internal/handler/wanx_pricing_fixture_test.go",
+      "sha256": "648b8556221724a09ee19e3774bb8a642497223c99da70c3d04b2da2ef43b0ad"
+    },
+    {
+      "repository": "nexusaos-qeetoken/sub2api",
+      "path": "backend/internal/handler/wanx_cross_service_test.go",
+      "sha256": "f7195ed3ec70f498e5799df5e109820c71139bad0ce1d63912b6a2044a121b50"
+    },
+    {
+      "repository": "centaur-WANX",
+      "path": "wanx-client/tests/support/release-display.mjs",
+      "sha256": "07b83b664bbdde64ab6278ca2e4b657a3936be08fdb2c9ac3224f81aa1d88ec0"
+    },
+    {
+      "repository": "centaur-WANX",
+      "path": "wanx-client/tests/support/electron-wallet.mjs",
+      "sha256": "fd36e8f11d94373ef261002ac35f979d9cbcdd39a4837c9e6540fec99334d8ee"
+    },
+    {
+      "repository": "centaur-WANX",
+      "path": "wanx-client/local-ui/renderer/wallet.bundle.js",
+      "sha256": "d47ccc7065c9f3803052cf2c33fc73e1b761e7fe7c816443b4a0ff5c5be48979"
+    },
+    {
+      "repository": "centaur-WANX",
+      "path": ".github/workflows/wanx-credit-desktop.yml",
+      "sha256": "1f5c351cfbce8d8e614506ed3a483a5b1bcbd58afce82b38fef72c68fac3d958"
+    },
+    {
+      "repository": "nexusaos-admin",
+      "path": "admin-backend/tests/module_nexus/test_credit_wanx_flow.py",
+      "sha256": "ef458dcc46f69ee89d169b1e476be72bc2ab02e0eef458bfea8d57503f213278"
+    }
+  ],
+  "pricing_assumptions": {
+    "kind": "synthetic_not_supplier_quote",
+    "cny_per_usd": "7",
+    "procurement_factor": "1",
+    "target_margin": "0.30",
+    "paid_revenue_cny_per_purchased_usd": "1"
+  },
+  "cross_service": {
+    "result": "PASS",
+    "python_cases_passed": 19,
+    "log_sha256": "52807088161a194dc490a9976089775b46fdff2bc23f8d9e9e1cd162ee80c6c5",
+    "records": {
+      "TB04_EVIDENCE": [
+        {
+          "split": {
+            "adjustment_atoms": "0",
+            "grant_atoms": "-200000000",
+            "purchased_atoms": "-100000000",
+            "unattributed_atoms": "0"
+          },
+          "correction": {
+            "original_currency_rule_id": "usd-credit-1-v1",
+            "currency_rule_id": "usd-credit-1-v1",
+            "current_delta_credit_atoms": "3000000",
+            "sources_before": {
+              "version": "1",
+              "purchased_atoms": "900000000",
+              "grant_atoms": "0",
+              "unattributed_atoms": "0",
+              "adjustment_atoms": "0",
+              "initialized": false,
+              "review_required": true
+            },
+            "eligibility_id": null,
+            "grant_rule_id": null,
+            "sources_after": {
+              "version": "1",
+              "purchased_atoms": "1000000000",
+              "grant_atoms": "200000000",
+              "unattributed_atoms": "0",
+              "adjustment_atoms": "0",
+              "initialized": false,
+              "review_required": true
+            },
+            "source_delta": {
+              "grant_atoms": "200000000",
+              "purchased_atoms": "100000000",
+              "adjustment_atoms": "0",
+              "unattributed_atoms": "0"
+            },
+            "evidence_id": null,
+            "reversal_of_event_id": "c8f5ce83-155f-4ef1-b5ba-01eff2f3deef",
+            "event_id": "ebd7ec9f-77f0-4299-baaa-98cc81a4f66c",
+            "account_id": "alice",
+            "sequence": "5",
+            "kind": "balance_adjustment",
+            "delta_usd_atoms": "300000000",
+            "delta_credit_atoms": "3000000",
+            "balance_usd_atoms": "1200000000",
+            "occurred_at": "2026-10-20T16:27:55.139140Z",
+            "source_id": "tb04-reversal",
+            "device_id": null,
+            "model": null,
+            "input_tokens": null,
+            "output_tokens": null
+          },
+          "summary": {
+            "as_of": "2026-10-18T02:00:00.000000Z",
+            "ledger_sequence": 5,
+            "gross_consumed_credit_atoms": "6000000",
+            "correction_credit_atoms": "3000000",
+            "net_consumed_credit_atoms": "3000000",
+            "pending_call_count": 0,
+            "settled_call_count": 0
+          },
+          "final_balance_atoms": "99994900",
+          "final_sources": {
+            "adjustment_atoms": "-300000000",
+            "grant_atoms": "0",
+            "initialized": false,
+            "purchased_atoms": "399994900",
+            "review_required": true,
+            "unattributed_atoms": "0",
+            "version": "1"
+          },
+          "sequence": "10",
+          "negative_zero_blocked": true,
+          "positive_admitted": true
+        }
+      ],
+      "TB05_EVIDENCE": [
+        {
+          "receipt": {
+            "account_id": "alice",
+            "currency_rule_id": "usd-credit-100-v2",
+            "old_currency_rule_id": "usd-credit-1-v1",
+            "old_credit_atoms": "4999700",
+            "balance_credit_atoms": "499970000",
+            "balance_usd_atoms": "499970000",
+            "remote_sequence": "2",
+            "ledger_sequence": 2,
+            "preview_hash": "a08508e32e1506b3836182c1fc1fe5579717db8f8e821f415326a6bf24cc4907",
+            "actor_id": "19",
+            "operation_id": "live-display",
+            "reason": "verified new registration",
+            "committed_at": "2026-10-20T16:27:57.211101Z"
+          },
+          "final_sequence": "4",
+          "final_usd_atoms": "1499939700",
+          "wallet": {
+            "view_version": "2",
+            "account_id": "alice",
+            "currency_rule_id": "usd-credit-100-v2",
+            "credit_scale": 6,
+            "balance_credit_atoms": "1499939700",
+            "spent_credit_atoms": "60300",
+            "correction_credit_atoms": "0",
+            "net_spent_credit_atoms": "60300",
+            "remote_sequence": "4",
+            "sync_state": "synced",
+            "synced_at": "2026-10-20T16:27:57.288075Z",
+            "pending_executions": 0,
+            "error_code": null,
+            "registration_grant": {
+              "eligibility_id": "12c8bd6f-f36d-4441-a09e-87122a1a7ac3",
+              "origin": "self_registration",
+              "eligibility": "new_account",
+              "state": "credited",
+              "grant_rule_id": "registration-500-v1",
+              "event_id": "d3b6850f-f0aa-473d-a379-d43bed544aae",
+              "credit_display": {
+                "currency_rule_id": "usd-credit-100-v2",
+                "credit_scale": 6,
+                "grant_credit_atoms": "500000000"
+              },
+              "attempts": 0,
+              "error_code": null,
+              "updated_at": "2026-10-20T16:27:57.000000Z"
+            }
+          },
+          "old_event_id": "ee243774-688c-45bb-9d13-0f4930c02b34",
+          "new_event_id": "24497806-b0f7-41e0-9c06-036b43f47bf6",
+          "old_order_id": "795d2d43-3308-43fb-97e3-eec59012cf7e",
+          "client_verified": "v2: balance 1499.94; mixed history 0.03 + 0.03; total 0.06; original paid order 1000.00; no raw currency or tokens"
+        }
+      ],
+      "TB06_EVIDENCE": [
+        {
+          "amounts_fen": [
+            1000,
+            5000,
+            10000,
+            20000,
+            50000,
+            1000,
+            1100,
+            100000
+          ],
+          "grants": [
+            "1000000000",
+            "5000000000",
+            "10000000000",
+            "20000000000",
+            "50000000000",
+            "1000000000",
+            "1100000000",
+            "100000000000"
+          ],
+          "final_usd_atoms": "188600000000",
+          "sequence": "9",
+          "recharges": 8,
+          "lost_response_recovered": true,
+          "client_verified": "five tiers; server quote 11 yuan = 1100.00 credits; completed order recovered; final 188600.00; no USD/token"
+        }
+      ],
+      "TB09_REPORTS": [
+        {
+          "scenario": "close_race",
+          "reports": [
+            {
+              "report_id": "tb09-close_race-unknown",
+              "actor_id": "19",
+              "operation_id": "tb09-close_race-unknown",
+              "reason": "隔离窗口预演 unknown",
+              "account_ids": [
+                "tb09-close_race"
+              ],
+              "created_at": "2026-10-20T16:28:07.618847Z",
+              "items": [
+                {
+                  "account_id": "tb09-close_race",
+                  "next_action": "resolve_payment",
+                  "inventory": {
+                    "account_id": "tb09-close_race",
+                    "category": "blocked",
+                    "legacy_credit_atoms": "15000000",
+                    "remote_id": "18",
+                    "remote_balance_atoms": null,
+                    "remote_sequence": null,
+                    "registration_finding": "history_unclaimed",
+                    "pending_order_ids": [],
+                    "credited_order_ids": [
+                      "53b38fa2-71dc-46a8-ab15-cd5999e74ce7"
+                    ],
+                    "blockers": [
+                      "unresolved_payment"
+                    ],
+                    "job_id": null,
+                    "stage": null
+                  },
+                  "orders": [
+                    {
+                      "order_id": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                      "purchase_intent_id": "old-credited",
+                      "merchant_order_no": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                      "payment_state": "paid",
+                      "fulfillment_state": "credited",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "1d13f1e5-b66b-4f3d-bcfd-6718f922bef6",
+                          "kind": "create_payment",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:18:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "7a7d8f66-52fc-4448-977b-dc5eca54e329",
+                          "kind": "fulfill_order",
+                          "state": "done",
+                          "attempts": 1,
+                          "due_at": "2026-10-18T02:01:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "c453b96a-1b37-44d2-8f6a-f7248d941edd",
+                          "work_id": "1d13f1e5-b66b-4f3d-bcfd-6718f922bef6",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-close_race",
+                          "order_id": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                          "merchant_order_no": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        }
+                      ]
+                    },
+                    {
+                      "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                      "purchase_intent_id": "old-unresolved",
+                      "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                      "payment_state": "close_pending",
+                      "fulfillment_state": "not_due",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "faa67e32-fb88-4184-bdbf-cbe0ea27e357",
+                          "kind": "close_payment",
+                          "state": "pending",
+                          "attempts": 1,
+                          "due_at": "2026-10-18T02:17:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "fbea38de-2a03-4d90-a20d-4d2c35562bda",
+                          "kind": "create_payment",
+                          "state": "pending",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:18:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "45be89fd-9d00-4a0a-b581-d6b0c3f3eb1d",
+                          "work_id": "fbea38de-2a03-4d90-a20d-4d2c35562bda",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        },
+                        {
+                          "attempt_id": "39e9f06a-c3a4-45dc-ae20-190321053804",
+                          "work_id": "fbea38de-2a03-4d90-a20d-4d2c35562bda",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "8bcea7cb-8ded-4b8b-91b1-0e47b0a67bf6",
+                          "work_id": "faa67e32-fb88-4184-bdbf-cbe0ea27e357",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        }
+                      ]
+                    }
+                  ],
+                  "registration_grant": {
+                    "eligibility_id": "505573e1-d3e6-4566-a311-709f13a49355",
+                    "origin": "history",
+                    "eligibility": "history_unclaimed",
+                    "state": "waiting_migration",
+                    "grant_rule_id": "registration-500-v1",
+                    "event_id": null,
+                    "credit_display": null,
+                    "attempts": 0,
+                    "error_code": null,
+                    "updated_at": "2026-10-20T16:28:08.000000Z"
+                  },
+                  "registration_batch_id": null,
+                  "wallet_sequence": null,
+                  "wallet_synced_at": null
+                }
+              ],
+              "ready_count": 0,
+              "report_hash": "sha256:d148278d275dbdec6bfdef77e55fbff3340580d6292d8588454ed412b5d699c8"
+            },
+            {
+              "report_id": "tb09-close_race-final",
+              "actor_id": "19",
+              "operation_id": "tb09-close_race-final",
+              "reason": "隔离窗口预演 final",
+              "account_ids": [
+                "tb09-close_race"
+              ],
+              "created_at": "2026-10-20T16:28:08.079620Z",
+              "items": [
+                {
+                  "account_id": "tb09-close_race",
+                  "next_action": "ready",
+                  "inventory": {
+                    "account_id": "tb09-close_race",
+                    "category": "migrated",
+                    "legacy_credit_atoms": null,
+                    "remote_id": "18",
+                    "remote_balance_atoms": "4500000000",
+                    "remote_sequence": "3",
+                    "registration_finding": "history_unclaimed",
+                    "pending_order_ids": [],
+                    "credited_order_ids": [
+                      "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                      "733eb939-b8b8-4ce9-b141-a72db8f7be64"
+                    ],
+                    "blockers": [],
+                    "job_id": "78fb2e71-4935-48f1-a3ee-c96020b56282",
+                    "stage": "completed"
+                  },
+                  "orders": [
+                    {
+                      "order_id": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                      "purchase_intent_id": "old-credited",
+                      "merchant_order_no": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                      "payment_state": "paid",
+                      "fulfillment_state": "credited",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "1d13f1e5-b66b-4f3d-bcfd-6718f922bef6",
+                          "kind": "create_payment",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:18:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "7a7d8f66-52fc-4448-977b-dc5eca54e329",
+                          "kind": "fulfill_order",
+                          "state": "done",
+                          "attempts": 1,
+                          "due_at": "2026-10-18T02:01:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "c453b96a-1b37-44d2-8f6a-f7248d941edd",
+                          "work_id": "1d13f1e5-b66b-4f3d-bcfd-6718f922bef6",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-close_race",
+                          "order_id": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                          "merchant_order_no": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        }
+                      ]
+                    },
+                    {
+                      "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                      "purchase_intent_id": "old-unresolved",
+                      "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                      "payment_state": "paid",
+                      "fulfillment_state": "credited",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "57671604-6f3c-49b0-97f4-bf4820e8701f",
+                          "kind": "fulfill_order",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T03:06:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "faa67e32-fb88-4184-bdbf-cbe0ea27e357",
+                          "kind": "close_payment",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:34:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "fbea38de-2a03-4d90-a20d-4d2c35562bda",
+                          "kind": "create_payment",
+                          "state": "done",
+                          "attempts": 3,
+                          "due_at": "2026-10-18T02:52:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "45be89fd-9d00-4a0a-b581-d6b0c3f3eb1d",
+                          "work_id": "fbea38de-2a03-4d90-a20d-4d2c35562bda",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        },
+                        {
+                          "attempt_id": "39e9f06a-c3a4-45dc-ae20-190321053804",
+                          "work_id": "fbea38de-2a03-4d90-a20d-4d2c35562bda",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "8bcea7cb-8ded-4b8b-91b1-0e47b0a67bf6",
+                          "work_id": "faa67e32-fb88-4184-bdbf-cbe0ea27e357",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "00f353f6-0b85-4f70-b5ae-f9748454e2e0",
+                          "work_id": "faa67e32-fb88-4184-bdbf-cbe0ea27e357",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "close",
+                          "started_at": "2026-10-18T02:32:00.000000Z",
+                          "completed_at": "2026-10-18T02:32:00.000000Z",
+                          "result": {
+                            "status": "paid",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": "test-provider-query",
+                            "transaction_id": "tx-733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                            "paid_at": "2026-10-18T02:32:00.000000Z",
+                            "order_amount_fen": 5000
+                          },
+                          "result_hash": "sha256:b21e35a85224f56ff72d7eaaa4d4b45a64ba5c40fde5b1138a7f113e44b6ebb2"
+                        },
+                        {
+                          "attempt_id": "aa98335e-1255-426d-8128-9c3cb98492d2",
+                          "work_id": "faa67e32-fb88-4184-bdbf-cbe0ea27e357",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-close_race",
+                          "order_id": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "merchant_order_no": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:32:00.000000Z",
+                          "completed_at": "2026-10-18T02:32:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        }
+                      ]
+                    }
+                  ],
+                  "registration_grant": {
+                    "eligibility_id": "505573e1-d3e6-4566-a311-709f13a49355",
+                    "origin": "history",
+                    "eligibility": "history_unclaimed",
+                    "state": "credited",
+                    "grant_rule_id": "registration-500-v1",
+                    "event_id": "ddca323d-eff8-4826-bbd3-c535cd321a14",
+                    "credit_display": {
+                      "currency_rule_id": "usd-credit-100-v2",
+                      "credit_scale": 6,
+                      "grant_credit_atoms": "500000000"
+                    },
+                    "attempts": 1,
+                    "error_code": null,
+                    "updated_at": "2026-10-20T16:28:08.000000Z"
+                  },
+                  "registration_batch_id": "tb09-close_race-grant",
+                  "wallet_sequence": "3",
+                  "wallet_synced_at": "2026-10-20T16:28:08.044999Z"
+                }
+              ],
+              "ready_count": 1,
+              "report_hash": "sha256:b8768d66f5c4b814e949174b3485b1a74619ce27786b3906190b11b6a46e2eab"
+            }
+          ]
+        },
+        {
+          "scenario": "late_callback",
+          "reports": [
+            {
+              "report_id": "tb09-late_callback-unknown",
+              "actor_id": "19",
+              "operation_id": "tb09-late_callback-unknown",
+              "reason": "隔离窗口预演 unknown",
+              "account_ids": [
+                "tb09-late_callback"
+              ],
+              "created_at": "2026-10-20T16:28:08.669161Z",
+              "items": [
+                {
+                  "account_id": "tb09-late_callback",
+                  "next_action": "resolve_payment",
+                  "inventory": {
+                    "account_id": "tb09-late_callback",
+                    "category": "blocked",
+                    "legacy_credit_atoms": "15000000",
+                    "remote_id": "19",
+                    "remote_balance_atoms": null,
+                    "remote_sequence": null,
+                    "registration_finding": "history_unclaimed",
+                    "pending_order_ids": [],
+                    "credited_order_ids": [
+                      "dbf1581c-a6e2-426a-89a2-d8d694e0b907"
+                    ],
+                    "blockers": [
+                      "unresolved_payment"
+                    ],
+                    "job_id": null,
+                    "stage": null
+                  },
+                  "orders": [
+                    {
+                      "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                      "purchase_intent_id": "old-unresolved",
+                      "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                      "payment_state": "close_pending",
+                      "fulfillment_state": "not_due",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "0179bb32-f46e-4e3b-9b6a-0dbcd00437cd",
+                          "kind": "create_payment",
+                          "state": "pending",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:18:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "35f961a5-cba6-43c3-91d8-e941fb5838df",
+                          "kind": "close_payment",
+                          "state": "pending",
+                          "attempts": 1,
+                          "due_at": "2026-10-18T02:17:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "75424949-9b01-4b2b-bc08-525eca44d0e7",
+                          "work_id": "0179bb32-f46e-4e3b-9b6a-0dbcd00437cd",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        },
+                        {
+                          "attempt_id": "23bbbfb9-e26f-40f0-9734-bec6e8747b4a",
+                          "work_id": "35f961a5-cba6-43c3-91d8-e941fb5838df",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "f5e1d074-38e1-472b-9c6c-a520049e7166",
+                          "work_id": "0179bb32-f46e-4e3b-9b6a-0dbcd00437cd",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        }
+                      ]
+                    },
+                    {
+                      "order_id": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                      "purchase_intent_id": "old-credited",
+                      "merchant_order_no": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                      "payment_state": "paid",
+                      "fulfillment_state": "credited",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "8c209a83-fa89-4d5b-b6e9-02223849343f",
+                          "kind": "fulfill_order",
+                          "state": "done",
+                          "attempts": 1,
+                          "due_at": "2026-10-18T02:01:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "a0bfa564-81cf-4956-aef4-bb20330ea8ed",
+                          "kind": "create_payment",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:18:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "0abe5a12-8078-4b48-995e-58b43da5cab7",
+                          "work_id": "a0bfa564-81cf-4956-aef4-bb20330ea8ed",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                          "merchant_order_no": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        }
+                      ]
+                    }
+                  ],
+                  "registration_grant": {
+                    "eligibility_id": "d59f8c77-5925-4240-ac3a-09015664e2d4",
+                    "origin": "history",
+                    "eligibility": "history_unclaimed",
+                    "state": "waiting_migration",
+                    "grant_rule_id": "registration-500-v1",
+                    "event_id": null,
+                    "credit_display": null,
+                    "attempts": 0,
+                    "error_code": null,
+                    "updated_at": "2026-10-20T16:28:09.000000Z"
+                  },
+                  "registration_batch_id": null,
+                  "wallet_sequence": null,
+                  "wallet_synced_at": null
+                }
+              ],
+              "ready_count": 0,
+              "report_hash": "sha256:c8584b42a73105264c4f21c260a3adc43ba8288d50a4cd6a38e75a486210b4d4"
+            },
+            {
+              "report_id": "tb09-late_callback-final",
+              "actor_id": "19",
+              "operation_id": "tb09-late_callback-final",
+              "reason": "隔离窗口预演 final",
+              "account_ids": [
+                "tb09-late_callback"
+              ],
+              "created_at": "2026-10-20T16:28:09.135726Z",
+              "items": [
+                {
+                  "account_id": "tb09-late_callback",
+                  "next_action": "ready",
+                  "inventory": {
+                    "account_id": "tb09-late_callback",
+                    "category": "migrated",
+                    "legacy_credit_atoms": null,
+                    "remote_id": "19",
+                    "remote_balance_atoms": "4500000000",
+                    "remote_sequence": "3",
+                    "registration_finding": "history_unclaimed",
+                    "pending_order_ids": [],
+                    "credited_order_ids": [
+                      "8cd455f5-3a36-4424-820e-0bc351da387d",
+                      "dbf1581c-a6e2-426a-89a2-d8d694e0b907"
+                    ],
+                    "blockers": [],
+                    "job_id": "9355bc96-ecb9-4bee-85e5-e673c7d3b5bc",
+                    "stage": "completed"
+                  },
+                  "orders": [
+                    {
+                      "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                      "purchase_intent_id": "old-unresolved",
+                      "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                      "payment_state": "paid",
+                      "fulfillment_state": "credited",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "0179bb32-f46e-4e3b-9b6a-0dbcd00437cd",
+                          "kind": "create_payment",
+                          "state": "done",
+                          "attempts": 3,
+                          "due_at": "2026-10-18T02:52:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "35f961a5-cba6-43c3-91d8-e941fb5838df",
+                          "kind": "close_payment",
+                          "state": "done",
+                          "attempts": 3,
+                          "due_at": "2026-10-18T03:08:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "e8f27a7a-2a35-4c31-85d7-365c1f768d4f",
+                          "kind": "fulfill_order",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T03:06:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "75424949-9b01-4b2b-bc08-525eca44d0e7",
+                          "work_id": "0179bb32-f46e-4e3b-9b6a-0dbcd00437cd",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        },
+                        {
+                          "attempt_id": "23bbbfb9-e26f-40f0-9734-bec6e8747b4a",
+                          "work_id": "35f961a5-cba6-43c3-91d8-e941fb5838df",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "f5e1d074-38e1-472b-9c6c-a520049e7166",
+                          "work_id": "0179bb32-f46e-4e3b-9b6a-0dbcd00437cd",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:16:00.000000Z",
+                          "completed_at": "2026-10-18T02:16:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "b814c922-1bd5-4079-9936-f48abf361b9d",
+                          "work_id": "35f961a5-cba6-43c3-91d8-e941fb5838df",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "close",
+                          "started_at": "2026-10-18T02:32:00.000000Z",
+                          "completed_at": "2026-10-18T02:32:00.000000Z",
+                          "result": {
+                            "status": "unknown",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:811a8bb77c75bd4b7a7697ee2155befa5c3f757d1974b40c5de82c52c66da060"
+                        },
+                        {
+                          "attempt_id": "f17a0a8a-251c-46ee-9ea4-541164279488",
+                          "work_id": "35f961a5-cba6-43c3-91d8-e941fb5838df",
+                          "recovery_attempt": 2,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "merchant_order_no": "8cd455f5-3a36-4424-820e-0bc351da387d",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "query",
+                          "started_at": "2026-10-18T02:32:00.000000Z",
+                          "completed_at": "2026-10-18T02:32:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        }
+                      ]
+                    },
+                    {
+                      "order_id": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                      "purchase_intent_id": "old-credited",
+                      "merchant_order_no": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                      "payment_state": "paid",
+                      "fulfillment_state": "credited",
+                      "review_state": "none",
+                      "amount_fen": 5000,
+                      "original_grant_credit_atoms": "20000000",
+                      "frozen_usd_atoms": "2000000000",
+                      "snapshot_error": null,
+                      "works": [
+                        {
+                          "work_id": "8c209a83-fa89-4d5b-b6e9-02223849343f",
+                          "kind": "fulfill_order",
+                          "state": "done",
+                          "attempts": 1,
+                          "due_at": "2026-10-18T02:01:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        },
+                        {
+                          "work_id": "a0bfa564-81cf-4956-aef4-bb20330ea8ed",
+                          "kind": "create_payment",
+                          "state": "done",
+                          "attempts": 2,
+                          "due_at": "2026-10-18T02:18:00.000000Z",
+                          "lease_until": null,
+                          "last_error": null
+                        }
+                      ],
+                      "observations": [
+                        {
+                          "attempt_id": "0abe5a12-8078-4b48-995e-58b43da5cab7",
+                          "work_id": "a0bfa564-81cf-4956-aef4-bb20330ea8ed",
+                          "recovery_attempt": 1,
+                          "account_id": "tb09-late_callback",
+                          "order_id": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                          "merchant_order_no": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+                          "channel": "test",
+                          "merchant_id": "test-merchant",
+                          "app_id": "test-app",
+                          "amount_fen": 5000,
+                          "action": "create",
+                          "started_at": "2026-10-18T02:00:00.000000Z",
+                          "completed_at": "2026-10-18T02:00:00.000000Z",
+                          "result": {
+                            "status": "pending",
+                            "error_code": null,
+                            "unpaid_deadline": null,
+                            "trade_not_found_at": null,
+                            "evidence_ref": null,
+                            "transaction_id": null,
+                            "paid_at": null,
+                            "order_amount_fen": null
+                          },
+                          "result_hash": "sha256:b65bdc1eaf849a837007ebd65ce4d2c28059e20d5427183b84d8ef7a2d925254"
+                        }
+                      ]
+                    }
+                  ],
+                  "registration_grant": {
+                    "eligibility_id": "d59f8c77-5925-4240-ac3a-09015664e2d4",
+                    "origin": "history",
+                    "eligibility": "history_unclaimed",
+                    "state": "credited",
+                    "grant_rule_id": "registration-500-v1",
+                    "event_id": "d7ee3752-cfce-4264-b06c-f8f5be932231",
+                    "credit_display": {
+                      "currency_rule_id": "usd-credit-100-v2",
+                      "credit_scale": 6,
+                      "grant_credit_atoms": "500000000"
+                    },
+                    "attempts": 1,
+                    "error_code": null,
+                    "updated_at": "2026-10-20T16:28:09.000000Z"
+                  },
+                  "registration_batch_id": "tb09-late_callback-grant",
+                  "wallet_sequence": "3",
+                  "wallet_synced_at": "2026-10-20T16:28:09.104244Z"
+                }
+              ],
+              "ready_count": 1,
+              "report_hash": "sha256:943a52425a0e18fe86c146142f04c787e0bcb345b3689fca7dc1169cad753210"
+            }
+          ]
+        }
+      ],
+      "TB09_EVIDENCE": [
+        {
+          "scenario": "close_race",
+          "account_id": "tb09-close_race",
+          "old_credited_order": "53b38fa2-71dc-46a8-ab15-cd5999e74ce7",
+          "original_pending_order": "733eb939-b8b8-4ce9-b141-a72db8f7be64",
+          "migration_job": "78fb2e71-4935-48f1-a3ee-c96020b56282",
+          "report_id": "tb09-close_race-final",
+          "report_hash": "sha256:b8768d66f5c4b814e949174b3485b1a74619ce27786b3906190b11b6a46e2eab",
+          "event_ids": [
+            "022ec463-8f9a-4130-8ae0-e87e0ecf4e86",
+            "f0273c1d-8ba3-44f5-b683-d8a7bc2ec4f9",
+            "ddca323d-eff8-4826-bbd3-c535cd321a14"
+          ],
+          "sequence": "3",
+          "balance_usd_atoms": "4500000000",
+          "client_verified": "pending preserved 2000.00; original 20-credit order -> 2000.00; final balance 4500.00 and registration 500.00; no new intent"
+        },
+        {
+          "scenario": "late_callback",
+          "account_id": "tb09-late_callback",
+          "old_credited_order": "dbf1581c-a6e2-426a-89a2-d8d694e0b907",
+          "original_pending_order": "8cd455f5-3a36-4424-820e-0bc351da387d",
+          "migration_job": "9355bc96-ecb9-4bee-85e5-e673c7d3b5bc",
+          "report_id": "tb09-late_callback-final",
+          "report_hash": "sha256:943a52425a0e18fe86c146142f04c787e0bcb345b3689fca7dc1169cad753210",
+          "event_ids": [
+            "ee1d6fe4-8600-4d90-8821-d5243b1d34d7",
+            "ac3f9899-fc41-4081-9fef-33824ce43db2",
+            "d7ee3752-cfce-4264-b06c-f8f5be932231"
+          ],
+          "sequence": "3",
+          "balance_usd_atoms": "4500000000",
+          "client_verified": "pending preserved 2000.00; original 20-credit order -> 2000.00; final balance 4500.00 and registration 500.00; no new intent"
+        }
+      ],
+      "TB10_EVIDENCE": [
+        {
+          "account_id": "alice",
+          "remote_id": "20",
+          "order_id": "2d78de7f-fbb9-4957-a623-95ac1ec51533",
+          "charges": [
+            {
+              "sample": "gift_setup",
+              "applied": true,
+              "base_usd_atoms": "49500000",
+              "billing_mode": "per_request",
+              "charged_usd_atoms": "495000000",
+              "effective_charge_multiplier": 10
+            },
+            {
+              "sample": "input_output",
+              "applied": true,
+              "base_usd_atoms": "1000000",
+              "billing_mode": "token",
+              "charged_usd_atoms": "10000000",
+              "effective_charge_multiplier": 10
+            },
+            {
+              "sample": "cache",
+              "applied": true,
+              "base_usd_atoms": "1000000",
+              "billing_mode": "token",
+              "charged_usd_atoms": "10000000",
+              "effective_charge_multiplier": 10
+            },
+            {
+              "sample": "request",
+              "applied": true,
+              "base_usd_atoms": "1000000",
+              "billing_mode": "per_request",
+              "charged_usd_atoms": "10000000",
+              "effective_charge_multiplier": 10
+            }
+          ],
+          "event_ids": [
+            "bb20d03d-9071-493d-bbc9-ab14efe19278",
+            "d2f7b187-c3f5-44c0-95d9-2dea32a72fec",
+            "ed65f044-094a-4763-9633-4e44ae189f17",
+            "a0b1a329-c7a6-423c-ab57-8e1202239d3b",
+            "0f606338-f216-4ec3-9f9c-1fdb380ea0c8",
+            "cc18bd8f-d2b0-4300-8715-5ca1dfcfdd9c"
+          ],
+          "source_deltas": [
+            {
+              "adjustment_atoms": "0",
+              "grant_atoms": "500000000",
+              "purchased_atoms": "0",
+              "unattributed_atoms": "0"
+            },
+            {
+              "adjustment_atoms": "0",
+              "grant_atoms": "0",
+              "purchased_atoms": "1000000000",
+              "unattributed_atoms": "0"
+            },
+            {
+              "adjustment_atoms": "0",
+              "grant_atoms": "-495000000",
+              "purchased_atoms": "0",
+              "unattributed_atoms": "0"
+            },
+            {
+              "adjustment_atoms": "0",
+              "grant_atoms": "-5000000",
+              "purchased_atoms": "-5000000",
+              "unattributed_atoms": "0"
+            },
+            {
+              "adjustment_atoms": "0",
+              "grant_atoms": "0",
+              "purchased_atoms": "-10000000",
+              "unattributed_atoms": "0"
+            },
+            {
+              "adjustment_atoms": "0",
+              "grant_atoms": "0",
+              "purchased_atoms": "-10000000",
+              "unattributed_atoms": "0"
+            }
+          ],
+          "balance_usd_atoms": "975000000",
+          "sequence": "6",
+          "client_verified": "balance 975.00; consumption 495.00 + 3 x 10.00; registration 500.00; no USD/token leakage"
+        }
+      ]
+    }
+  },
+  "desktop": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.8.2",
+    "electron": "37.10.3",
+    "wanx": "1 passed, 0 skipped",
+    "admin": "1 passed, 0 skipped",
+    "screenshots": [
+      {
+        "path": "credit-release-evidence/admin-narrow.png",
+        "sha256": "94b2335f2ff07d05c5c55e48f58a01ca49e4566ca259b19ff5a6c6f3f32dd547"
+      },
+      {
+        "path": "credit-release-evidence/recharge-v2-narrow-quote.png",
+        "sha256": "1cd1690e155cdfa2108af0995fd764b72c6ddb8cafe8b7a3a246ef969cbc7e4d"
+      },
+      {
+        "path": "credit-release-evidence/recharge-v2.png",
+        "sha256": "67276a64f9154eebda8f0dd5e57c4d75ba089dccd5daa3f0f09aff46eb4eb8d2"
+      },
+      {
+        "path": "credit-release-evidence/wallet-minimum-desktop.png",
+        "sha256": "c44c731aaf91846aa236bf095d76c4e7c31ea7f0c003ec7e065426ab0ffd0db1"
+      }
+    ]
+  },
+  "external_gates": {
+    "windows": "not_run_no_environment",
+    "supplier_cost": "not_verified_no_documents",
+    "production_pricing": "not_verified",
+    "real_payment": "not_run",
+    "production_assets_and_restore": "not_run",
+    "deployment": "not_run"
+  },
+  "validation": {
+    "wanx_make_all": {
+      "passed": 4841,
+      "skipped": 17
+    },
+    "wanx_node": {
+      "passed": 1460,
+      "skipped": 19
+    },
+    "admin_regression": {
+      "passed": 777,
+      "skipped": 29
+    },
+    "admin_frontend": {
+      "passed": 429,
+      "skipped": 1
+    },
+    "desktop_contracts": {
+      "passed": 113,
+      "skipped": 0
+    },
+    "go_full": "PASS",
+    "go_unit": "PASS",
+    "go_vet": "PASS",
+    "go_pricing_top_level_passed": 67,
+    "go_lint": {
+      "baseline_issues": 22,
+      "new_issues": 0
+    },
+    "renderer_build": "PASS",
+    "admin_frontend_build": "PASS",
+    "admin_extra_cross_repository": {
+      "passed": 16,
+      "skipped": 0,
+      "log_sha256": "f27ff44fe7e2aead4dd209ed297aa1be2d86fce52079e40104c3688135d1901e"
+    }
+  }
+}

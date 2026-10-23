@@ -522,3 +522,68 @@ test("name editor retains its node through broadcasts and does not submit during
   assert.equal(calls.find(([action])=>action==="space.mkdir")[1].name, "项目资料");
   assert.equal(h.space.retainEditor(), false);
 });
+
+test('waiting/retrying queue remains visible offline and batch controls send explicit actions', async () => {
+  const calls = [];
+  const h = harness(async (action, input) => { calls.push([action, input]); return ok(action === 'space.refresh' ? { phase: 'ready', tasks: [] } : listed('file.txt')); });
+  h.space.hostState(connected('box')); h.space.activate(true); await tick();
+  const task = { id: 'a'.repeat(32), direction: 'upload', name: 'sample.txt', size: 512, offset: 0, phase: 'waiting' };
+  h.space.hostState({ ...connected('box'), canLaunchApplications: false, activeDeviceId: null, connectionPhase: 'recovering' });
+  h.emit({ accountId: 'owner', boxId: 'box', phase: 'disconnected', tasks: [task] });
+  assert.match(h.space.view(), /等待网络，恢复后自动继续/);
+  assert.doesNotMatch(h.space.view(), /传输 · 进行中/);
+  await h.click('transfer', '', { command: 'pause-all' });
+  assert.ok(calls.some(([action, input]) => action === 'space.transfer' && input.action === 'pause-all'));
+  h.space.hostState({ ...connected('box'), route: 'auth', account: null, canLaunchApplications: false });
+  assert.doesNotMatch(h.space.view(), /sample.txt/);
+});
+
+for (const entry of ["picker", "drop"]) test(`main ${entry} shows a detailed preflight rejection without adding transfer rows`, async () => {
+  const rejection = { code: "SPACE_UPLOAD_LIMIT", message: "单文件最大 200 MB：<large>.bin。本批文件未加入上传队列。" };
+  const h = harness(async action => ok(action === "space.uploads" ? { uploadRejection: rejection } : action === "space.refresh" ? { phase: "ready", tasks: [] } : listed("existing.txt")),
+    async () => ({ ok: false, ...rejection }));
+  h.space.hostState(connected("box")); h.space.activate(true); await tick();
+  if (entry === "picker") await h.click("upload");
+  else await h.event("drop", { preventDefault() {}, dataTransfer: { types: ["Files"], files: [{ name: "<large>.bin" }] } });
+  assert.match(h.space.view(), /200 MB：&lt;large&gt;.bin.*本批文件未加入上传队列/);
+  assert.doesNotMatch(h.space.view(), /<large>|class="space-transfer "/);
+});
+
+test('closing a loading preview prevents late content reopening the dialog', async () => {
+ let release;
+ const h=harness(async action=> action==='space.preview'?new Promise(r=>release=r):ok(action==='space.refresh'?{phase:'ready',tasks:[]}:listed('中文  图片😀.png')));
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();
+ const opening=h.click('preview','a'.repeat(32));await tick();assert.match(h.space.view(),/正在加载预览/);
+ await h.click('dialog-close');release(ok({type:'image/png',data:'aGk='}));await opening;
+ assert.doesNotMatch(h.space.view(),/role="dialog"/);
+});
+
+test('unsupported preview offers download of the same original resource and mode toggles',async()=>{
+ const downloads=[];
+ const h=harness(async(action,input)=>{if(action==='space.preview')return{ok:false,code:'SPACE_PREVIEW_UNSUPPORTED'};if(action==='space.download'){downloads.push(input.id);return ok();}return ok(action==='space.refresh'?{phase:'ready',tasks:[]}:listed('原文件.docx'));});
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();
+ await h.click('preview-mode');assert.match(h.space.view(),/aria-pressed="true"/);
+ await h.click('preview','a'.repeat(32));assert.match(h.space.view(),/下载原文件/);
+ await h.click('preview-download');assert.deepEqual(downloads,['a'.repeat(32)]);
+});
+
+for(const entry of ['picker','drop']) test(`main ${entry} retires accepted-upload errors and uses only the network waiting message`,async()=>{
+ let snapshot={accountId:'owner',boxId:'box',scope:'scope-a',phase:'ready',tasks:[]};
+ const h=harness(async action=>action==='space.uploads'?{ok:false,code:'SPACE_REQUEST_FAILED'}:ok(action==='space.refresh'?snapshot:listed('existing.txt')),async()=>({ok:false,code:'SPACE_REQUEST_FAILED'}));
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();
+ if(entry==='picker')await h.click('upload');else await h.event('drop',{preventDefault(){},dataTransfer:{types:['Files'],files:[{name:'样本.bin'}]}});
+ assert.match(h.space.view(),/notice error/);
+ const task={id:'a'.repeat(32),direction:'upload',name:'样本.bin',phase:'retrying',size:100,offset:40,error:'SPACE_REQUEST_FAILED'};
+ snapshot={...snapshot,tasks:[task]};h.emit(snapshot);
+ assert.match(h.space.view(),/等待网络，恢复后自动继续/);assert.doesNotMatch(h.space.view(),/notice error|inline-error/);
+ snapshot={...snapshot,tasks:[{...task,phase:'queued'}]};h.emit(snapshot);assert.match(h.space.view(),/等待网络，恢复后自动继续/);assert.doesNotMatch(h.space.view(),/等待传输|inline-error/);
+ snapshot={...snapshot,tasks:[{...task,phase:'running',offset:70}]};h.emit(snapshot);assert.doesNotMatch(h.space.view(),/等待网络，恢复后自动继续|notice error/);
+ snapshot={...snapshot,tasks:[{...task,phase:'complete',offset:100}]};h.emit(snapshot);await tick();assert.doesNotMatch(h.space.view(),/等待网络，恢复后自动继续|notice error|inline-error/);
+ snapshot={...snapshot,tasks:[]};h.emit(snapshot);assert.doesNotMatch(h.space.view(),/notice error/);
+});
+test('main preserves true submission errors and manual pauses during unrelated automatic recovery',async()=>{
+ let snapshot={accountId:'owner',boxId:'box',scope:'scope-a',phase:'ready',tasks:[{id:'a'.repeat(32),direction:'upload',name:'原有.bin',phase:'retrying',size:100,offset:40,error:'ECONNRESET'}]};
+ const h=harness(async action=>action==='space.uploads'?{ok:false,code:'SPACE_DISK_FULL'}:ok(action==='space.refresh'?snapshot:listed('existing.txt')));
+ h.space.hostState(connected('box'));h.space.activate(true);await tick();await h.click('upload');assert.match(h.space.view(),/存储空间不足/);
+ snapshot={...snapshot,tasks:[{...snapshot.tasks[0],phase:'paused',error:null}]};h.emit(snapshot);assert.match(h.space.view(),/已暂停|存储空间不足/);assert.doesNotMatch(h.space.view(),/等待网络，恢复后自动继续/);
+});

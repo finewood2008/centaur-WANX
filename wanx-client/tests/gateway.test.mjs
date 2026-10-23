@@ -235,3 +235,59 @@ test("rejects target credentials, paths and non-HTTP protocols", async () => {
     );
   }
 });
+
+test('opt-in upload idle timeout destroys a stalled socket and allows fresh requests', async t => {
+  let calls = 0;
+  const {gateway} = await fixture(t, (incoming, response) => {
+    incoming.resume();
+    if (++calls > 1) response.end('ok');
+  });
+  await assert.rejects(gateway.request({path:'/api/personal-space/uploads/test',method:'PUT',body:Buffer.alloc(1024),idleTimeoutMs:80}), error => {
+    assert.equal(error.code, 'SPACE_CHUNK_STALLED');
+    assert.equal(error.transportPhase, 'awaiting_response');
+    assert.ok(error.requestBytes >= 1024);
+    assert.equal(error.responseBytes, 0);
+    return true;
+  });
+  assert.equal((await gateway.request({path:'/api/personal-space/uploads/test',method:'PUT',body:'retry',idleTimeoutMs:80})).body.toString(), 'ok');
+});
+
+test('upload idle timeout follows activity rather than total duration, and cancellation still wins', async t => {
+  const timers = new Set(); t.after(() => {for(const timer of timers) clearInterval(timer);});
+  const {gateway} = await fixture(t, (incoming, response) => {
+    incoming.resume();
+    if (incoming.url.endsWith('/cancel')) return;
+    let n=0; const timer=setInterval(()=>{response.write('x');if(++n===8){clearInterval(timer);timers.delete(timer);response.end();}},30);timers.add(timer);
+  });
+  const started=Date.now();
+  const result=await gateway.request({path:'/api/personal-space/uploads/active',method:'PUT',body:'x',idleTimeoutMs:120});
+  assert.equal(result.body.toString(),'xxxxxxxx');assert.ok(Date.now()-started>120);
+  const controller=new AbortController();
+  const pending=gateway.request({path:'/api/personal-space/uploads/cancel',method:'PUT',body:'x',idleTimeoutMs:1000,signal:controller.signal});
+  setTimeout(()=>controller.abort(),30);
+  await assert.rejects(pending,{code:'ABORT_ERR'});
+});
+
+test('completed upload watchdog does not leak onto a reused socket or a non-opt-in request', async t => {
+  const {targetURL}=await fixture(t,(incoming,response)=>{
+    incoming.resume();
+    if(incoming.url.endsWith('/slow'))setTimeout(()=>response.end('slow-ok'),180);
+    else response.end('ok');
+  });
+  const agent=new http.Agent({keepAlive:true,maxSockets:1});
+  const gateway=await createDashboardGateway({targetURL,agent});
+  t.after(async()=>{await gateway.close();agent.destroy();});
+  await gateway.request({path:'/api/personal-space/uploads/first',method:'PUT',body:'x',idleTimeoutMs:60});
+  assert.equal((await gateway.request({path:'/api/personal-space/uploads/slow',method:'POST',body:'x'})).body.toString(),'slow-ok');
+});
+
+test('bulk chunks use independent connections through the authorized dialer without destroying the control pool', async t => {
+  const ports=[];
+  const {targetURL}=await fixture(t,(incoming,response)=>{ports.push(incoming.socket.remotePort);incoming.resume();response.end('ok');});
+  const agent=new http.Agent({keepAlive:true,maxSockets:1});let dials=0;
+  const dial=agent.createConnection.bind(agent);agent.createConnection=(options,callback)=>{dials++;return dial(options,callback);};
+  const gateway=await createDashboardGateway({targetURL,agent});t.after(async()=>{await gateway.close();agent.destroy();});
+  const request=(freshConnection=false)=>gateway.request({path:'/api/personal-space/uploads/test',method:'PUT',body:'x',freshConnection,idleTimeoutMs:1000});
+  await request();await request(true);await request(true);await request();
+  assert.equal(dials,3);assert.equal(ports[0],ports[3]);assert.notEqual(ports[1],ports[0]);assert.notEqual(ports[2],ports[1]);
+});

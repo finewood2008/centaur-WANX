@@ -12,7 +12,7 @@ const source = (await Promise.all([...html.matchAll(/<script src="([^"]+)"><\/sc
 async function harness(t, options = {}) {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
   const events = new Map(), calls = [];
-  const app = { innerHTML: "", addEventListener: (name, fn) => events.set(name, fn) };
+  const app = { innerHTML: "", querySelector: () => null, addEventListener: (name, fn) => events.set(name, fn) };
   const state = { route: "auth", phase: "signed_out" };
   const button = { disabled: false, textContent: "获取验证码", classList: { toggle() {} }, setAttribute() {},
     set innerHTML(value) { this.textContent = value.replace(/<[^>]*>/g, ""); } };
@@ -23,9 +23,9 @@ async function harness(t, options = {}) {
       onLocalState() {},
       action: async (name, input) => { calls.push([name, input]); return options.action ? options.action(name, input) : { ok: true, value: { expiresIn: 300 }, state }; },
     } },
-    document: { addEventListener() {}, querySelector: selector => selector === "#app" ? app : inputs[selector] || null },
+    document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: selector => selector === "#app" ? app : inputs[selector] || null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
-    Date, setTimeout, clearTimeout, setInterval() {}, TextEncoder,
+    Date, setTimeout, clearTimeout, setInterval() {}, clearInterval() {}, TextEncoder,
   });
   await new Promise(resolve => setImmediate(resolve));
   return {

@@ -60,7 +60,7 @@ help:
 	@echo ""
 	@echo "Quality targets (ship bar):"
 	@echo "  all              format-all + lint + typecheck + test (backend lint/typecheck/test)"
-	@echo "  precommit        git pre-commit checks (format + lint + typecheck; no tests)"
+	@echo "  precommit        manual checks (format + lint + typecheck; no tests)"
 	@echo "  lint             Ruff check + format check (src, tests)"
 	@echo "  format           Ruff auto-fix + format (src, tests)"
 	@echo "  typecheck        mypy --strict src/octop"
@@ -79,7 +79,7 @@ help:
 	@echo "  check-all        lint-all + typecheck-all + test"
 	@echo ""
 	@echo "Utility targets:"
-	@echo "  install-hooks    Point git to .githooks (pre-commit: make all + dashboard build)"
+	@echo "  install-hooks    Point git to .githooks (no automatic commit checks)"
 	@echo "  install          Install Python dev dependencies (alias: install-dev)"
 	@echo "  install-dev      uv sync / pip install -e \".[dev]\""
 	@echo "  install-tools    Install build + twine for publishing"
@@ -233,7 +233,7 @@ test-live:
 	@echo "[test] pytest (live)..."
 	$(RUN) pytest -m live
 
-# Local pre-commit gate. Tests are explicit via test-affected / all, or run in CI.
+# Optional manual checks; git commit does not invoke this target.
 .PHONY: precommit
 precommit: format-all lint typecheck
 
@@ -293,8 +293,7 @@ install-hooks:
 	@echo "[install-hooks] Setting core.hooksPath=.githooks"
 	git config core.hooksPath .githooks
 	@chmod +x "$(REPO_ROOT)/.githooks/"* 2>/dev/null || true
-	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck), dashboard build; tests run separately"
-	@echo "[install-hooks] Bypass: SKIP_PRECOMMIT=1 git commit …   or   git commit --no-verify"
+	@echo "[install-hooks] Done. Commits run directly; checks and builds are manual or run in CI."
 
 .PHONY: install install-dev
 install install-dev:

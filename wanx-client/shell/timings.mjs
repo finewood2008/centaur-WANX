@@ -4,7 +4,12 @@ import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 // Codes are an allowlist, not a pattern: even a plausible code may contain a secret.
 const errorCodes = new Set([
+  "LOCAL_CONNECT_TIMEOUT", "LOCAL_CONNECT_UNSUPPORTED_BOND_FLOW", "LOCAL_SELECTION_LEASE_INVALID",
+  "LOCAL_DEVICE_INFO_INVALID", "LOCAL_DEVICE_INCOMPATIBLE", "LOCAL_TRANSPORT_DISCONNECTED",
+  "LOCAL_USER_CANCELLED", "GATT_SERVICE_NOT_FOUND", "GATT_CHARACTERISTIC_MISMATCH",
+  "GATT_FRAGMENT_PROTOCOL_ERROR", "GATT_FRAGMENT_INCOMPLETE", "PROTOCOL_CHANGED", "RESOURCE_EXHAUSTED",
   ...BOX_SESSION_ERROR_CODES,
+  "PLATFORM_SESSION_EXPIRED", "SPACE_RETRY_EXHAUSTED", "ENOENT", "ENOSPC", "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EAI_AGAIN", "SPACE_TRANSFER_FAILED", "SPACE_CONNECTION_TIMEOUT", "SPACE_CHUNK_STALLED", "SPACE_LOCAL_FILE_CHANGED", "SPACE_UPLOAD_OFFSET", "SPACE_UPLOAD_OFFSET_INVALID", "SPACE_CONTEXT_CHANGED", "SPACE_NETWORK_WAIT", "SPACE_PAUSED", "SECURE_STORAGE_WRITE_FAILED",
   "ACCOUNT_ACCESS_DENIED", "ACCOUNT_CANCELLED", "ACCOUNT_INVALID_RESPONSE",
   "ACCOUNT_INVALID_STORED_SESSION", "ACCOUNT_LOGIN_REQUIRED", "ACCOUNT_NETWORK_ERROR",
   "ACCOUNT_REDIRECT_REJECTED", "ACCOUNT_REQUEST_FAILED", "ACCOUNT_SESSION_EXPIRED",
@@ -18,6 +23,7 @@ const errorCodes = new Set([
   "network_disabled", "netbird_peer_disconnected", "netbird_peer_unknown",
 ]);
 const phases = new Set(["idle", "disabled", "checking", "enrolling", "authorizing", "ready", "recovering", "unavailable", "auth_required"]);
+const paymentStages = new Set(["confirm", "qr", "close"]);
 const safeCode = code => errorCodes.has(code) ? code : "UNKNOWN_ERROR";
 
 // Bounded local diagnostics never serialize request/response data or error objects.
@@ -47,6 +53,38 @@ export function createTimingRecorder({
       .catch(() => {}); // Diagnostic I/O must never break a connection.
   }
   return {
+    provisioning(value) {
+      if (!["connect", "readDeviceInfo", "request", "subscribeStatus", "close", "closeAll"].includes(value.operation)
+          || !["completed", "failed"].includes(value.outcome)) return;
+      const details = { operation: value.operation };
+      if (/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.requestId || ""))
+        details.requestId = value.requestId;
+      if ([1, 2].includes(value.attempt)) details.attempt = value.attempt;
+      if (["renderer", "deadline", "abort", "send", "lifecycle"].includes(value.source)) details.source = value.source;
+      if (["connect", "service", "characteristic", "notifications"].includes(value.stage)) details.stage = value.stage;
+      if (["NetworkError", "NotFoundError", "NotSupportedError", "InvalidStateError", "SecurityError",
+        "AbortError", "TimeoutError", "UnknownError", "LocalProvisioningFailure"].includes(value.errorName))
+        details.errorName = value.errorName;
+      if (["device.info.result", "hello.result", "status.result", "pairing.start.result",
+        "pairing.challenge.result", "pairing.token.result", "pairing.cancel.result",
+        "wifi.scan.result", "wifi.apply.result", "job.status.result"].includes(value.messageType))
+        details.messageType = value.messageType;
+      if (value.errorCode) details.errorCode = safeCode(value.errorCode);
+      const duration = Number.isSafeInteger(value.durationMs) && value.durationMs >= 0 ? value.durationMs : undefined;
+      record("setup.transport", value.outcome, duration, details);
+    },
+    transfer(value) {
+      if (!["enqueued", "connection", "reconciled", "confirmed", "completed", "interrupted", "resumed", "paused", "request"].includes(value.action)) return;
+      const details = {};
+      for (const key of ["taskId", "batchId"]) if (/^[a-f0-9]{32}$/.test(value[key] || "")) details[key] = value[key];
+      for (const key of ["offset", "size", "attempt", "httpStatus", "durationMs", "requestBytes", "responseBytes"]) if (Number.isSafeInteger(value[key]) && value[key] >= 0) details[key] = value[key];
+      if (["queued", "checking", "running", "waiting", "retrying", "paused", "complete", "canceled"].includes(value.phase)) details.phase = value.phase;
+      if (["commit", "chunk", "reconcile"].includes(value.stage)) details.stage = value.stage;
+      if (["connecting", "sending", "awaiting_response", "receiving"].includes(value.transportPhase)) details.transportPhase = value.transportPhase;
+      if (typeof value.reusedSocket === "boolean") details.reusedSocket = value.reusedSocket;
+      if (value.errorCode) details.errorCode = safeCode(value.errorCode);
+      record("space.transfer", value.action, undefined, details);
+    },
     state(component, value) {
       if (!["network", "platform"].includes(component)) return;
       const state = {
@@ -58,6 +96,14 @@ export function createTimingRecorder({
       if (previousStates.get(component) === key) return;
       previousStates.set(component, key);
       record(`${component}.state`, "changed", undefined, state);
+    },
+    creditPayment(value = {}) {
+      if (!paymentStages.has(value.stage) || !Number.isFinite(value.durationMs) || value.durationMs < 0) return;
+      const details = {};
+      if (typeof value.qrReady === "boolean") details.qrReady = value.qrReady;
+      if (typeof value.ready === "boolean") details.qrReady = value.ready;
+      record(`credit.payment.${value.stage}`, value.outcome === "failed" ? "failed" : "completed",
+        Math.round(value.durationMs), details);
     },
     async run(step, operation) {
       const start = performance.now();

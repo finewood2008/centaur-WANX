@@ -82,3 +82,29 @@ test("logout while verifying ownership prevents transfer under a new login", asy
   await assert.rejects(change, { code: "ACCOUNT_CANCELLED" });
   assert.equal(calls.some(call => call.path.endsWith("/ownership/transfer")), false);
 });
+
+test("console claim signs request, keeps retry intent and never exposes device credentials", async t => {
+  const { account, calls } = await fixture(t, call => call.path.endsWith('/device-console-claims/redeem') ? reply({
+    deviceId: 'box-one', ownership: 'claimed', authorization: { secret: 'private' }, apiKey: 'private',
+  }) : undefined);
+  const claim = { claimCode: 'ABCDEFG234', clientAttemptId: 'b338f42e-e1ab-46e0-89a7-b2c6f79f45f1' };
+  for (let i = 0; i < 2; i++) {
+    assert.deepEqual(await account.redeemConsoleClaim(claim), { deviceId: 'box-one', ownership: 'claimed', authorizationState: 'deviceAckPending' });
+    assert.deepEqual(calls.at(-1).body, claim);
+    assert.equal(calls.at(-1).headers['Idempotency-Key'], claim.clientAttemptId);
+    assert.match(calls.at(-1).headers['X-Nexus-Signature'], /.+/);
+  }
+  for (const invalid of [{ claimCode: '123456' }, { clientAttemptId: 'bad' }])
+    await assert.rejects(account.redeemConsoleClaim({ ...claim, ...invalid }), { code: 'ACCOUNT_INVALID_INPUT' });
+  await account.logout();
+  await assert.rejects(account.redeemConsoleClaim(claim), { code: 'ACCOUNT_LOGIN_REQUIRED' });
+});
+
+test("console claim carries safe API error codes while withholding server diagnostics", async t => {
+  for (const code of ['CONSOLE_CLAIM_EXPIRED', 'CONSOLE_CLAIM_NOT_FOUND', 'OWNER_ALREADY_CHANGED']) {
+    const { account } = await fixture(t, call => call.path.endsWith('/device-console-claims/redeem')
+      ? new Response(JSON.stringify({ success: false, errorCode: code, message: 'private server details' }), { status: 409 }) : undefined);
+    await assert.rejects(account.redeemConsoleClaim({ claimCode: 'ABCDEFG234', clientAttemptId: 'b338f42e-e1ab-46e0-89a7-b2c6f79f45f1' }),
+      error => error.code === code && !error.message.includes('private'));
+  }
+});

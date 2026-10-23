@@ -352,6 +352,8 @@ async def run(stop: asyncio.Event | None = None) -> None:
                 semantica_config_file=runtime.credentials_file.parent / "semantica.json",
                 semantica_desktop_url=os.getenv("WANX_BRIDGE_SEMANTICA_URL"),
                 resources=resources,
+                clipboard_url=os.getenv("WANX_BRIDGE_CLIPBOARD_URL", "http://127.0.0.1:8092")
+                or None,
             ),
             runtime.bind_host,
             runtime.bind_port,

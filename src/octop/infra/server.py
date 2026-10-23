@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
@@ -254,6 +255,7 @@ class OctopServer:
         self.plugin_manager: PluginManager | None = None
         self.wizard_tokens = WizardTokenStore(ttl_seconds=300)
         self._started = False
+        self._shutdown_callbacks: list[Callable[[], Awaitable[None]]] = []
         self._started_at: int | None = None
         self._sso_service: SsoService | None = None
 
@@ -539,10 +541,17 @@ class OctopServer:
                 wizard_home / WIZARD_FILE_NAME,
             )
 
+    def add_shutdown_callback(self, callback: Callable[[], Awaitable[None]]) -> None:
+        if callback not in self._shutdown_callbacks:
+            self._shutdown_callbacks.append(callback)
+
     async def stop(self) -> None:
         if not self._started:
             return
         try:
+            callbacks, self._shutdown_callbacks = self._shutdown_callbacks, []
+            for callback in reversed(callbacks):
+                await callback()
             if self.app_runtime is not None:
                 rt = self.app_runtime
                 if rt.loop_service is not None:

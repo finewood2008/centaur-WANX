@@ -42,6 +42,11 @@ class Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_exact_declarations_and_ambiguous_or_quoted_text(self):
         self.assertEqual(
+            f.explicit_declaration("知君，记住：我希望你先听我说完"), "我希望你先听我说完"
+        )
+        for text in ["记住这一点", "请记住：我今天很难受", "知君，记住：我今天很难受"]:
+            self.assertIsNone(f.explicit_declaration(text))
+        self.assertEqual(
             f.explicit_declaration("我确认我现在的核心是人工智能，这条可以进本体"),
             "我现在的核心是人工智能",
         )
@@ -85,6 +90,51 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.claims[0].evidence[0].source_type, "owner_declaration")
         self.assertEqual(d.claims[0].discussion_thread_id, "t")
         self.assertFalse(self.registry.agents["work"].workspace.files)
+
+    async def test_response_preferences_are_not_personal_aspirations(self):
+        for text, expected in [
+            ("知君，记住：我希望你先听我说完", "response"),
+            ("知君，记住：我希望你优先给我简短建议", "response"),
+            ("知君，记住：我希望成为更耐心的人", "aspiration"),
+        ]:
+            with r.agent_scope(self.registry, 1, "personal"):
+                result = await f.capture_declaration(self.registry, 1, "personal", "t", text, text)
+            doc = await p._read(self.registry.agents["personal"].workspace)
+            claim = next(c for c in doc.claims if c.id == result["id"])
+            self.assertEqual(claim.kind, expected, text)
+            self.assertTrue(admitted(claim))
+
+    async def test_ordinary_experts_do_not_prepare_understandings_even_if_previously_enabled(self):
+        await self.enable("work")
+        self.registry.rows["work"].config_json = "{}"
+        before = dict(self.registry.agents["work"].workspace.files)
+        with patch.object(f, "_owned_sources", AsyncMock()) as sources:
+            await f.request_preparation(self.registry, 1, "work")
+            await f.prepare_role(self.registry, 1, "work")
+            sources.assert_not_awaited()
+        self.assertEqual(self.registry.agents["work"].workspace.files, before)
+
+    async def test_ordinary_expert_middleware_leaves_original_request_and_data_untouched(self):
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        await self.enable("work")
+        self.registry.rows["work"].config_json = "{}"
+        request = NS(
+            messages=[HumanMessage(content="知君，记住：我希望你先听我说完", id="turn")],
+            system_message=SystemMessage(content="ordinary expert rules"),
+        )
+        before = dict(self.registry.agents["work"].workspace.files)
+        handler = AsyncMock(return_value="ordinary reply")
+        with patch(
+            "langgraph.config.get_config",
+            return_value={"configurable": {"agent_id": "work", "user": "1", "thread_id": "t"}},
+        ):
+            reply = await r.RoleOntologyMiddleware(self.registry, "work", 1).awrap_model_call(
+                request, handler
+            )
+        self.assertEqual(reply, "ordinary reply")
+        handler.assert_awaited_once_with(request)
+        self.assertEqual(self.registry.agents["work"].workspace.files, before)
 
     async def test_sources_include_unreviewed_owner_not_assistant_or_withdrawn(self):
         from octop.infra.agents import ontology_graph as g

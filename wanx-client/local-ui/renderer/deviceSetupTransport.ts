@@ -329,6 +329,15 @@ export function createDeviceSetupTransport(options: {
     } catch (error) {
       if (!disposed) {
         const code = (error as { code?: unknown })?.code;
+        const detail = (error as { diagnostic?: { stage?: string; errorName?: string } })?.diagnostic;
+        const nativeName = detail?.errorName ?? (error as { name?: string })?.name;
+        const diagnostic = {
+          ...(["connect", "service", "characteristic", "notifications"].includes(detail?.stage ?? "")
+            ? { stage: detail!.stage } : {}),
+          errorName: ["NetworkError", "NotFoundError", "NotSupportedError", "InvalidStateError",
+            "SecurityError", "AbortError", "TimeoutError", "LocalProvisioningFailure"].includes(nativeName ?? "")
+            ? nativeName : "UnknownError",
+        };
         options.bridge.reply({
           requestId,
           ok: false,
@@ -336,6 +345,7 @@ export function createDeviceSetupTransport(options: {
             typeof code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/u.test(code)
               ? code
               : "LOCAL_TRANSPORT_DISCONNECTED",
+          ...(detail || diagnostic.errorName !== "UnknownError" ? { diagnostic } : {}),
         });
       }
     } finally {

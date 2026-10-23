@@ -1,0 +1,157 @@
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
+
+// Reproducible local patch of the pinned SDK; never patch node_modules in place.
+const root = fileURLToPath(new URL('../', import.meta.url));
+const version = '2.0.1-wanx.3';
+const archive = path.join(root, 'vendor/nexusaos-local-provisioning-electron-ble-2.0.1.tgz');
+const check = process.argv.includes('--check');
+if (process.argv.slice(2).some(arg => arg !== '--check')) throw Error('Only --check is supported');
+const sha256 = data => createHash('sha256').update(data).digest('hex');
+const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+const runNpm = (args, options) => execFileSync(process.platform === 'win32' ? process.execPath : 'npm',
+  process.platform === 'win32' ? [npmCli, ...args] : args, options);
+function archiveEqual(left, right) {
+  const a = readFileSync(left), b = readFileSync(right);
+  return a.equals(b) || gunzipSync(a).equals(gunzipSync(b));
+}
+if (sha256(readFileSync(archive)) !== '3a321b54ac255904b190b9b772282999f2e62677806b1f624f18dfedf8f0e248') {
+  throw Error('SDK baseline hash mismatch: electron-ble');
+}
+const temporary = mkdtempSync(path.join(os.tmpdir(), 'wanx-provisioning-gatt-'));
+try {
+  const directory = path.join(temporary, 'package');
+  mkdirSync(directory);
+  for (const entry of execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).split(/\r?\n/).filter(Boolean)) {
+    if (!/^package\/(?:package\.json|README\.md|dist\/[a-z]+\.js|dist\/[a-z]+\.d\.ts)$/.test(entry)) {
+      throw Error(`Unexpected SDK archive member: ${entry}`);
+    }
+    const destination = path.join(temporary, entry);
+    mkdirSync(path.dirname(destination), { recursive: true });
+    writeFileSync(destination, execFileSync('tar', ['-xOzf', archive, entry]), { mode: 0o644 });
+  }
+  const manifestPath = path.join(directory, 'package.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  if (manifest.name !== '@nexusaos/local-provisioning-electron-ble' || manifest.version !== '2.0.1') {
+    throw Error('Unexpected SDK package identity');
+  }
+  manifest.version = version;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+  const target = path.join(directory, 'dist/index.js');
+  const source = readFileSync(target, 'utf8');
+  const before = `            let server, service, deviceInfo, command, status;
+            try {
+                server = await device.gatt.connect();
+                service = await server.getPrimaryService(PROVISIONING_SERVICE_UUID);
+                [deviceInfo, command, status] = await Promise.all([
+                    service.getCharacteristic(DEVICE_INFO_UUID),
+                    service.getCharacteristic(COMMAND_UUID),
+                    service.getCharacteristic(STATUS_UUID),
+                ]);
+            }
+            catch {
+                device.gatt.disconnect();
+                throw new LocalProvisioningFailure("GATT_CHARACTERISTIC_MISMATCH");
+            }`;
+  const after = `            let server, service, deviceInfo, command, status;
+            let stage = "connect", retired = false, closeOnRetire;
+            const diagnosticFailure = (code, failureStage, error) => {
+                const failure = new LocalProvisioningFailure(code);
+                const names = ["NetworkError", "NotFoundError", "NotSupportedError", "InvalidStateError",
+                    "SecurityError", "AbortError", "TimeoutError", "UnknownError"];
+                failure.diagnostic = { stage: failureStage,
+                    errorName: names.includes(error?.name) ? error.name : "UnknownError" };
+                return failure;
+            };
+            const retireConnection = () => {
+                if (retired) return;
+                retired = true;
+                signal.removeEventListener("abort", retireConnection);
+                closeOnRetire?.();
+                device.gatt.disconnect();
+            };
+            signal.addEventListener("abort", retireConnection, { once: true });
+            const assertActive = () => {
+                if (signal.aborted || retired)
+                    throw new DOMException("Aborted", "AbortError");
+            };
+            try {
+                server = await device.gatt.connect();
+                assertActive();
+                stage = "service";
+                service = await server.getPrimaryService(PROVISIONING_SERVICE_UUID);
+                assertActive();
+                stage = "characteristic";
+                // Web Bluetooth backends may allow only one GATT operation at a time.
+                deviceInfo = await service.getCharacteristic(DEVICE_INFO_UUID);
+                assertActive();
+                command = await service.getCharacteristic(COMMAND_UUID);
+                assertActive();
+                status = await service.getCharacteristic(STATUS_UUID);
+                assertActive();
+            }
+            catch (error) {
+                retireConnection();
+                if (signal.aborted || error?.name === "AbortError")
+                    throw new DOMException("Aborted", "AbortError");
+                const code = error?.name === "NotFoundError" && stage !== "connect"
+                    ? (stage === "service" ? "GATT_SERVICE_NOT_FOUND" : "GATT_CHARACTERISTIC_MISMATCH")
+                    : "LOCAL_TRANSPORT_DISCONNECTED";
+                throw diagnosticFailure(code, stage, error);
+            }`;
+  if (source.split(before).length !== 2) throw Error('SDK GATT patch anchor is not unique');
+  let patched = source.replace(before, after);
+  const changes = [
+    ['                server.disconnect();', '                retireConnection();'],
+    ['            device.addEventListener("gattserverdisconnected", onDisconnect);',
+      '            closeOnRetire = () => closeWith(new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED"));\n            device.addEventListener("gattserverdisconnected", onDisconnect);'],
+    ['                await status.startNotifications();',
+      '                await status.startNotifications();\n                assertActive();'],
+    [`            catch {
+                closeWith();
+                throw new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");
+            }`, `            catch (error) {
+                closeWith();
+                throw diagnosticFailure("LOCAL_TRANSPORT_DISCONNECTED", "notifications", error);
+            }`],
+    ['                    const abort = () => {', `                    // Observe response failures immediately, including while a native write
+                    // is blocked. Race only failures: a successful reply must not bypass
+                    // completion of the final write. Losing native promises stay observed.
+                    const interruption = new Promise((_, reject) => { void response.catch(reject); });
+                    void interruption.catch(() => undefined);
+                    const abort = () => {`],
+    ['            let closed = false, pending, statusListener;',
+      '            let closed = false, pending, statusListener, terminalFailure;'],
+    ['                closed = true;',
+      '                closed = true;\n                terminalFailure = error ?? new LocalProvisioningFailure("LOCAL_TRANSPORT_DISCONNECTED");'],
+    ['                            await command.writeValueWithResponse(fragment.slice().buffer);',
+      '                            if (closed) throw terminalFailure;\n                            await Promise.race([command.writeValueWithResponse(fragment.slice().buffer), interruption]);'],
+    ['                        if (error instanceof DOMException && error.name === "AbortError")\n                            throw error;',
+      `                        if (error instanceof DOMException && error.name === "AbortError") {
+                            closeWith(error);
+                            throw error;
+                        }`],
+  ];
+  for (const [from, to] of changes) {
+    if (patched.split(from).length !== 2) throw Error('SDK GATT lifecycle patch anchor is not unique');
+    patched = patched.replace(from, to);
+  }
+  writeFileSync(target, patched);
+  const packed = JSON.parse(runNpm(
+    ['pack', '--offline', '--ignore-scripts', '--json', '--pack-destination', temporary],
+    { cwd: directory, encoding: 'utf8' }));
+  const filename = `nexusaos-local-provisioning-electron-ble-${version}.tgz`;
+  if (packed.length !== 1 || packed[0].filename !== filename) throw Error('Unexpected packed SDK filename');
+  const generated = path.join(temporary, filename), destination = path.join(root, 'vendor', filename);
+  if (check) {
+    if (!archiveEqual(destination, generated)) throw Error('SDK GATT patch is not reproducible');
+  } else renameSync(generated, destination);
+  console.log(`${check ? 'Verified' : 'Built'} ${filename} ${sha256(readFileSync(destination))}`);
+} finally {
+  rmSync(temporary, { recursive: true, force: true });
+}

@@ -22,7 +22,7 @@ async function fixture(t, overrides = {}) {
       let value = {};
       if (input.path.endsWith("/overview")) value = { protocolVersion: 1 };
       else if (input.path.endsWith("/uploads") && input.method === "POST") { const b = JSON.parse(input.body); remote ||= { ...b, offset: 0, state: "pending" }; value = remote; }
-      else if (input.method === "PUT") { assert.ok(input.body.length <= 4 * 1024 * 1024); assert.equal(input.headers["x-content-sha256"], hash(input.body)); uploaded.push(input.body); remote.offset += input.body.length; value = { offset: remote.offset }; }
+      else if (input.method === "PUT") { assert.ok(input.body.length <= 1024 * 1024); assert.equal(input.headers["x-content-sha256"], hash(input.body)); uploaded.push(input.body); remote.offset += input.body.length; value = { offset: remote.offset }; }
       else if (input.path.endsWith("/complete")) { assert.equal(JSON.parse(input.body).digest, hash(Buffer.concat(uploaded))); remote.state = "complete"; }
       else if (input.path.includes("/content")) { const offset = Number(new URL(input.path, "http://test").searchParams.get("offset")); const bytes = payload.subarray(offset, offset + 4 * 1024 * 1024); return { status: 200, headers: { "x-content-sha256": hash(bytes) }, body: bytes }; }
       else if (input.path.includes("/files/")) value = { id: "a".repeat(32), kind: "file", name: "remote.bin", size: payload.length, digest: hash(payload) };
@@ -40,7 +40,7 @@ test("large transfers remain chunked, private paths stay out of renderer, and do
   const f = await fixture(t);
   await f.service.uploads("");
   await waitFor(() => f.service.snapshot().tasks[0]?.phase === "complete");
-  assert.equal(f.requests.filter(r => r.method === "PUT").length, 9);
+  assert.equal(f.requests.filter(r => r.method === "PUT").length, 36);
   assert.equal(f.service.snapshot().tasks[0].localPath, undefined);
   await f.service.download("a".repeat(32));
   await waitFor(() => f.service.snapshot().tasks[1]?.phase === "complete");
@@ -67,13 +67,12 @@ test("dropped files use the same verified transfer queue without opening a picke
   const created = JSON.parse(f.requests.find(r => r.method === 'POST' && r.path.endsWith('/uploads')).body);
   assert.equal(created.parent, 'b'.repeat(32));
   assert.equal(created.size, f.payload.length);
-  assert.equal(f.requests.filter(r => r.method === 'PUT').length, 9);
+  assert.equal(f.requests.filter(r => r.method === 'PUT').length, 36);
   assert.equal(f.service.snapshot().tasks[0].localPath, undefined);
 });
-test("invalid drops and directories do not create remote uploads", async t => {
+test("invalid native path payloads do not create remote uploads", async t => {
   const f = await fixture(t);
   await assert.rejects(f.service.uploads('', ['relative.bin']), { code: 'SPACE_INVALID_DROP' });
-  await assert.rejects(f.service.uploads('', [path.dirname(f.source)]), { code: 'SPACE_DROP_FILES_ONLY' });
   assert.deepEqual(f.service.snapshot().tasks, []);
   assert.equal(f.requests.some(r => r.method === 'POST'), false);
 });
@@ -89,20 +88,16 @@ test("resuming requires the original local file and never silently uploads a cha
   await waitFor(() => f.service.snapshot().tasks[0].error === "SPACE_LOCAL_FILE_CHANGED");
   assert.equal(f.requests.some(r => r.path.endsWith("/complete")), false);
 });
-test("restart retains a paused transfer and resumes from the box's committed chunk only on request", async t => {
+test("restart automatically resumes an active transfer from the box committed offset", async t => {
   let release, held = false; const blocked = new Promise(r => { release = r; });
   const f = await fixture(t, { beforeRequest: async input => { if (input.method === "PUT" && !held) { held = true; await blocked; } } });
   await f.service.uploads("");
   await waitFor(() => held);
   const taskId = f.service.snapshot().tasks[0].id;
   const restarting = f.restart(); release(); await restarting;
-  const count = f.requests.length;
-  assert.equal(f.service.snapshot().tasks[0].phase, "paused");
-  await new Promise(r => setTimeout(r, 30));
-  assert.equal(f.requests.length, count);
-  await f.service.transfer("resume", taskId);
+  assert.equal(f.service.snapshot().tasks[0].id, taskId);
   await waitFor(() => f.service.snapshot().tasks[0]?.phase === "complete");
-  assert.equal(f.requests.filter(r => r.method === "PUT").length, 9);
+  assert.equal(f.requests.filter(r => r.method === "PUT").length, 36);
   assert.equal(f.service.snapshot().tasks[0].offset, f.payload.length);
 });
 test("canceling while the box changes never sends cancellation to the new box", async t => {

@@ -15,7 +15,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -48,12 +47,12 @@ class Observation:
     def ok(self) -> bool:
         return self.status == 200
 
-    def coded_not_found(self) -> bool:
+    def coded_not_found(self, *, codes: tuple[str, ...] = ("NOT_FOUND",)) -> bool:
         return (
             self.status == 404
             and isinstance(self.data, dict)
             and isinstance(self.data.get("error"), dict)
-            and self.data["error"].get("code") == "NOT_FOUND"
+            and self.data["error"].get("code") in codes
         )
 
 
@@ -143,13 +142,14 @@ def _valid_models(observation: Observation) -> list[dict[str, Any]]:
 def _browser_model(
     providers: Observation, active: Observation, models: list[dict[str, Any]]
 ) -> bool:
-    """Mirror the current browser's configured DeepSeek requirement, not inference.
+    """Mirror the browser's configured WANX model requirement, not inference.
 
     The native provider endpoint contains secrets. Only a boolean is retained in
     the public result; neither provider rows nor URLs are copied to the receipt.
-    An absent active selection uses the native resolved catalog's first model.
+    An absent/stale active selection uses the first usable native model.
     """
-    if not providers.ok or not isinstance(providers.data, list) or not models:
+    models = _usable_models(providers, models)
+    if not models:
         return False
     selected = _dict(active)
     target = next(
@@ -161,14 +161,7 @@ def _browser_model(
         ),
         models[0],
     )
-    for provider in providers.data:
-        if not isinstance(provider, dict) or provider.get("name") != target["provider_name"]:
-            continue
-        try:
-            return urlsplit(str(provider.get("base_url") or "")).hostname == "api.deepseek.com"
-        except ValueError:
-            return False
-    return False
+    return bool(target)
 
 
 def _usable_models(providers: Observation, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -376,7 +369,13 @@ def _evaluate(root: Path, mode: str, observed: dict[str, Observation]) -> dict[s
         ],
         "zhijun": [
             _check("ZHIJUN_TEMPLATE_MISSING", "zhijun-personal-companion" in templates),
-            _check("ONTOLOGY_API_UNAVAILABLE", observed["ontology"].coded_not_found()),
+            # Native application access may reject the absent probe Agent before
+            # the ontology handler runs. Both native 404 codes are valid here;
+            # authorization failures and generic missing routes remain blocked.
+            _check(
+                "ONTOLOGY_API_UNAVAILABLE",
+                observed["ontology"].coded_not_found(codes=("NOT_FOUND", "AGENT_NOT_FOUND")),
+            ),
             model_check,
             knowledge_runtime,
             knowledge_setting,

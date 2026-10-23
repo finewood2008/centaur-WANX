@@ -142,7 +142,7 @@ test("Windows uses a color tray and standard editing/window roles", () => {
   assert.equal(h.trays[0].menu, undefined);
   assert.equal(h.app.dockHidden, undefined);
   h.panel.emit("blur");
-  assert.equal(h.panel.hidden, false, "keep the panel available for file drops");
+  assert.equal(h.panel.hidden, true, "clicking outside dismisses the panel");
   h.trays[0].emit("right-click");
   h.trays[0].poppedMenu.getMenuItemById("settings").click();
   assert.deepEqual(h.management, ["settings"]);
@@ -151,7 +151,23 @@ test("Windows uses a color tray and standard editing/window roles", () => {
   h.desktop.dispose();
 });
 
-test("macOS tray keeps the panel visible on blur and toggles it only on explicit dismissal", () => {
+test("tray panel dismisses when focus moves outside and can be reopened", () => {
+  for (const platform of ["darwin", "win32"]) {
+    const h = harness(platform, true);
+    h.trays[0].emit("click");
+    assert.equal(h.panel.hidden, false);
+    h.panel.emit("blur");
+    assert.equal(h.panel.hidden, true, `${platform}: clicking outside must dismiss the panel`);
+    assert.equal(h.hidden.length, 1);
+    h.panel.emit("blur");
+    assert.equal(h.hidden.length, 1, "a delayed blur must not dismiss twice");
+    h.trays[0].emit("click");
+    assert.equal(h.panel.hidden, false, "the next tray click opens the panel again");
+    h.desktop.dispose();
+  }
+});
+
+test("macOS tray dismisses on blur and still toggles on repeated icon clicks", () => {
   const h = harness("darwin", true);
   const tray = h.trays[0];
   assert.equal(h.app.dockHidden, true);
@@ -165,7 +181,8 @@ test("macOS tray keeps the panel visible on blur and toggles it only on explicit
   assert.equal(h.hidden.length, 1);
   tray.emit("click");
   h.panel.emit("blur");
-  assert.equal(h.panel.hidden, false);
+  assert.equal(h.panel.hidden, true);
+  tray.emit("click");
   h.screen.cursor = { x: 1345, y: 10 };
   h.panel.emit("blur");
   tray.emit("click");
@@ -177,6 +194,29 @@ test("macOS tray keeps the panel visible on blur and toggles it only on explicit
   h.update({ ...ready, account: { phase: "signed_out" } });
   assert.equal(tray.poppedMenu.getMenuItemById("space").enabled, false);
   h.desktop.dispose();
+});
+
+test("a tray click that blurs the panel cannot reopen it, but later clicks can", (t) => {
+  let now = 1000;
+  t.mock.method(Date, "now", () => now);
+  for (const platform of ["darwin", "win32"]) {
+    const h = harness(platform, true);
+    const tray = h.trays[0];
+    h.screen.cursor = { x: 1345, y: 10 };
+    tray.emit("click");
+    h.panel.emit("blur");
+    assert.equal(h.panel.hidden, true, "focus loss closes even with the cursor over the tray");
+    tray.emit("click");
+    assert.equal(h.panel.hidden, true, "the same gesture must not reopen the panel");
+    assert.equal(h.hidden.length, 1);
+    tray.emit("click");
+    assert.equal(h.panel.hidden, false, "the following click can reopen the panel");
+    h.panel.emit("blur");
+    now += 1000;
+    tray.emit("click");
+    assert.equal(h.panel.hidden, false, "switching apps with the cursor over the tray must not swallow a later click");
+    h.desktop.dispose();
+  }
 });
 
 test("panel placement handles negative coordinates, small work areas, Retina-neutral sizes and removed displays", () => {
@@ -246,7 +286,8 @@ test("management handoff preserves the pending launch intent despite synchronous
   assert.equal(h.hidden.length, 1, "an explicit dismissal still cancels once, even if hide emits blur");
   h.desktop.show();
   h.panel.emit("blur");
-  assert.equal(h.hidden.length, 1, "ordinary focus loss keeps the panel and intent available for drops");
+  assert.equal(h.panel.hidden, true);
+  assert.equal(h.hidden.length, 2, "ordinary focus loss dismisses once, even if hide emits blur");
   h.desktop.dispose();
 });
 
@@ -273,8 +314,8 @@ test("Mac application and tray menus route quit through the Host confirmation an
 test("packaging ships readable platform icons and Retina tray artwork", async () => {
   const root = new URL("../", import.meta.url);
   const config = JSON.parse(await readFile(new URL("package.json", root), "utf8")).build;
-  assert.equal(config.productName, "万象");
-  assert.equal(DESKTOP_NAME, "万象");
+  assert.equal(config.productName, "万象个人版");
+  assert.equal(DESKTOP_NAME, "CentaurAI-WanX Mini 万象个人版");
   assert.ok(config.files.includes("resources/**"));
   const icns = await readFile(new URL(config.mac.icon, root));
   assert.equal(icns.toString("ascii", 0, 4), "icns");

@@ -74,8 +74,15 @@ async function rawState() {
 }
 
 const actions = {
+  ...Object.fromEntries(["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
+  "notifications.read": input => ipcRenderer.invoke("wanx-client:notifications-read", { id: input?.id, all: input?.all === true }),
+  "notifications.refresh": () => ipcRenderer.invoke("wanx-client:notifications-refresh"),
+  "notifications.open": input => ipcRenderer.invoke("wanx-client:notifications-open", { id: input?.id }),
+  "wallet.quote": input => walletRequest("quote", input),
   "wallet.catalog": () => walletRequest("catalog"),
   "wallet.balance": () => walletRequest("balance"),
+  "wallet.wallet": () => walletRequest("wallet"),
+  "wallet.usage": input => walletRequest("usage", input),
   "wallet.orders": input => walletRequest("orders", input),
   "wallet.order": input => walletRequest("order", input),
   "wallet.entries": input => walletRequest("entries", input),
@@ -112,6 +119,9 @@ const actions = {
   "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
+  "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId,
+    ...(input?.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) }),
+  "devices.claim-status": (input) => ipcRenderer.invoke("wanx-client:console-claim-status", { deviceId: input?.deviceId }),
   "ownership.list": () => ipcRenderer.invoke("wanx-client:ownership-list"),
   "support.current": input => ipcRenderer.invoke("wanx-client:support-current", { deviceId: input?.deviceId }),
   "support.decide": input => ipcRenderer.invoke("wanx-client:support-decide", {
@@ -130,8 +140,6 @@ const actions = {
     ipcRenderer.invoke("wanx-client:connect-box", input?.deviceId),
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
   "maintenance.open": (input) => ipcRenderer.invoke("wanx-client:maintenance-open", { tool: input?.tool, deviceId: input?.deviceId }),
-  "network.set-enabled": (input) =>
-    ipcRenderer.invoke("wanx-client:set-network-enabled", input?.enabled),
   "applications.list": () => ipcRenderer.invoke("wanx-client:applications-list"),
   "market.list": () => ipcRenderer.invoke("wanx-client:market-list"),
   "market.candidate": (input) => ipcRenderer.invoke("wanx-client:market-candidate", { applicationId: input?.applicationId }),
@@ -157,8 +165,11 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
+for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
+
+for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])
+  actions[`clipboard.${method}`] = input => ipcRenderer.invoke(`wanx-client:clipboard-${method}`, input);
 
 async function action(name, input = {}) {
   const handler = actions[name];
@@ -168,7 +179,10 @@ async function action(name, input = {}) {
     const value = await handler(input);
     return { ok: true, value, state: await getLocalState() };
   } catch (error) {
-    return { ok: false, code: errorCode(error), state: await getLocalState(),
+    const rawCode = errorCode(error);
+    const clipboardCode = rawCode.match(/(?:^|Error: )((?:CLIPBOARD|SPACE|BOX|ACCOUNT|SECURE_STORAGE)_[A-Z0-9_]+)$/)?.[1];
+    const dialogueCode = rawCode.match(/(?:^|Error: )([A-Z][A-Z0-9_]{1,80})$/)?.[1];
+    return { ok: false, code: name.startsWith("dialogue.") ? dialogueCode || "DIALOGUE_REQUEST_FAILED" : name.startsWith("clipboard.") ? clipboardCode || "CLIPBOARD_OPERATION_FAILED" : rawCode, state: await getLocalState(),
       ...(name.startsWith("wallet.") ? { request_id: error.request_id || null, details: error.details || {},
         retryable: error.retryable === true, status: error.status || null } : {}) };
   }
@@ -183,17 +197,35 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     getLocalState,
     getRememberedLogin: () => ipcRenderer.invoke("wanx-client:remembered-login-get"),
+    recordPaymentTiming: (input) => ipcRenderer.invoke("wanx-client:credit-payment-timing", input),
     action,
     async uploadDroppedFiles(files, input = {}) {
       try {
         if (!Array.isArray(files) || !files.length) throw new Error("SPACE_INVALID_DROP");
         const paths = files.map(file => webUtils.getPathForFile(file));
         if (paths.some(file => !file)) throw new Error("SPACE_INVALID_DROP");
-        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths });
+        const value = await ipcRenderer.invoke("wanx-client:space-upload-dropped", { parent: input.parent || "", paths, names: files.map(file => file.name), ...(input.scope ? {scope: input.scope} : {}), ...(input.space_id ? {space_id: input.space_id} : {}) });
+        if (value?.uploadRejection) return { ok: false, ...value.uploadRejection };
         return { ok: true, value };
       } catch (error) {
         return { ok: false, code: errorCode(error) };
       }
+    },
+    async clipboardFiles(files, input={}) {
+      try {
+        if(!Array.isArray(files)||!files.length||files.length>20)throw new Error("CLIPBOARD_LIMIT");
+        if(files.some(file=>file.size>20*1024*1024))throw new Error("CLIPBOARD_LIMIT");
+        const paths=files.map(file=>webUtils.getPathForFile(file));
+        let payload;
+        if(paths.every(Boolean))payload={paths};
+        else if(files.length===1&&["image/png","image/jpeg","image/gif","image/webp"].includes(files[0].type))payload={image:Buffer.from(await files[0].arrayBuffer()).toString("base64"),name:files[0].name,mime:files[0].type};
+        else throw new Error("CLIPBOARD_VIRTUAL_FILE");
+        return await action("clipboard.capture",{...payload,scope:input.scope});
+      }catch(error){return {ok:false,code:errorCode(error)};}
+    },
+    onClipboardState(listener) {
+      const receive=(_event,state)=>listener(state);ipcRenderer.on("wanx-client:clipboard-state",receive);
+      return ()=>ipcRenderer.removeListener("wanx-client:clipboard-state",receive);
     },
     checkHealth: async () => ({
       ok: false,
@@ -204,6 +236,11 @@ contextBridge.exposeInMainWorld(
       const receive = (_event, state) => listener(projectState(state));
       ipcRenderer.on("wanx-client:state", receive);
       return () => ipcRenderer.removeListener("wanx-client:state", receive);
+    },
+    onAIDialogue(listener) {
+      const receive = (_event, value) => listener(value);
+      ipcRenderer.on("wanx-client:ai-dialogue", receive);
+      return () => ipcRenderer.removeListener("wanx-client:ai-dialogue", receive);
     },
     onSpaceContentChanged(listener) {
       const receive = () => listener();
@@ -217,7 +254,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (page === "space" || page === "applications" || page === "boxes" || page === "settings" || page === "profile" || page === "credits") listener(page);
+        if (["applications", "ai-dialogue", "space", "boxes", "settings", "profile", "credits", "notifications"].includes(page)) listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);
@@ -241,6 +278,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
   scanWifi: () => setupCall("scanWifi"),
   wifi: (input) => setupCall("wifi", input),
   confirmOwnership: () => setupCall("confirmOwnership"),
+  redeemClaimCode: (input) => setupCall("redeemClaimCode", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId }),
   refresh: () => setupCall("refresh"),
   cancel: () => setupCall("cancel"),
   reset: () => setupCall("reset"),
@@ -257,7 +295,7 @@ contextBridge.exposeInMainWorld("wanxSetup", {
 });
 
 contextBridge.exposeInMainWorld("wanxSetupTransport", {
-  scanTimeoutMs: process.platform === "win32" ? 60000 : 12000,
+  scanTimeoutMs: process.platform === "win32" ? 60000 : 30000,
   subscribe: (listener) => {
     const handler = (_event, request) => listener(request);
     ipcRenderer.on("wanx:setup:transport", handler);

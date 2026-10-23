@@ -1,6 +1,6 @@
 {
   "name": "centuarai-wanx-client",
-  "version": "0.1.4",
+  "version": "1.0.0",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -13,11 +13,13 @@
     "build:network": "node tools/build-network.mjs",
     "build:network:all": "node tools/build-network.mjs --all",
     "build:discovery": "node tools/build-discovery.mjs",
-    "prestart": "node tools/ensure-network.mjs && node tools/build-discovery.mjs && node tools/build-maintenance.mjs",
+    "prestart": "node tools/ensure-network.mjs && node tools/build-discovery.mjs && node tools/build-maintenance.mjs && node tools/build-clipboard.mjs",
     "start": "node tools/start-desktop.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "prestart:local": "npm run prestart",
+    "start:local": "node tools/start-local.mjs",
+    "test": "node --test --test-concurrency=4 tests/*.test.mjs",
     "test:native": "cd native && go test ./...",
-    "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && node tools/build-discovery.mjs darwin-arm64 darwin-x64 && electron-builder --mac --dir",
+    "package:mac": "node tools/build-network.mjs darwin-arm64 darwin-x64 && node tools/build-discovery.mjs darwin-arm64 darwin-x64 && node tools/build-clipboard.mjs arm64 x64 && electron-builder --mac --dir",
     "package:windows": "node tools/build-network.mjs win32-x64 win32-arm64 && node tools/build-discovery.mjs win32-x64 && electron-builder --win nsis",
     "build:renderer": "esbuild local-ui/renderer/device-setup-entry.ts --bundle --format=iife --platform=browser --outfile=local-ui/renderer/device-setup.bundle.js && esbuild local-ui/renderer/wallet-entry.mjs --bundle --format=iife --platform=browser --outfile=local-ui/renderer/wallet.bundle.js",
     "package:application": "node tools/package-application.mjs",
@@ -25,7 +27,8 @@
     "package:windows:x64:internal": "node shell/package-win.mjs",
     "build:maintenance": "node tools/build-maintenance.mjs",
     "prepackage:mac": "npm run build:maintenance",
-    "prepackage:windows": "npm run build:maintenance"
+    "prepackage:windows": "npm run build:maintenance",
+    "build:studio": "node ../wanx-studio/tools/assemble-client.mjs personal"
   },
   "dependencies": {
     "@nexusaos/consumer-contracts": "file:vendor/nexusaos-consumer-contracts-1.0.0.tgz",
@@ -33,7 +36,7 @@
     "@nexusaos/device-discovery-electron": "file:vendor/nexusaos-device-discovery-electron-1.0.6.tgz",
     "@nexusaos/local-provisioning-contracts": "file:vendor/nexusaos-local-provisioning-contracts-2.0.1-wanx.2.tgz",
     "@nexusaos/local-provisioning-core": "file:vendor/nexusaos-local-provisioning-core-2.0.1-wanx.3.tgz",
-    "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1-wanx.2.tgz",
+    "@nexusaos/local-provisioning-electron-ble": "file:vendor/nexusaos-local-provisioning-electron-ble-2.0.1-wanx.3.tgz",
     "electron-updater": "6.8.9",
     "qrcode": "1.5.4",
     "semver": "7.8.5",
@@ -49,7 +52,7 @@
   "build": {
     "appId": "ai.centuarai.wanx.client",
     "afterPack": "tools/package-client-native.mjs",
-    "productName": "万象",
+    "productName": "万象个人版",
     "directories": {
       "output": "release"
     },
@@ -66,7 +69,10 @@
       "updates/**",
       "resources/**",
       "package.json",
-      "README.md"
+      "README.md",
+      "!**/.env",
+      "!**/.env.*",
+      "!**/.local/**"
     ],
     "extraResources": [
       {
@@ -97,7 +103,8 @@
           "to": "network",
           "filter": [
             "wanx-netbird-darwin-${arch}*",
-            "wanx-discovery-darwin-${arch}"
+            "wanx-discovery-darwin-${arch}",
+            "wanx-clipboard-darwin-${arch}"
           ]
         }
       ],
@@ -129,11 +136,21 @@
       ]
     },
     "nsis": {
+      "include": "shell/installer.nsh",
+      "installerHeader": "resources/installer/header.bmp",
+      "installerSidebar": "resources/installer/sidebar.bmp",
+      "uninstallerSidebar": "resources/installer/sidebar.bmp",
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "allowToChangeInstallationDirectory": true
     }
   },
   "overrides": {
     "@nexusaos/local-provisioning-contracts": "$@nexusaos/local-provisioning-contracts"
-  }
+  },
+  "wanxEdition": "personal"
 }

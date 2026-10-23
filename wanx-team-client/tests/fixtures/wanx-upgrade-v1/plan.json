@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "planId": "plan_fixture_v1",
+  "deviceId": "centauros-111111111111111111111111",
+  "ownershipEpoch": 1,
+  "baselineDigest": "120f978a104093270843ca4e9956060fa8aa3913e4f6f18688ca4871cd8d8b60",
+  "baseline": {
+    "deviceId": "centauros-111111111111111111111111",
+    "ownershipEpoch": 1,
+    "platform": {
+      "os": "linux",
+      "osId": "ubuntu",
+      "osVersion": "24.04",
+      "arch": "x64"
+    },
+    "components": {
+      "base": {
+        "installedVersion": null,
+        "runningVersion": null,
+        "artifactDigest": null,
+        "imageId": null,
+        "health": "unknown",
+        "evidenceStatus": "unknown",
+        "otaSupported": false
+      },
+      "discovery": {
+        "installedVersion": null,
+        "runningVersion": null,
+        "artifactDigest": null,
+        "imageId": null,
+        "health": "unknown",
+        "evidenceStatus": "unknown",
+        "otaSupported": false
+      },
+      "docker": {
+        "installedVersion": null,
+        "runningVersion": null,
+        "artifactDigest": null,
+        "imageId": null,
+        "health": "unknown",
+        "evidenceStatus": "unknown",
+        "otaSupported": false
+      },
+      "p2p": {
+        "installedVersion": null,
+        "runningVersion": null,
+        "artifactDigest": null,
+        "imageId": null,
+        "health": "unknown",
+        "evidenceStatus": "unknown",
+        "otaSupported": false
+      },
+      "wanx": {
+        "installedVersion": "1.1.0",
+        "runningVersion": "1.1.0",
+        "artifactDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "imageId": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "health": "healthy",
+        "evidenceStatus": "verified",
+        "otaSupported": true
+      },
+      "semantica": {
+        "installedVersion": null,
+        "runningVersion": null,
+        "artifactDigest": null,
+        "imageId": null,
+        "health": "unknown",
+        "evidenceStatus": "unknown",
+        "otaSupported": false
+      }
+    }
+  },
+  "releaseId": "wanx-box-1.2.0",
+  "releaseDigest": "c997244983401dafd1e8ee90ae9c60fdd6c4c153d24f5f21c86d22b24b3b24f3",
+  "release": {
+    "payload": {
+      "schemaVersion": 1,
+      "purpose": "wanx.release.v1",
+      "version": "1.2.0",
+      "buildId": "20261014.1",
+      "metadataSequence": 1,
+      "securityEpoch": 1,
+      "channel": "stable",
+      "backendContract": 1,
+      "hostProtocol": 1,
+      "dataPolicy": "backward-compatible",
+      "createdAt": "2026-10-14T00:00:00Z",
+      "expiresAt": "2099-01-01T00:00:00Z",
+      "requiredExtensions": [],
+      "releaseId": "wanx-box-1.2.0",
+      "product": "wanx-box",
+      "platform": {
+        "os": "linux",
+        "osId": "ubuntu",
+        "osVersion": "24.04",
+        "arch": "x64"
+      },
+      "minUpdaterVersion": "1.0.0",
+      "components": {
+        "wanx": {
+          "version": "1.2.0",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "imageId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      },
+      "artifacts": [
+        {
+          "component": "wanx",
+          "url": "https://artifacts.example.test/wanx-1.2.0.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sizeBytes": 4096,
+          "kind": "docker-gzip",
+          "imageId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ]
+    },
+    "signature": {
+      "algorithm": "ed25519",
+      "keyId": "test-only-release-v1",
+      "signatureBase64": "7kKzgSIMLeAt3XXf70wQ9Se7lppy/kjUY+FeuSaH9CDQ71qwG66UxdvBmBBDNmcwcPzffHQUcVpKGS6pcA74AA=="
+    }
+  },
+  "steps": [
+    "wanx"
+  ],
+  "impact": {
+    "serviceInterruption": true,
+    "dataMigration": false
+  },
+  "dataPolicy": "backward-compatible",
+  "createdAt": "2026-10-14T00:00:00Z",
+  "expiresAt": "2099-01-01T00:00:00Z",
+  "planDigest": "78d4637a3d46ab4df970dd39071b72499bd7ab542e2507b2e160b8197a60821d"
+}

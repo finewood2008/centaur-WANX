@@ -8,6 +8,8 @@ import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlencode
 
 import httpx
@@ -17,6 +19,119 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from wanx_bridge.oidc import OidcError, OidcProvider, loopback_origin
 from wanx_bridge.upstream import BridgeUpstreamError, OctopAdapter
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_fresh_or_existing_companion_bootstrap_opens_native_ontology(
+    real_octop, oidc_server, monkeypatch, existing
+):
+    from tests.support.auth import bearer, login, seed_openai_provider
+
+    from wanx_bridge import upstream
+
+    client, server, credentials = real_octop
+    await seed_openai_provider(client, bearer(await login(client)))
+    adapter = OctopAdapter(
+        "http://127.0.0.1:18088",
+        oidc_server,
+        credentials,
+        transport=httpx.ASGITransport(app=client._octop_app),
+    )
+    original = upstream.ensure_private_expert
+    try:
+        await adapter.initialize()
+        if existing:
+
+            async def skip_bootstrap(*args):
+                pass
+
+            monkeypatch.setattr(upstream, "ensure_private_expert", skip_bootstrap)
+            initial = await adapter.login({"sub": "reset-owner", "role": "user"})
+            headers = {"Authorization": "Bearer " + initial["access_token"]}
+            created = await client.post(
+                "/api/agents/from-expert/zhijun-personal-companion",
+                headers=headers,
+                json={"agent_id": "existing-private-zhijun", "name": "知君 · 私人伙伴"},
+            )
+            assert created.status_code == 201, created.text
+            monkeypatch.setattr(upstream, "ensure_private_expert", original)
+        session = await adapter.login({"sub": "reset-owner", "role": "user"})
+        headers = {"Authorization": "Bearer " + session["access_token"]}
+        rows = (await client.get("/api/agents?scope=mine", headers=headers)).json()
+        companions = [row for row in rows if "知君" in row["name"]]
+        assert len(companions) == 1
+        aid = companions[0]["agent_id"]
+        registry = server.app_runtime.agent_registry
+        registry.get_agent(aid)._memory_runtime = SimpleNamespace(memory=None)
+        monkeypatch.setattr(registry.ontology, "tick", AsyncMock())
+        root = f"/api/agents/{aid}/ontology"
+        read = await client.get(root, headers=headers)
+        assert read.status_code == 200, read.text
+        assert read.json()["claims"] == []
+        prepared = await client.post(root + "/prepare", headers=headers, json={})
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["claims"] == []
+        assert companions[0]["zhijun_primary"] is True
+        again = await adapter.login({"sub": "reset-owner", "role": "user"})
+        assert again["user"]["id"] == session["user"]["id"]
+        assert server.app_runtime.agent_registry.get_row(aid).user_id == session["user"]["id"]
+    finally:
+        await adapter.close()
+
+
+async def test_existing_session_repairs_missing_companion_profile_through_bridge(
+    real_octop, oidc_server, monkeypatch
+):
+    from tests.support.auth import bearer, login, seed_openai_provider
+
+    from wanx_bridge import upstream
+    from wanx_bridge.server import create_app
+
+    client, server, credentials = real_octop
+    await seed_openai_provider(client, bearer(await login(client)))
+    transport = httpx.ASGITransport(app=client._octop_app)
+    adapter = OctopAdapter("http://127.0.0.1:18088", oidc_server, credentials, transport=transport)
+    try:
+        await adapter.initialize()
+        # A deferred bootstrap or an older installed bridge has already issued
+        # this session. Opening the page must not require another login.
+        monkeypatch.setattr(upstream, "ensure_private_expert", AsyncMock())
+        session = await adapter.login({"sub": "reclaimed-owner", "role": "user"})
+        token = session["access_token"]
+        uid = session["user"]["id"]
+        aid = f"centuarai-zhijun-{uid}"
+        headers = {"Authorization": "Bearer " + token}
+        created = await client.post(
+            "/api/agents/from-expert/zhijun-personal-companion",
+            headers=headers,
+            json={"agent_id": aid, "name": "知君 · 私人伙伴"},
+        )
+        assert created.status_code == 201, created.text
+        path = f"/api/agents/{aid}/ontology"
+        before = await client.get(path, headers=headers)
+        assert before.status_code == 404
+        registry = server.app_runtime.agent_registry
+        registry.get_agent(aid)._memory_runtime = SimpleNamespace(memory=None)
+        monkeypatch.setattr(registry.ontology, "tick", AsyncMock())
+        authorized = {"upstream_token": token, "user": session["user"]}
+        auth = SimpleNamespace(
+            authorize=AsyncMock(return_value=authorized), assert_live=AsyncMock()
+        )
+        app = create_app(auth, adapter, http_transport=transport)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://box"
+            ) as public:
+                response = await public.get(path, headers={"Authorization": "Bearer lease"})
+                assert response.status_code == 200, response.text
+                assert response.json()["claims"] == []
+        bound = (await client.get(f"/api/agents/{aid}", headers=headers)).json()
+        assert bound["zhijun_primary"] is True
+        assert bound["user_id"] == uid
+        prepared = await client.post(path + "/prepare", headers=headers, json={})
+        assert prepared.status_code == 200, prepared.text
+    finally:
+        await adapter.close()
 
 
 def make_provider(issuer="http://127.0.0.1:19089"):

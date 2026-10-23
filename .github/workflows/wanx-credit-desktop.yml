@@ -1,0 +1,56 @@
+name: WANX credit desktop acceptance
+
+on:
+  pull_request:
+    paths:
+      - "wanx-client/**"
+      - ".github/workflows/wanx-credit-desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wallet:
+    name: "Wallet / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    defaults:
+      run:
+        working-directory: wanx-client
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: wanx-client/package-lock.json
+      - run: npm ci
+      - name: Verify shipped renderer matches source
+        run: |
+          npm run build:renderer
+          git diff --exit-code -- local-ui/renderer/wallet.bundle.js local-ui/renderer/device-setup.bundle.js
+      - name: Wallet contracts, IPC and panel
+        run: |
+          mkdir -p credit-evidence
+          set -o pipefail
+          node --test tests/credit-wallet.test.mjs tests/credit-wallet-view.test.mjs tests/credit-wallet-ipc.test.mjs tests/panel-security.test.mjs tests/panel-renderer.test.mjs 2>&1 | tee credit-evidence/contracts.log
+      - name: Native Electron wallet and narrow layouts
+        env:
+          WANX_TEST_ELECTRON: "1"
+          WALLET_SCREENSHOT_DIR: credit-evidence/screenshots
+        run: |
+          set -o pipefail
+          node -e "const fs=require('node:fs'); fs.writeFileSync('credit-evidence/platform.json',JSON.stringify({platform:process.platform,arch:process.arch,node:process.version,electron:require('electron/package.json').version,commit:process.env.GITHUB_SHA},null,2))"
+          node --test tests/credit-wallet-electron.test.mjs 2>&1 | tee credit-evidence/electron.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: credits-${{ matrix.os }}
+          path: wanx-client/credit-evidence/
+          if-no-files-found: warn
+          retention-days: 14

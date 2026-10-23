@@ -1,3 +1,5 @@
+import {createLocalEncryption} from "../account/local-encryption.mjs";
+import {panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { readAvatar } from "./avatar.mjs";
 import { createCreditsReader } from "../account/credits.mjs";
@@ -9,7 +11,8 @@ import {
   app,
   BrowserWindow,
   ipcMain,
-  safeStorage,
+  safeStorage as osSafeStorage,
+  clipboard,
   powerMonitor,
   session,
   shell,
@@ -21,7 +24,7 @@ import {
 } from "electron";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
-import { readFile, writeFile, mkdir, rename, lstat } from "node:fs/promises";
+import { readFile, writeFile, lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -51,8 +54,12 @@ import { createDashboardGateway } from "../octop/gateway.mjs";
 import { createStaticAssetCache } from "../octop/static-cache.mjs";
 import { createUIState } from "./ui-state.mjs";
 import { createUIBroadcast } from "./ui-broadcast.mjs";
+import { createNotificationCenter } from "./notification-center.mjs";
+import { createAIDialogue } from "./ai-dialogue.mjs";
 import { createStartupSettings } from "./startup.mjs";
 import { createSpaceLinkBridge } from "./space-links.mjs";
+import {createSuperClipboard} from "./super-clipboard.mjs";
+import {createSystemClipboard} from "./system-clipboard.mjs";
 import { createPersonalSpace } from "./personal-space.mjs";
 import { createAdvertisementNames } from "./discovery-names.mjs";
 import { protectPrivateDirectory } from "./private-storage.mjs";
@@ -78,11 +85,14 @@ let control;
 let panel;
 let uiState;
 let broadcast;
+let notifications;
+let aiDialogue;
 let client;
 let unsubscribe;
 let setupRuntime;
 let applications;
 let personalSpace;
+let superClipboard;
 let spaceLinks;
 let marketSession;
 let dashboards;
@@ -141,6 +151,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       const nativePaths = nativeBinaryPaths({ appPath: app.getAppPath(),
         resourcesPath: process.resourcesPath, packaged: app.isPackaged });
       const userData = app.getPath("userData");
+      const safeStorage = process.platform === "darwin" ? createLocalEncryption({directory:userData}) : osSafeStorage;
       await protectPrivateDirectory(userData, { packaged: app.isPackaged });
       if (process.argv.includes("--wanx-smoke-safe-storage")) {
         const smokeFile = path.join(userData, "smoke-account.enc");
@@ -166,6 +177,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       const binaryPath = nativePaths.engine;
       const account = createAccount({
+        measure: timed,
         ...(process.env.WANX_CONSUMER_URL
           ? { baseURL: process.env.WANX_CONSUMER_URL }
           : {}),
@@ -187,7 +199,6 @@ if (process.argv.includes("--wanx-managed-app")) {
           creditsServiceURL = config.serviceURL;
         } catch (error) { if (error.code !== "ENOENT") reportError(new Error("CREDITS_INVALID_CONFIG")); }
       }
-      const preferenceFile = path.join(userData, "p2p-preference.json");
       const requestAccount = account.request;
       account.request = (input) => {
         const step =
@@ -207,7 +218,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           ? timed(step, () => requestAccount(input))
           : requestAccount(input);
       };
-      let preferenceWrites = Promise.resolve();
+      // Desktop networking follows login; ignore the retired manual-off preference.
       client = createPlatformClient({
         account,
         localBoxes: createLocalBoxes(),
@@ -217,31 +228,6 @@ if (process.argv.includes("--wanx-managed-app")) {
           filePath: path.join(userData, "network-resume.enc"),
           safeStorage,
         }),
-        async readPreference() {
-          try {
-            return (
-              JSON.parse(await readFile(preferenceFile, "utf8")).enabled !==
-              false
-            );
-          } catch (error) {
-            if (error.code === "ENOENT") return true;
-            throw error;
-          }
-        },
-        writePreference(enabled) {
-          preferenceWrites = preferenceWrites
-            .catch(() => {})
-            .then(async () => {
-              await mkdir(userData, { recursive: true, mode: 0o700 });
-              await writeFile(
-                `${preferenceFile}.tmp`,
-                JSON.stringify({ enabled }),
-                { mode: 0o600 },
-              );
-              await rename(`${preferenceFile}.tmp`, preferenceFile);
-            });
-          return preferenceWrites;
-        },
         createTransport(identity) {
           const scope = createHash("sha256")
             .update(JSON.stringify(identity || "direct"))
@@ -272,8 +258,8 @@ if (process.argv.includes("--wanx-managed-app")) {
               createGateway: (options) =>
                 createDashboardGateway({
                   ...options,
-                  staticCache,
-                  cacheScope: identity
+                  staticCache: options.businessService ? undefined : staticCache,
+                  cacheScope: identity && !options.businessService
                     ? { accountId: identity.accountId, boxId: options.deviceId }
                     : undefined,
                 }),
@@ -362,7 +348,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           deviceId: client.snapshot().connection?.deviceId || null }),
       });
       updates = { client: clientUpdates, box: boxUpdates };
-      const updateListeners = [clientUpdates.subscribe(() => { void broadcast?.publish(); }),
+      const updateListeners = [clientUpdates.subscribe(() => { notifications?.update(clientUpdates.snapshot()); void broadcast?.publish(); }),
         boxUpdates.subscribe(() => { desktop?.sync(client.snapshot()); void broadcast?.publish(); })];
       let updateAccount = JSON.stringify(account.getIdentity());
       const unsubscribeUpdateAccount = account.subscribe(state => {
@@ -375,11 +361,17 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
       try { startup.initializeDefault(); } catch (error) { reportError(error); }
+      notifications = await createNotificationCenter({
+        client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        store: createSecureAccountStore({ filePath: path.join(userData, "notification-center.enc"), safeStorage }),
+        onChanged: () => { void broadcast?.publish(); },
+      });
       uiState = await createUIState({
         client, account, applications,
         preferenceFile: path.join(userData, "ui-preferences.json"),
         serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onChanged: () => { void broadcast?.publish(); },
+        onOperation: event => notifications.operation(event),
         onOpened: ({ applicationId }) => {
           desktop?.hidePanel();
           applications.activate(applicationId);
@@ -426,7 +418,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         window.webContents.on("will-attach-webview", event => event.preventDefault());
       }
       broadcast = createUIBroadcast({
-        client, applications, uiState, startup, updates, windows: () => [control, panel], onError: reportError,
+        client, applications, uiState, startup, updates, defaultApplications, notifications, windows: () => [control, panel], onError: reportError,
       });
       let quitPrompt;
       const requestQuit = () => {
@@ -462,10 +454,11 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       personalSpace = await createPersonalSpace({
+        onEvent: event => timings.transfer(event),
         client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         store: createSecureAccountStore({ filePath: path.join(userData, "space-transfers.enc"), safeStorage }),
-        chooseUploads: async () => {
-          const result = await dialog.showOpenDialog(control, { title: "上传到盒子空间", properties: ["openFile", "multiSelections"] });
+        chooseUploads: async ({ folders = false } = {}) => {
+          const result = await dialog.showOpenDialog(control, { title: "上传到盒子空间", message: "支持文件和文件夹，自动分批上传并保留目录结构；单文件最大 200 MB，问题文件单独提示。", properties: [folders ? "openDirectory" : "openFile", "multiSelections"] });
           return result.canceled ? [] : result.filePaths;
         },
         chooseDownloadDirectory: async () => {
@@ -481,6 +474,21 @@ if (process.argv.includes("--wanx-managed-app")) {
           if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-space-state", panelSpaceState(state));
         },
       });
+      const clipboardDirectory = path.join(userData, "super-clipboard");
+      try {
+      superClipboard = await createSuperClipboard({
+        client, personalSpace, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        store: createSecureAccountStore({filePath:path.join(userData,"super-clipboard.enc"),safeStorage}),
+        directory: clipboardDirectory, deviceName: os.hostname(),
+        systemClipboard: createSystemClipboard({clipboard,nativeImage,app,directory:path.join(clipboardDirectory,"native")}),
+        chooseFiles: async (input={}) => { const result=await dialog.showOpenDialog(input.panel&&panel&&!panel.isDestroyed()?panel:control,{title:"插入图片到便签",message:"每次最多20张图片，单张最大20 MB",filters:[{name:"图片",extensions:["png","jpg","jpeg","gif","webp"]}],properties:["openFile","multiSelections"]});return result.canceled?[]:result.filePaths; },
+        chooseDownload: async name => {const result=await dialog.showSaveDialog(control,{title:"下载便签内容",defaultPath:name});return result.canceled?null:result.filePath;},
+        onChanged: state => {if(!control.isDestroyed())control.webContents.send("wanx-client:clipboard-state",state);if(panel&&!panel.isDestroyed())panel.webContents.send("wanx-client:panel-note-state",panelNoteState(state));},
+      });
+      } catch (error) {
+        const code = error.code || "CLIPBOARD_CACHE_DAMAGED";
+        superClipboard = {snapshot:()=>({scope:null,items:[],tasks:[],error:code}),operation:async method=>{if(method==="snapshot")return {scope:null,items:[],tasks:[],error:code};throw Object.assign(new Error(code),{code});},close:async()=>{}};
+      }
       try {
         spaceLinks = await createSpaceLinkBridge({
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
@@ -506,9 +514,16 @@ if (process.argv.includes("--wanx-managed-app")) {
         const code = error.code || "SPACE_LINK_START_FAILED";
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
+      aiDialogue = createAIDialogue({ client, preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+        if (!control.isDestroyed()) control.webContents.send("wanx-client:ai-dialogue", event);
+      } });
       registerControlActions({
+        aiDialogue,
+        timings,
+        notifications,
         spaceLinks,
         personalSpace,
+        superClipboard,
         confirmSpacePurge: async () => (await dialog.showMessageBox(control, {
           type: "warning", message: "彻底删除这个文件或文件夹？", detail: "删除后无法恢复。文件夹中的内容也会一并删除。",
           buttons: ["取消", "彻底删除"], defaultId: 0, cancelId: 0,
@@ -572,13 +587,16 @@ if (process.argv.includes("--wanx-managed-app")) {
         app,
         async closeApplications() {
           uiState.invalidateOpen();
-          deliveryScheduler.close();
+          aiDialogue?.close();
+          await deliveryScheduler.close();
           await defaultApplications.close();
           marketSession?.close();
           releaseAccess.close();
+          await superClipboard?.close();
           await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
         },
         async closeHost() {
+          await notifications?.close();
           support.close();
           unsubscribeUpdateAccount();
           for (const remove of updateListeners) remove();
@@ -601,6 +619,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       let setupStartFailed = false;
       setupRuntime = await createSetupRuntime({
         control, controlURL, ipcMain, account, client, safeStorage, userData,
+        onDiagnostic: event => timings.provisioning(event),
         advertisementNames: createAdvertisementNames({
           lookupName: (deviceId) => account.lookupDeviceName(deviceId),
           cacheScope: () => account.getIdentity()?.accountId || null,

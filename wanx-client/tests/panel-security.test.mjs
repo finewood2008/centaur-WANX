@@ -54,6 +54,24 @@ function harness(overrides = {}) {
   };
 }
 
+test('AI browser opens through the original application path without a browser tab or surface IPC', async () => {
+  const h = harness();
+  for (const window of [h.control, h.panel]) await h.invoke('applications-request-open', { applicationId: 'centaurai.wanx.ai-browser' }, window);
+  await h.invoke('applications-launch', { applicationId: 'centaurai.wanx.ai-browser' });
+  assert.deepEqual(h.calls, [['requestOpen', 'centaurai.wanx.ai-browser'], ['requestOpen', 'centaurai.wanx.ai-browser'], ['launch', 'centaurai.wanx.ai-browser']]);
+  assert.equal(h.handlers.has('wanx-client:browser-surface'), false);
+  assert.throws(() => h.invoke('desktop-open', { page: 'browser' }), /invalid_page/);
+});
+
+test('AI dialogue requests are management-only and old 众见 opens route to its standard tab', async () => {
+  const requests = [], h = harness({ aiDialogue: { action: async (...args) => requests.push(args) } });
+  assert.throws(() => h.invoke('ai-dialogue-send', { prompt: 'untrusted' }, h.panel), denied);
+  await h.invoke('ai-dialogue-load');
+  for (const window of [h.control, h.panel]) await h.invoke('applications-request-open', { applicationId: 'centaurai.wanx.dialogue' }, window);
+  assert.deepEqual(h.calls, [['showManagement', 'ai-dialogue'], ['showManagement', 'ai-dialogue']]);
+  assert.deepEqual(requests, [['load', undefined]]);
+});
+
 for (const surface of ["control", "panel"]) {
   test(`${surface}: every control IPC rejects subframes, foreign contents, forged URLs, and closed windows`, () => {
     const h = harness(), window = h[surface], trusted = h.event(window);
@@ -79,7 +97,7 @@ for (const surface of ["control", "panel"]) {
 test("panel cannot invoke account, market mutation, version selection, or management-only operations", () => {
   const h = harness();
   for (const name of [
-    "login-password", "login-sms", "send-sms", "logout", "set-network-enabled", "connect", "dashboard-open", "maintenance-open",
+    "console-claim", "login-password", "login-sms", "send-sms", "logout", "connect", "dashboard-open", "maintenance-open",
     "applications-install", "applications-launch", "applications-select-current", "applications-stop",
     "market-list", "market-candidate", "market-install", "market-uninstall", "market-rollback",
     "desktop-startup-get", "desktop-startup-set", "desktop-quit",
@@ -91,6 +109,8 @@ test("panel cannot invoke account, market mutation, version selection, or manage
     }, h.panel), denied, name);
   }
   assert.deepEqual(h.calls, []);
+  assert.equal(h.handlers.has("wanx-client:set-network-enabled"), false,
+    "neither management nor panel can disable automatic networking");
   assert.equal([...h.handlers.keys()].some(name => name.startsWith("wanx:setup:")), false,
     "setup IPC is registered separately against only the management window");
 });
@@ -194,7 +214,7 @@ test("panel preload exposes a fixed balance reader, retaining the generic-action
   const vm = await import("node:vm");
   let api; const calls = [];
   vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
-    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    contextBridge: { exposeInMainWorld: (name, value) => { if(name==="wanxPanel")api = value; } },
     ipcRenderer: { invoke: name => { calls.push(name); return Promise.resolve({ available: 55 }); } },
   }) });
   assert.deepEqual(await api.getBalance({ accountId: "forged" }), { available: 55 });
@@ -220,7 +240,7 @@ test("panel space upload fixes the root, rejects stale contexts, and exposes onl
   assert.equal(value.tasks.length, 1);
   assert.doesNotMatch(JSON.stringify(value), /localPath|private|digest|overview/);
   await h.invoke("panel-space-upload", { scope, paths: ["/private/one.txt", "/private/two.txt"], parent: "injected-folder" }, h.panel);
-  assert.deepEqual(calls.pop(), ["uploads", "", ["/private/one.txt", "/private/two.txt"], "scope-a"]);
+  assert.deepEqual(calls.pop(), ["uploads", "", ["/private/one.txt", "/private/two.txt"], "scope-a", undefined]);
   await h.invoke("panel-space-transfer", { scope, id: "a".repeat(32), action: "pause" }, h.panel);
   assert.deepEqual(calls.pop(), ["transfer", "pause", "a".repeat(32)]);
   for (const action of ["cancel", "purge", "download"]) assert.throws(() => h.invoke("panel-space-transfer", { scope, id: "a".repeat(32), action }, h.panel), /PANEL_ACTION_NOT_ALLOWED/);
@@ -268,7 +288,7 @@ test("panel preload exposes a fixed balance reader, retaining the generic-action
   const vm = await import("node:vm");
   let api; const calls = [];
   vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
-    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    contextBridge: { exposeInMainWorld: (name, value) => { if(name==="wanxPanel")api = value; } },
     ipcRenderer: { invoke: name => { calls.push(name); return Promise.resolve({ available: 55 }); } },
   }) });
   assert.deepEqual(await api.getBalance({ accountId: "forged" }), { available: 55 });
@@ -306,11 +326,93 @@ test("panel preload exposes only the fixed application name reader", async () =>
   const vm = await import("node:vm");
   let api; const calls = [];
   vm.runInNewContext(await readFile(new URL("../local-ui/panel-preload.cjs", import.meta.url), "utf8"), { require: () => ({
-    contextBridge: { exposeInMainWorld: (_name, value) => api = value },
+    contextBridge: { exposeInMainWorld: (name, value) => { if(name==="wanxPanel")api = value; } },
     ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve([]); } },
   }) });
   assert.deepEqual(await api.getApplicationNames({ accountId: "forged" }), []);
   assert.deepEqual(calls, [["wanx-client:panel-application-names"]]);
   await assert.rejects(api.action("market-list"), /PANEL_ACTION_NOT_ALLOWED/);
   await assert.rejects(api.action("market-install"), /PANEL_ACTION_NOT_ALLOWED/);
+});
+
+test('panel reads QeeToken projection without exposing wallet history or falling back to shadow credits', async () => {
+  const h = harness({ credits: { balance: async () => { throw Error('shadow must not be read'); } },
+    creditWallet: {
+      balance: async () => ({ data: { billing_backend: 'qeetoken' } }),
+      wallet: async () => ({ data: { view_version: '2', currency_rule_id: 'usd-credit-100-v2', credit_scale: 6, remote_sequence: '2', synced_at: '2026-10-20T00:00:00Z', balance_credit_atoms: '-1', spent_credit_atoms: '1', correction_credit_atoms: '0', net_spent_credit_atoms: '1', sync_state: 'stale', pending_executions: 2, account_id: 'alice' } }),
+    },
+  });
+  assert.deepEqual(await h.invoke('panel-balance', undefined, h.panel), { available_text: '欠费不足 1 积分', sync_state: 'stale' });
+  assert.throws(() => h.invoke('wallet-usage', {}, h.panel), /无权/);
+});
+
+test('offline quick panel may pause its own upload but cannot upload or touch another scope', async () => {
+  const calls = [], scope = 'offline-scope';
+  const h = harness({ client: { snapshot: () => ({ ...ready, phase: 'recovering', connection: null }) }, personalSpace: {
+    snapshot: () => ({ scope, tasks: [{id: 'a'.repeat(32), direction: 'upload'}] }),
+    transfer: (...args) => calls.push(args),
+  } });
+  await h.invoke('panel-space-transfer', {scope, id: 'a'.repeat(32), action: 'pause'}, h.panel);
+  assert.deepEqual(calls, [['pause', 'a'.repeat(32)]]);
+  await assert.rejects(h.invoke('panel-space-upload', {scope, paths: ['private.txt']}, h.panel));
+  assert.throws(() => h.invoke('panel-space-transfer', {scope: 'other', id: 'a'.repeat(32), action: 'resume'}, h.panel), /SPACE_CONTEXT_CHANGED/);
+});
+
+test("all three upload IPC entries return only the deliberate preflight notice and retain target scope", async () => {
+  const calls = [], notice = { code: "SPACE_UPLOAD_LIMIT", message: "一次最多上传 20 个文件；本批文件未加入上传队列。" };
+  const personalSpace = {
+    snapshot: () => ({ scope: "scope-a", tasks: [] }), refresh: async () => {},
+    uploads: async (...args) => { calls.push(args); throw Object.assign(new Error(notice.message), { code: notice.code, localPath: "/secret/path" }); },
+  };
+  const h = harness({ personalSpace });
+  for (const [method, input, window, expected] of [
+    ["space-uploads", { parent: "a".repeat(32) }, h.control, ["a".repeat(32), undefined, undefined, undefined, "personal", false]],
+    ["space-upload-dropped", { parent: "b".repeat(32), paths: ["/tmp/file"] }, h.control, ["b".repeat(32), ["/tmp/file"], undefined, undefined, "personal"]],
+    ["panel-space-upload", { parent: "ignored", scope: "scope-a", paths: ["/tmp/file"] }, h.panel, ["", ["/tmp/file"], "scope-a", undefined]],
+  ]) {
+    assert.deepEqual(await h.invoke(method, input, window), { uploadRejection: notice });
+    assert.deepEqual(calls.at(-1), expected);
+  }
+  personalSpace.uploads = async () => { throw Object.assign(new Error("SECURE_STORAGE_WRITE_FAILED"), { localPath: "/private" }); };
+  await assert.rejects(h.invoke("space-uploads", {}), /SECURE_STORAGE_WRITE_FAILED/);
+});
+
+// Clipboard access is main-window-only and cannot target a stale account/box scope.
+test('clipboard IPC is denied to the panel and rejects stale targets before reading the OS clipboard',async()=>{
+ const called=[];let bound='scope-a';const h=harness({superClipboard:{snapshot:()=>({scope:bound}),operation:async(method,input)=>{called.push([method,input]);return {};}}});
+ for(const method of ['snapshot','refresh','capture','paste','choose','transfer','copy','preview','download','manage','export','note-save','note-refresh','note-command','note-paste'])assert.throws(()=>h.invoke('clipboard-'+method,{scope:bound},h.panel),denied);
+ await assert.rejects(h.invoke('clipboard-paste',{scope:'old'}),/SPACE_CONTEXT_CHANGED/);assert.equal(called.length,0);
+ await h.invoke('clipboard-paste',{scope:bound});assert.deepEqual(called,[['paste',{}]]);
+});
+
+test('panel note bridge exposes only the shared note and denies broader clipboard operations',async()=>{
+ const called=[],bound='scope-a',image='a'.repeat(32);
+ const snapshot={scope:bound,online:true,boxId:'box-a',note:{blocks:[{type:'image',item:image}]},tasks:[],items:[{private:'legacy'}],cache:[{path:'/private'}]};
+ const h=harness({superClipboard:{snapshot:()=>snapshot,operation:async(method,args)=>{called.push([method,args]);return method==='preview'?{item:{id:image,name:'图片.png',mime:'image/png',path:'/private'},data:'png'}:snapshot;}}});
+ const panel=await h.invoke('panel-note',{method:'snapshot'},h.panel);
+ assert.equal(panel.items,undefined);assert.equal(panel.cache,undefined);assert.deepEqual(panel.note,snapshot.note);
+ for(const method of ['copy','download','manage','export','paste','refresh','readFile'])await assert.rejects(h.invoke('panel-note',{method,scope:bound},h.panel),/PANEL_ACTION_NOT_ALLOWED/);
+ for(const method of ['note-save','note-paste','choose','capture','preview','transfer','note-command'])
+  await assert.rejects(h.invoke('panel-note',{method,scope:'old'},h.panel),/SPACE_CONTEXT_CHANGED/);
+ await assert.rejects(h.invoke('panel-note',{method:'preview',id:'b'.repeat(32),scope:bound},h.panel),/CLIPBOARD_NOT_FOUND/);
+ const preview=await h.invoke('panel-note',{method:'preview',id:image,scope:bound},h.panel);
+ assert.equal(preview.item.path,undefined);assert.equal(preview.data,'png');
+ await h.invoke('panel-note',{method:'choose',scope:bound},h.panel);
+ assert.deepEqual(called.at(-1),['choose',{panel:true}]);
+ await assert.rejects(h.invoke('panel-note',{method:'transfer',action:'cancel',scope:bound},h.panel),/PANEL_ACTION_NOT_ALLOWED/);
+ await assert.rejects(h.invoke('panel-note',{method:'note-command',action:'purge',scope:bound},h.panel),/PANEL_ACTION_NOT_ALLOWED/);
+});
+
+test('panel note preload cannot send other actions and copied blobs remain bounded',async()=>{
+ const vm=await import('node:vm');const api={},calls=[];
+ vm.runInNewContext(await (await import('node:fs/promises')).readFile(new URL('../local-ui/panel-preload.cjs',import.meta.url),'utf8'),{
+  Buffer,require:()=>({contextBridge:{exposeInMainWorld:(name,value)=>api[name]=value},webUtils:{getPathForFile:f=>f.path||''},ipcRenderer:{invoke:async(name,input)=>{calls.push([name,input]);return {scope:'now'};}}})
+ });
+ assert.equal((await api.wanxClient.action('clipboard.download',{id:'x'})).code,'PANEL_ACTION_NOT_ALLOWED');
+ assert.equal((await api.wanxClient.action('profile.save',{})).code,'PANEL_ACTION_NOT_ALLOWED');assert.equal(calls.length,0);
+ await api.wanxClient.action('clipboard.note-save',{scope:'now',blocks:[]});
+ assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),['wanx-client:panel-note',{scope:'now',blocks:[],method:'note-save'}]);
+ assert.equal((await api.wanxClient.clipboardFiles(Array(21).fill({size:1}),{scope:'now'})).code,'CLIPBOARD_LIMIT');
+ assert.equal((await api.wanxClient.clipboardFiles([{size:20*1024*1024+1}],{scope:'now'})).code,'CLIPBOARD_LIMIT');
+ assert.equal(calls.length,1);
 });

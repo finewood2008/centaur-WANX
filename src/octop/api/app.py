@@ -108,6 +108,9 @@ def build_app(server: OctopServer) -> FastAPI:
             svc = getattr(application.state, "dialogue_service", None)
             if svc is not None:
                 await svc.close()
+            studio = getattr(application.state, "app_studio", None)
+            if studio is not None:
+                await studio.close()
 
     cfg = server.services.config if server.services else getattr(server, "config", None)
     enable_dashboard = cfg.enable_dashboard if cfg else True
@@ -155,6 +158,9 @@ def build_app(server: OctopServer) -> FastAPI:
     from octop.api.routers.semantica import router as semantica_router
 
     app.include_router(semantica_router, prefix="/api")
+    from octop.api.routers.semantica import internal_router as semantica_internal_router
+
+    app.include_router(semantica_internal_router)
 
     from octop.infra.setup.tls.challenge import challenge_store
 
@@ -332,6 +338,11 @@ def build_app(server: OctopServer) -> FastAPI:
                 openapi_url=app.openapi_url,
                 title="CentaurAI-WANX API",
             )
+
+    # Both desktop editions use the same authenticated WANX service and user store.
+    from octop.api.studio import mount_studio
+
+    mount_studio(app, server)
 
     if enable_dashboard:
         dashboard_dir = Path(__file__).parent.parent / "dashboard"

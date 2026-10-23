@@ -1,6 +1,10 @@
 # 半人马AI-万象 · CentaurAI-WANX
 
-WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用户数据。**万象电脑端**位于 `wanx-client/`，负责盒子管理、连接和应用运行。Dashboard 提供盒端业务控制台。
+**WANX 1.0.0**：万象个人版（CentaurAI-WanX Mini）与万象团队版（CentaurAI-WanX Studio）是两个独立客户端，共用同一套 WANX 后端。源码整合分支为 `wanx1.0`，功能、构建与兼容说明见 [1.0 版本说明](docs/wanx-1.0-release.md)。
+
+个人版位于 `wanx-client/`，团队版位于 `wanx-team-client/`，Builder 组件位于 `wanx-studio/`。分别运行 `npm run start:mini`、`npm run start:studio`。
+
+WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用户数据。**万象个人版**位于 `wanx-client/`，**万象团队版**位于 `wanx-team-client/`，分别负责各自客户端的盒子连接和应用运行。Dashboard 提供盒端业务控制台。
 
 当前万象底座与应用市场代码位于 `wanx-client/`，通过 Consumer 账号查询已上架应用、检查版本和下载安装 `.wanxapp`，连接盒子后启动应用。在仓库根目录运行 `npm run start:client`；macOS 和 Windows 打包分别使用 `npm run package:client:mac`、`npm run package:client:windows`。macOS 此命令输出应用目录。详细使用见 [客户端说明](wanx-client/README.md) 和 [应用市场说明](docs/wanx-application-market.md)。
 
@@ -10,7 +14,7 @@ WANX 服务端运行在盒子中，负责账号、配置、Agent、记忆和用�
 
 ## 客户端个人资料与积分入口
 
-头像昵称按万象账号保存在本机，个人资料与快捷面板见 [客户端说明](docs/wanx-client-profile.md)。积分购买、订单恢复与余额查询已完成 Admin/WANX 联调，支持支付宝与微信 Native 支付，权威账务在 Admin。积分消费和 Provider 关联尚未开始设计；客户端实现从 [客户端积分接入](docs/credits.md) 阅读。
+头像昵称按万象账号保存在本机，个人资料与快捷面板见 [客户端说明](docs/wanx-client-profile.md)。积分购买、订单恢复、来源分账、赠送、迁移与消费展示已完成开发及隔离联调。Admin 管理支付及投影，QeeToken 保存权威消费余额；生产验收门槛仍未解除。规则、当前状态、客户端流程与上线手册从 [积分文档入口](docs/credits.md) 阅读。
 
 ## 本次 GitHub 迁移
 

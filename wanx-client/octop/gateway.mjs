@@ -636,7 +636,7 @@ export async function createDashboardGateway({
   const gateway = {
     url: localURL.origin + (bootstrapPath ?? ""),
     origin: localURL.origin,
-    async request({ path, method = "GET", headers = {}, body, signal, stream = false, applicationScope, applicationExchange = false } = {}) {
+    async request({ path, method = "GET", headers = {}, body, signal, stream = false, applicationScope, applicationExchange = false, idleTimeoutMs = 0, freshConnection = false } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
       const request = {
@@ -645,7 +645,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session", "x-content-sha256", "range", "if-none-match", "if-modified-since"].includes(key) || (key === "x-space-link" && ["/api/personal-space/agent-access", "/api/personal-space/connection-access"].includes(path.split("?")[0])) || (key === "x-xingtu-key" && /^\/api\/semantica\/open\/v1\//.test(path.split("?")[0])))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session", "x-content-sha256", "range", "if-none-match", "if-modified-since"].includes(key) || (key === "x-space-link" && ["/api/personal-space/agent-access", "/api/personal-space/connection-access", "/api/clipboard/v1/agent-access"].includes(path.split("?")[0])) || (key === "x-xingtu-key" && /^\/api\/semantica\/open\/v1\//.test(path.split("?")[0])))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };
@@ -655,21 +655,36 @@ export async function createDashboardGateway({
       bootstrapped = wasBootstrapped;
       if (authorized) authorized = await scopedAuthorization(authorized, applicationScope);
       if (!authorized) throw new Error("PLATFORM_SESSION_EXPIRED");
+      // Bulk chunks must not reuse a control request's potentially stale tunnel.
+      // Delegate dialing to the same authorized transport; never bypass P2P or TLS.
+      const dedicatedAgent = freshConnection && agent ? new transport.Agent({ ...agent.options, keepAlive: false }) : null;
+      if (dedicatedAgent) dedicatedAgent.createConnection = agent.createConnection.bind(agent);
       const upstream = transport.request(target, {
         method,
         path: authorized.path,
         // Keep the read side alive for a business response during an upload.
-        headers: { ...authorized.headers, connection: "keep-alive" },
-        agent: agent ?? false,
+        headers: { ...authorized.headers, connection: freshConnection ? "close" : "keep-alive" },
+        agent: dedicatedAgent ?? agent ?? false,
         signal,
       });
       requests.add(upstream);
+      if (dedicatedAgent) upstream.once("close", () => dedicatedAgent.destroy());
+      // Only callers with an idempotent recovery protocol opt into this. This
+      // measures the local transport, not acknowledgement by the remote box.
+      let transportPhase = "connecting", socket, written = 0, received = 0;
+      const diagnostic = () => ({ transportPhase, requestBytes: socket ? Math.max(0, socket.bytesWritten - written) : 0, responseBytes: received, reusedSocket: upstream.reusedSocket === true });
+      if (Number.isSafeInteger(idleTimeoutMs) && idleTimeoutMs > 0) {
+        upstream.setTimeout(idleTimeoutMs, () => upstream.destroy(Object.assign(new Error("SPACE_CHUNK_STALLED"), { code: "SPACE_CHUNK_STALLED", ...diagnostic() })));
+      }
+      upstream.once("finish", () => { transportPhase = "awaiting_response"; });
       upstream.once("close", () => requests.delete(upstream));
       const timer = setTimeout(() => upstream.destroy(new Error("CONNECT_TIMEOUT")), 10_000);
       timer.unref();
-      upstream.on("socket", (socket) => {
-        if (!socket.connecting) clearTimeout(timer);
-        else socket.once(target.protocol === "https:" ? "secureConnect" : "connect", () => clearTimeout(timer));
+      upstream.on("socket", (value) => {
+        socket = value; written = socket.bytesWritten;
+        const connected = () => { clearTimeout(timer); transportPhase = "sending"; };
+        if (!socket.connecting) connected();
+        else socket.once(target.protocol === "https:" ? "secureConnect" : "connect", connected);
       });
       upstream.once("close", () => clearTimeout(timer));
       return new Promise((resolve, rejectRequest) => {
@@ -687,6 +702,8 @@ export async function createDashboardGateway({
           if (uploading) body.removeListener("error", uploadError);
         });
         upstream.on("response", (response) => {
+          transportPhase = "receiving";
+          response.once("end", () => { upstream.setTimeout(0); });
           response.once("end", stopUpload);
           if (response.statusCode >= 400) stopUpload();
           const headers = headersWithoutHop(response.headers);
@@ -700,6 +717,7 @@ export async function createDashboardGateway({
           const chunks = [];
           let size = 0;
           response.on("data", (chunk) => {
+            received += chunk.length;
             size += chunk.length;
             if (size > 32 * 1024 * 1024) return response.destroy(new Error("RESPONSE_TOO_LARGE"));
             chunks.push(chunk);

@@ -45,3 +45,8 @@ node_modules
 *.log
 logs
 agent-transcripts
+
+# Isolated local profiles and lab artifacts
+**/.local/
+**/.env
+**/.env.*

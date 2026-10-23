@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,6 +38,7 @@ from .semantica import create_router as semantica_router
 from .semantica.desktop_routes import create_desktop_router
 from .upstream import BridgeUpstreamError
 from .version import bridge_build_metadata, version_snapshot
+from .zhijun_bootstrap import recover_private_profile
 
 _HOP = frozenset(
     {
@@ -99,6 +101,10 @@ def _allowed(path: str, method: str) -> bool:
     # Match decoded ASGI paths, reject traversal and slash aliases before httpx
     # normalizes them. Never forward public /docs or /.well-known provider routes.
     if "\\" in path or "//" in path or any(p in {".", ".."} for p in path.split("/")):
+        return False
+    if method == "WEBSOCKET" and (
+        path == "/api/clipboard/v1" or path.startswith("/api/clipboard/v1/")
+    ):
         return False
     if path in {"/docs", "/redoc", "/openapi.json"} or path.startswith(
         ("/.well-known", "/oidc", "/internal")
@@ -199,6 +205,7 @@ def create_app(
     semantica_url: str = SEMANTICA_URL,
     semantica_config_file: Path = Path("/data/.octop/semantica.json"),
     semantica_desktop_url: str | None = None,
+    clipboard_url: str | None = "http://127.0.0.1:8092",
     http_transport: Any = None,
     lease_check_interval: float = 0.25,
     dashboard_dir: Path | None = None,
@@ -216,6 +223,18 @@ def create_app(
         or parsed.fragment
     ):
         raise ValueError("upstream_url must be a loopback HTTP origin")
+    if clipboard_url is not None:
+        business = urlsplit(clipboard_url)
+        if (
+            business.scheme not in {"http", "https"}
+            or business.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or business.username
+            or business.password
+            or business.path not in {"", "/"}
+            or business.query
+            or business.fragment
+        ):
+            raise ValueError("clipboard_url must be a loopback HTTP origin")
     assets = DashboardAssets(dashboard_dir or installed_dashboard())
     origin = upstream_url.rstrip("/")
     metadata = bridge_build_metadata() if build_metadata is None else dict(build_metadata)
@@ -504,6 +523,78 @@ def create_app(
             if guard in done:
                 await guard
             upstream = await pending
+            ontology = re.fullmatch(r"/api/agents/([^/]+)/ontology", path)
+            if (
+                guard_resources
+                and target_origin == origin
+                and session
+                and request.method == "GET"
+                and ontology
+                and upstream.status_code == 404
+            ):
+                # Only retry the read. Never replay ontology edits or model calls.
+                # Existing sessions may predate primary-profile provisioning.
+                async def recover() -> tuple[bytes, bool]:
+                    async with asyncio.timeout(30):
+                        data = bytearray()
+                        async for chunk in upstream.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > 65536:
+                                raise _error("BOX_UPSTREAM_PROTOCOL_INVALID", 502)
+                        await _call(auth.assert_live, session)
+                        try:
+                            body = json.loads(data)
+                        except (ValueError, UnicodeError):
+                            return bytes(data), False
+                        missing = (
+                            isinstance(body, dict)
+                            and isinstance(body.get("error"), dict)
+                            and body["error"].get("code") == "NOT_FOUND"
+                        )
+                        repaired = missing and await recover_private_profile(
+                            adapter,
+                            token,
+                            _field(session, "user"),
+                            ontology[1],
+                            lambda: _call(auth.assert_live, session),
+                        )
+                        return bytes(data), repaired
+
+                pending = asyncio.create_task(recover())
+                done, _ = await asyncio.wait(
+                    {pending, guard, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if disconnect_task in done:
+                    await disconnect_task
+                if guard in done:
+                    await guard
+                data, repaired = await pending
+                await upstream.aclose()
+                if not repaired:
+                    headers = _response_headers(upstream, target_origin)
+                    for name in ("content-length", "content-encoding"):
+                        headers.pop(name, None)
+                    guard.cancel()
+                    with contextlib.suppress(BaseException):
+                        await guard
+                    return Response(data, status_code=404, headers=headers)
+                await _call(auth.assert_live, session)
+                req = client.build_request(
+                    "GET",
+                    _target(target_origin, path, request.query_params, token),
+                    headers=_headers(request.headers, token),
+                )
+                req.headers.pop("cookie", None)
+                upstream = None
+                pending = asyncio.create_task(client.send(req, stream=True))
+                done, _ = await asyncio.wait(
+                    {pending, guard, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if disconnect_task in done:
+                    await disconnect_task
+                if guard in done:
+                    await guard
+                upstream = await pending
             headers = _response_headers(upstream, target_origin)
             if filter_response_headers is not None:
                 headers = filter_response_headers(headers)
@@ -642,13 +733,35 @@ def create_app(
         marker = _credentials(request.headers, request.query_params, required=protected)
         session = await _call(auth.authorize, marker) if marker else None
         token = _field(session, "upstream_token") if session else None
+        is_clipboard = path == "/api/clipboard/v1" or path.startswith("/api/clipboard/v1/")
+        service_origin = origin
+        forward_token = token
+        if is_clipboard:
+            if not clipboard_url:
+                raise _error("CLIPBOARD_SERVICE_UNAVAILABLE", 503)
+            if _field(session, "user").get("application_id", "wanx") != "wanx":
+                raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
+            service_origin = clipboard_url.rstrip("/")
+            forward_token = marker
         if path.startswith("/assets/"):
             asset_response = await assets.response(request, path)
             if asset_response is not None:
                 if session:
                     await _call(auth.assert_live, session)
                 return asset_response
-        return await forward(request, path=path, target_origin=origin, session=session, token=token)
+
+        def clipboard_headers(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+            # This server-to-server hop reuses the lease for each storage hop.
+            return [(k, v) for k, v in headers if k.lower() != "origin"]
+
+        return await forward(
+            request,
+            path=path,
+            target_origin=service_origin,
+            session=session,
+            token=forward_token,
+            filter_request_headers=clipboard_headers if is_clipboard else None,
+        )
 
     @app.websocket("/{path:path}")
     async def websocket_proxy(websocket: WebSocket, path: str) -> None:

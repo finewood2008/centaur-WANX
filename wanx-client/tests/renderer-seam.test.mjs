@@ -82,6 +82,7 @@ async function harness(initial = state(), installed = [application], options = {
           scrollIntoView: (options) => calls.push(["scroll-form", name, options.block]),
           replaceWith: (retained) => forms.set(name, retained),
         };
+        form.reset = () => { form.values = {}; };
         if (name === "wifi") {
           wifiNodes.set('button[type="submit"]', submit);
           for (const fieldName of ["ssid", "password", "security", "hidden"]) {
@@ -99,7 +100,10 @@ async function harness(initial = state(), installed = [application], options = {
         return [name, form];
       }));
     },
-    querySelector: (selector) => forms.get(selector.match(/data-form="([^"]+)"/)?.[1]),
+    querySelector: (selector) => selector === ".pending-open" && markup.includes('class="pending-open"')
+      ? { style: {}, scrollIntoView(options) { calls.push(["scroll-pending-open", options.block, options.behavior, this.style.scrollMarginTop]); } }
+      : selector === ".topbar" ? { offsetHeight: 76 }
+      : forms.get(selector.match(/data-form="([^"]+)"/)?.[1]),
     addEventListener: (name, fn) => events.set(name, fn),
   };
   const controlURL = "file:///client/local-ui/renderer/index.html";
@@ -129,13 +133,12 @@ async function harness(initial = state(), installed = [application], options = {
         devices: deviceIds.map(deviceId => ({ deviceId, deviceName: null, claimStatus: "unknown" })),
       };
     },
+    redeemConsoleClaim: async input => { calls.push(["console-claimed", input]); return options.claim ? options.claim(input) : { deviceId: supportDeviceId, ownership: "claimed" }; },
+    getConsoleClaimAuthorization: async deviceId => { calls.push(["claim-status", deviceId]); return options.claimStatus ? options.claimStatus(deviceId) : { deviceId, authorizationState: "deviceAckPending" }; },
     listOwnershipTransfers: async () => options.transfers ? options.transfers() : [],
     sendTransferCode: async () => ({ expiresIn: 300 }),
     createOwnershipTransfer: async input => { calls.push(["ownership-created", input]); return { ...input, state: "pending_target" }; },
     acceptOwnershipTransfer: async input => { calls.push(["ownership-accepted", input]); if (options.acceptFailure) throw new Error(options.acceptFailure); return { ...input, state: "completed" }; },
-    setNetworkEnabled: async (enabled) => {
-      rawState = { ...state(enabled ? "enrolling" : "idle", enabled ? "checking" : "disabled"), network: { enabled, phase: enabled ? "checking" : "disabled" } };
-    },
   };
   const applications = {
       listInstalled: async () => records,
@@ -184,7 +187,7 @@ async function harness(initial = state(), installed = [application], options = {
         calls.push([name, input]);
         if (name === "wanx:discovery:bluetooth-state") return { status: options.bluetoothStatus || "available" };
         if (name === "wanx:discovery:open-bluetooth-settings") return { ok: true };
-        if (name.startsWith("wanx:setup:")) return { ok: true, value: await options.setupRequest?.(name) ?? { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
+        if (name.startsWith("wanx:setup:")) return { ok: true, value: await options.setupRequest?.(name, input) ?? { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
         return handlers.get(name)({ sender: contents, senderFrame: frame }, input);
       },
       on: (name, listener) => listeners.set(name, listener), removeListener() {},
@@ -197,7 +200,7 @@ async function harness(initial = state(), installed = [application], options = {
   if (discoveryTest) {
     const clock = { monotonicMs: () => Date.now() };
     discoveryTest.after(installElectronBluetoothPicker({ webContents: contents, ipcMain, documentUrl: controlURL, clock,
-      scanTimeoutMs: options.platform === "win32" ? 60000 : 12000,
+      scanTimeoutMs: window.wanxSetupTransport.scanTimeoutMs,
       advertisementNames: { subscribe: (listener) => { advertisementListener = listener; return () => { advertisementListener = undefined; }; } } }));
     const bluetooth = {
       getAvailability: async () => options.bluetoothStatus !== "unavailable",
@@ -206,7 +209,7 @@ async function harness(initial = state(), installed = [application], options = {
         queueMicrotask(() => contents.emit("select-bluetooth-device", { preventDefault() {} }, nearby, chooser));
       }),
     };
-    // Run the shipped transport too, including its independent 12-second deadline.
+    // Run the shipped transport too, using the actual preload's scan deadline.
     vm.runInNewContext(transportBundle, {
       window, navigator: { bluetooth }, crypto: globalThis.crypto,
       performance: { now: clock.monotonicMs }, setTimeout, clearTimeout,
@@ -215,10 +218,10 @@ async function harness(initial = state(), installed = [application], options = {
     discoveryTest.after(() => window.wanxDeviceSetupTransport.dispose());
   }
   vm.runInNewContext(source, {
-    window, setInterval() {},
-    Date,
+    window, setInterval() {}, clearInterval() {},
+    Date, crypto: globalThis.crypto,
     setTimeout, clearTimeout, TextEncoder, queueMicrotask,
-    document: { addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
+    document: { body:{dataset:{},append(){}},createElement:()=>({dataset:{},setAttribute(){}}),addEventListener() {}, querySelector: (selector) => selector === "#app" ? app : selector === "#account-name" ? { value: forms.get("auth")?.values.username || "" } : null },
     FormData: class { constructor(form) { return Object.entries(form.values || {}); } },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -252,12 +255,33 @@ async function harness(initial = state(), installed = [application], options = {
   };
 }
 
+test("box recovery shows attempts, supports cancellation and offers manual connection after exhaustion", async () => {
+  const initial = { ...state("ready", "ready", "box-102"), phase: "recovering",
+    recovery: { deviceId: "box-102", status: "retrying", attempt: 2, maxAttempts: 3 } };
+  const h = await harness(initial);
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /正在自动重连（2\/3）/);
+  assert.match(h.app.innerHTML, /data-action="disconnect"[^>]*>停止重连/);
+  await h.click("disconnect");
+  await h.click("market-confirm");
+  assert.equal((await h.window.wanxClient.getLocalState()).selectedDeviceId, null);
+  h.update({ ...initial, phase: "disconnected", connection: null,
+    recovery: { ...initial.recovery, status: "failed", attempt: 3 } });
+  assert.match(h.app.innerHTML, /自动重连 3 次未成功，请手动重连/);
+  assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
+});
+
 test("login opens the store while the network prepares, with registration available and no account identifier", async () => {
-  const h = await harness({ account: { phase: "signed_out" } });
+  const login = pendingResponse();
+  const h = await harness({ account: { phase: "signed_out" } }, [application], { loginRequest: () => login.promise });
   assert.match(h.app.innerHTML, /登录万象平台/);
   assert.match(h.app.innerHTML, /data-action="auth-register"/);
   assert.doesNotMatch(h.app.innerHTML, /name="code"/);
-  await h.submit("auth", { username: "13800000000", password: "example-password" });
+  const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
+  await flushActions();
+  assert.match(h.form("auth").querySelector('button[type="submit"]').innerHTML, /正在登录…/);
+  assert.doesNotMatch(h.app.innerHTML, /正在完成退出…/);
+  login.resolve(); await loggingIn;
   assert.match(h.app.innerHTML, /我的应用/);
   assert.match(h.app.innerHTML, /网络连接中/);
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
@@ -315,6 +339,10 @@ test("opening an app while disconnected asks which box to use and continues only
   const h = await harness();
   await h.click("applications-launch", { applicationId: application.applicationId });
   assert.match(h.app.innerHTML, /连接盒子并打开应用/);
+  assert.deepEqual(h.calls.filter(([name]) => name === "scroll-pending-open"), [["scroll-pending-open", "start", "instant", "92px"]]);
+  h.update(state("ready", "checking"));
+  h.update(state());
+  assert.equal(h.calls.filter(([name]) => name === "scroll-pending-open").length, 1);
   assert.equal(h.launches.length, 0);
   h.changePendingDevice("box-103");
   await h.click("pending-confirm");
@@ -330,13 +358,16 @@ test("pending app launch may be cancelled without connecting a box", async () =>
   assert.doesNotMatch(h.app.innerHTML, /data-action="pending-confirm"/);
   assert.equal(h.launches.length, 0);
   assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
+  await h.click("applications-launch", { applicationId: application.applicationId });
+  assert.equal(h.calls.filter(([name]) => name === "scroll-pending-open").length, 2);
 });
 
 test("box management has its own top-level tab and exposes no console action", async () => {
   const h = await harness();
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
   assert.match(header, /<nav/);
-  for (const page of ["applications", "space", "boxes", "credits"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  for (const page of ["applications", "space", "boxes"]) assert.ok(header.includes(`data-action="show-${page}"`));
+  assert.doesNotMatch(header, /data-action="show-credits"/);
   assert.match(header, />空间<\/button>/);
   assert.match(header, />盒子<\/button>/);
   assert.ok(!header.includes('data-action="show-settings"'));
@@ -408,11 +439,11 @@ test("switching or disconnecting a box warns that the original application conne
   await h.click("market-confirm");
   assert.match(h.app.innerHTML, /尚未连接盒子/);
   await h.click("show-boxes");
-  await h.click("network-toggle");
-  assert.match(h.app.innerHTML, /aria-checked="false" aria-label="万象网络"/);
-  await h.click("network-toggle");
-  assert.match(h.app.innerHTML, /aria-checked="true" aria-label="万象网络"/);
-  assert.deepEqual(h.calls.filter(([name]) => name === "wanx-client:set-network-enabled").map(([, value]) => value), [false, true]);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="network-toggle"|class="box-network"/);
+  const disabled = await h.window.wanxClient.action("network.set-enabled", { enabled: false });
+  assert.equal(disabled.ok, false);
+  assert.equal(disabled.code, "UNKNOWN_CLIENT_ACTION");
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:set-network-enabled").length, 0);
 });
 
 test("network failure is actionable without disabling independent app requests", async () => {
@@ -558,10 +589,10 @@ test("discovery shows loading and retry states without bundled application cards
 });
 
 test("unlisted official apps stay installed but do not reappear in discovery after uninstall or restart", async () => {
-  const dialogue = { applicationId: "centaurai.wanx.dialogue", name: "众见", version: "0.3.3" };
+  const dialogue = { applicationId: "centaurai.wanx.superadvisors", name: "个人议事厅", version: "0.3.3" };
   const options = { list: async () => ({ items: [] }), candidate: async () => ({ status: "unavailable", reason: "application_unlisted" }) };
   const h = await harness(state(), [dialogue], options);
-  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.dialogue"/);
+  assert.match(h.app.innerHTML, /class="application-card" data-application="centaurai.wanx.superadvisors"/);
   assert.match(h.app.innerHTML, /data-action="applications-launch"/);
   await h.click("market-uninstall", { applicationId: dialogue.applicationId });
   await h.click("market-confirm");
@@ -569,8 +600,8 @@ test("unlisted official apps stay installed but do not reappear in discovery aft
   assert.doesNotMatch(h.app.innerHTML, /class="application-card" data-application=/);
   assert.match(h.app.innerHTML, /暂无已上架应用/);
   await h.click("store-details", { applicationId: dialogue.applicationId });
-  assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.dialogue"/);
-  assert.match(h.app.innerHTML, /dialogue-product-v1.png/);
+  assert.match(h.app.innerHTML, /data-application-detail="centaurai.wanx.superadvisors"/);
+  assert.match(h.app.innerHTML, /council-product-v1.png/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"|data-action="applications-launch"/);
   await h.click("market-install", { applicationId: dialogue.applicationId });
   assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
@@ -665,9 +696,9 @@ test("device setup retains its wizard across polling and returns to boxes", asyn
   const h = await harness();
   await h.click("show-settings");
   await h.click("provisioning");
-  assert.match(h.app.innerHTML, /发现并配置盒子/);
+  assert.match(h.app.innerHTML, /添加盒子/);
   h.update(state("enrolling", "checking"));
-  assert.match(h.app.innerHTML, /发现并配置盒子/);
+  assert.match(h.app.innerHTML, /添加盒子/);
   await h.click("back-devices");
   assert.match(h.app.innerHTML, /设备管理/);
   assert.match(h.app.innerHTML, /disabled>网络连接中<\/button>/);
@@ -690,7 +721,7 @@ test("box scanning disables repeat clicks, then allows a new scan after timeout"
   assert.equal(h.chooser(), chooser, "repeat clicks must not restart Bluetooth discovery");
   h.update(state());
   assert.match(scanButton(), /disabled/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   assert.match(scanButton(), /重新扫描/);
   assert.doesNotMatch(scanButton(), /disabled/);
@@ -708,7 +739,7 @@ test("discovered boxes remain selectable after the scan times out", async (t) =>
   await new Promise((resolve) => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
   assert.match(h.app.innerHTML, /Test box/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /Test box/, "timeout must not discard discovered boxes");
   await h.click("select-candidate", { candidateId });
@@ -766,7 +797,7 @@ test("expired results are removed and require a new scan", async (t) => {
   await h.click("provisioning");
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   t.mock.timers.tick(120000);
   assert.doesNotMatch(h.app.innerHTML, /Test box/);
@@ -781,12 +812,12 @@ test("a missing retained target never selects a different box with the same name
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   h.nearby([{ deviceId: "provider-2", deviceName: "Test box" }]);
   await h.click("select-candidate", { candidateId });
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
   assert.match(h.app.innerHTML, /未能连接所选盒子/);
@@ -803,17 +834,17 @@ test("failed reselection keeps the first result expiry in the rendered flow", as
   await h.click("provisioning"); await h.click("start-provisioning");
   await new Promise(resolve => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   t.mock.timers.tick(60000);
   h.nearby([]);
   await h.click("select-candidate", { candidateId });
   await new Promise(resolve => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未能连接所选盒子/);
   assert.match(h.app.innerHTML, /Test box/);
-  t.mock.timers.tick(48000);
+  t.mock.timers.tick(120000 - 60000 - h.window.wanxSetupTransport.scanTimeoutMs);
   assert.match(h.app.innerHTML, /扫描结果已过期/);
   assert.doesNotMatch(h.app.innerHTML, /Test box/);
   assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
@@ -825,7 +856,7 @@ test("result expiry cancels in-progress reselection without starting setup", asy
   await h.click("provisioning"); await h.click("start-provisioning");
   await new Promise(resolve => setImmediate(resolve));
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise(resolve => setImmediate(resolve));
   t.mock.timers.tick(119999);
   h.nearby([]);
@@ -853,7 +884,7 @@ for (const leave of ["back-devices", "logout"]) {
     else await h.click(leave);
     lateChooser("provider-1");
     await new Promise((resolve) => setImmediate(resolve));
-    t.mock.timers.tick(132000);
+    t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs + 120000);
     assert.doesNotMatch(h.app.innerHTML, /Test box|扫描结果已过期/);
     assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
     assert.ok(h.calls.some(([name]) => name === "nexusaos:discovery:forget"));
@@ -867,7 +898,7 @@ test("an empty scan allows retry after reporting no nearby box", async (t) => {
   await h.click("provisioning");
   await h.click("start-provisioning");
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未发现可用盒子/);
   assert.doesNotMatch(h.app.innerHTML, /User cancelled/);
@@ -897,7 +928,7 @@ test("native menu navigation reaches settings and home while preserving login an
   await h.click("show-settings");
   await h.click("provisioning");
   h.navigate("applications");
-  assert.match(h.app.innerHTML, /发现并配置盒子/);
+  assert.match(h.app.innerHTML, /添加盒子/);
 });
 
 
@@ -1231,6 +1262,37 @@ test("unclaimed inventory names are visible and discovery queries stay batched a
   assert.equal(requests().length, 2, "re-renders and unchanged identity notifications must not poll metadata");
 });
 
+test("macOS resolves an unclaimed box whose retried identity arrives after 12 seconds", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const id = "centauros-727f68e96c972c5bcf000fe1";
+  const h = await harness({ ...state(), devices: [] }, [application], {
+    after: fn => t.after(fn),
+    lookupDeviceDiscovery: async ids => ({ devices: ids.map(deviceId => ({
+      deviceId, deviceName: "CentaurAI-AMD-102", claimStatus: "unclaimed",
+    })) }),
+  });
+  await startDiscovery(h);
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-000FE1" });
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(h.app.innerHTML, /正在读取盒子名称/);
+  t.mock.timers.tick(14000);
+  await settleDiscovery();
+  h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-000FE1",
+    displayIdentity: { deviceId: id, displayName: "CentaurAI Box" } });
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
+  assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
+  assert.doesNotMatch(h.app.innerHTML, /未获取到盒子名称|未读取到名称|认领状态待确认/);
+  assert.match(h.app.innerHTML, /class="scan-spinner"/);
+  assert.equal(h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1], candidateId);
+  assert.deepEqual(h.calls.find(([name]) => name === "lookup-device-discovery")[1], [id]);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
+  t.mock.timers.tick(16000);
+  await settleDiscovery();
+  assert.match(h.app.innerHTML, /扫描已结束/);
+  assert.match(h.app.innerHTML, /<strong>CentaurAI-AMD-102<\/strong>/);
+});
+
 for (const outcome of ["unknown", "missing", "404"]) test(`discovery ${outcome} retains the local name and never infers unclaimed`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const id = discoveryId(5);
@@ -1300,6 +1362,45 @@ test("connecting a box shows progress on its card and restores the action on fai
   assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
 });
 
+for (const failure of ["health_unavailable", "health_timeout", "health_invalid", "Error invoking remote method 'wanx-client:connect-box': Error: health_unavailable", "request failed https://private.example/health?token=secret-token"]) {
+  test(`box connection failure stays on its card and clears after retry: ${failure.split(" ")[0]}`, async () => {
+    let attempts = 0;
+    const h = await harness(state(), [application], {
+      connectRequest: async () => { if (++attempts === 1) throw new Error(failure); },
+    });
+    const card = (name) => {
+      const article = [...h.app.innerHTML.matchAll(/<article\b[^>]*>[\s\S]*?<\/article>/g)]
+        .map(([markup]) => markup).find(markup => markup.includes(`<h3>${name}</h3>`));
+      assert.ok(article, `missing device card: ${name}`);
+      return article;
+    };
+    h.navigate("boxes");
+    await h.click("connect", { deviceId: "box-102" });
+    const failedCard = card("CentuarAI-AMD-102");
+    const alert = failedCard.match(/<([a-z][\w-]*)\b[^>]*role="alert"[^>]*>([\s\S]*?)<\/\1>/);
+    assert.ok(alert, "connection failure should be visible inside the selected device card");
+    assert.match(alert[2], /连接/);
+    assert.doesNotMatch(alert[2], /应用市场|private\.example|secret-token/);
+    if (failure.endsWith("health_unavailable")) assert.match(alert[2], /health_unavailable/);
+    assert.doesNotMatch(card("CentuarAI-AMD-103"), /role="alert"/);
+    await h.click("connect", { deviceId: "box-102" });
+    assert.equal(attempts, 2);
+    assert.doesNotMatch(card("CentuarAI-AMD-102"), /role="alert"/);
+  });
+}
+
+test("logging out clears the box connection failure before the same account returns", async () => {
+  const h = await harness(state(), [application], { connectFailure: "health_unavailable" });
+  h.navigate("boxes");
+  await h.click("connect", { deviceId: "box-102" });
+  assert.match(h.app.innerHTML, /role="alert"/);
+  await h.click("logout");
+  h.update(state());
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /CentuarAI-AMD-102/);
+  assert.doesNotMatch(h.app.innerHTML, /role="alert"|health_unavailable/);
+});
+
 test("market installation shows progress on the clicked app until it completes", async () => {
   const install = pendingResponse();
   const h = await harness(state(), [], { install: () => install.promise });
@@ -1351,7 +1452,7 @@ test("each new scan refreshes inventory names and claim state", async t => {
   await settleDiscovery();
   assert.match(h.app.innerHTML, /第一次扫描名称/);
   assert.match(h.app.innerHTML, /claim-unclaimed">未认领/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await settleDiscovery();
   await h.click("start-provisioning");
   await settleDiscovery();
@@ -1377,7 +1478,7 @@ test("late inventory metadata enriches retained scan results without selecting o
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
   assert.match(h.app.innerHTML, /未获取到盒子名称/);
   assert.match(h.app.innerHTML, /认领状态待确认/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await settleDiscovery();
   assert.match(h.app.innerHTML, /扫描已结束，本轮结果保留 2 分钟/);
   t.mock.timers.tick(1000);
@@ -1514,7 +1615,7 @@ test("space is files only and the box tab combines management and maintenance", 
   assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
   assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
   assert.match(h.app.innerHTML, /CentuarAI-AMD-102/);
-  assert.match(h.app.innerHTML, /data-action="network-toggle"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="network-toggle"|class="box-network"/);
   assert.doesNotMatch(h.app.innerHTML, /data-action="dashboard-open"|返回设置/);
   await h.click("show-maintenance");
   assert.match(h.app.innerHTML, /class="nav-item active" data-action="show-boxes" aria-current="page"/);
@@ -1540,7 +1641,7 @@ for (const retained of [false, true]) {
     const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
     assert.match(h.app.innerHTML, /<strong>未获取到盒子名称<\/strong>/);
     if (retained) {
-      t.mock.timers.tick(12000);
+      t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
       await new Promise((resolve) => setImmediate(resolve));
       assert.match(h.app.innerHTML, /扫描已结束/);
       assert.doesNotMatch(h.app.innerHTML, /class="scan-spinner"/);
@@ -1567,7 +1668,7 @@ test("discovery escapes public names and broadcast hints and stops claiming to r
   assert.doesNotMatch(h.app.innerHTML, /<script>bad|<img src=x/);
   h.advertisement({ deviceId: "provider-1", advertisedName: "CentaurOS-Setup-2222", displayIdentity: null });
   assert.match(h.app.innerHTML, /正在读取盒子名称/);
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await new Promise((resolve) => setImmediate(resolve));
   assert.match(h.app.innerHTML, /未读取到名称 · 蓝牙配网/);
   assert.doesNotMatch(h.app.innerHTML, /正在读取盒子名称/);
@@ -2083,7 +2184,9 @@ test("logout unlocks the login form and its late completion cannot unlock a new 
   assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, false);
   const loggingIn = h.submit("auth", { username: "13800000000", password: "example-password" });
   await flushActions();
-  assert.match(h.app.innerHTML, /正在完成退出…/);
+  assert.match(h.app.innerHTML, /正在登录…/);
+  assert.doesNotMatch(h.app.innerHTML, /正在完成退出…/);
+  assert.match(h.form("auth").querySelector('button[type="submit"]').innerHTML, /正在登录…/);
   logout.resolve(); await loggingOut;
   assert.equal(h.form("auth").querySelector('button[type="submit"]').disabled, true);
   login.resolve(); await loggingIn;
@@ -2234,6 +2337,87 @@ test("empty login password is explained inline without submitting", async () => 
 });
 
 
+test("an offline owned box has a dedicated network entry and keeps its target before discovery knows the identity", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(supportState(), [application], t);
+  await h.click("show-boxes");
+  assert.match(actionButton(h, "configure-network"), /配置网络/);
+  assert.doesNotMatch(actionButton(h, "configure-network"), /disabled/);
+  await h.click("configure-network", { deviceId: supportDeviceId });
+  assert.match(h.app.innerHTML, /<h2>配置网络<\/h2>/);
+  assert.match(h.app.innerHTML, /正在配置：<strong>离线测试盒/);
+  assert.doesNotMatch(h.app.innerHTML, /认领设备|初始化盒端|确认绑定|data-form="console-claim"/);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin").length, 0);
+  await h.click("start-provisioning"); await settleDiscovery();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate-wifi", { candidateId }); await settleDiscovery();
+  const selected = h.calls.find(([name]) => name === "wanx:setup:begin")[1];
+  assert.equal(selected.mode, "wifi");
+  assert.equal(selected.expectedDeviceId, supportDeviceId);
+  assert.ok(selected.transportHandle);
+  assert.equal(selected.deviceId, undefined);
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:confirmOwnership").length, 0);
+});
+
+for (const device of [
+  { deviceRole: "member" }, { deviceRole: "unknown" }, {}, { deviceRole: "owner", local: true },
+]) test(`dedicated network entry is unavailable for ${JSON.stringify(device)}`, async () => {
+  const h = await harness({ ...state(), devices: [{ ...device, deviceId: supportDeviceId }] });
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /data-action="configure-network"/);
+  await h.click("configure-network", { deviceId: supportDeviceId });
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:reset").length, 0);
+});
+
+test("dedicated network discovery blocks another owned box even when its display name matches", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const otherDeviceId = discoveryId(79);
+  const h = await harness({ ...state(), devices: [supportDeviceId, otherDeviceId].map(deviceId => ({
+    deviceId, name: "同名盒子", deviceRole: "owner",
+  })) }, [application], t);
+  await h.click("configure-network", { deviceId: supportDeviceId });
+  await h.click("start-provisioning"); await settleDiscovery();
+  discoveryIdentity(h, otherDeviceId); await settleDiscovery();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  assert.match(actionButton(h, "select-candidate-wifi"), /disabled/);
+  assert.match(h.app.innerHTML, /不是当前要配置的盒子/);
+  await h.click("select-candidate-wifi", { candidateId });
+  await h.click("select-candidate", { candidateId });
+  assert.equal(h.calls.filter(([name]) => name === "wanx:setup:begin" || name === "nexusaos:discovery:select").length, 0);
+  discoveryIdentity(h, supportDeviceId); await settleDiscovery();
+  await h.click("select-candidate-wifi", { candidateId }); await settleDiscovery();
+  assert.equal(h.calls.find(([name]) => name === "wanx:setup:begin")[1].expectedDeviceId, supportDeviceId);
+});
+
+for (const outcome of ["cancelled", "terminalError"]) test(`dedicated network ${outcome} can rescan the same target and then return to adding boxes`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const h = await harness(supportState(), [application], t);
+  await h.click("configure-network", { deviceId: supportDeviceId });
+  await h.click("start-provisioning"); await settleDiscovery();
+  let candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate-wifi", { candidateId }); await settleDiscovery();
+  if (outcome === "cancelled") await h.click("cancel-provisioning");
+  h.setup({ state: outcome, mode: "wifi", ...(outcome === "terminalError" ? { errorCode: "DEVICE_IDENTITY_MISMATCH" } : {}) });
+  assert.match(h.app.innerHTML, /<h2>配置网络<\/h2>/);
+  assert.doesNotMatch(h.app.innerHTML, /认领设备|初始化盒端/);
+  await h.click("start-provisioning"); await settleDiscovery();
+  candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate-wifi", { candidateId }); await settleDiscovery();
+  const starts = h.calls.filter(([name]) => name === "wanx:setup:begin");
+  assert.equal(starts.length, 2);
+  assert.ok(starts.every(([, input]) => input.mode === "wifi" && input.expectedDeviceId === supportDeviceId));
+  await h.click("back-devices");
+  await h.click("provisioning");
+  assert.match(h.app.innerHTML, /<h2>添加盒子<\/h2>/);
+  assert.match(h.app.innerHTML, /认领设备/);
+  await h.click("start-provisioning"); await settleDiscovery();
+  candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click("select-candidate", { candidateId }); await settleDiscovery();
+  const next = h.calls.filter(([name]) => name === "wanx:setup:begin").at(-1)[1];
+  assert.equal(next.mode, undefined);
+  assert.equal(next.expectedDeviceId, undefined);
+});
+
 test("nearby owner Wi-Fi entry preserves the opaque selection and requests only wifi mode", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const deviceId = discoveryId(79);
@@ -2274,7 +2458,7 @@ test("retained owner Wi-Fi selection keeps wifi mode and ignores repeat clicks",
   discoveryIdentity(h, deviceId);
   await settleDiscovery();
   const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
-  t.mock.timers.tick(12000);
+  t.mock.timers.tick(h.window.wanxSetupTransport.scanTimeoutMs);
   await settleDiscovery();
   assert.match(h.app.innerHTML, /扫描已结束/);
   await h.click("select-candidate-wifi", { candidateId });
@@ -2326,7 +2510,8 @@ test("wallet entry reads the versioned account ledger through real IPC without a
     calls: async () => envelope({ items: [], next_cursor: null }),
     summary: async () => envelope({ gross_consumed_credit_atoms: "0", correction_credit_atoms: "0", net_consumed_credit_atoms: "0", pending_call_count: 0, ledger_sequence: 1 }),
   } });
-  assert.match(h.app.innerHTML, /1,250\.00 点/);
+  await h.click("profile-menu");
+  assert.match(h.app.innerHTML, /1,250 点/);
   await h.click("show-credits");
   await new Promise(resolve => setImmediate(resolve));
   assert.match(h.app.innerHTML, /账号积分/);
@@ -2365,23 +2550,25 @@ test("box maintenance opens the current box terminal and desktop through trusted
   h.update({ account: { phase: "signed_out" } });
   assert.doesNotMatch(h.app.innerHTML, /aria-label="盒子运维工具"/);
 });
-test("avatar menu owns profile and settings; credits is a primary tab", async () => {
+test("avatar menu and personal profile own credits outside the primary tabs", async () => {
   const initial = state();
   initial.account = { ...initial.account, maskedPhone: "138****8000", profile: { displayName: '<小万>', avatarDataUrl: null } };
   const h = await harness(initial);
   const header = h.app.innerHTML.match(/<header[\s\S]*?<\/header>/)[0];
-  assert.match(header, /data-action="show-credits"/);
+  assert.doesNotMatch(header, /data-action="show-credits"/);
   assert.doesNotMatch(header, /data-action="show-settings"/);
   await h.click("profile-menu");
   assert.match(h.app.innerHTML, /&lt;小万&gt;/);
   assert.match(h.app.innerHTML, /138\*\*\*\*8000/);
   assert.match(h.app.innerHTML, /data-action="show-settings"/);
+  assert.match(h.app.innerHTML, /data-action="show-credits"/);
   h.keydown("Escape");
   assert.doesNotMatch(h.app.innerHTML, /id="profile-menu"/);
   await h.click("profile-menu"); await h.click("show-profile");
   assert.match(h.app.innerHTML, /data-form="profile"/);
   assert.match(h.app.innerHTML, /仅保存在这台电脑/);
   assert.match(h.app.innerHTML, /data-action="profile-avatar"/);
+  assert.match(h.app.innerHTML, /data-action="show-credits"/);
   const form = h.form("profile"); form.values.displayName = "正在编辑";
   h.update({ ...initial, phase: "connecting" });
   assert.equal(h.form("profile"), form);
@@ -2474,9 +2661,15 @@ test("catalog product pages have bundled icons, product posters and a safe back 
     assert.ok(h.app.innerHTML.includes(`data-application-detail="${applicationId}"`));
     assert.ok(h.app.innerHTML.includes(info.introduction));
     assert.doesNotMatch(h.app.innerHTML, /assets\/screenshots\/|界面预览|界面截图/);
-    assert.match(h.app.innerHTML, /data-action="applications-launch"/);
-    assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
-    assert.match(h.app.innerHTML, /恢复上一版本/);
+    if (applicationId === "centaurai.wanx.dialogue") {
+      assert.match(h.app.innerHTML, /data-action="show-ai-dialogue"/);
+      assert.match(h.app.innerHTML, /客户端内置/);
+      assert.doesNotMatch(h.app.innerHTML, /data-action="applications-launch"|data-action="market-uninstall"/);
+    } else {
+      assert.match(h.app.innerHTML, /data-action="applications-launch"/);
+      assert.match(h.app.innerHTML, /data-action="market-uninstall"/);
+      assert.match(h.app.innerHTML, /恢复上一版本/);
+    }
     assert.match(h.app.innerHTML, /aria-current="page"[^>]*>应用/);
     assert.match(h.app.innerHTML, /data-action="poster-open"/);
     await h.click("poster-open", { posterIndex: "0" });
@@ -2571,4 +2764,161 @@ test("box overview shows WANX-wide usage and the box public IP, never private or
   assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|容器 IP/);
   h.update({ ...state("ready", "ready", "box-102"), phase: "recovering" });
   assert.doesNotMatch(h.app.innerHTML, /172\.17\.0\.2|≥ 1\.0 KB/);
+});
+
+test("ownership transfer and console claim entries are hidden while box scanning remains available", async () => {
+  const h = await harness(supportState(), []);
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /data-form="console-claim"/);
+  const css = await readFile(new URL("../local-ui/renderer/styles.css", import.meta.url), "utf8");
+  assert.match(css, /(?:transfer-open|ownership-section)[^{]*\{[^}]*display:\s*none/);
+  await h.click("provisioning");
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-(?:online|offline)"|已有认领码|没有认领码？/);
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
+});
+
+test("console claim retains input and retry intent, then waits for real device authorization", async () => {
+  let fail = true;
+  let ready = false;
+  const h = await harness(supportState(), [], { claim: async () => {
+    if (fail) throw new Error('ACCOUNT_NETWORK_ERROR');
+    return { deviceId: supportDeviceId, ownership: 'claimed', authorizationState: 'deviceAckPending' };
+  }, claimStatus: async deviceId => ({ deviceId, authorizationState: ready ? 'ready' : 'deviceAckPending' }) });
+  await h.click('provisioning');
+  await h.click('console-claim-online');
+  const form = h.app.querySelector('[data-form="console-claim"]');
+  form.values.claimCode = 'abcdefg234';
+  h.update({ ...supportState(), platform: { phase: 'enrolling' } });
+  assert.equal(h.app.querySelector('[data-form="console-claim"]'), form);
+  assert.equal(form.values.claimCode, 'abcdefg234');
+  await h.submit('console-claim', { claimCode: 'abcdefg234' });
+  const first = h.calls.find(([action]) => action === 'console-claimed')[1];
+  assert.equal(first.claimCode, 'ABCDEFG234');
+  assert.match(first.clientAttemptId, /^[\da-f-]{36}$/);
+  fail = false;
+  await h.submit('console-claim', { claimCode: 'abcdefg234' });
+  assert.deepEqual(h.calls.filter(([action]) => action === 'console-claimed').at(-1)[1], first);
+  assert.match(h.app.innerHTML, /绑定已确认，等待盒子授权/);
+  assert.doesNotMatch(h.app.innerHTML, /盒子已就绪/);
+  assert.deepEqual(form.values, {});
+  await h.click('console-claim-refresh');
+  assert.match(h.app.innerHTML, /等待盒子授权/);
+  ready = true;
+  await h.click('console-claim-refresh');
+  assert.match(h.app.innerHTML, /盒子已就绪/);
+  h.update({ ...supportState(), account: { phase: 'authenticated', accountId: 'different-account' } });
+  await h.click('provisioning');
+  await h.click('console-claim-online');
+  assert.doesNotMatch(h.app.innerHTML, /盒子已就绪/);
+  await h.submit('console-claim', { claimCode: 'abcdefg234' });
+  assert.notEqual(h.calls.filter(([action]) => action === 'console-claimed').at(-1)[1].clientAttemptId, first.clientAttemptId);
+});
+
+test("expired console claim reports actionable guidance without claiming success", async () => {
+  const h = await harness(supportState(), [], { claim: async () => { throw new Error('CONSOLE_CLAIM_EXPIRED'); } });
+  await h.click('provisioning');
+  await h.click('console-claim-online');
+  await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
+  assert.match(h.app.innerHTML, /认领码已过期/);
+  assert.doesNotMatch(h.app.innerHTML, /绑定已确认/);
+});
+
+test("offline code setup binds only after Wi-Fi completion and explicit confirmation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  let refreshed = 0;
+  const h = await harness(state(), [], { after: t.after.bind(t), refreshRequest: async () => { refreshed++; }, setupRequest: async name => name === 'wanx:setup:redeemClaimCode'
+    ? { deviceId: supportDeviceId, ownership: 'claimed', authorizationState: 'deviceAckPending' } : undefined });
+  await h.click('provisioning');
+  await h.click('console-claim-offline');
+  await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
+  assert.match(h.app.innerHTML, /使用认领码：先配置网络/);
+  assert.equal(h.calls.filter(([name]) => name === 'console-claimed').length, 0);
+  await h.click('start-provisioning'); await settleDiscovery();
+  const candidateId = h.app.innerHTML.match(/data-candidate-id="([^"]+)"/)[1];
+  await h.click('select-candidate', { candidateId }); await settleDiscovery();
+  const begin = h.calls.find(([name]) => name === 'wanx:setup:begin')[1];
+  assert.equal(begin.mode, 'console');
+  assert.equal(begin.claimCode, 'ABCDEFG234');
+  assert.ok(begin.transportHandle);
+  h.setup({ state: 'awaitingWifi', mode: 'console' });
+  assert.match(h.app.innerHTML, /连接 Wi-Fi/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-confirm"/);
+  await h.click('console-claim-confirm');
+  assert.equal(h.calls.filter(([name]) => name === 'wanx:setup:redeemClaimCode').length, 0);
+  h.setup({ state: 'awaitingCodeClaim', mode: 'console', networkState: 'connected' });
+  assert.match(h.app.innerHTML, /盒子已连接 Wi-Fi/);
+  await h.click('console-claim-confirm');
+  const redemption = h.calls.find(([name]) => name === 'wanx:setup:redeemClaimCode');
+  assert.equal(redemption[1].claimCode, 'ABCDEFG234');
+  assert.equal(Object.hasOwn(redemption[1], 'expectedDeviceId'), false);
+  assert.match(h.app.innerHTML, /绑定已确认，等待盒子授权/);
+  await h.click('back-devices');
+  assert.equal(refreshed, 1, 'refresh the newly claimed device before showing the directory');
+  assert.doesNotMatch(h.app.innerHTML, /绑定已确认，等待盒子授权/);
+});
+
+test("a new client session for the same account discards an unfinished console claim", async () => {
+  const initial = state();
+  const h = await harness(initial, []);
+  await h.click('provisioning');
+  await h.click('console-claim-offline');
+  await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
+  h.update({ ...initial, account: { ...initial.account, clientId: 'replacement-client' } });
+  h.setup({ state: 'awaitingCodeClaim', mode: 'console', networkState: 'connected' });
+  await h.click('console-claim-confirm');
+  assert.equal(h.calls.filter(([name]) => name === 'wanx:setup:redeemClaimCode').length, 0);
+  await h.click('provisioning');
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-(?:online|offline)"/);
+});
+
+test("cancelled offline code setup clears its claim intent", async () => {
+  const h = await harness(state(), [], { setupRequest: async name => name === 'wanx:setup:cancel' ? { state: 'cancelled', mode: 'console' } : undefined });
+  await h.click('provisioning');
+  await h.click('console-claim-offline');
+  await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
+  h.setup({ state: 'awaitingCodeClaim', mode: 'console', networkState: 'connected' });
+  await h.click('cancel-provisioning');
+  await h.click('console-claim-confirm');
+  assert.equal(h.calls.filter(([name]) => name === 'wanx:setup:redeemClaimCode').length, 0);
+  assert.match(h.app.innerHTML, /data-action="start-provisioning"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="console-claim-(?:online|offline)"/);
+});
+
+test("a rejected code can be corrected without restarting the add wizard", async () => {
+  const h = await harness(state(), [], { setupRequest: async name => name === 'wanx:setup:cancel' ? { state: 'cancelled', mode: 'console' } : undefined });
+  await h.click('provisioning');
+  await h.click('console-claim-offline');
+  await h.submit('console-claim', { claimCode: 'ABCDEFG234' });
+  h.setup({ state: 'terminalError', mode: 'console', errorCode: 'CONSOLE_CLAIM_NOT_FOUND' });
+  assert.match(h.app.innerHTML, /重新输入认领码/);
+  await h.click('console-claim-edit');
+  assert.match(h.app.innerHTML, /data-form="console-claim"/);
+  assert.match(h.app.innerHTML, /下一步：发现盒子/);
+  assert.deepEqual(h.form('console-claim').values, {});
+});
+
+test("pending network cleanup explains server recovery instead of blaming the local network", async () => {
+  const s = state("unavailable", "unavailable");
+  s.platform.reason = "NETWORK_REVOCATION_PENDING";
+  const h = await harness(s);
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /网络会话清理中/);
+  assert.match(h.app.innerHTML, /完成后将自动重连/);
+  assert.doesNotMatch(h.app.innerHTML, /请检查本机网络后重试连接/);
+});
+
+test('AI dialogue is a standard tab beside applications and the browser remains independent', async () => {
+  const h = await harness();
+  const nav = h.app.innerHTML.match(/<nav class="main-nav"[\s\S]*?<\/nav>/)[0];
+  assert.deepEqual([...nav.matchAll(/data-action="show-([a-z-]+)"/g)].map(match => match[1]), ['applications', 'ai-dialogue', 'space', 'boxes']);
+  assert.doesNotMatch(h.app.innerHTML, /browser-host|show-browser/);
+  await h.click('show-ai-dialogue');
+  assert.match(h.app.innerHTML, /id="ai-dialogue-host"/);
+  assert.equal(h.launches.length, 0);
+  await h.click('show-settings');
+  assert.match(h.app.innerHTML, /AI 对话模型/);
+  await h.click('show-dialogue-models');
+  assert.match(h.app.innerHTML, /id="dialogue-model-settings-host"/);
+  assert.equal(h.launches.length, 0);
 });

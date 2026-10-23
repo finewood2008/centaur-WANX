@@ -37,6 +37,21 @@ test("release tool signs exact verified bytes, refuses internal reports, tamperi
     now: Date.parse("2026-10-14T00:00:00Z"), expiresAt: "2026-11-14T00:00:00Z" };
   await signClientRelease(input);
   const envelope = JSON.parse(await readFile(outputPath));
+  assert.equal(envelope.payload.channel, "stable");
+  const testOutput = path.join(root, "test-channel-release.json"), supportPath = path.join(root, "support.json");
+  await writeFile(supportPath, JSON.stringify({ supportedOsVersions: input.supportedOsVersions, compatibleApplications: [] }));
+  execFileSync(process.execPath, [fileURLToPath(new URL("../tools/sign-client-release.mjs", import.meta.url)),
+    "--report", reportPath, "--url", input.artifactURL, "--key-id", input.keyId, "--private-key", privateKeyPath,
+    "--release-id", "client-2.0.0-test", "--sequence", "1", "--support", supportPath,
+    "--expires-at", "2099-01-01T00:00:00Z", "--out", testOutput, "--channel", "test-client-acceptance"]);
+  const testEnvelope = JSON.parse(await readFile(testOutput));
+  assert.equal(verifyRelease(testEnvelope, { keys: { "test-only": publicKey.export({ type: "spki", format: "pem" }) },
+    product: "wanx-client" }).release.channel, "test-client-acceptance");
+  assert.deepEqual(testEnvelope.payload.artifacts, envelope.payload.artifacts);
+  assert.equal(testEnvelope.payload.buildId, envelope.payload.buildId);
+  assert.deepEqual(JSON.parse(await readFile(reportPath)), report, "signing for another channel must not edit the build report");
+  for (const channel of ["", "stable ", "../stable", "a".repeat(33), 1])
+    await assert.rejects(signClientRelease({ ...input, channel, outputPath: path.join(root, "invalid-channel.json") }), /渠道无效/);
   assert.deepEqual(envelope.payload.sourceCommits, { "wanx-client": { "centuarai-wanx": "a".repeat(40) } });
   assert.equal(verifyRelease(envelope, { keys: { "test-only": publicKey.export({ type: "spki", format: "pem" }) }, product: "wanx-client", now: input.now }).release.buildId, "build-2");
   await assert.rejects(signClientRelease(input), { code: "EEXIST" });
@@ -81,6 +96,8 @@ test("formal Windows build pins certificate, publisher, current-user NSIS scope 
   assert.equal(config.win.verifyUpdateCodeSignature, true);
   assert.deepEqual(config.win.signtoolOptions.publisherName, ["Example Publisher"]);
   assert.equal(config.nsis.perMachine, false); assert.equal(config.nsis.allowElevation, false);
+  for (const field of ["include", "installerHeader", "installerSidebar", "uninstallerSidebar"])
+    assert.ok(config.nsis[field], `formal builds must retain the branded installer ${field}`);
   assert.equal(config.extraMetadata.wanxBuild.distributionClass, "formal");
   assert.equal(config.extraMetadata.wanxBuild.installationScope, "per-user");
   assert.ok(config.files.includes("updates/**"));

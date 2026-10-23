@@ -1,5 +1,19 @@
+import { displayCreditAtoms, validateCreditWallet } from "../account/credit-wallet.mjs";
+
+import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
+import { DIALOGUE_APPLICATION_ID } from "./ai-dialogue.mjs";
+
+// Electron IPC errors omit custom fields. Return only this locally generated
+// validation notice; all other errors retain their existing sanitization.
+async function uploadResult(action) {
+  try { return await action(); }
+  catch (error) {
+    if (error.code !== "SPACE_UPLOAD_LIMIT") throw error;
+    return { uploadRejection: { code: error.code, message: error.message } };
+  }
+}
 
 function text(value, max, code) {
   if (typeof value !== "string" || !value.trim() || value.length > max)
@@ -43,12 +57,15 @@ export function registerControlActions({
   selectApplicationArchive,
   market,
   personalSpace,
+  superClipboard,
   spaceLinks,
   confirmSpacePurge,
   updates,
   credits,
   creditWallet,
   accountProfile,
+  notifications,
+  aiDialogue,
   support,
   uiState,
   desktop,
@@ -59,14 +76,15 @@ export function registerControlActions({
   showAbout,
   quit,
   allowDevelopmentInstall = false,
+  timings = null,
 }) {
   const panelActions = new Set([
     "get-state", "applications-list", "applications-request-open", "applications-confirm-open",
     "applications-cancel-open",
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
-    "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer",
+    "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
-  const reads = new Set(["panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize"]);
+  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize", "credit-payment-timing"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -74,7 +92,7 @@ export function registerControlActions({
         throw new Error("此页面无权操作万象连接。");
       // Keep validation synchronous; mutations also refresh both trusted windows.
       const result = action(argument);
-      if (reads.has(name)) return result;
+      if (reads.has(name) || name.startsWith("ai-dialogue-")) return result;
       return Promise.resolve(result).finally(() => publishState());
     });
   };
@@ -86,15 +104,20 @@ export function registerControlActions({
       throw error;
     }
   };
-  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
+  for (const method of ["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"]) register(`ai-dialogue-${method}`, input => {
+    if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
+    return aiDialogue.action(method, input);
+  });
+  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
       return spaceLinks.manage(action, input);
     });
   }
-  const requirePanelSpace = scope => {
+  const requirePanelSpace = (scope, offline = false) => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
-    requireConnectedBox(client.snapshot());
+    if (offline && client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!offline) requireConnectedBox(client.snapshot());
     if (!scope || scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
   };
   register("panel-space-snapshot", () => {
@@ -111,12 +134,12 @@ export function registerControlActions({
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
     await personalSpace.refresh();
     requirePanelSpace(input.scope);
-    await personalSpace.uploads("", input.paths, input.scope);
+    return uploadResult(() => personalSpace.uploads("", input.paths, input.scope, input.names));
   });
   register("panel-space-transfer", (input = {}) => {
-    requirePanelSpace(input.scope);
-    if (!["pause", "resume"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
-    if (!personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload"))
+    requirePanelSpace(input.scope, true);
+    if (!["pause", "resume", "pause-batch", "resume-batch", "retry-batch"].includes(input.action)) throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if (!(input.action.endsWith("-batch") ? personalSpace.snapshot().imports?.some(batch => batch.id === input.id) : personalSpace.snapshot().tasks.some(task => task.id === input.id && task.direction === "upload")))
       throw new Error("SPACE_NOT_FOUND");
     return personalSpace.transfer(input.action, input.id);
   });
@@ -125,7 +148,7 @@ export function registerControlActions({
       if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
       if (method === "snapshot" || method === "refresh") return personalSpace[method]();
       if (method === "downloads") return personalSpace.downloads(input.ids);
-      if (method === "uploads") return personalSpace.uploads(input.parent || "");
+      if (method === "uploads") return uploadResult(() => personalSpace.uploads(input.parent || "", undefined, input.scope, undefined, input.space_id || "personal", input.folders === true));
       if (method === "download" || method === "preview") return personalSpace[method](input.id);
       if (method === "transfer") return personalSpace.transfer(input.action, input.id);
       if (method === "purge") {
@@ -136,10 +159,32 @@ export function registerControlActions({
       return personalSpace.operation(method, input);
     });
   }
+  register("panel-note", async (input={}) => {
+    if(!superClipboard)throw new Error("CLIPBOARD_UNAVAILABLE");
+    const {method,scope,...args}=input;
+    if(!PANEL_NOTE_METHODS.has(method))throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if(method!=="snapshot"&&(!scope||scope!==superClipboard.snapshot().scope))throw new Error("SPACE_CONTEXT_CHANGED");
+    if(method==="preview"&&!superClipboard.snapshot().note?.blocks?.some(b=>b.type==="image"&&b.item===args.id)&&!superClipboard.snapshot().tasks?.some(t=>t.kind==="image"&&t.id===args.id))throw new Error("CLIPBOARD_NOT_FOUND");
+    if(method==="transfer"&&!['pause','resume'].includes(args.action))throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    if(method==="note-command"&&!['clear','restore','local','remote','recover-local'].includes(args.action))throw new Error("PANEL_ACTION_NOT_ALLOWED");
+    return panelNoteState(await superClipboard.operation(method,{...args,...(method==="choose"?{panel:true}:{})}));
+  });
+  for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"]) {
+    register(`clipboard-${method}`, async (input={}) => {
+      if(!superClipboard)throw new Error("CLIPBOARD_UNAVAILABLE");
+      if(method!=="snapshot" && input.scope!==superClipboard.snapshot().scope)throw new Error("SPACE_CONTEXT_CHANGED");
+      if(method==="manage" && input.action==="purge") {
+        if(!(await confirmSpacePurge?.()))return {canceled:true};
+        if(input.scope!==superClipboard.snapshot().scope)throw new Error("SPACE_CONTEXT_CHANGED");
+      }
+      const {scope,...args}=input;
+      return superClipboard.operation(method,args);
+    });
+  }
   register("space-upload-dropped", (input = {}) => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
     if (!Array.isArray(input.paths) || !input.paths.length) throw new Error("SPACE_INVALID_DROP");
-    return personalSpace.uploads(input.parent || "", input.paths);
+    return uploadResult(() => personalSpace.uploads(input.parent || "", input.paths, input.scope, input.names, input.space_id || "personal"));
   });
   register("panel-application-names", async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
@@ -149,6 +194,13 @@ export function registerControlActions({
   });
   register("panel-balance", () => creditsRead(async () => {
     if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (creditWallet) {
+      const summary = (await creditWallet.balance()).data;
+      const wallet = summary.billing_backend === "qeetoken" ? (await creditWallet.wallet()).data : summary;
+      if (summary.billing_backend === "qeetoken") validateCreditWallet(wallet, client.snapshot().account.accountId);
+      return { available_text: wallet.balance_credit_atoms == null ? null : displayCreditAtoms(wallet.balance_credit_atoms),
+        sync_state: wallet.sync_state || "synced" };
+    }
     if (!credits) throw new Error("CREDITS_NOT_CONFIGURED");
     const balance = await credits.balance();
     return { available: balance.available };
@@ -159,7 +211,7 @@ export function registerControlActions({
       return credits[method](input);
     }));
   }
-  for (const method of ["catalog", "balance", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
+  for (const method of ["catalog", "quote", "balance", "wallet", "usage", "orders", "order", "entries", "calls", "call", "summary", "createOrder", "closeOrder"]) {
     if (!["createOrder", "closeOrder"].includes(method)) reads.add(`wallet-${method}`);
     register(`wallet-${method}`, async input => {
       try {
@@ -179,6 +231,18 @@ export function registerControlActions({
       }
     });
   }
+  register("credit-payment-timing", input => timings?.creditPayment(input));
+  for (const method of ["read", "refresh", "open"]) register(`notifications-${method}`, async input => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!notifications) throw new Error("NOTIFICATIONS_UNAVAILABLE");
+    if (method === "refresh") return notifications.refresh();
+    if (method === "read") return notifications.markRead(input?.all === true ? { all: true } : { id: text(input?.id, 64, "NOTIFICATION_INVALID_ID") });
+    const target = notifications.target(text(input?.id, 64, "NOTIFICATION_INVALID_ID"));
+    if (target.category === "application") return { destination: "applications" };
+    if (target.applicationId === DIALOGUE_APPLICATION_ID) { desktop?.showManagement("ai-dialogue"); return { destination: "ai-dialogue" }; }
+    if (target.applicationId) return uiState.requestOpen(target.applicationId);
+    if (target.category === "task") return openConnectedDashboard(client, dashboards);
+  });
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {
       if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
@@ -191,11 +255,6 @@ export function registerControlActions({
     if (getState) return getState();
     const installed = applications ? await applications.listInstalled() : [];
     return { ...client.snapshot(), applications: installed };
-  });
-  register("set-network-enabled", (enabled) => {
-    if (typeof enabled !== "boolean") throw new Error("invalid_network_mode");
-    if (!enabled) uiState?.invalidateOpen();
-    return client.setNetworkEnabled(enabled);
   });
   register("login-password", (input) => {
     const number = phone(input);
@@ -250,6 +309,16 @@ export function registerControlActions({
         ids.some(id => typeof id !== "string" || !/^centauros-(?:[0-9a-f]{24}|[0-9a-f]{32})$/.test(id)) ||
         new Set(ids).size !== ids.length) throw new Error("ACCOUNT_INVALID_INPUT");
     return client.lookupDeviceDiscovery([...ids]);
+  });
+  register("console-claim", (input) => {
+    if (!input || Object.keys(input).some(key => !["claimCode", "clientAttemptId", "expectedDeviceId"].includes(key)))
+      throw new Error("ACCOUNT_INVALID_INPUT");
+    return client.redeemConsoleClaim({ claimCode: input.claimCode, clientAttemptId: input.clientAttemptId,
+      ...(input.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) });
+  });
+  register("console-claim-status", (input) => {
+    if (!input || Object.keys(input).some(key => key !== "deviceId")) throw new Error("ACCOUNT_INVALID_INPUT");
+    return client.getConsoleClaimAuthorization(text(input.deviceId, 36, "invalid_device"));
   });
   register("ownership-list", () => client.listOwnershipTransfers());
   for (const method of ["current", "decide", "revoke"]) register(`support-${method}`, input => {
@@ -310,7 +379,9 @@ export function registerControlActions({
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
     const state = client.snapshot();
     requireConnectedBox(state);
-    return applications.launch(text(input?.applicationId, 64, "invalid_application_id"));
+    const id = text(input?.applicationId, 64, "invalid_application_id");
+    if (id === DIALOGUE_APPLICATION_ID) { desktop?.showManagement("ai-dialogue"); return { builtin: true }; }
+    return applications.launch(id);
   });
   register("applications-select-current", (input) => {
     if (!applications) throw new Error("APPLICATIONS_UNAVAILABLE");
@@ -324,8 +395,13 @@ export function registerControlActions({
     return applications.stop(text(input?.applicationId, 64, "invalid_application_id"));
   });
   register("applications-request-open", (input) => {
+    const id = text(input?.applicationId, 64, "invalid_application_id");
+    if (id === DIALOGUE_APPLICATION_ID) {
+      if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+      desktop?.showManagement("ai-dialogue"); return { builtin: true };
+    }
     if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
-    return uiState.requestOpen(text(input?.applicationId, 64, "invalid_application_id"));
+    return uiState.requestOpen(id);
   });
   register("applications-confirm-open", (input) => {
     if (!uiState) throw new Error("APPLICATIONS_UNAVAILABLE");
@@ -336,7 +412,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "space", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile", "notifications"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());
@@ -367,7 +443,18 @@ export function registerControlActions({
       if (method === "list") return market.list();
       const id = text(input?.applicationId, 64, "invalid_application_id");
       const operation = () => market[method](id);
-      if (method === "candidate" || !uiState) return operation();
+      if (method === "candidate") {
+        const accountId = client.snapshot().account.accountId;
+        const result = operation();
+        if (notifications) {
+          void Promise.resolve(result).then(async value => {
+            const installed = (await applications.listInstalled()).some(row => row.applicationId === id);
+            if (client.snapshot().account?.accountId === accountId) notifications.candidate(id, value, installed);
+          }).catch(() => {}); // Notification observation never changes market results.
+        }
+        return result;
+      }
+      if (!uiState) return operation();
       return uiState.runApplicationOperation(id, { install: "installing", uninstall: "uninstalling", rollback: "rolling-back" }[method], operation);
     });
   }

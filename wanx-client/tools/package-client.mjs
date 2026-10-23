@@ -86,6 +86,7 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
 
   run(process.execPath, [path.join(root, "tools/build-network.mjs"), `darwin-${arch}`]);
   run(process.execPath, [path.join(root, "tools/build-discovery.mjs"), `darwin-${arch}`]);
+  run(process.execPath, [path.join(root, "tools/build-clipboard.mjs"), arch]);
   run("npm", ["run", "build:renderer"]);
   if (test) {
     source = clientBuildSource(root, { formal: false });

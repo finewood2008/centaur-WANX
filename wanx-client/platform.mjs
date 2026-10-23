@@ -59,8 +59,10 @@ export function createPlatformClient({
     selectionController;
   let switching = Promise.resolve(),
     activeWork = null;
+  let refreshWork = null;
   let resumeHint = null;
   let retryActivation = false;
+  let reconnectTarget = null;
   let retryDelay = 5000;
   let resumeWrites = Promise.resolve();
   const persistResume = (value) => {
@@ -170,6 +172,7 @@ export function createPlatformClient({
   function cancel() {
     stopAuthorizationPolling({ reset: true });
     retryActivation = false;
+    reconnectTarget = null;
     retryDelay = 5000;
     epoch++;
     directoryRevision++;
@@ -183,6 +186,7 @@ export function createPlatformClient({
     activeController?.abort();
     activeController = null;
     activeWork = null;
+    refreshWork = null;
   }
   function retireTransport() {
     unsubscribeTransport?.();
@@ -232,7 +236,21 @@ export function createPlatformClient({
           identity ? { ...identity, networkSessionId: sessionId } : null,
         );
         transportKey = key;
-        unsubscribeTransport = transport.client.subscribe(() => emit());
+        const target = transport;
+        let previousConnection = null;
+        unsubscribeTransport = target.client.subscribe(() => {
+          const state = target.client.snapshot();
+          const network = target.network.snapshot();
+          if (activeLink === target && previousConnection?.mode === "netbird" &&
+              !state.connection && state.reason === "network_unavailable" &&
+              network.enabled !== false && network.phase !== "auth_required")
+            reconnectTarget = { deviceId: previousConnection.deviceId, selection: connectionEpoch };
+          previousConnection = state.connection;
+          if (reconnectTarget && network.phase === "ready" && usableLease() &&
+              platform.phase === "ready" && !activeWork)
+            void activate();
+          emit();
+        });
         return transport;
       });
     switching = operation;
@@ -465,17 +483,27 @@ export function createPlatformClient({
       return false;
     }
   }
-  async function loadNetworkDevices(generation, signal) {
+  async function loadNetworkDevices(generation, signal, { requireLiveSession = false } = {}) {
     const result = await request(
       { path: "/app-api/network/devices" },
       generation,
       signal,
     );
-    if (
-      !Array.isArray(result?.devices) ||
-      result.networkSessionId !== networkSession?.networkSessionId
-    )
+    if (!Array.isArray(result?.devices))
       throw fail("NETWORK_INVALID_RESPONSE");
+    if (result.networkSessionId !== networkSession?.networkSessionId)
+      throw fail(requireLiveSession ? "NETWORK_SESSION_REVOKED" : "NETWORK_INVALID_RESPONSE");
+    if (result.phase !== undefined && result.phase !== "ready")
+      throw fail(result.phase === "revocation_pending" ? "NETWORK_REVOCATION_PENDING" : "NETWORK_SESSION_REVOKED");
+    if (result.leaseExpiresAt !== undefined &&
+        (!Number.isFinite(result.leaseExpiresAt) || result.leaseExpiresAt * 1000 <= Date.now()))
+      throw fail("NETWORK_LEASE_EXPIRED");
+    if (requireLiveSession && (result.phase !== "ready" ||
+        !Number.isFinite(result.leaseExpiresAt) || result.leaseExpiresAt * 1000 <= Date.now())) {
+      // Older servers do not expose phase on this read. Use their existing
+      // restore protocol, never infer current authority from a cached lease.
+      throw fail("NETWORK_SESSION_RECHECK_REQUIRED");
+    }
     devices = result.devices.map((device) => {
       if (
         !validDeviceID(device.deviceId) ||
@@ -555,6 +583,12 @@ export function createPlatformClient({
         ),
       );
     } catch (error) {
+      // A new account session can precede server-side cleanup of its old
+      // network enrollment. Retry only restoration; never enroll over it.
+      if (["NETWORK_SESSION_REVOKED", "NETWORK_REVOCATION_PENDING"].includes(error.code)) {
+        error.retryable = true;
+        throw error;
+      }
       if (error.code !== "NETWORK_ENROLLMENT_REQUIRED") throw error;
       enrollment = validateSession(
         await request(
@@ -654,6 +688,18 @@ export function createPlatformClient({
     retryDelay = 5000;
     schedule(generation);
     scheduleAuthorizationPolling(generation);
+    // Restore only the user's last interrupted selection, after fresh directory,
+    // network and box authorization. Never take over a subsequent user selection.
+    const resume = reconnectTarget;
+    if (resume && resume.selection === connectionEpoch && (!activeLink || activeLink === transport)) {
+      reconnectTarget = null;
+      const selection = connectionEpoch + 1;
+      try { await api.connectBox(resume.deviceId); }
+      catch (error) {
+        if (current(generation) && selection === connectionEpoch && transientError(error))
+          reconnectTarget = { ...resume, selection };
+      }
+    }
     return emit();
   }
   function activate() {
@@ -667,10 +713,15 @@ export function createPlatformClient({
     const work = activateImpl(generation, controller.signal)
       .catch(async (error) => {
         if (current(generation)) {
-          const transient = transientError(error);
-          retryActivation = transient;
+          const pendingCleanup = ["NETWORK_SESSION_REVOKED", "NETWORK_REVOCATION_PENDING"].includes(error.code);
+          const transient = !pendingCleanup && transientError(error);
+          // Pending cleanup is not authorization to keep the old tunnel alive.
+          // Poll restore with backoff; only a confirmed revoked response may
+          // trigger replacement enrollment through the existing validation path.
+          const retryable = transient || pendingCleanup;
+          retryActivation = retryable;
           const backoff = retryDelay;
-          if (transient) retryDelay = Math.min(retryDelay * 2, 60_000);
+          if (retryable) retryDelay = Math.min(retryDelay * 2, 60_000);
           if (
             transient &&
             platform.phase === "ready" &&
@@ -683,6 +734,10 @@ export function createPlatformClient({
             schedule(generation, backoff);
             return emit();
           }
+          const interrupted = activeLink === transport ? activeLink?.client.snapshot().connection : null;
+          if (retryable && interrupted?.deviceId)
+            reconnectTarget = { deviceId: interrupted.deviceId, selection: connectionEpoch };
+          if (!retryable) reconnectTarget = null;
           clearTimeout(leaseTimer);
           networkSession = null;
           devices = [];
@@ -690,7 +745,7 @@ export function createPlatformClient({
           if (!transient) void persistResume(null);
           await retireTransport();
           if (current(generation)) {
-            if (transient) schedule(generation, backoff);
+            if (retryable) schedule(generation, backoff);
             emit();
           }
         }
@@ -748,7 +803,15 @@ export function createPlatformClient({
     });
     return snapshot();
   }
-  async function refreshDevices() {
+  function refreshDevices() {
+    if (refreshWork) return refreshWork;
+    const work = refreshDevicesImpl().finally(() => {
+      if (refreshWork === work) refreshWork = null;
+    });
+    refreshWork = work;
+    return work;
+  }
+  async function refreshDevicesImpl() {
     authenticated();
     authorizationDeadline = 0;
     const generation = epoch;
@@ -760,7 +823,51 @@ export function createPlatformClient({
         await retireDirect();
       emit();
     }
+    // A live session with the same box access needs fresh reads, not another
+    // write-side preparation and NetBird projection under the account lock.
+    const accessKey = () => JSON.stringify(boxes.map(box =>
+      [box.deviceId, box.deviceRole, box.accessState]).sort((a, b) => a[0].localeCompare(b[0])));
+    const previousAccess = accessKey();
+    const ready = enabled && !activeWork && !prepareNeeded &&
+      platform.phase === "ready" && usableLease();
     const listing = loadDirectory(generation);
+    if (ready) {
+      const loaded = await listing;
+      if (!current(generation) || !enabled) return snapshot();
+      if (loaded && !activeWork && usableLease() && previousAccess === accessKey() &&
+          !boxes.some(box => box.accessState === "authorization_pending")) {
+        try {
+          await Promise.all([
+            transport.network.refresh(),
+            loadNetworkDevices(generation, undefined, { requireLiveSession: true }),
+          ]);
+          if (current(generation)) scheduleAuthorizationPolling(generation);
+          return snapshot();
+        } catch (error) {
+          // The normal activation path owns lease revocation and transient
+          // recovery; never convert a failed authorization read into readiness.
+          if (!current(generation)) return snapshot();
+          if (["NETWORK_REVOCATION_PENDING", "NETWORK_SESSION_REVOKED",
+            "NETWORK_LEASE_EXPIRED", "ACCOUNT_ACCESS_DENIED"].includes(error.code)) {
+            const selected = activeLink === transport ? activeLink?.client.snapshot().connection : null;
+            cancel();
+            const recoveryGeneration = epoch;
+            void persistResume(null);
+            networkSession = null;
+            devices = [];
+            platform = { phase: "unavailable", reason: safeReason(error) };
+            if (selected?.deviceId)
+              reconnectTarget = { deviceId: selected.deviceId, selection: connectionEpoch };
+            const retiring = retireTransport();
+            emit();
+            await retiring;
+            if (!current(recoveryGeneration) || !enabled) return snapshot();
+          }
+          await activate();
+          return snapshot();
+        }
+      }
+    }
     if (enabled) {
       prepareNeeded = true;
       await Promise.all([listing, activate()]);
@@ -793,7 +900,7 @@ export function createPlatformClient({
     if (!current(generation)) throw fail("ACCOUNT_CANCELLED");
     return { ...transfer, refreshRequired };
   }
-  return {
+  const api = {
     snapshot,
     async applicationContext() {
       const state = snapshot();
@@ -861,6 +968,7 @@ export function createPlatformClient({
       return {
         context: () => ({ ...context, connection: assertLive() }),
         request: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.request(value); }); },
+        businessRequest: (service, input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.businessRequest(service, value); }); },
         openStream: (input) => { assertReady(); return meteredInput(input).then(value => { assertReady(); return connection.openStream(value); }); },
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       };
@@ -904,6 +1012,8 @@ export function createPlatformClient({
     changePassword: (input) => account.changePassword(input),
     refreshDevices,
     lookupDeviceDiscovery: (deviceIds) => account.lookupDeviceDiscovery(deviceIds),
+    redeemConsoleClaim: (input) => ownershipChange(() => account.redeemConsoleClaim(input)),
+    getConsoleClaimAuthorization: (deviceId) => account.getConsoleClaimAuthorization(deviceId),
     listOwnershipTransfers: () => account.listOwnershipTransfers(),
     sendTransferCode: () => account.sendTransferCode(),
     createOwnershipTransfer: (input) => ownershipChange(() => account.createOwnershipTransfer(input)),
@@ -956,6 +1066,7 @@ export function createPlatformClient({
       return emit();
     },
     async connect(input) {
+      reconnectTarget = null;
       if (input?.mode !== "direct") throw fail("NETWORK_USE_AUTHORIZED_DEVICE");
       activeLocalDeviceId = null;
       const selection = ++connectionEpoch;
@@ -974,6 +1085,7 @@ export function createPlatformClient({
       return target.client.connect(input).then(() => snapshot());
     },
     async connectBox(deviceId) {
+      reconnectTarget = null;
       const identity = authenticated();
       const local = localDevices.find(device => device.deviceId === deviceId);
       if (local && localBoxes) {
@@ -1067,6 +1179,7 @@ export function createPlatformClient({
       return snapshot();
     },
     async disconnect() {
+      reconnectTarget = null;
       connectionEpoch++;
       selectionController?.abort();
       selectionController = null;
@@ -1087,7 +1200,7 @@ export function createPlatformClient({
       // seconds; ensureTransport already drains it before creating a new one.
       void Promise.allSettled([retireTransport(), retireDirect()]);
       emit();
-      await account.logout({ revokeNetwork: true });
+      await account.logout();
       return emit();
     },
     async close() {
@@ -1104,4 +1217,5 @@ export function createPlatformClient({
       listeners.clear();
     },
   };
+  return api;
 }

@@ -28,14 +28,19 @@ async def test_binding_requires_admin_and_thread_ownership():
 
 
 @pytest.mark.asyncio
-async def test_foreign_thread_cannot_be_bound(monkeypatch):
+@pytest.mark.parametrize(
+    "row", [None, NS(user_id=2, agent_id="main"), NS(user_id=1, agent_id="other")]
+)
+async def test_foreign_thread_cannot_be_bound(monkeypatch, row):
     monkeypatch.setattr("octop.api.routers.browser.harness.assert_agent_access", lambda *a: None)
-    threads = NS(get_thread=lambda _: NS(user_id=2, agent_id="main"))
+    update = Mock()
+    threads = NS(get_thread=lambda _: row, update_composer=update)
     server = NS(app_runtime=NS(gateway=NS(thread_registry=threads)))
     with pytest.raises(OctopError):
         await browser_model_access(
             ModelAccessBody(agent_id="main", thread_id="a"), NS(id=1, is_admin=True), server
         )
+    update.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -62,7 +67,7 @@ def test_changed_config_does_not_silently_use_another_provider():
         access.configured_model(m)
 
 
-def test_disabled_or_missing_deepseek_is_rejected():
+def test_missing_configured_provider_is_rejected():
     m = manager()
     m.providers.build_harness_configs = lambda: []
     with pytest.raises(OctopError):
@@ -74,3 +79,18 @@ def test_native_provider_selection_does_not_change_the_factory():
     original = m.providers.build_harness_configs
     assert access.configured_model(m) == "DeepSeek/test"
     assert m.providers.build_harness_configs is original
+
+
+@pytest.mark.parametrize("ref", [None, "DeepSeek/disabled"])
+def test_unavailable_model_is_rejected(ref):
+    m = manager()
+    m.resolve_fallback_model_ref = lambda: ref
+    m.providers.build_harness_configs = lambda: [
+        NS(
+            id="DeepSeek",
+            base_url="https://api.deepseek.com",
+            models=[NS(id="disabled", enabled=False)],
+        )
+    ]
+    with pytest.raises(OctopError):
+        access.configured_model(m)

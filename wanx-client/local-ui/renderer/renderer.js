@@ -1,9 +1,33 @@
 const app = document.querySelector("#app");
+let walletCountdownTimer = null;
+function syncWalletCountdown() {
+  clearInterval(walletCountdownTimer);
+  walletCountdownTimer = null;
+  const clock = app.querySelector('[data-wallet-deadline]');
+  if (!clock) return;
+  const tick = () => {
+    const seconds = Math.max(0, Math.ceil((Number(clock.dataset.walletDeadline) - Date.now()) / 1000));
+    clock.textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+    if (!seconds || !clock.isConnected) { clearInterval(walletCountdownTimer); walletCountdownTimer = null; }
+  };
+  tick();
+  walletCountdownTimer = setInterval(tick, 1000);
+}
 let currentState;
 let page = "applications";
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
+let notificationFilter = "all";
+let expandedNotificationId = null;
+const aiDialogueView = window.createAIDialogueView?.({
+  request: (action, input) => window.wanxClient.action(action, input),
+  onBoxes: () => { page = "boxes"; render(currentState); },
+});
+const dialogueModelSettings = window.createDialogueModelSettingsView?.({
+  request: (action, input) => window.wanxClient.action(action, input),
+  onSaved: () => aiDialogueView?.modelsChanged(),
+});
 const storeCarousel = window.createStoreCarousel();
 const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurai.wanx.centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
 const creditsView = window.createWalletView({ request: async (action, input) => {
@@ -11,7 +35,8 @@ const creditsView = window.createWalletView({ request: async (action, input) => 
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
   if (!response.ok) throw Object.assign(new Error(response.code), { code: response.code, request_id: response.request_id, details: response.details, retryable: response.retryable });
   return response.value;
-}, changed: () => { if (currentState) render(currentState); } });
+}, changed: () => { if (currentState) render(currentState); },
+  onTiming: value => { void window.wanxClient.recordPaymentTiming?.(value); } });
 const supportView = window.createSupportView({ request: async (action, input) => {
   const response = await window.wanxClient.action(action, input);
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) throw new Error("SUPPORT_SESSION_CHANGED");
@@ -29,6 +54,17 @@ let ownershipTransfers = [];
 let ownershipRevision = 0;
 let transferRequest = null;
 let transferDeviceId = null;
+let consoleClaimAttempt = null;
+let consoleClaimNotice = null;
+let consoleClaimFlow = null;
+let consoleClaimReceipt = null;
+function resetConsoleClaim() {
+  app.querySelector?.('[data-form="console-claim"]')?.reset();
+  consoleClaimAttempt = null;
+  consoleClaimNotice = null;
+  consoleClaimFlow = null;
+  consoleClaimReceipt = null;
+}
 let transferNotice = null;
 let transferResendAt = 0;
 let transferResendTimer;
@@ -42,8 +78,10 @@ let resetResendAt = 0;
 let changeResendAt = 0;
 let passwordResendTimer;
 let notice = null;
+let connectionFailure = null;
 const localOperations = new Map();
 let pendingSelection = null;
+let revealedPendingOpenId = null;
 const expandedDetails = new Set();
 let busy = false;
 let busyRequest = null;
@@ -61,6 +99,7 @@ let setupReady = false;
 let bluetoothState = window.wanxBluetooth?.snapshot() || { status: "unsupported" };
 let setupRequest = null;
 let setupSelection = null;
+let setupTargetDeviceId = null;
 let wifiPicker = newWifiPicker();
 function newWifiPicker() { return { scanned: false, pending: null, networks: [], selected: null, manual: false, error: null, sessionId: null }; }
 function resetWifiPicker() {
@@ -191,6 +230,8 @@ const selection = createDiscoverySelection({
   },
   onNotice(issue) {
     const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
       unavailable: "当前运行时尚未接入本地配网能力",
       expired: "扫描结果已过期，请重新扫描盒子。",
       reselect_failed: "未能连接所选盒子，请靠近盒子并重新扫描后重试。",
@@ -207,7 +248,8 @@ const selection = createDiscoverySelection({
       render(currentState);
       return;
     }
-    void run("provisioning.start", { candidate, mode: selected?.mode || "claim" });
+    void run("provisioning.start", { candidate, mode: selected?.mode || "claim", expectedDeviceId: selected?.expectedDeviceId,
+      ...(selected?.mode === "console" ? { claimCode: consoleClaimAttempt?.claimCode } : {}) });
   },
 });
 window.addEventListener?.("pagehide", () => { resetWifiPicker(); resetDiscoveryMetadata(); selection.dispose(); supportView.close(); }, { once: true });
@@ -229,6 +271,8 @@ const escapeHTML = (value) => String(value ?? "")
 
 function statusLabel(device) {
   const selected = (currentState.selectedDeviceId || currentState.activeDeviceId) === device.deviceId;
+  if (currentState.recovery?.deviceId === device.deviceId && currentState.recovery.status === "failed") return "连接已中断，自动重连 3 次未成功，请手动重连";
+  if (selected && currentState.recovery?.status === "retrying") return `正在自动重连（${currentState.recovery.attempt}/3）`;
   if (selected && currentState.connectionPhase === "recovering") return "正在恢复连接";
   if (selected && ["connecting", "resolving"].includes(currentState.connectionPhase)) return "正在连接";
   if (currentState.activeDeviceId === device.deviceId) return "当前连接";
@@ -254,9 +298,7 @@ function deviceCanConnect(device) {
 }
 
 function authorizationHint() {
-  return currentState.network?.enabled === false
-    ? "开启万象网络后将同步此电脑的访问权限。"
-    : "请保持电脑和盒子联网，授权同步完成后会自动更新；长时间未完成可点击刷新。";
+  return "请保持电脑和盒子联网，授权同步完成后会自动更新；长时间未完成可点击刷新。";
 }
 
 function deviceCard(device) {
@@ -269,6 +311,8 @@ function deviceCard(device) {
   const needsSetup = ["discovered", "unclaimed", "uninitialized"].includes(device.accessState);
   const action = disconnecting
     ? `<button class="button small activity-button" aria-busy="true" disabled>${activityLabel("正在断开…")}</button>`
+    : currentState.selectedDeviceId === device.deviceId && currentState.recovery?.status === "retrying"
+    ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>停止重连</button>`
     : connecting
     ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
     : selected
@@ -281,14 +325,18 @@ function deviceCard(device) {
           : `<span class="muted">${escapeHTML(statusLabel(device))}</span>`;
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
-    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}</div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button hidden class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}${connectionFailure?.deviceId === device.deviceId ? `<p class="inline-error" role="alert">${escapeHTML(connectionFailure.message)}</p>` : ""}</div>
+    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `${!device.local ? `<button class="text-button" data-action="configure-network" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>配置网络</button>` : ""}<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
   if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
-  if (currentState.network?.enabled === false) return { label: "网络已关闭", detail: "开启网络后即可连接盒子。" };
+  if (currentState.network?.enabled === false) return { label: "网络尚未就绪", detail: "请检查本机网络后点击“刷新设备”重试。" };
   if (currentState.networkReady) return { label: "网络已连接", detail: "可以连接盒子并使用应用。" };
+  if (currentState.platform?.reason === "NETWORK_REVOCATION_PENDING")
+    return { label: "网络会话清理中", detail: "服务器正在清理旧连接，完成后将自动重连；传输会保留进度等待恢复。" };
+  if (currentState.platform?.reason === "NETWORK_LEASE_EXPIRED")
+    return { label: "网络授权已到期", detail: "请重试连接，重新获取授权后继续传输。" };
   if (currentState.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(currentState.network?.phase))
     return { label: "网络暂不可用", detail: "请检查本机网络后重试连接。" };
   return { label: "网络连接中", detail: "正在准备与盒子的连接。" };
@@ -307,11 +355,11 @@ function shellHeader(title) {
   const activePage = page === "provisioning" ? "boxes" : page === "application-detail" ? "applications" : page;
   const name = currentState.account?.profile?.displayName || "万象用户";
   return `<header class="topbar">
-    <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
+    <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">个人版</span></strong><small>CentaurAI-WanX Mini</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["space", "空间"], ["boxes", "盒子"], ["credits", "积分"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
-    <div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></header>`;
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["space", "空间"], ["boxes", "盒子"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
+    <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -321,8 +369,29 @@ function profileView() {
     ${notice ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="profile-card"><div class="profile-avatar-row"><button class="profile-avatar-button" data-action="profile-avatar" aria-label="上传头像" ${busy ? "disabled" : ""}>${profileAvatar(true)}<span>更换头像</span></button><div><h3>你的头像</h3><p class="muted">支持 JPG、PNG，最大 5 MB。图片将居中裁为方形。</p><div class="settings-actions"><button class="button small ${busyFor("profile.avatar") ? "activity-button" : ""}" data-action="profile-avatar" aria-busy="${busyFor("profile.avatar")}" ${busy ? "disabled" : ""}>${busyFor("profile.avatar") ? activityLabel("正在更新…") : "上传头像"}</button>${profile.avatarDataUrl ? `<button class="text-button ${busyFor("profile.avatar-remove") ? "activity-button" : ""}" data-action="profile-avatar-remove" aria-busy="${busyFor("profile.avatar-remove")}" ${busy ? "disabled" : ""}>${busyFor("profile.avatar-remove") ? activityLabel("正在恢复…") : "恢复默认"}</button>` : ""}</div></div></div>${avatarPending ? `<p class="muted activity-status" role="status">${activityLabel("正在更新头像…")}</p>` : ""}
     <form data-form="profile"><label for="profile-name">昵称</label><input id="profile-name" name="displayName" value="${escapeHTML(profile.displayName || "万象用户")}" maxlength="80" required autocomplete="nickname" /><p class="muted">最多 40 个字符，昵称不会改变登录账号。</p><button class="button primary ${busyFor("profile.save") ? "activity-button" : ""}" type="submit" aria-busy="${busyFor("profile.save")}" ${busy ? "disabled" : ""}>${busyFor("profile.save") ? activityLabel("正在保存…") : "保存资料"}</button></form></section>
+    <section class="profile-card profile-credits"><div><h3>积分</h3><p class="profile-credit-balance">${escapeHTML(creditsView.label())}</p></div><button class="button small" data-action="show-credits">查看积分明细<span aria-hidden="true"> ›</span></button></section>
     <section class="profile-card profile-account"><h3>万象账号</h3><dl><dt>绑定手机号</dt><dd>${escapeHTML(account.maskedPhone || "暂未提供")}</dd><dt>资料保存</dt><dd>当前电脑</dd></dl><p class="muted">头像和昵称仅保存在这台电脑，按万象账号分别保存。</p></section>
     </div></div>`;
+}
+
+function notificationView() {
+  const center = currentState.notifications || { items: [], unreadCount: 0, taskStatus: "disconnected" };
+  const items = (center.items || []).filter(item => notificationFilter !== "unread" || !item.readAt || item.id === expandedNotificationId);
+  const status = { disconnected: "连接盒子后接收应用任务消息。", connecting: "正在连接任务消息…", unavailable: "任务消息暂时无法同步，稍后会自动重试。", "upgrade-required": "此盒子需更新后才能同步半人马环通知。" }[center.taskStatus];
+  return `<div class="app-layout">${shellHeader("通知中心")}<div class="page-content notification-page">
+    <div class="page-heading"><div><h2>通知中心</h2><p class="muted">应用动态与任务进展，都在这里。</p></div><button class="button" data-action="notifications-refresh" ${busy ? "disabled" : ""}>刷新</button></div>
+    ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    <div class="notification-toolbar"><div class="notification-filters" role="group" aria-label="筛选通知"><button data-action="notifications-filter" data-filter="all" aria-pressed="${notificationFilter === "all"}">全部</button><button data-action="notifications-filter" data-filter="unread" aria-pressed="${notificationFilter === "unread"}">未读${center.unreadCount ? ` ${center.unreadCount}` : ""}</button></div><button class="text-button" data-action="notifications-read-all" ${!center.unreadCount || busy ? "disabled" : ""}>全部已读</button></div>
+    ${status ? `<p class="muted notification-sync" role="status">${status}</p>` : ""}
+    ${center.storageError ? `<p class="notice error" role="status">通知暂时无法保存在本机，请检查系统安全存储后重启万象。</p>` : ""}
+    <section class="notification-list" aria-label="消息列表">${items.length ? items.map(item => {
+      const expanded = expandedNotificationId === item.id;
+      const date = new Date(item.createdAt);
+      const time = Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date) : "";
+      return `<article class="notification-card ${item.readAt ? "" : "unread"}"><span class="notification-kind" aria-hidden="true">${item.category === "task" ? "↗" : item.category === "system" ? "◈" : "▦"}</span><div class="notification-main"><button class="notification-summary" data-action="notifications-select" data-id="${escapeHTML(item.id)}" aria-expanded="${expanded}"><span class="notification-title">${escapeHTML(item.title)}${!item.readAt ? '<i class="notification-unread-dot" aria-label="未读"></i>' : ""}</span><span class="notification-meta">${item.category === "task" ? "任务消息" : item.category === "system" ? "系统通知" : "应用动态"}${item.deviceName ? ` · ${escapeHTML(item.deviceName)}` : ""}<time>${escapeHTML(time)}</time></span><span class="notification-body ${expanded ? "expanded" : ""}">${escapeHTML(item.body)}</span></button>${expanded && (item.applicationId || item.category === "task") ? `<button class="text-button" data-action="notifications-open" data-id="${escapeHTML(item.id)}">${item.applicationId ? "打开应用" : "打开万象控制台"} ↗</button>` : ""}</div></article>`;
+    }).join("") : `<div class="notification-empty"><span aria-hidden="true">✧</span><h3>${notificationFilter === "unread" ? "未读消息都看完了" : "暂时没有通知"}</h3><p class="muted">有新的应用动态或任务进展时，会在这里提醒你。</p></div>`}</section>
+    <p class="muted notification-footnote">通知按当前账号保存在这台电脑。</p>
+  </div></div>`;
 }
 
 function resendSeconds() {
@@ -387,7 +456,7 @@ function authView() {
   const reset = authMode === "reset";
   const newPassword = register || reset;
   return `<div class="auth-layout"><section class="auth-card">
-    <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
+    <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">个人版</span></strong><small>CentaurAI-WanX Mini</small></span></button>
     <h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
         ${reset ? `<p class="muted">通过账号绑定的手机号验证身份，重置后请用新密码登录。</p>` : `<div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>`}
         <form id="auth-form" data-form="auth" data-mode="${authMode}" novalidate>
@@ -412,6 +481,8 @@ function updateBytes(value) {
 
 function updateGuidance(code) {
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     PLAN_STALE: "盒子状态已变化，请重新检查并生成更新计划。",
     UPDATE_IN_PROGRESS: "已有更新正在进行，请刷新该任务的进度。",
     UNSUPPORTED_PLATFORM: "此平台尚未通过更新验证，请继续使用当前版本并联系维护人员。",
@@ -574,6 +645,7 @@ function settingsView() {
     <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small ${busyFor("auth.logout") ? "activity-button" : ""}" data-action="logout" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出当前账号"}</button></div></section>
     ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
     <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted ${busyFor("desktop.startup.set") ? "activity-status" : ""}" role="status">${busyFor("desktop.startup.set") ? activityLabel("正在保存设置…") : escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" aria-busy="${busyFor("desktop.startup.set")}" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
+    <section class="settings-panel"><div><h3>AI 对话模型</h3><p class="muted">选择在 AI 对话中显示的模型，按盒子分别记忆。</p></div><button class="button small" data-action="show-dialogue-models">配置模型</button></section>
     <section class="settings-panel"><div><h3>关于万象</h3><p class="muted">半人马AI-万象 · CentaurAI-WanX</p></div><button class="button small" data-action="desktop-about">关于</button></section>
     <div class="settings-foot"><p class="muted">关闭窗口后继续后台运行。完全退出请在万象菜单中选择“退出万象”。</p></div>
   </div></div>${confirmationView()}`;
@@ -591,16 +663,15 @@ function boxesView() {
   const metrics = window.wanxSpace?.overview?.();
   const storage = ready ? metrics?.wanxStorage : null;
   const publicIP = ready ? metrics?.network?.publicIp : null;
-  const network = networkStatus(), enabled = currentState.network?.enabled !== false;
-  const status = ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
+  const network = networkStatus();
+  const status = currentState.recovery?.status === "failed" ? "自动重连未成功，请手动重连" : currentState.recovery?.status === "retrying" ? `正在自动重连（${currentState.recovery.attempt}/3）` : ready ? "连接正常" : currentState.connectionPhase === "recovering" ? "正在恢复连接" : currentState.connectionPhase === "connecting" ? "正在连接" : "尚未连接";
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("盒子")}<div class="page-content space-page-content box-page-content">
-    <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 发现新盒子</button></div></div>
+    <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 添加盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="box-overview" aria-label="当前盒子"><div class="box-overview-heading"><div class="box-identity"><img src="./assets/centaurai-mark.png" alt=""/><div><span class="box-eyebrow">当前使用的盒子</span><h3 class="current-device">${currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</h3><p>${ready ? currentState.connection?.mode === "local" ? "本机万象 · 文件与服务运行在这台电脑上" : "万象网络 · 已建立盒子连接" : network.detail}</p><div class="box-addresses" aria-label="盒子 IP" title="由当前盒子查询的公网出口地址"><span>盒子 IP</span>${publicIP ? `<code>${escapeHTML(publicIP)}</code>` : `<span>${ready ? "暂未获取盒子 IP" : "连接后显示"}</span>`}</div></div></div><span class="box-status ${ready ? "ready" : ""}"><i class="status-dot ${ready ? "ready" : ""}"></i>${status}</span></div>
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
-    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">发现新盒子</button></div>`}</section>
-    <section class="box-network" aria-label="连接设置"><div><h3>万象网络</h3><p class="muted ${busyFor("network.set-enabled") ? "activity-status" : ""}" role="status">${busyFor("network.set-enabled") ? activityLabel("正在切换网络…") : `${network.label} · ${network.detail}`}</p></div><div class="settings-actions">${enabled && network.label === "网络暂不可用" ? `<button class="text-button" data-action="refresh" ${busy ? "disabled" : ""}>重试连接</button>` : ""}<button class="switch" role="switch" aria-checked="${enabled}" aria-label="万象网络" aria-busy="${busyFor("network.set-enabled")}" data-action="network-toggle" ${busy ? "disabled" : ""}><span></span></button></div></section>
+    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
     ${ownershipView()}
     ${supportView.render()}
   </div></div>${confirmationView()}`;
@@ -609,7 +680,7 @@ function boxesView() {
 function ownershipView() {
   const device = currentState.devices?.find(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner"));
   const pending = ownershipTransfers.filter(item => item.state === "pending_target" && Date.parse(item.expiresAt) > Date.now());
-  return `<section hidden class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
+  return `<section class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
     <p class="muted">将盒子交给另一个万象账号。此操作保留盒内数据；需要清空交付时，请由管理员执行盒子清除。</p>
     ${transferNotice ? `<p role="status">${escapeHTML(transferNotice)}</p>` : ""}
     ${device ? `<form data-form="transfer" data-device-id="${escapeHTML(device.deviceId)}" class="auth-card transfer-form"><h3>转移 ${escapeHTML(device.name || device.displayName || device.deviceId)}</h3>
@@ -704,6 +775,8 @@ function pendingOpenView() {
 function marketErrorMessage(error) {
   const message = String(error?.code || error?.message || error || "");
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     BOX_APPLICATION_PLATFORM_SESSION_REQUIRED: "请登录万象并选择已关联的盒子后打开此应用。",
     BOX_APPLICATION_RUNTIME_UPDATE_REQUIRED: "盒子需要更新万象服务后才能打开此应用，请联系管理员。",
     BOX_APPLICATION_ACCESS_DENIED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
@@ -859,6 +932,7 @@ function applicationPreparationStatus(item) {
   return item.resourcePreparation?.status === "pending" ? "打开时将检查盒端专家和技能包。" : "";
 }
 function applicationActions(item, installed) {
+  if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="application-actions"><button class="button primary small" data-action="show-ai-dialogue">打开AI对话</button></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
@@ -874,6 +948,7 @@ function applicationActions(item, installed) {
     : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${active ? "" : "primary"} small ${installing ? "activity-button" : ""}" data-action="market-install" data-application-id="${id}" aria-busy="${installing}" ${disabled}>${installing ? activityLabel(status || "正在安装…") : staged ? active ? "重试更新" : "继续安装" : active ? "更新" : "安装"}</button>` : ""}${active ? `<button class="button primary small ${opening ? "activity-button" : ""}" data-action="applications-launch" data-application-id="${id}" aria-busy="${opening}" ${disabled}>${opening ? activityLabel(status || "正在打开…") : operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>` : ""}</div>`;
 }
 function applicationManagement(item, installed) {
+  if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="store-detail-body"><p class="store-full-description">AI对话已内置于万象，无需另外安装。通过顶部 AI对话进入，继续使用当前盒子上的原有对话记录。</p></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const availability = item.editorialOnly && !candidate ? "暂未提供可安装版本" : candidateLabel(candidate);
   const id = escapeHTML(item.applicationId);
@@ -947,7 +1022,7 @@ function applicationDetailView() {
     <button class="store-back" data-action="store-back"><span aria-hidden="true">‹</span> 应用</button>
     ${item ? `<section class="app-detail-hero" data-application-detail="${escapeHTML(item.applicationId)}" data-tone="${applicationTone(item)}">${applicationIcon(item)}<div class="app-detail-identity"><p class="app-detail-category">${escapeHTML(metadata?.category || "万象应用")}</p><h2 class="app-detail-title" tabindex="-1">${escapeHTML(item.name)}</h2><p class="app-detail-tagline">${escapeHTML(metadata?.tagline || item.description || "在你的盒子上使用 AI 服务。")}</p>${applicationActions(item, Boolean(installedItem))}${item.editorialOnly ? '<p class="muted app-editorial-notice">产品介绍 · 暂未提供可安装版本</p>' : ""}</div></section>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}${status || preparation ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || preparation)}</p>` : ""}
-    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem?.installationState === "pending" ? "待安装版本" : installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${installedItem ? installedItem.selectionRequired ? "待选择当前版本" : installedItem.installationState === "pending" ? "待完成盒端准备" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
+    <dl class="app-detail-facts"><div><dt>分类</dt><dd>${escapeHTML(metadata?.category || "万象应用")}</dd></div><div><dt>${installedItem?.installationState === "pending" ? "待安装版本" : installedItem ? "当前版本" : "商店版本"}</dt><dd>${escapeHTML(installedItem?.version || candidate?.release?.version || item.version || "待获取")}</dd></div><div><dt>使用方式</dt><dd>连接万象盒子</dd></div><div><dt>安装状态</dt><dd>${selectedApplicationId === "centaurai.wanx.dialogue" ? "客户端内置" : installedItem ? installedItem.selectionRequired ? "待选择当前版本" : installedItem.installationState === "pending" ? "待完成盒端准备" : "已安装在此电脑" : "尚未安装"}</dd></div></dl>
     ${media.length ? `<section class="app-detail-section"><div class="section-heading"><h3>产品介绍</h3><span class="app-preview-hint">点击图片，放大查看</span></div><div class="app-poster-gallery ${media.length === 1 ? "single" : ""}" role="region" aria-label="${escapeHTML(item.name)}产品海报" tabindex="0">${media.map(([file, caption, context], index) => `<figure><button class="app-poster" data-action="poster-open" data-poster-index="${index}" aria-label="放大：${escapeHTML(caption)}"><img src="./assets/posters/${file}" alt="${escapeHTML(caption)}" decoding="async" /></button><figcaption><strong>${escapeHTML(caption)}</strong><span>${escapeHTML(context)}</span></figcaption></figure>`).join("")}</div></section>` : ""}
     <section class="app-detail-section app-detail-about"><p class="app-detail-category">为你的日常而设计</p><h3>关于${escapeHTML(item.name)}</h3><p>${escapeHTML(metadata?.introduction || item.description || "在你的盒子上使用 AI 服务。")}</p>${metadata ? `<div class="app-feature-grid">${metadata.features.map(([title, description], index) => `<article><span class="app-feature-number">0${index + 1}</span><h4>${escapeHTML(title)}</h4><p>${escapeHTML(description)}</p></article>`).join("")}</div>` : ""}</section>
     <section class="app-detail-section app-version-section"><h3>版本与管理</h3>${applicationManagement(item, Boolean(installedItem))}</section>
@@ -965,9 +1040,13 @@ function applicationsView() {
   const installed = new Set(applications.map((item) => item.applicationId));
   const pendingInstallations = applications.some((item) => item.installationState === "pending");
   const available = discoverableApplications().filter((item) => !installed.has(item.applicationId));
+  const delivery = currentState.defaultApplications;
+  const preparingDefaults = delivery?.status === "preparing";
+  const defaultsPending = delivery?.status === "pending";
   return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用")}<div class="page-content store-page">
     <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div><button class="store-refresh ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" aria-busy="${marketLoading}" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在检查…") : "检查更新"}</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    ${preparingDefaults || defaultsPending ? `<div class="notice" role="status">${preparingDefaults ? "正在准备随盒应用，已安装的应用可以继续使用。" : "部分随盒应用尚未准备完成，联网后会自动重试。你也可以在下方应用介绍中查看安装条件。"}</div>` : ""}
     ${storeFeatures()}
     <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${pendingInstallations ? "部分应用待完成安装" : applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>
@@ -1036,6 +1115,7 @@ function discoveryCard(candidate) {
   const resolvedName = knownName || registryName || specificName;
   const knownClaimed = ["owner", "member"].includes(known?.deviceRole) || ["owner", "member"].includes(known?.role);
   const owner = deviceIsOwner(deviceId);
+  const wrongTarget = setupTargetDeviceId && deviceId && deviceId !== setupTargetDeviceId;
   const claimStatus = knownClaimed ? "claimed" : metadata?.claimStatus || "unknown";
   const claimLabel = { claimed: "已认领", unclaimed: "未认领", unknown: "认领状态待确认" }[claimStatus];
   const title = resolvedName || (reading ? "正在读取盒子名称…" : "未获取到盒子名称");
@@ -1044,7 +1124,7 @@ function discoveryCard(candidate) {
     : [advertisedName, !deviceId ? reading ? "正在读取盒子名称…" : "未读取到名称" : "", "蓝牙配网"].filter(Boolean).join(" · ");
   const identityDetail = deviceId && !resolvedName
     ? `<span>设备编号：${escapeHTML(deviceId)}（用于核对，不是名称）</span>` : "";
-  return `<button class="device-card discovery-card" data-action="${owner ? "select-candidate-wifi" : "select-candidate"}" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong><span class="claim-badge claim-${claimStatus}">${claimLabel}</span>${identityDetail}<span>${escapeHTML(detail)}</span>${owner ? "<span>修改 Wi-Fi</span>" : ""}</button>`;
+  return `<button class="device-card discovery-card" data-action="${owner || setupTargetDeviceId ? "select-candidate-wifi" : "select-candidate"}" data-candidate-id="${escapeHTML(candidate.candidateId)}" ${wrongTarget || bluetoothState.status !== "available" || discoveryView.selecting && discoveryView.retained ? "disabled" : ""}><strong>${escapeHTML(title)}</strong><span class="claim-badge claim-${claimStatus}">${claimLabel}</span>${identityDetail}<span>${escapeHTML(detail)}</span>${wrongTarget ? "<span>不是当前要配置的盒子</span>" : setupTargetDeviceId && !deviceId ? "<span>选择后核对是否为目标盒子</span>" : owner ? "<span>修改 Wi-Fi</span>" : ""}</button>`;
 }
 
 function bluetoothNotice() {
@@ -1060,8 +1140,30 @@ function bluetoothNotice() {
   return `<div class="notice bluetooth-notice" role="status"><p>${escapeHTML(message)}</p>${!["checking", "unsupported"].includes(status) ? `<div class="wizard-actions"><button class="button small" data-action="bluetooth-settings">${status === "permission-denied" ? "打开蓝牙权限设置" : "打开蓝牙设置"}</button><button class="text-button" data-action="bluetooth-refresh">重新检查</button></div>` : ""}</div>`;
 }
 
+function consoleClaimView() {
+  const offline = consoleClaimFlow === "entry-wifi";
+  const receipt = consoleClaimReceipt;
+  const ready = receipt?.authorizationState === "ready";
+  const blocked = receipt?.authorizationState === "blocked";
+  return `<div class="app-layout">${shellHeader("添加盒子")}<div class="page-content">
+    <div class="page-heading"><div><h2>使用认领码添加盒子</h2><p class="muted">${receipt ? "账号绑定已确认，盒子接收授权后即可连接。" : "已有认领码的盒子也可以先配网，再确认绑定。"}</p></div></div>
+    <section class="wizard-card">
+    ${receipt ? `<div role="status"><h3>${ready ? "盒子已就绪" : blocked ? "绑定已确认，授权暂不可用" : "绑定已确认，等待盒子授权"}</h3><p>设备 ID：${escapeHTML(receipt.deviceId)}</p><p>${ready ? "盒子已确认授权，可以返回盒子列表连接。" : blocked ? "请检查当前账号的设备权限，刷新状态后重试。" : "请保持盒子联网，等待盒子接收并确认授权后刷新状态。"}</p></div>
+      <div class="wizard-actions"><button class="button" data-action="back-devices">返回盒子</button>${!ready ? `<button class="button primary" data-action="console-claim-refresh" ${busy ? "disabled" : ""}>${busyFor("devices.claim-status") ? "正在刷新…" : "刷新授权状态"}</button>` : '<button class="button primary" data-action="refresh">完成</button>'}</div>` : `
+      <div class="wizard-actions"><button class="button ${!offline ? "primary" : ""}" data-action="console-claim-online" aria-pressed="${!offline}" ${busy ? "disabled" : ""}>盒子已联网</button><button class="button ${offline ? "primary" : ""}" data-action="console-claim-offline" aria-pressed="${offline}" ${busy ? "disabled" : ""}>需要先配网</button></div>
+      <p>${offline ? "输入认领码以验证配网权限，然后发现并确认盒子、连接 Wi-Fi。配网成功后，还需点击“确认绑定到当前账号”。" : "输入盒子控制台或机身标签上的认领码，确认后绑定到当前账号。"}</p>
+      <form data-form="console-claim"><label for="console-claim-code">盒子认领码</label><input id="console-claim-code" name="claimCode" required maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="输入 10 或 20 位认领码" /><button class="button primary" type="submit" ${busy ? "disabled" : ""}>${busyFor("devices.claim") ? "正在确认绑定…" : offline ? "下一步：发现盒子" : "确认绑定到当前账号"}</button></form>
+      <div class="wizard-actions"><button class="button" data-action="back-devices">返回盒子</button><button class="text-button" data-action="console-claim-without-code" ${busy ? "disabled" : ""}>没有认领码，使用蓝牙认领</button></div>`}
+      ${consoleClaimNotice ? `<p role="status">${escapeHTML(consoleClaimNotice)}</p>` : ""}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    </section></div></div>`;
+}
+
 function provisioningView() {
-  const wifiOnly = setupState.mode === "wifi" || setupRequest?.mode === "wifi";
+  if (consoleClaimReceipt || ["entry-online", "entry-wifi"].includes(consoleClaimFlow)) return consoleClaimView();
+  const codeWifi = consoleClaimFlow === "wifi" || setupState.mode === "console";
+  const wifiOnly = Boolean(setupTargetDeviceId) || setupState.mode === "wifi" || setupRequest?.mode === "wifi";
+  const targetDevice = currentState.devices?.find(device => device.deviceId === setupTargetDeviceId);
+  const targetLabel = targetDevice?.name || targetDevice?.displayName || setupTargetDeviceId;
   const starting = setupRequest?.action === "provisioning.start";
   const cancelling = setupRequest?.action === "provisioning.cancel";
   const refreshing = setupRequest?.action === "provisioning.refresh";
@@ -1079,7 +1181,7 @@ function provisioningView() {
   }[setupState.claimState] || "认领尚未确认完成，请刷新认领状态。";
   const stagesByState = {
     idle: "discover", previewReady: "identity", awaitingWifi: "network",
-    awaitingOwnershipConfirmation: "claim", submittingAppProof: "claim",
+    awaitingOwnershipConfirmation: "claim", awaitingCodeClaim: "claim", submittingAppProof: "claim",
     verifyingLocalDevice: "identity", establishingSecureChannel: "identity", provisioningWifi: "network", waitingCloud: cloudStage, attentionRequired: cloudStage,
   };
   const failed = ["terminalError", "restartRequired"].includes(setupState.state);
@@ -1099,13 +1201,14 @@ function provisioningView() {
   const setupPhase = setupState.state || "idle";
   const stages = Object.entries(stageLabels).filter(([key]) => !wifiOnly || !["claim", "initialize"].includes(key));
   const setupCopy = starting ? (setupState.connectionAttempt === 2 ? "蓝牙连接暂未成功，正在自动重连…" : "正在通过蓝牙读取盒子身份，请稍候。") : cancelling ? "正在停止本次配网，请稍候。" : {
-    idle: "让盒子保持通电，点击扫描并选择附近的盒子。已认领的盒子可由主人修改 Wi-Fi。",
+    idle: wifiOnly ? "让目标盒子保持通电并靠近电脑，扫描后确认设备身份，再选择 Wi-Fi。电脑需联网以验证主人权限，盒子可以处于离线状态。" : "让盒子保持通电，点击扫描并选择附近的盒子。已认领的盒子也可从盒子卡片的“配置网络”入口修改 Wi-Fi。",
     attentionRequired: cloudCopy,
     previewReady: previewBlocked ? setupErrorMessage(previewBlocked) : "请核对设备 ID、型号和身份指纹，然后确认。",
-    verifyingLocalDevice: "正在验证设备身份和主人权限…",
+    verifyingLocalDevice: codeWifi ? "正在验证设备身份和认领码配网权限…" : wifiOnly ? "正在验证设备身份和主人权限…" : "正在验证设备身份…",
     establishingSecureChannel: "正在建立加密连接…",
     awaitingWifi: setupState.sessionRenewed ? "安全会话已自动更新，请重新选择网络并确认。上次提交不会自动重复。" : wifiOnly ? "主人权限已验证，请选择新的 Wi-Fi。认领关系和盒子数据将保留。" : "设备身份已验证，请选择盒子要连接的 Wi-Fi。",
     awaitingOwnershipConfirmation: "设备已准备联网，请确认绑定到当前账号。",
+    awaitingCodeClaim: "盒子已连接 Wi-Fi。请确认使用认领码，将此盒子绑定到当前账号。",
     submittingAppProof: "正在提交账号绑定证明…",
     provisioningWifi: "正在通过加密通道配置 Wi‑Fi…",
     waitingCloud: cloudCopy,
@@ -1118,18 +1221,21 @@ function provisioningView() {
   const controls = setupPhase === "previewReady"
     ? `<button class="button primary" data-action="provisioning-confirm" ${busy || previewBlocked ? "disabled" : ""}>${previewBlocked ? (wifiOnly ? "暂不能配置网络" : "暂不能认领") : "确认设备身份"}</button>`
     : setupPhase === "awaitingWifi"
-      ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label>密码<input name="password" type="password" maxlength="128" autocomplete="off" /></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>${wifiOnly ? "连接 Wi-Fi" : "继续绑定账号"}</button></form>`
+      ? `<form class="setup-wifi" data-form="wifi"><div class="wifi-picker" data-wifi-list><label>盒子附近的 Wi-Fi<select data-input="wifi-network" required>${wifiOptions()}</select></label><button class="button small" type="button" data-action="wifi-refresh">刷新列表</button></div><p class="hint wifi-status" data-wifi-status role="status" aria-live="polite"></p><button class="text-button wifi-mode" type="button" data-action="wifi-manual">隐藏网络 / 手动添加</button><label hidden>Wi‑Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label hidden>安全类型<select name="security"><option value="wpa_personal">WPA/WPA2 个人网络</option><option value="open">开放网络</option></select></label><label class="check" hidden><input name="hidden" type="checkbox" />隐藏网络</label><label class="wifi-password">密码<span class="password-field"><input name="password" type="password" maxlength="128" autocomplete="off" /><button type="button" class="password-toggle" data-action="wifi-password-toggle" aria-label="显示密码" aria-pressed="false" title="显示密码"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/><path data-password-slash d="M4 4l16 16" hidden /></svg></button></span></label><button class="button primary" type="submit" ${busy ? "disabled" : ""}>${wifiOnly || codeWifi ? "连接 Wi-Fi" : "继续绑定账号"}</button></form>`
+      : codeWifi && setupPhase === "awaitingCodeClaim"
+        ? `<button class="button primary" data-action="console-claim-confirm" ${busy ? "disabled" : ""}>${busyFor("provisioning.code-claim") ? "正在确认绑定…" : "确认绑定到当前账号"}</button>`
       : !wifiOnly && setupPhase === "awaitingOwnershipConfirmation"
         ? `<button class="button primary" data-action="provisioning-owner" ${busy ? "disabled" : ""}>确认绑定到当前账号</button>`
         : "";
   return `
     <div class="app-layout">
-      ${shellHeader(wifiOnly ? "修改 Wi-Fi" : "发现并配置盒子")}<div class="page-content">
-      <div class="page-heading"><div><h2>${wifiOnly ? "修改 Wi-Fi" : "发现附近的盒子"}</h2><p class="muted">${wifiOnly ? "为你的盒子更换网络，保留认领关系和全部业务数据。" : "新盒子可配网并认领；已认领的盒子可由主人修改 Wi-Fi。"}</p></div></div>
+      ${shellHeader(wifiOnly ? "配置网络" : "添加盒子")}<div class="page-content">
+      <div class="page-heading"><div><h2>${wifiOnly ? "配置网络" : codeWifi ? "使用认领码：先配置网络" : "添加盒子"}</h2><p class="muted">${wifiOnly ? "通过蓝牙修改 Wi-Fi，保留认领关系和全部业务数据。" : "新盒子可配网并认领；已认领的盒子可由主人修改 Wi-Fi。"}</p>${setupTargetDeviceId ? `<p>正在配置：<strong>${escapeHTML(targetLabel)}</strong></p><p class="muted">设备编号：${escapeHTML(setupTargetDeviceId)}</p>` : ""}</div></div>
       <section class="wizard-card"><div class="wizard-steps">${stages.map(([key, label], index) => { const active = provisioning.stage === key; const done = provisioning.phase === "ready" || stages.findIndex(([name]) => name === provisioning.stage) > index; return `<div class="wizard-step ${active ? "active" : ""} ${done ? "done" : ""}"><span>${done ? "✓" : index + 1}</span><label>${label}</label></div>`; }).join("")}</div>
         <div class="wizard-copy"><p class="eyebrow">${running ? "正在处理" : provisioning.phase === "failed" ? "接入未完成" : "设备配置"}</p><h3>${starting ? "正在读取设备身份…" : cancelling ? "正在取消配网…" : running ? escapeHTML(stageLabels[provisioning.stage] || "处理中") : setupPhase === "idle" ? "发现附近的万象盒子" : "配置设备"}</h3><p>${provisioning.phase === "failed" ? escapeHTML(provisioning.error?.message || "本次接入失败") : escapeHTML(setupCopy)}</p>${bluetoothNotice()}${discoveryBlock}${previewBlock}${controls}</div>
         <div class="wizard-actions">${running ? `<button class="button" disabled>返回盒子</button>${cancelButton}` : `<button class="button" data-action="back-devices">返回盒子</button>${["idle", "cancelled"].includes(setupPhase) || provisioning.phase === "failed" ? `<button class="button primary scan-button" data-action="start-provisioning" aria-busy="${selecting}" ${busy || !setupReady || bluetoothState.status !== "available" || selecting ? "disabled" : ""}>${selecting ? '<span class="scan-spinner" aria-hidden="true"></span><span>正在扫描…</span>' : provisioning.phase === "failed" || retained ? "重新扫描" : "开始扫描盒子"}</button>` : setupPhase === "completed" ? '<button class="button primary" data-action="refresh">完成</button>' : cancelButton}</div>`}
         ${setupPhase === "attentionRequired" ? `<button class="button" data-action="provisioning-refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? "正在刷新…" : initializing ? "刷新授权状态" : "刷新认领状态"}</button>` : ""}
+        ${codeWifi && failed ? `<button class="text-button" data-action="console-claim-edit" ${busy ? "disabled" : ""}>重新输入认领码</button>` : ""}
         ${notice ? `<div class="notice error">${escapeHTML(notice)}</div>` : ""}
         ${!setupReady ? '<p class="hint">正在准备蓝牙配网服务…</p>' : ""}
       </section></div>
@@ -1137,7 +1243,11 @@ function provisioningView() {
 }
 
 function authBusyLabel() {
-  return currentState?.account?.logoutPending ? "正在完成退出…" : "处理中…";
+  return {
+    "auth.login": "正在登录…",
+    "auth.register": "正在创建账号…",
+    "auth.reset-password": "正在重置密码…",
+  }[busyRequest?.action] || "处理中…";
 }
 
 // State broadcasts must not detach the pressed control before Chromium emits click.
@@ -1185,11 +1295,42 @@ async function fillRememberedLogin(form) {
   }
 }
 
+// Keep the credits dialog, focused input and decoded QR image mounted while
+// polling changes text or attributes elsewhere on the page.
+function updateCreditsDOM(current, incoming) {
+  const previous = Array.from(current.childNodes);
+  const next = Array.from(incoming.childNodes);
+  for (let index = 0; index < Math.max(previous.length, next.length); index++) {
+    const oldNode = previous[index], newNode = next[index];
+    if (!newNode) { oldNode.remove(); continue; }
+    if (!oldNode) { current.appendChild(newNode.cloneNode(true)); continue; }
+    if (oldNode.nodeType !== newNode.nodeType || oldNode.nodeName !== newNode.nodeName) {
+      oldNode.replaceWith(newNode.cloneNode(true)); continue;
+    }
+    if (oldNode.nodeType !== 1) {
+      if (oldNode.nodeValue !== newNode.nodeValue) oldNode.nodeValue = newNode.nodeValue;
+      continue;
+    }
+    for (const attribute of Array.from(oldNode.attributes)) {
+      if (!newNode.hasAttribute(attribute.name)) oldNode.removeAttribute(attribute.name);
+    }
+    for (const attribute of newNode.attributes) {
+      if (oldNode.getAttribute(attribute.name) !== attribute.value) oldNode.setAttribute(attribute.name, attribute.value);
+    }
+    if (oldNode.tagName === 'INPUT' && oldNode.value !== newNode.value) oldNode.value = newNode.value;
+    updateCreditsDOM(oldNode, newNode);
+  }
+}
+
 function render(state) {
   const auth = state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
   const previousAuth = app.querySelector?.('[data-form="auth"]');
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
+  aiDialogueView?.hostState(state);
+  aiDialogueView?.visible(!auth && page === "ai-dialogue");
+  dialogueModelSettings?.hostState(state);
+  dialogueModelSettings?.visible(!auth && page === "dialogue-models");
   window.wanxSpace?.activate(!auth && ["space", "boxes"].includes(page), page === "space");
   supportView.sync(auth || state.account?.phase !== "authenticated" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]), state.devices || []);
   supportView.visible(!auth && page === "boxes");
@@ -1197,9 +1338,11 @@ function render(state) {
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
+    : page === "ai-dialogue" ? `<div class="app-layout ai-dialogue-layout">${shellHeader("AI对话")}<div id="ai-dialogue-host"></div></div>`
+    : page === "dialogue-models" ? `<div class="app-layout">${shellHeader("AI 对话模型")}<div class="page-content dialogue-model-settings-page"><div id="dialogue-model-settings-host"></div></div></div>`
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
-    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
-  if (markup === renderedMarkup) { syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); return; }
+    : page === "notifications" ? notificationView() : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+  if (markup === renderedMarkup) { if (page === "dialogue-models") dialogueModelSettings?.mount(app.querySelector?.("#dialogue-model-settings-host")); syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); if (page === "ai-dialogue") aiDialogueView?.mount(app.querySelector?.("#ai-dialogue-host")); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
   // selection and focus; network polling does not rebuild active setup forms.
@@ -1212,10 +1355,15 @@ function render(state) {
   const scanAnimations = new Map(scanButton?.querySelector('.scan-spinner').getAnimations().map(animation => [animation.animationName, animation.currentTime]));
   const passwordForm = !auth && page === "settings" && passwordEditing ? app.querySelector?.('[data-form="password-change"]') : null;
   const profileForm = !auth && page === "profile" ? app.querySelector?.('[data-form="profile"]') : null;
-  const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm;
+  const claimForm = !auth && page === "provisioning" && !consoleClaimReceipt && ["entry-online", "entry-wifi"].includes(consoleClaimFlow) ? app.querySelector?.('[data-form="console-claim"]') : null;
+  const retainedForm = wifiForm || authForm || transferForm || passwordForm || profileForm || claimForm;
   const focused = retainedForm?.contains(document.activeElement) ? document.activeElement : null;
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
+  // Detached dialog nodes lose their scroll offsets when innerHTML is replaced.
+  const walletScroll = walletDialog ? { top: walletDialog.scrollTop, left: walletDialog.scrollLeft, step: walletDialog.dataset.step } : null;
   const walletFocus = walletDialog?.contains(document.activeElement) ? { ...document.activeElement.dataset } : null;
+  const walletInput = walletDialog && document.activeElement?.id === 'wallet-custom-amount' ? document.activeElement : null;
+  const walletSelection = walletInput ? [walletInput.selectionStart, walletInput.selectionEnd] : null;
   const scroller = document.scrollingElement;
   const scroll = (retainedForm || walletDialog) && scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
   const spaceList = page === "space" ? app.querySelector?.(".space-file-list") : null;
@@ -1223,7 +1371,19 @@ function render(state) {
   const spaceFocus = spaceList?.contains?.(document.activeElement) ? document.activeElement.closest?.("[data-entry-id]")?.dataset.entryId || "" : null;
   const spaceSearch = page === "space" && document.activeElement?.id === "space-search" ? document.activeElement : null;
   const searchSelection = spaceSearch ? [spaceSearch.selectionStart, spaceSearch.selectionEnd] : null;
-  app.innerHTML = markup;
+  const aiHost = !auth && page === "ai-dialogue" ? app.querySelector?.("#ai-dialogue-host") : null;
+  const modelSettingsHost = !auth && page === "dialogue-models" ? app.querySelector?.("#dialogue-model-settings-host") : null;
+  const modelSettingsFocus = modelSettingsHost?.contains(document.activeElement) ? document.activeElement : null;
+  const aiFocus = aiHost?.contains(document.activeElement) ? document.activeElement : null;
+  if (!auth && page === 'credits' && app.querySelector?.('.credits-page')) {
+    const template = document.createElement('template');
+    template.innerHTML = markup;
+    updateCreditsDOM(app, template.content);
+  } else app.innerHTML = markup;
+  if (modelSettingsHost) { app.querySelector?.("#dialogue-model-settings-host")?.replaceWith(modelSettingsHost); modelSettingsFocus?.focus({ preventScroll:true }); }
+  if (!auth && page === "dialogue-models") dialogueModelSettings?.mount(app.querySelector?.("#dialogue-model-settings-host"));
+  if (aiHost) { app.querySelector?.("#ai-dialogue-host")?.replaceWith(aiHost); aiFocus?.focus({ preventScroll: true }); }
+  if (!auth && page === "ai-dialogue") aiDialogueView?.mount(app.querySelector?.("#ai-dialogue-host"));
   if (spacePosition) {
     const replacement = app.querySelector?.(".space-file-list");
     if (replacement?.dataset.location === spacePosition.key) {
@@ -1261,7 +1421,7 @@ function render(state) {
     }
   }
   if (retainedForm) {
-    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : profileForm ? "profile" : "auth";
+    const formName = wifiForm ? "wifi" : transferForm ? "transfer" : passwordForm ? "password-change" : profileForm ? "profile" : claimForm ? "console-claim" : "auth";
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
@@ -1272,6 +1432,7 @@ function render(state) {
       submit.setAttribute("aria-busy", String(pending));
       if (authForm) submit.innerHTML = pending ? activityLabel(authBusyLabel()) : busy ? authBusyLabel() : authSubmitLabel();
       if (passwordForm) submit.innerHTML = pending ? activityLabel("正在修改…") : busy ? "处理中…" : "确认修改";
+      if (claimForm) submit.textContent = busyFor("devices.claim") ? "正在确认绑定…" : consoleClaimFlow === "entry-wifi" ? "下一步：发现盒子" : "确认绑定到当前账号";
       if (profileForm) submit.innerHTML = pending ? activityLabel("正在保存…") : "保存资料";
     }
     focused?.focus({ preventScroll: true });
@@ -1279,12 +1440,23 @@ function render(state) {
   const nextWalletDialog = app.querySelector?.('.wallet-purchase-dialog');
   if (nextWalletDialog) {
     const buttons = Array.from(nextWalletDialog.querySelectorAll('button:not(:disabled)'));
-    const previous = buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount);
-    (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
-    if (walletDialog) nextWalletDialog.scrollTop = walletDialog.scrollTop;
+    const previous = walletInput ? nextWalletDialog.querySelector('#wallet-custom-amount:not(:disabled)')
+      : buttons.find(button => button.dataset.action === walletFocus?.action && button.dataset.amount === walletFocus?.amount && button.dataset.channel === walletFocus?.channel);
+    if (!nextWalletDialog.contains(document.activeElement) || document.activeElement.disabled) {
+      (previous || buttons.find(button => button.getAttribute('aria-pressed') === 'true') || buttons.find(button => button.dataset.action === 'credits-buy') || nextWalletDialog).focus({ preventScroll: true });
+    }
+    if (walletSelection && previous) previous.setSelectionRange(...walletSelection);
+    if (walletScroll && walletScroll.step !== nextWalletDialog.dataset.step) {
+      nextWalletDialog.scrollTop = 0;
+      nextWalletDialog.focus({ preventScroll: true });
+    } else if (walletScroll) {
+      nextWalletDialog.scrollTop = walletScroll.top;
+      nextWalletDialog.scrollLeft = walletScroll.left;
+    }
   } else if (walletDialog && page === 'credits' && !auth) {
     app.querySelector?.('[data-action="credits-open"]')?.focus({ preventScroll: true });
   }
+  syncWalletCountdown();
   syncFormState();
   // Reattaching a focused form must not pull the user back after they scroll away.
   if (scroll) {
@@ -1293,6 +1465,15 @@ function render(state) {
   }
   if (marketConfirmation) app.querySelector?.('[data-action="market-cancel"]')?.focus();
   if (page === "space") window.wanxSpace?.mounted?.();
+  const pendingPanel = app.querySelector?.(".pending-open");
+  const pendingId = pendingPanel ? currentState.ui?.pendingOpen?.id : null;
+  // Reveal each new request once; background updates must not pull the user
+  // back after they choose a box or scroll elsewhere.
+  if (pendingId && pendingId !== revealedPendingOpenId) {
+    pendingPanel.style.scrollMarginTop = `${(app.querySelector?.(".topbar")?.offsetHeight || 0) + 16}px`;
+    pendingPanel.scrollIntoView?.({ block: "start", behavior: "instant" });
+  }
+  revealedPendingOpenId = pendingId;
 }
 
 function syncFormState() {
@@ -1327,16 +1508,26 @@ function syncFormState() {
 function setupErrorMessage(error) {
   const code = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，请联系设备管理员完成初始化。",
     CLAIM_STATUS_CHECKING: "正在核对盒子归属…",
     CLAIM_STATUS_UNAVAILABLE: "暂时无法核对盒子归属，请检查网络后重新选择盒子；如仍失败，请管理员检查账号服务版本。",
+    OWNER_ALREADY_CHANGED: "盒子归属已变化，请刷新设备列表并核对当前拥有者。",
+    IDEMPOTENCY_CONFLICT: "认领码已用于其他认领请求，请刷新设备列表核对结果。",
+    CONSOLE_CLAIM_NOT_FOUND: "认领码无效，请核对盒子控制台显示的认领码。",
+    CONSOLE_CLAIM_EXPIRED: "认领码已过期，请从盒子控制台获取新的认领码。",
+    CONSOLE_CLAIM_INACTIVE: "认领码已失效，请从盒子控制台重新发起。",
+    CONSOLE_CLAIM_DISABLED: "平台暂未启用认领码功能，请联系管理员。",
+    CONSOLE_CLAIM_RATE_LIMITED: "认领尝试过于频繁，请稍后重试。",
+    CONSOLE_CLAIM_CONFLICT: "认领状态已变化，请刷新设备列表后重试。",
     DEVICE_ALREADY_OWNED: "这台盒子已属于当前账号，无需再次认领。返回盒子列表即可连接或修改 Wi-Fi。",
     DEVICE_OWNED_BY_OTHER: "这台盒子已属于其他账号，需要原主人完成转移后才能认领。",
     LEGACY_BINDING_REVIEW_REQUIRED: "这台盒子保留旧版账号绑定，请联系管理员迁移归属，或完成重置后重新交付。",
     CLAIM_HISTORY_REVIEW_REQUIRED: "这台盒子有尚待核对的交付历史，请联系管理员处理后再认领。",
     DEVICE_RESET_PENDING: "盒子正在完成重置，请等待管理员确认交付就绪后再试。",
     PAIRING_MODE_CLOSED: "盒子正在准备配网，请稍后重新选择；如持续未就绪，请管理员更新并检查盒端状态。",
-    PROTOCOL_CHANGED: "盒子与客户端的配网协议未能匹配，接入已停止（PROTOCOL_CHANGED）。",
+    PROTOCOL_CHANGED: "盒子与客户端的配网协议未能匹配，请更新盒端和客户端后重试（PROTOCOL_CHANGED）。",
     DEVICE_IDENTITY_MISMATCH: "盒子身份校验未通过，接入已停止。请核对目标盒子。",
     LOCAL_TRANSPORT_DISCONNECTED: "蓝牙连接已断开，请靠近盒子并重新扫描。",
     LOCAL_CONNECT_TIMEOUT: "蓝牙连接盒子超时。请靠近盒子，检查电脑蓝牙后重试。",
@@ -1355,7 +1546,23 @@ function setupErrorMessage(error) {
   return messages[key] || `盒子接入未完成，请重试；如仍失败，请联系管理员。${diagnostic}`;
 }
 
-function operationErrorMessage(error) {
+function connectionErrorMessage(error) {
+  const code = String(error?.code || error?.message || "")
+    .replace(/^Error invoking remote method 'wanx-client:connect-box': (?:Error: )?/, "");
+  const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
+    health_unavailable: "连接盒子失败：盒端服务暂不可达，请检查盒子网络和服务后重试。",
+    health_timeout: "连接盒子超时：盒端服务未及时响应，请稍后重试。",
+    health_invalid: "连接盒子失败：盒端服务健康检查未通过，请联系管理员检查服务版本与状态。",
+    netbird_peer_disconnected: "连接盒子失败：盒子当前离线，请确认盒子联网后重试。",
+    netbird_peer_unknown: "连接盒子失败：网络尚未发现此盒子，请刷新设备后重试。",
+  };
+  return Object.hasOwn(messages, code) ? `${messages[code]}（${code}）`
+    : operationErrorMessage(new Error(code), "连接盒子失败，请刷新设备后重试；如仍失败，请联系管理员检查盒子网络与服务。");
+}
+
+function operationErrorMessage(error, fallback) {
   const message = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const boxSessionMessages = {
     BOX_PLATFORM_AUTH_FAILED: "盒子登录验证失败，请重新连接；如仍失败，请联系管理员检查盒端登录服务。",
@@ -1372,6 +1579,8 @@ function operationErrorMessage(error) {
     boxSessionMessages[code] = "盒端服务暂不可用，请稍后重新连接；如仍失败，请联系管理员。";
   if (Object.hasOwn(boxSessionMessages, message)) return `${boxSessionMessages[message]}（${message}）`;
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
       OWNERSHIP_RETAIN_DATA_REQUIRED: "此功能仅转移所有权并保留数据；清空交付请使用盒子清除。",
       OWNERSHIP_TRANSFER_PENDING: "此盒子已有待处理的转移邀请，请等待客户接受或邀请过期。",
       OWNERSHIP_TRANSFER_NOT_FOUND: "未找到属于你的转移邀请，请刷新记录。",
@@ -1449,7 +1658,7 @@ function operationErrorMessage(error) {
       APPLICATION_INSTALL_FAILED: "应用安装失败，请检查磁盘空间和目录权限后重试。",
     };
   const code = Object.keys(messages).find(value => message.includes(value));
-  return messages[code] || marketErrorMessage(error);
+  return messages[code] || fallback || marketErrorMessage(error);
 }
 
 async function run(action, input = {}) {
@@ -1459,6 +1668,7 @@ async function run(action, input = {}) {
   if (request) setupRequest = request;
   if (["provisioning.start", "provisioning.cancel", "auth.logout"].includes(action)) resetWifiPicker();
   notice = null;
+  if (action === "devices.connect") connectionFailure = null;
   codeSent = false;
   const actionAccount = marketAccount;
   const applicationId = input.applicationId;
@@ -1472,7 +1682,7 @@ async function run(action, input = {}) {
   let failure;
   try {
     const setupActions = {
-      "provisioning.start": () => window.wanxSetup.begin(input.mode === "wifi" ? { ...input.candidate, mode: "wifi" } : input.candidate),
+      "provisioning.start": () => window.wanxSetup.begin(input.mode === "console" ? { ...input.candidate, mode: "console", claimCode: input.claimCode } : input.mode === "wifi" ? { ...input.candidate, mode: "wifi", ...(input.expectedDeviceId ? { expectedDeviceId: input.expectedDeviceId } : {}) } : input.candidate),
       "provisioning.confirm": () => window.wanxSetup.confirmPhysical(),
       "provisioning.wifi": () => window.wanxSetup.wifi(input),
       "provisioning.owner": () => window.wanxSetup.confirmOwnership(),
@@ -1485,7 +1695,9 @@ async function run(action, input = {}) {
       setupState = snapshot;
       return { ok: true };
     }
-    const response = await window.wanxClient.action(action, input);
+    const response = action === "provisioning.code-claim"
+      ? { ok: true, value: await window.wanxSetup.redeemClaimCode(input) }
+      : await window.wanxClient.action(action, input);
     if (holdBusy && busyRequest !== operation) return null;
     if (response.state) acceptRemoteState(response.state);
     if (!response.ok) throw new Error(response.code);
@@ -1500,7 +1712,8 @@ async function run(action, input = {}) {
       if (action === "auth.send-reset-code") resetResendAt = Date.now() + 60000;
       else changeResendAt = Date.now() + 60000;
     }
-    failure = action.startsWith("provisioning.") ? setupErrorMessage(error) : action.startsWith("updates.") ? updateGuidance(error.message) : operationErrorMessage(error);
+    failure = action === "devices.connect" ? connectionErrorMessage(error) : action.startsWith("provisioning.") || action === "devices.claim" ? setupErrorMessage(error) : action.startsWith("updates.") ? updateGuidance(error.message) : operationErrorMessage(error);
+    if (action === "devices.connect" && actionAccount === marketAccount) connectionFailure = { deviceId: input.deviceId, message: failure };
     if (!isAppOperation && actionAccount === marketAccount) notice = failure;
     return null;
   } finally {
@@ -1524,6 +1737,11 @@ app.addEventListener("click", async (event) => {
   const action = target.dataset.action;
   if (action === "profile-menu" && page !== "provisioning") { profileMenuOpen = !profileMenuOpen; render(currentState); if (profileMenuOpen) app.querySelector?.('[data-action="show-profile"]')?.focus(); return; }
   if (profileMenuOpen && action !== "logout") profileMenuOpen = false;
+  if (action === "notifications-filter") { notificationFilter = target.dataset.filter === "unread" ? "unread" : "all"; expandedNotificationId = null; render(currentState); return; }
+  if (action === "notifications-select") { expandedNotificationId = expandedNotificationId === target.dataset.id ? null : target.dataset.id; await run("notifications.read", { id: target.dataset.id }); return; }
+  if (action === "notifications-read-all") { expandedNotificationId = null; await run("notifications.read", { all: true }); return; }
+  if (action === "notifications-refresh") { await run("notifications.refresh"); return; }
+  if (action === "notifications-open") { const item = currentState.notifications?.items?.find(row => row.id === target.dataset.id); const result = await run("notifications.open", { id: target.dataset.id }); if (result && item?.applicationId) { page = result.destination === "ai-dialogue" ? "ai-dialogue" : "applications"; render(currentState); } return; }
   if (action === "profile-avatar" || action === "profile-avatar-remove") {
     if (busy || page !== "profile") return;
     await run(action === "profile-avatar" ? "profile.avatar" : "profile.avatar-remove"); return;
@@ -1651,7 +1869,7 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
-  if (["show-applications", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile"].includes(action)) {
+  if (["show-applications", "show-ai-dialogue", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile", "show-notifications", "show-dialogue-models"].includes(action)) {
     if (page === "provisioning") return;
     page = action === "show-maintenance" ? "boxes" : action.slice(5);
     selectedApplicationId = null; posterPreview = null;
@@ -1718,17 +1936,22 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "refresh") { if (page === "provisioning") page = "boxes"; await run("devices.refresh"); if (page === "boxes") await refreshTransfers({ force: true }); return; }
-  if (action === "network-toggle") { await run("network.set-enabled", { enabled: currentState.network?.enabled === false }); return; }
   if (action === "bluetooth-refresh") { await window.wanxBluetooth?.refresh(); return; }
   if (action === "bluetooth-settings") {
     try { await window.wanxDiscovery.openBluetoothSettings(bluetoothState.status === "permission-denied" ? "privacy" : "bluetooth"); }
     catch { notice = "无法自动打开系统设置，请手动打开电脑的蓝牙设置并开启蓝牙、允许万象访问。"; render(currentState); }
     return;
   }
-  if (action === "provisioning") {
+  if (["provisioning", "configure-network"].includes(action)) {
+    const deviceId = action === "configure-network" ? target.dataset.deviceId : null;
+    if (action === "configure-network" && (!deviceIsOwner(deviceId) || currentState.devices?.find(device => device.deviceId === deviceId)?.local)) return;
     resetWifiPicker();
     setupSelection = null;
     selection.reset();
+    setupTargetDeviceId = deviceId;
+    resetConsoleClaim();
+    setupState = { state: "idle" };
+    notice = null;
     page = "provisioning";
     void window.wanxBluetooth?.refresh();
     const operation = { action: "provisioning.reset" };
@@ -1740,6 +1963,50 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "wifi-refresh") { await scanWifi(); return; }
+  if (action === "wifi-password-toggle") {
+    const password = app.querySelector?.('[data-form="wifi"]')?.querySelector('[name="password"]');
+    if (!password || password.disabled) return;
+    const visible = password.type === "password";
+    const cursor = [password.selectionStart, password.selectionEnd];
+    password.type = visible ? "text" : "password";
+    const label = visible ? "隐藏密码" : "显示密码";
+    target.setAttribute("aria-pressed", String(visible));
+    target.setAttribute("aria-label", label);
+    target.setAttribute("title", label);
+    const slash = target.querySelector?.('[data-password-slash]');
+    if (slash) slash.toggleAttribute("hidden", !visible);
+    password.focus({ preventScroll: true });
+    if (cursor[0] !== null) password.setSelectionRange(...cursor);
+    return;
+  }
+  if (["console-claim-online", "console-claim-offline", "console-claim-without-code"].includes(action)) {
+    if (busy || page !== "provisioning" || setupTargetDeviceId) return;
+    selection.reset(); notice = null; consoleClaimNotice = null;
+    if (action === "console-claim-without-code") { resetConsoleClaim(); setupState = { state: "idle" }; }
+    else consoleClaimFlow = action === "console-claim-offline" ? "entry-wifi" : "entry-online";
+    render(currentState); return;
+  }
+  if (action === "console-claim-confirm") {
+    if (busy || setupState.state !== "awaitingCodeClaim" || consoleClaimFlow !== "wifi" || !consoleClaimAttempt) return;
+    await submitConsoleClaim(true); return;
+  }
+  if (action === "console-claim-edit") {
+    if (busy || consoleClaimFlow !== "wifi" || !["terminalError", "restartRequired"].includes(setupState.state)) return;
+    const result = await run("provisioning.cancel");
+    if (!result) return;
+    resetConsoleClaim(); consoleClaimFlow = "entry-wifi"; setupState = { state: "idle" };
+    render(currentState); return;
+  }
+  if (action === "console-claim-refresh") {
+    const receipt = consoleClaimReceipt;
+    if (!receipt || busy) return;
+    const result = await run("devices.claim-status", { deviceId: receipt.deviceId });
+    if (consoleClaimReceipt === receipt && result?.value?.deviceId === receipt.deviceId) {
+      consoleClaimReceipt = { ...receipt, authorizationState: result.value.authorizationState };
+      render(currentState);
+    }
+    return;
+  }
   if (action === "wifi-manual") {
     if (setupState.state !== "awaitingWifi") return;
     wifiPicker.manual = !wifiPicker.manual;
@@ -1757,15 +2024,21 @@ app.addEventListener("click", async (event) => {
     if (!candidate) return;
     const deviceId = discoveryDeviceId(candidate);
     const owner = deviceIsOwner(deviceId);
-    if (action === "select-candidate-wifi" && !owner) return;
-    setupSelection = { mode: owner ? "wifi" : "claim", deviceId };
+    if (setupTargetDeviceId) {
+      if (!deviceIsOwner(setupTargetDeviceId) || deviceId && deviceId !== setupTargetDeviceId) return;
+      setupSelection = { mode: "wifi", deviceId: setupTargetDeviceId, expectedDeviceId: setupTargetDeviceId };
+    } else {
+      if (action === "select-candidate-wifi" && !owner) return;
+      if (consoleClaimFlow === "wifi" && owner) { notice = "此盒子已认领，请从盒子卡片的“配置网络”入口修改 Wi-Fi。"; render(currentState); return; }
+      setupSelection = { mode: consoleClaimFlow === "wifi" ? "console" : owner ? "wifi" : "claim", deviceId };
+    }
     selection.choose(candidate.candidateId);
     return;
   }
   if (action === "provisioning-confirm") { await run("provisioning.confirm"); return; }
   if (action === "provisioning-refresh") { await run("provisioning.refresh"); return; }
   if (action === "provisioning-owner") { await run("provisioning.owner"); return; }
-  if (action === "cancel-provisioning") { selection.reset(); await run("provisioning.cancel"); return; }
+  if (action === "cancel-provisioning") { selection.reset(); await run("provisioning.cancel"); if (consoleClaimFlow === "wifi") { resetConsoleClaim(); setupState = { state: "idle" }; render(currentState); } return; }
   if (action === "connect") {
     const device = currentState.devices?.find((item) => item.deviceId === target.dataset.deviceId);
     if (!device || (!device.local && !currentState.networkReady) || !deviceCanConnect(device)) return;
@@ -1779,7 +2052,13 @@ app.addEventListener("click", async (event) => {
     marketConfirmation = { action: "devices.disconnect", input: {}, title: "断开当前盒子", detail: "当前应用与盒子的连接将失效。重新连接后，请再次打开应用。", verb: "断开" };
     render(currentState); return;
   }
-  if (action === "back-devices") { resetWifiPicker(); page = "boxes"; selection.reset(); notice = null; render(currentState); return; }
+  if (action === "back-devices") {
+    const claimed = Boolean(consoleClaimReceipt);
+    void window.wanxSetup.reset().catch(() => {});
+    resetConsoleClaim(); resetWifiPicker(); page = "boxes"; selection.reset(); setupTargetDeviceId = null; notice = null; render(currentState);
+    if (claimed) await run("devices.refresh");
+    return;
+  }
   if (action === "applications-select-current") {
     await run("applications.select-current", { applicationId: target.dataset.applicationId, version: target.dataset.version });
     return;
@@ -1803,6 +2082,9 @@ function selectWifi(key) {
   const hidden = form.querySelector('[name="hidden"]'); if (hidden) hidden.checked = false;
   updateWifiPicker();
 }
+app.addEventListener("input", event => {
+  if (event.target.id === "wallet-custom-amount") void creditsView.action("credits-custom-change", { amount: event.target.value, value: event.target.value });
+});
 app.addEventListener("change", async (event) => {
   if (event.target.name === "remember" && !event.target.checked && !busy) {
     await run("auth.forget-login");
@@ -1821,7 +2103,7 @@ app.addEventListener("keydown", (event) => {
   const walletDialog = app.querySelector?.('.wallet-purchase-dialog');
   if (walletDialog && event.key === 'Escape') { event.preventDefault(); releaseInteraction(); void creditsView.action('credits-dismiss'); return; }
   if (walletDialog && event.key === 'Tab') {
-    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled)'));
+    const buttons = Array.from(walletDialog.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
     if (buttons.length) {
       event.preventDefault();
       const index = buttons.indexOf(document.activeElement);
@@ -1856,6 +2138,23 @@ function validateNewPassword(data) {
   return null;
 }
 
+async function submitConsoleClaim(scanned) {
+  const attempt = consoleClaimAttempt;
+  const generation = marketGeneration;
+  const result = await run(scanned ? "provisioning.code-claim" : "devices.claim", attempt);
+  if (!result || generation !== marketGeneration || consoleClaimAttempt !== attempt) return;
+  const receipt = result.value;
+  if (!receipt?.deviceId || receipt.ownership !== "claimed") {
+    notice = "暂未获得绑定确认，请重试。";
+    render(currentState); return;
+  }
+  app.querySelector?.('[data-form="console-claim"]')?.reset();
+  consoleClaimAttempt = null;
+  consoleClaimReceipt = { deviceId: receipt.deviceId, authorizationState: receipt.authorizationState || "deviceAckPending" };
+  consoleClaimFlow = "receipt";
+  render(currentState);
+}
+
 app.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (busy) return;
@@ -1863,6 +2162,25 @@ app.addEventListener("submit", async (event) => {
     const data = Object.fromEntries(new FormData(event.target));
     const result = await run("profile.save", { displayName: String(data.displayName || "").trim() });
     if (result) { notice = "资料已保存在这台电脑。"; codeSent = true; render(currentState); }
+    return;
+  }
+  if (event.target.dataset.form === "console-claim") {
+    if (!["entry-online", "entry-wifi"].includes(consoleClaimFlow)) return;
+    consoleClaimNotice = null;
+    const data = Object.fromEntries(new FormData(event.target));
+    const claimCode = String(data.claimCode || "").trim().toUpperCase();
+    if (!/^(?:[A-Z2-7]{10}|[A-Z2-7]{20})$/.test(claimCode)) {
+      consoleClaimNotice = "请输入 10 或 20 位有效认领码。"; render(currentState); return;
+    }
+    if (consoleClaimAttempt?.claimCode !== claimCode)
+      consoleClaimAttempt = { claimCode, clientAttemptId: crypto.randomUUID() };
+    if (consoleClaimFlow === "entry-wifi") {
+      app.querySelector?.('[data-form="console-claim"]')?.reset();
+      consoleClaimFlow = "wifi";
+      setupState = { state: "idle" };
+      notice = null;
+      render(currentState);
+    } else await submitConsoleClaim(false);
     return;
   }
   if (event.target.dataset.form === "transfer") {
@@ -1919,7 +2237,8 @@ function acceptRemoteState(state) {
   const creditsIdentity = state.route === "auth" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]);
   const creditsChanged = creditsView.reset(creditsIdentity);
   const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
-  const accountChanged = account !== marketAccount;
+  const accountChanged = account !== marketAccount || state.account?.clientId !== currentState?.account?.clientId;
+  if (accountChanged || state.activeDeviceId === connectionFailure?.deviceId) connectionFailure = null;
   if (marketConfirmation?.updateReleaseId && (state.upgrades?.client?.phase !== "downloaded" || state.upgrades?.client?.candidate?.releaseId !== marketConfirmation.updateReleaseId)) marketConfirmation = null;
   if (marketConfirmation?.updateDeviceId && (accountChanged || state.activeDeviceId !== marketConfirmation.updateDeviceId || state.upgrades?.box?.deviceId !== marketConfirmation.updateDeviceId || marketConfirmation.updatePlanId && state.upgrades.box.plan?.planId !== marketConfirmation.updatePlanId)) marketConfirmation = null;
   if (marketConfirmation?.updateDeviceId && state.upgrades?.box?.canUpgrade !== true) marketConfirmation = null;
@@ -1928,6 +2247,8 @@ function acceptRemoteState(state) {
     selectedApplicationId = null;
     posterPreview = null;
     profileMenuOpen = false;
+    expandedNotificationId = null;
+    notificationFilter = "all";
     storeCarousel.select(0);
     notice = null;
     resetDiscoveryMetadata();
@@ -1956,6 +2277,7 @@ function acceptRemoteState(state) {
     transferRequest = null;
     ++ownershipRevision;
     if (setupRequest) { setupRequest = null; busy = false; }
+    resetConsoleClaim();
     ownershipTransfers = []; transferDeviceId = null; transferNotice = null; transferResendAt = 0;
     selection.reset();
     marketItems = [];
@@ -1970,6 +2292,7 @@ function acceptRemoteState(state) {
     marketAccount = account;
     marketGeneration++;
     setupState = { state: "idle" };
+    setupTargetDeviceId = null;
   }
   render(state);
   if (creditsChanged && creditsIdentity) void creditsView.refresh();
@@ -1983,9 +2306,10 @@ window.wanxBluetooth?.subscribe(state => {
   if (page === "provisioning" && currentState) render(currentState);
 });
 window.wanxClient.onLocalState(acceptRemoteState);
+window.wanxClient.onAIDialogue?.(value => aiDialogueView?.event(value));
 window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
-  if (!["applications", "space", "boxes", "settings", "credits", "profile"].includes(destination)) return;
+  if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile", "notifications"].includes(destination)) return;
   profileMenuOpen = false;
   page = destination;
   if (page === "credits") void creditsView.refresh();

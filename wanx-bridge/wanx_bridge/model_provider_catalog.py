@@ -93,6 +93,7 @@ class ModelProviderConfig:
     api_base: str
     interval: int = 60
     identity_device_id: str | None = None
+    protocol_version: int = 2
 
     @classmethod
     def from_env(cls) -> ModelProviderConfig | None:
@@ -124,7 +125,9 @@ class ModelProviderConfig:
             require(
                 identity is None or re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", identity) is not None
             )
-            return cls(device, key, base, interval, identity)
+            version = int(os.getenv("WANX_MODEL_PROVIDERS_PROTOCOL_VERSION", "2"))
+            require(version in {2, 3})
+            return cls(device, key, base, interval, identity, version)
         except (ValueError, BridgeAuthError):
             raise BridgeAuthError("MODEL_PROVIDER_LOCAL_CONFIG_INVALID", 503) from None
 
@@ -221,6 +224,7 @@ class ModelProviderCatalog:
         )
         self.lock = asyncio.Lock()
         self.snapshot: dict[str, Any] | None = None
+        self.applied_versions: list[dict[str, str]] = []
         self.deadline = 0.0
         self.history_identity: tuple[Any, ...] | None = None
         self.binding: dict[str, Any] | None = None
@@ -229,6 +233,7 @@ class ModelProviderCatalog:
 
     def clear(self) -> None:
         self.snapshot = None
+        self.applied_versions = []
         self.deadline = 0.0
 
     def active(self) -> dict[str, Any]:
@@ -261,7 +266,7 @@ class ModelProviderCatalog:
                     url,
                     headers={
                         "Authorization": "CentaurOS-DeviceKey " + key,
-                        "X-Nexus-Provisioning-Version": "2",
+                        "X-Nexus-Provisioning-Version": str(self.config.protocol_version),
                         "X-Request-Id": request_id,
                         "Accept": "application/json",
                     },
@@ -305,10 +310,14 @@ class ModelProviderCatalog:
     def _validate(
         self, value: dict[str, Any]
     ) -> tuple[tuple[Any, ...], dict[str, tuple[int, bytes]], float]:
-        require(set(value) == {"schemaVersion", *BINDING, "issuedAt", "expiresAt", "providers"})
+        expected = {"schemaVersion", *BINDING, "issuedAt", "expiresAt", "providers"}
+        if self.config.protocol_version == 3:
+            expected.add("modelAccessState")
+            require(value.get("modelAccessState") in {"ready", "provisioning", "revoking_previous"})
+        require(set(value) == expected)
         require(
             type(value["schemaVersion"]) is int
-            and value["schemaVersion"] == 2
+            and value["schemaVersion"] == self.config.protocol_version
             and value["deviceId"] == self.config.device_id
         )
         for field in ("bindingId", "ownerAccountId"):
@@ -328,16 +337,53 @@ class ModelProviderCatalog:
             issued <= now + 30 and 0 < expires - issued <= 300 and expires > now,
             "MODEL_PROVIDER_LEASE_EXPIRED",
         )
-        require(type(value["providers"]) is list and len(value["providers"]) <= 32)
+        limit = 33 if self.config.protocol_version == 3 else 32
+        require(type(value["providers"]) is list and len(value["providers"]) <= limit)
         current: dict[str, tuple[int, bytes]] = {}
         for item in value["providers"]:
-            _provider(item)
+            stable_item = item
+            if self.config.protocol_version == 3 and type(item) is dict and "billingMode" in item:
+                extra = {
+                    "credentialId",
+                    "credentialGeneration",
+                    "credentialExpiresAt",
+                    "profileRevision",
+                    "billingMode",
+                }
+                require(
+                    type(item) is dict
+                    and set(item) == (PROVIDER_FIELDS - {"allowedProducts"}) | extra
+                )
+                _provider(
+                    {k: v for k, v in item.items() if k not in extra}
+                    | {"allowedProducts": ["wanxiang", "zhijun"] if item["enabled"] else []}
+                )
+                require(
+                    item["providerId"] == "qeetoken" and item["billingMode"] == "account_balance"
+                )
+                for field in ("credentialGeneration", "profileRevision"):
+                    require(
+                        type(item[field]) is str
+                        and re.fullmatch(r"[1-9][0-9]{0,15}", item[field]) is not None
+                    )
+                if item["enabled"]:
+                    require(value["modelAccessState"] == "ready" and item["allowedModels"] == [])
+                    require(
+                        type(item["credentialId"]) is str
+                        and re.fullmatch(r"wc_[a-f0-9]{48}", item["credentialId"]) is not None
+                    )
+                    require(_timestamp(item["credentialExpiresAt"]) >= expires)
+                stable_item = {k: v for k, v in item.items() if k != "credentialExpiresAt"}
+            else:
+                _provider(item)
+                if self.config.protocol_version == 3:
+                    require(item["providerId"] != "qeetoken")
             require(item["providerId"] not in current)
             current[item["providerId"]] = (
                 int(item["configVersion"]),
                 hashlib.sha256(
                     json.dumps(
-                        item, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                        stable_item, sort_keys=True, separators=(",", ":"), ensure_ascii=True
                     ).encode()
                 ).digest(),
             )
@@ -381,35 +427,37 @@ class ModelProviderCatalog:
                     self.clear()
                 self.history_identity, self.history = identity, history
                 self.binding = {k: value[k] for k in BINDING}
-                versions = [
-                    {"providerId": p["providerId"], "configVersion": p["configVersion"]}
-                    for p in value["providers"]
-                ]
-                body = {
-                    "schemaVersion": 2,
-                    "status": "loaded",
-                    **{k: value[k] for k in BINDING - {"deviceId"}},
-                    "providers": versions,
-                }
-                ack = await self._request("POST", key, body)
-                require(
-                    set(ack) == {"accepted", "providers"}
-                    and ack["accepted"] is True
-                    and type(ack["providers"]) is list
-                )
-                require(
-                    all(
-                        type(p) is dict
-                        and set(p) == {"providerId", "configVersion"}
-                        and type(p["providerId"]) is str
-                        and type(p["configVersion"]) is str
-                        for p in ack["providers"]
+                self._ack_key = key
+                if self.config.protocol_version == 2:
+                    versions = [
+                        {"providerId": p["providerId"], "configVersion": p["configVersion"]}
+                        for p in value["providers"]
+                    ]
+                    body = {
+                        "schemaVersion": 2,
+                        "status": "loaded",
+                        **{k: value[k] for k in BINDING - {"deviceId"}},
+                        "providers": versions,
+                    }
+                    ack = await self._request("POST", key, body)
+                    require(
+                        set(ack) == {"accepted", "providers"}
+                        and ack["accepted"] is True
+                        and type(ack["providers"]) is list
                     )
-                )
-                require(
-                    sorted(ack["providers"], key=lambda p: p["providerId"])
-                    == sorted(versions, key=lambda p: p["providerId"])
-                )
+                    require(
+                        all(
+                            type(p) is dict
+                            and set(p) == {"providerId", "configVersion"}
+                            and type(p["providerId"]) is str
+                            and type(p["configVersion"]) is str
+                            for p in ack["providers"]
+                        )
+                    )
+                    require(
+                        sorted(ack["providers"], key=lambda p: p["providerId"])
+                        == sorted(versions, key=lambda p: p["providerId"])
+                    )
                 self.snapshot = {
                     **value,
                     # Providers are device-wide services. Keep the legacy field
@@ -417,6 +465,19 @@ class ModelProviderCatalog:
                     # separate per-product grant (including old zhijun-only rows).
                     "providers": [p for p in value["providers"] if p["enabled"]],
                 }
+                self.applied_versions = [
+                    {
+                        k: p[k]
+                        for k in (
+                            "providerId",
+                            "configVersion",
+                            "credentialGeneration",
+                            "profileRevision",
+                        )
+                        if k in p
+                    }
+                    for p in value["providers"]
+                ]
                 self.deadline = deadline
                 self.last_error = None
                 return self.active()
@@ -430,6 +491,21 @@ class ModelProviderCatalog:
                 ):
                     self.clear()
                 raise
+
+    async def acknowledge_applied(self) -> None:
+        """V3 ACK follows runtime installation, never just HTTP receipt."""
+        if self.config.protocol_version != 3:
+            return
+        value = self.active()
+        versions = self.applied_versions
+        body = {
+            "schemaVersion": 3,
+            "status": "applied",
+            **{k: value[k] for k in BINDING - {"deviceId"}},
+            "providers": versions,
+        }
+        ack = await self._request("POST", self._ack_key, body)
+        require(ack == {"accepted": True, "providers": versions}, "MODEL_PROVIDER_ACK_INVALID")
 
     async def close(self) -> None:
         self.clear()

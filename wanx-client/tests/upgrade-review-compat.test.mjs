@@ -31,8 +31,9 @@ async function temporary(t) {
   return root;
 }
 
-async function artifact(root, version, contract = compatibility, schemaVersion = 2, { entrypoint = "main.mjs", source = "export default {};\n" } = {}) {
+async function artifact(root, version, contract = compatibility, schemaVersion = 2, { entrypoint = "main.mjs", source = "export default {};\n", launchMode } = {}) {
   const manifest = { applicationId, name: "Review app", version, protocolVersion: schemaVersion, runtime: "electron", entrypoint,
+    ...(launchMode ? { launchMode } : {}),
     ...(schemaVersion >= 2 ? { compatibility: contract } : {}) };
   const zip = new ZipFile(), chunks = [];
   zip.addBuffer(Buffer.from(JSON.stringify(manifest)), "wanx-app.json");
@@ -82,6 +83,68 @@ async function shellProvider(client) {
     account: { getIdentity: () => ({ accountId: "review-account", clientId: "review-client" }) },
   }).getCompatibilityContext;
 }
+
+for (const layout of ["legacy", "managed"]) for (const hasRoles of [false, true]) {
+  test(`Zhijun v1 to v3 upgrade preserves ${layout} ${hasRoles ? "role records" : "cache-only profile"}`, async t => {
+    const root = await temporary(t);
+    const contract = { ...compatibility, resourceDependencies: [] };
+    delete contract.requiredExperts;
+    const entry = { entrypoint: "market/main.mjs", launchMode: "shared" };
+    const provider = await shellProvider({
+      snapshot: () => ({ phase: "ready", connection: { deviceId: "review-box" } }),
+      async applicationConnection() {
+        return {
+          context: () => ({ connection: "ready", boxId: "review-box", accountId: "review-account", clientId: "review-client" }),
+          async request(input) {
+            const body = JSON.parse(input.body);
+            return { status: 200, body: Buffer.from(JSON.stringify({ ...backend(), resources: [], bindings: [],
+              ...(input.path.endsWith("prepare") ? { status: "ready", backendProductId: "wanx", applicationId, artifactId: body.artifactId } : {}) })) };
+          },
+        };
+      },
+    });
+    const { result } = await manager(t, root, provider);
+    await result.installVerifiedPackage(await artifact(root, "0.5.1", undefined, 1, entry));
+    const profile = layout === "legacy" ? path.join(root, "application-data", applicationId)
+      : path.join(root, "applications", ".runtime", applicationId);
+    const scope = path.join(profile, "host-scopes", "a".repeat(64));
+    await mkdir(scope, { recursive: true });
+    const preferences = '{"window_placement":{"width":1200}}';
+    await writeFile(path.join(profile, "Preferences"), preferences);
+    const roles = JSON.stringify({ version: 1, users: { "1": [{ id: "role_saved", name: "Work", agentId: "existing-agent", ready: true }] } });
+    if (hasRoles) await writeFile(path.join(scope, "roles.json"), roles);
+    await result.installVerifiedPackage(await artifact(root, "0.5.2", contract, 3, entry));
+    assert.equal((await result.listInstalled())[0].version, "0.5.2");
+    assert.equal((await result.launch(applicationId)).state, "running");
+    await result.stop(applicationId);
+    assert.equal(await readFile(path.join(profile, "Preferences"), "utf8"), preferences);
+    if (hasRoles) assert.equal(await readFile(path.join(scope, "roles.json"), "utf8"), roles);
+    assert.equal((await result.launch(applicationId)).state, "running");
+    await result.stop(applicationId);
+    // Fresh inspection still rejects a future/unknown data format, even after
+    // the exact artifact has already been recorded as a trusted writer.
+    await writeFile(path.join(scope, "roles.json"), JSON.stringify({ version: 2, users: {} }));
+    await assert.rejects(result.launch(applicationId), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
+  });
+}
+
+test("Zhijun schema inspection preserves conflicting provider and invalid Host record barriers", async t => {
+  const root = await temporary(t);
+  const profile = path.join(root, "application-data", applicationId);
+  const scope = path.join(profile, "host-scopes", "b".repeat(64));
+  await mkdir(scope, { recursive: true });
+  await writeFile(path.join(scope, "roles.json"), JSON.stringify({ version: 1, users: {} }));
+  let schema = "2.0.0";
+  const { result } = await manager(t, root, () => ({ ...context(), localDataSchemaVersion: schema }));
+  const value = await artifact(root, "0.5.2", compatibility, 2, { entrypoint: "market/main.mjs", launchMode: "shared" });
+  await assert.rejects(result.installVerifiedPackage(value), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
+  schema = "1.0.0";
+  await result.installVerifiedPackage(value);
+  const access = path.join(root, "applications", ".data-access");
+  await mkdir(access);
+  await writeFile(path.join(access, `${applicationId}.json`), "{invalid");
+  await assert.rejects(result.launch(applicationId), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
+});
 
 test("review: signed v2 reopens after Electron writes a profile using the real shell provider and HTTP gateway", async t => {
   const root = await temporary(t), seen = [];
