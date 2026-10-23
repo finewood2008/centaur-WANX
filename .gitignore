@@ -143,3 +143,6 @@ videos/
 *.mov
 *.keychain*
 *.enc
+
+# Local integration probes, reports, and staging copies
+/.codex-tmp/
