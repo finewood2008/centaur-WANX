@@ -13,11 +13,18 @@ export function createSecureAccountStore({ filePath, safeStorage }) {
   };
   return {
     async load() {
-      check();
+      // A new/unused store has nothing to decrypt. Do not open Keychain for it.
+      let encrypted;
       try {
-        return JSON.parse(safeStorage.decryptString(await readFile(filePath)));
+        encrypted = await readFile(filePath);
       } catch (error) {
         if (error.code === "ENOENT") return null;
+        throw new Error("SECURE_STORAGE_READ_FAILED");
+      }
+      check();
+      try {
+        return JSON.parse(safeStorage.decryptString(encrypted));
+      } catch {
         throw new Error("SECURE_STORAGE_READ_FAILED");
       }
     },

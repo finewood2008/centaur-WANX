@@ -1,6 +1,6 @@
 {
   "name": "wanx-workspace",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
@@ -14,6 +14,14 @@
     "test": "npm run test:client",
     "start": "npm run start:client",
     "package:mac": "npm run package:client:mac",
-    "package:windows": "npm run package:client:windows"
+    "package:windows": "npm run package:client:windows",
+    "start:mini": "npm --prefix wanx-client start",
+    "start:studio": "npm --prefix wanx-team-client start",
+    "test:studio": "npm --prefix wanx-studio run check",
+    "test:team-client": "npm --prefix wanx-team-client test",
+    "package:mini:mac": "npm --prefix wanx-client run package:mac",
+    "package:studio:mac": "npm --prefix wanx-team-client run package:mac",
+    "package:mini:windows": "npm --prefix wanx-client run package:windows",
+    "package:studio:windows": "npm --prefix wanx-team-client run package:windows"
   }
 }

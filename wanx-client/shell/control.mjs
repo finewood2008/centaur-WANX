@@ -64,6 +64,7 @@ export function registerControlActions({
   credits,
   creditWallet,
   accountProfile,
+  notifications,
   aiDialogue,
   support,
   uiState,
@@ -231,6 +232,17 @@ export function registerControlActions({
     });
   }
   register("credit-payment-timing", input => timings?.creditPayment(input));
+  for (const method of ["read", "refresh", "open"]) register(`notifications-${method}`, async input => {
+    if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (!notifications) throw new Error("NOTIFICATIONS_UNAVAILABLE");
+    if (method === "refresh") return notifications.refresh();
+    if (method === "read") return notifications.markRead(input?.all === true ? { all: true } : { id: text(input?.id, 64, "NOTIFICATION_INVALID_ID") });
+    const target = notifications.target(text(input?.id, 64, "NOTIFICATION_INVALID_ID"));
+    if (target.category === "application") return { destination: "applications" };
+    if (target.applicationId === DIALOGUE_APPLICATION_ID) { desktop?.showManagement("ai-dialogue"); return { destination: "ai-dialogue" }; }
+    if (target.applicationId) return uiState.requestOpen(target.applicationId);
+    if (target.category === "task") return openConnectedDashboard(client, dashboards);
+  });
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {
       if (client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
@@ -400,7 +412,7 @@ export function registerControlActions({
     return uiState.cancelOpen({ intentId: text(input?.intentId, 128, "invalid_intent") });
   });
   register("desktop-open", (input) => {
-    if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile"].includes(input?.page)) throw new Error("invalid_page");
+    if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile", "notifications"].includes(input?.page)) throw new Error("invalid_page");
     desktop?.showManagement(input.page);
   });
   register("desktop-hide", () => desktop?.hidePanel());
@@ -431,7 +443,18 @@ export function registerControlActions({
       if (method === "list") return market.list();
       const id = text(input?.applicationId, 64, "invalid_application_id");
       const operation = () => market[method](id);
-      if (method === "candidate" || !uiState) return operation();
+      if (method === "candidate") {
+        const accountId = client.snapshot().account.accountId;
+        const result = operation();
+        if (notifications) {
+          void Promise.resolve(result).then(async value => {
+            const installed = (await applications.listInstalled()).some(row => row.applicationId === id);
+            if (client.snapshot().account?.accountId === accountId) notifications.candidate(id, value, installed);
+          }).catch(() => {}); // Notification observation never changes market results.
+        }
+        return result;
+      }
+      if (!uiState) return operation();
       return uiState.runApplicationOperation(id, { install: "installing", uninstall: "uninstalling", rollback: "rolling-back" }[method], operation);
     });
   }

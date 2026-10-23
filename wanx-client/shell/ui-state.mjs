@@ -13,7 +13,7 @@ const errorCode = (error) => {
 // Main-process UI coordination only. Preferences are hints, never authorization.
 export async function createUIState({
   client, account, applications, preferenceFile, serviceURL,
-  onChanged = () => {}, onOpened = () => {},
+  onChanged = () => {}, onOpened = () => {}, onOperation = () => {},
 }) {
   let preferences = { version: 1, lastDevices: {} };
   try {
@@ -100,15 +100,17 @@ export async function createUIState({
     assertOpen();
     if (!applicationID(id)) throw fail("INVALID_APPLICATION_ID");
     if (operations.has(id) && operations.get(id).phase !== "failed") throw fail("MARKET_OPERATION_BUSY");
-    const current = { phase };
+    const current = { phase }, accountId = account.snapshot().accountId;
     operations.set(id, current);
     emit();
     try {
       const value = await operation();
       if (operations.get(id) === current) operations.delete(id);
+      if (!value?.canceled) { try { onOperation({ accountId, applicationId: id, phase, status: "succeeded" }); } catch { /* A notification must not fail an installation. */ } }
       return value;
     } catch (error) {
       if (operations.get(id) === current) operations.set(id, { phase: "failed", error: errorCode(error) });
+      try { onOperation({ accountId, applicationId: id, phase, status: "failed" }); } catch { /* Preserve the original operation error. */ }
       throw error;
     } finally { emit(); }
   }

@@ -97,10 +97,11 @@ dev = [
 octop = "octop.cli.main:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/octop"]
+packages = ["src/octop", "wanx-studio/backend/wanx_studio"]
 
 [tool.hatch.build]
 include = [
+    "wanx-studio/backend/wanx_studio/**/*.py",
     "src/octop/**/*.py",
     "src/octop/**/*.json",
     "src/octop/**/*.md",

@@ -1,0 +1,143 @@
+/* Uses the existing WANX / CentaurAI light palette; dark values keep its warm hue. */
+:root{
+  color-scheme:light;
+  --canvas:#faf7f2;
+  --sidebar:#f3ece2;
+  --panel:#f6f0e8;
+  --surface:#fffdfa;
+  --surface-muted:#f1e9df;
+  --surface-hover:#eee5d9;
+  --ink:#302d29;
+  --text-secondary:#686159;
+  --muted:#8a8176;
+  --line:#e7e0d6;
+  --line-strong:#d9cec0;
+  --accent:#a35c43;
+  --accent-hover:#824731;
+  --accent-soft:#f5eae2;
+  --accent-selected:#ebd9cb;
+  --on-accent:#fffdfa;
+  --focus:#c78d70;
+  --success:#547762;
+  --success-soft:#eff4ee;
+  --warning:#91672e;
+  --warning-soft:#f5ecdc;
+  --danger:#a14038;
+  --danger-soft:#fbefed;
+  --shadow:#4f37291a;
+  --scrim:#30282066;
+  --blue:var(--accent);
+  --orange:var(--accent);
+  color:var(--ink);
+  background:var(--canvas);
+}
+:root[data-theme=dark]{
+  color-scheme:dark;
+  --canvas:#262421;
+  --sidebar:#211f1c;
+  --panel:#2b2824;
+  --surface:#312e29;
+  --surface-muted:#37322c;
+  --surface-hover:#403930;
+  --ink:#eee8e0;
+  --text-secondary:#c4bbb0;
+  --muted:#a69a8c;
+  --line:#443e36;
+  --line-strong:#5a5045;
+  --accent:#d39b7e;
+  --accent-hover:#e0ad92;
+  --accent-soft:#3e3028;
+  --accent-selected:#4b372b;
+  --on-accent:#251e19;
+  --focus:#c9977f;
+  --success:#a2b7a0;
+  --success-soft:#2d382c;
+  --warning:#d4b37d;
+  --warning-soft:#3b3124;
+  --danger:#dfa198;
+  --danger-soft:#422d29;
+  --shadow:#00000033;
+  --scrim:#15120fd1;
+}
+body,.main{background:var(--canvas)}
+button{background:var(--surface);border-color:var(--line-strong);color:var(--text-secondary)}
+button:hover:not(:disabled){background:var(--surface-hover);border-color:var(--line-strong)}
+button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline-color:var(--focus)}
+input,textarea,select{color:var(--ink);caret-color:var(--accent)}
+input::placeholder,textarea::placeholder{color:var(--muted)}
+.primary,.send{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.primary:hover:not(:disabled),.send:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover);color:var(--on-accent)}
+.sidebar{background:var(--sidebar)}
+.brand{padding:0 3px 27px;gap:10px;color:var(--ink)}
+.brand:hover{background:transparent!important}
+.brand img.brand-mark{width:34px;height:43px;object-fit:contain;flex-shrink:0}
+.brand>span.brand-copy{display:block;font-size:13px;letter-spacing:0;line-height:1.4}
+.brand-copy strong{font-weight:650;white-space:nowrap}
+.brand .brand-copy small{font-family:Georgia,"Times New Roman",serif;font-size:24px;font-weight:500;letter-spacing:-.7px;color:var(--accent);margin-top:0;line-height:1.15}
+.new-project{background:var(--surface);border-color:var(--line-strong);color:var(--accent);box-shadow:none}
+.nav-home.selected,.project-item.active{background:var(--accent-selected);color:var(--accent)}
+.project-symbol{background:var(--surface);border-color:var(--line-strong);color:var(--accent)}
+.environment{background:var(--surface);border-color:var(--line)}
+.avatar{background:var(--surface-muted);color:var(--accent)}
+.topbar,.project-header,.steps{background:var(--canvas)}
+.global-alert.info{background:var(--accent-soft);border-color:var(--line);color:var(--text-secondary)}
+.home h1{color:var(--ink);font-family:"Songti SC","STSong",Georgia,serif;font-weight:600}
+.home h1>span,.eyebrow>span{color:var(--accent)}
+.eyebrow>span{background:var(--accent)}
+.idea-box,.idea-box textarea{background:var(--surface)}
+.idea-box{border-color:var(--line-strong);box-shadow:0 6px 22px var(--shadow)}
+.idea-box:focus-within,.composer:focus-within{border-color:var(--accent)}
+.inspiration,.project-card{background:var(--surface);border-color:var(--line)}
+.inspiration:hover{background:var(--surface-hover);border-color:var(--line-strong)}
+.card-icon.blue,.card-icon.orange,.card-icon.purple{background:var(--accent-soft);color:var(--accent)}
+.card-link,.example-link{color:var(--accent)}
+.pill{background:var(--surface-muted);color:var(--text-secondary)}
+.pill.preview,.pill.waiting,.pill.example{background:var(--warning-soft);color:var(--warning)}
+.pill.installed,.pill.accepted{background:var(--success-soft);color:var(--success)}
+.pill.building{background:var(--accent-soft);color:var(--accent)}
+.step.current{color:var(--accent)}
+.step.current>span{background:var(--accent-selected);color:var(--accent)}
+.step.done,.step.done>span{color:var(--success)}
+.conversation{background:var(--canvas)}
+.artifact-pane{background:var(--panel)}
+.pane-heading h2 svg,.assistant-avatar{color:var(--accent)}
+.assistant-avatar{background:var(--accent-soft);border-color:var(--line)}
+.message-body{color:var(--text-secondary)}
+.message.user .message-body{background:var(--surface-muted);border-color:var(--line);color:var(--ink)}
+.answer-options button{background:var(--surface);border-color:var(--line-strong);color:var(--text-secondary)}
+.build-event-card{background:var(--surface);border-color:var(--line)}
+.build-icon{color:var(--accent);background:var(--accent-soft);border-color:var(--line)}
+.build-icon.completed{color:var(--success);background:var(--success-soft);border-color:var(--line)}
+.build-log{background:var(--surface-muted)}
+.question-card{background:var(--warning-soft);border-color:var(--line-strong)}
+.composer{background:var(--surface);border-color:var(--line-strong);box-shadow:none}
+.composer textarea{color:var(--ink)}
+.send:disabled{background:var(--surface-muted);color:var(--muted)}
+.artifact-tabs,.preview-toolbar,.pane-footer,.footer-reason{background:var(--panel)}
+.artifact-tabs button.active{color:var(--accent)}
+.artifact-tabs button.active:after{background:var(--accent)}
+.artifact-tabs small,.field-chips span{background:var(--surface-muted);color:var(--text-secondary);border-color:var(--line)}
+.document-top h2,.brief-section h3{color:var(--ink)}
+.brief-section h3:before{background:var(--accent)}
+.document-state{background:var(--warning-soft);border-color:var(--line);color:var(--warning)}
+.document-state.confirmed{background:var(--success-soft);border-color:var(--line);color:var(--success)}
+.capability-chips>span{color:var(--accent);background:var(--accent-soft);border-color:var(--line)}
+.dependency{background:var(--warning-soft);border-color:var(--line-strong)}
+.version-icon{background:var(--accent-soft);color:var(--accent);border-color:var(--line)}
+.version-icon.muted{background:var(--surface-muted);color:var(--muted)}
+.preview-illustration{background:var(--surface-muted);color:var(--accent);border-color:var(--line)}
+.modal{background:var(--surface);border-color:var(--line);box-shadow:0 20px 90px var(--shadow)}
+.modal input:not([type=checkbox]),.modal textarea,.modal select{background:var(--canvas);border-color:var(--line-strong);color:var(--ink)}
+.modal input[type=checkbox]{accent-color:var(--accent)}
+.appearance{padding:4px 0 0}
+.appearance-label{display:block;font-size:10px;color:var(--muted);margin:0 2px 8px}
+.theme-switch{display:flex;gap:3px;padding:3px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface-muted)}
+.theme-switch button{flex:1;min-width:0;gap:4px;font-size:9px;padding:7px 5px;border:0;border-radius:5px;color:var(--muted);background:transparent;white-space:nowrap}
+.theme-switch button[aria-pressed=true]{background:var(--surface);color:var(--accent);box-shadow:0 1px 3px var(--shadow)}
+@media(max-width:1100px){.brand{gap:7px}.brand img.brand-mark{width:29px;height:39px}.brand>span.brand-copy{font-size:12px}.brand .brand-copy small{font-size:23px}}
+@media(max-width:850px){.brand img.brand-mark{width:32px;height:39px}.brand>span.brand-copy{display:none}.sidebar-bottom{display:block}.sidebar-bottom .environment,.sidebar-bottom .profile,.appearance-label,.theme-switch button span{display:none}.appearance{padding-bottom:16px}.theme-switch{flex-direction:column;padding:3px}.theme-switch button{padding:9px}.brand{padding-bottom:25px}}
+.connection-dot,.preview-toolbar .connection-dot,.status-dot.installed,.status-dot.completed{background:var(--success)}
+.status-dot.building,.status-dot.running,.thinking i{background:var(--accent)}
+.status-dot.waiting,.status-dot.preview{background:var(--warning)}
+.status-dot.failed{background:var(--danger)}
+.event-line>span{background:var(--muted)}

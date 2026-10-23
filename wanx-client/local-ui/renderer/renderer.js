@@ -18,6 +18,8 @@ let page = "applications";
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
+let notificationFilter = "all";
+let expandedNotificationId = null;
 const aiDialogueView = window.createAIDialogueView?.({
   request: (action, input) => window.wanxClient.action(action, input),
   onBoxes: () => { page = "boxes"; render(currentState); },
@@ -228,6 +230,8 @@ const selection = createDiscoverySelection({
   },
   onNotice(issue) {
     const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
       unavailable: "当前运行时尚未接入本地配网能力",
       expired: "扫描结果已过期，请重新扫描盒子。",
       reselect_failed: "未能连接所选盒子，请靠近盒子并重新扫描后重试。",
@@ -351,11 +355,11 @@ function shellHeader(title) {
   const activePage = page === "provisioning" ? "boxes" : page === "application-detail" ? "applications" : page;
   const name = currentState.account?.profile?.displayName || "万象用户";
   return `<header class="topbar">
-    <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
+    <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">个人版</span></strong><small>CentaurAI-WanX Mini</small></span></button>
     <h1 class="sr-only">${title}</h1>
     <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["space", "空间"], ["boxes", "盒子"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
-    <div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></header>`;
+    <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -368,6 +372,26 @@ function profileView() {
     <section class="profile-card profile-credits"><div><h3>积分</h3><p class="profile-credit-balance">${escapeHTML(creditsView.label())}</p></div><button class="button small" data-action="show-credits">查看积分明细<span aria-hidden="true"> ›</span></button></section>
     <section class="profile-card profile-account"><h3>万象账号</h3><dl><dt>绑定手机号</dt><dd>${escapeHTML(account.maskedPhone || "暂未提供")}</dd><dt>资料保存</dt><dd>当前电脑</dd></dl><p class="muted">头像和昵称仅保存在这台电脑，按万象账号分别保存。</p></section>
     </div></div>`;
+}
+
+function notificationView() {
+  const center = currentState.notifications || { items: [], unreadCount: 0, taskStatus: "disconnected" };
+  const items = (center.items || []).filter(item => notificationFilter !== "unread" || !item.readAt || item.id === expandedNotificationId);
+  const status = { disconnected: "连接盒子后接收应用任务消息。", connecting: "正在连接任务消息…", unavailable: "任务消息暂时无法同步，稍后会自动重试。", "upgrade-required": "此盒子需更新后才能同步半人马环通知。" }[center.taskStatus];
+  return `<div class="app-layout">${shellHeader("通知中心")}<div class="page-content notification-page">
+    <div class="page-heading"><div><h2>通知中心</h2><p class="muted">应用动态与任务进展，都在这里。</p></div><button class="button" data-action="notifications-refresh" ${busy ? "disabled" : ""}>刷新</button></div>
+    ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    <div class="notification-toolbar"><div class="notification-filters" role="group" aria-label="筛选通知"><button data-action="notifications-filter" data-filter="all" aria-pressed="${notificationFilter === "all"}">全部</button><button data-action="notifications-filter" data-filter="unread" aria-pressed="${notificationFilter === "unread"}">未读${center.unreadCount ? ` ${center.unreadCount}` : ""}</button></div><button class="text-button" data-action="notifications-read-all" ${!center.unreadCount || busy ? "disabled" : ""}>全部已读</button></div>
+    ${status ? `<p class="muted notification-sync" role="status">${status}</p>` : ""}
+    ${center.storageError ? `<p class="notice error" role="status">通知暂时无法保存在本机，请检查系统安全存储后重启万象。</p>` : ""}
+    <section class="notification-list" aria-label="消息列表">${items.length ? items.map(item => {
+      const expanded = expandedNotificationId === item.id;
+      const date = new Date(item.createdAt);
+      const time = Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date) : "";
+      return `<article class="notification-card ${item.readAt ? "" : "unread"}"><span class="notification-kind" aria-hidden="true">${item.category === "task" ? "↗" : item.category === "system" ? "◈" : "▦"}</span><div class="notification-main"><button class="notification-summary" data-action="notifications-select" data-id="${escapeHTML(item.id)}" aria-expanded="${expanded}"><span class="notification-title">${escapeHTML(item.title)}${!item.readAt ? '<i class="notification-unread-dot" aria-label="未读"></i>' : ""}</span><span class="notification-meta">${item.category === "task" ? "任务消息" : item.category === "system" ? "系统通知" : "应用动态"}${item.deviceName ? ` · ${escapeHTML(item.deviceName)}` : ""}<time>${escapeHTML(time)}</time></span><span class="notification-body ${expanded ? "expanded" : ""}">${escapeHTML(item.body)}</span></button>${expanded && (item.applicationId || item.category === "task") ? `<button class="text-button" data-action="notifications-open" data-id="${escapeHTML(item.id)}">${item.applicationId ? "打开应用" : "打开万象控制台"} ↗</button>` : ""}</div></article>`;
+    }).join("") : `<div class="notification-empty"><span aria-hidden="true">✧</span><h3>${notificationFilter === "unread" ? "未读消息都看完了" : "暂时没有通知"}</h3><p class="muted">有新的应用动态或任务进展时，会在这里提醒你。</p></div>`}</section>
+    <p class="muted notification-footnote">通知按当前账号保存在这台电脑。</p>
+  </div></div>`;
 }
 
 function resendSeconds() {
@@ -432,7 +456,7 @@ function authView() {
   const reset = authMode === "reset";
   const newPassword = register || reset;
   return `<div class="auth-layout"><section class="auth-card">
-    <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象</strong><small>CentaurAI-WanX</small></span></button>
+    <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">个人版</span></strong><small>CentaurAI-WanX Mini</small></span></button>
     <h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
         ${reset ? `<p class="muted">通过账号绑定的手机号验证身份，重置后请用新密码登录。</p>` : `<div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>`}
         <form id="auth-form" data-form="auth" data-mode="${authMode}" novalidate>
@@ -457,6 +481,8 @@ function updateBytes(value) {
 
 function updateGuidance(code) {
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     PLAN_STALE: "盒子状态已变化，请重新检查并生成更新计划。",
     UPDATE_IN_PROGRESS: "已有更新正在进行，请刷新该任务的进度。",
     UNSUPPORTED_PLATFORM: "此平台尚未通过更新验证，请继续使用当前版本并联系维护人员。",
@@ -749,6 +775,8 @@ function pendingOpenView() {
 function marketErrorMessage(error) {
   const message = String(error?.code || error?.message || error || "");
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     BOX_APPLICATION_PLATFORM_SESSION_REQUIRED: "请登录万象并选择已关联的盒子后打开此应用。",
     BOX_APPLICATION_RUNTIME_UPDATE_REQUIRED: "盒子需要更新万象服务后才能打开此应用，请联系管理员。",
     BOX_APPLICATION_ACCESS_DENIED: "此账号尚未获得应用使用权限，请联系管理员启用并授权。",
@@ -1313,7 +1341,7 @@ function render(state) {
     : page === "ai-dialogue" ? `<div class="app-layout ai-dialogue-layout">${shellHeader("AI对话")}<div id="ai-dialogue-host"></div></div>`
     : page === "dialogue-models" ? `<div class="app-layout">${shellHeader("AI 对话模型")}<div class="page-content dialogue-model-settings-page"><div id="dialogue-model-settings-host"></div></div></div>`
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
-    : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
+    : page === "notifications" ? notificationView() : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if (markup === renderedMarkup) { if (page === "dialogue-models") dialogueModelSettings?.mount(app.querySelector?.("#dialogue-model-settings-host")); syncFormState(); storeCarousel.mount(app.querySelector?.(".store-carousel"), !auth && page === "applications" && !marketConfirmation && !profileMenuOpen); if (page === "ai-dialogue") aiDialogueView?.mount(app.querySelector?.("#ai-dialogue-host")); return; }
   renderedMarkup = markup;
   // Reuse the actual Wi-Fi form when setup updates. This preserves typed secrets,
@@ -1480,6 +1508,8 @@ function syncFormState() {
 function setupErrorMessage(error) {
   const code = typeof error === "string" ? error : String(error?.code || error?.message || "");
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     DEVICE_NOT_ENROLLED: "盒子尚未完成平台注册，请联系设备管理员完成初始化。",
     CLAIM_STATUS_CHECKING: "正在核对盒子归属…",
     CLAIM_STATUS_UNAVAILABLE: "暂时无法核对盒子归属，请检查网络后重新选择盒子；如仍失败，请管理员检查账号服务版本。",
@@ -1520,6 +1550,8 @@ function connectionErrorMessage(error) {
   const code = String(error?.code || error?.message || "")
     .replace(/^Error invoking remote method 'wanx-client:connect-box': (?:Error: )?/, "");
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
     health_unavailable: "连接盒子失败：盒端服务暂不可达，请检查盒子网络和服务后重试。",
     health_timeout: "连接盒子超时：盒端服务未及时响应，请稍后重试。",
     health_invalid: "连接盒子失败：盒端服务健康检查未通过，请联系管理员检查服务版本与状态。",
@@ -1547,6 +1579,8 @@ function operationErrorMessage(error, fallback) {
     boxSessionMessages[code] = "盒端服务暂不可用，请稍后重新连接；如仍失败，请联系管理员。";
   if (Object.hasOwn(boxSessionMessages, message)) return `${boxSessionMessages[message]}（${message}）`;
   const messages = {
+      NOTIFICATION_BOX_REQUIRED: "请先连接这条通知对应的盒子，再打开任务。",
+      NOTIFICATION_NOT_FOUND: "这条通知已不可用，请刷新通知列表。",
       OWNERSHIP_RETAIN_DATA_REQUIRED: "此功能仅转移所有权并保留数据；清空交付请使用盒子清除。",
       OWNERSHIP_TRANSFER_PENDING: "此盒子已有待处理的转移邀请，请等待客户接受或邀请过期。",
       OWNERSHIP_TRANSFER_NOT_FOUND: "未找到属于你的转移邀请，请刷新记录。",
@@ -1703,6 +1737,11 @@ app.addEventListener("click", async (event) => {
   const action = target.dataset.action;
   if (action === "profile-menu" && page !== "provisioning") { profileMenuOpen = !profileMenuOpen; render(currentState); if (profileMenuOpen) app.querySelector?.('[data-action="show-profile"]')?.focus(); return; }
   if (profileMenuOpen && action !== "logout") profileMenuOpen = false;
+  if (action === "notifications-filter") { notificationFilter = target.dataset.filter === "unread" ? "unread" : "all"; expandedNotificationId = null; render(currentState); return; }
+  if (action === "notifications-select") { expandedNotificationId = expandedNotificationId === target.dataset.id ? null : target.dataset.id; await run("notifications.read", { id: target.dataset.id }); return; }
+  if (action === "notifications-read-all") { expandedNotificationId = null; await run("notifications.read", { all: true }); return; }
+  if (action === "notifications-refresh") { await run("notifications.refresh"); return; }
+  if (action === "notifications-open") { const item = currentState.notifications?.items?.find(row => row.id === target.dataset.id); const result = await run("notifications.open", { id: target.dataset.id }); if (result && item?.applicationId) { page = result.destination === "ai-dialogue" ? "ai-dialogue" : "applications"; render(currentState); } return; }
   if (action === "profile-avatar" || action === "profile-avatar-remove") {
     if (busy || page !== "profile") return;
     await run(action === "profile-avatar" ? "profile.avatar" : "profile.avatar-remove"); return;
@@ -1830,7 +1869,7 @@ app.addEventListener("click", async (event) => {
     return;
   }
   if (action === "logout") { await run("auth.logout"); return; }
-  if (["show-applications", "show-ai-dialogue", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile", "show-dialogue-models"].includes(action)) {
+  if (["show-applications", "show-ai-dialogue", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile", "show-notifications", "show-dialogue-models"].includes(action)) {
     if (page === "provisioning") return;
     page = action === "show-maintenance" ? "boxes" : action.slice(5);
     selectedApplicationId = null; posterPreview = null;
@@ -2208,6 +2247,8 @@ function acceptRemoteState(state) {
     selectedApplicationId = null;
     posterPreview = null;
     profileMenuOpen = false;
+    expandedNotificationId = null;
+    notificationFilter = "all";
     storeCarousel.select(0);
     notice = null;
     resetDiscoveryMetadata();
@@ -2268,7 +2309,7 @@ window.wanxClient.onLocalState(acceptRemoteState);
 window.wanxClient.onAIDialogue?.(value => aiDialogueView?.event(value));
 window.wanxClient.onNavigate?.((destination) => {
   if (!currentState || currentState.route === "auth" || page === "provisioning") return;
-  if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile"].includes(destination)) return;
+  if (!["applications", "ai-dialogue", "space", "boxes", "settings", "credits", "profile", "notifications"].includes(destination)) return;
   profileMenuOpen = false;
   page = destination;
   if (page === "credits") void creditsView.refresh();

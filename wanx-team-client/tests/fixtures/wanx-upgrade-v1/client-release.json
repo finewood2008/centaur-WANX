@@ -1,0 +1,54 @@
+{
+  "payload": {
+    "schemaVersion": 1,
+    "purpose": "wanx.release.v1",
+    "version": "1.2.0",
+    "buildId": "20261014.1",
+    "metadataSequence": 1,
+    "securityEpoch": 1,
+    "channel": "stable",
+    "backendContract": 1,
+    "hostProtocol": 1,
+    "dataPolicy": "backward-compatible",
+    "createdAt": "2026-10-14T00:00:00Z",
+    "expiresAt": "2099-01-01T00:00:00Z",
+    "requiredExtensions": [],
+    "releaseId": "wanx-client-1.2.0-win32-x64",
+    "product": "wanx-client",
+    "platform": {
+      "os": "win32",
+      "osVersion": "10.0.26100",
+      "arch": "x64"
+    },
+    "supportedOsVersions": [
+      "10.0.26100"
+    ],
+    "compatibleApplications": [
+      {
+        "applicationId": "zhijun",
+        "versionRange": ">=1.0.0 <2.0.0"
+      }
+    ],
+    "components": {
+      "wanx-client": {
+        "version": "1.2.0",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    "artifacts": [
+      {
+        "component": "wanx-client",
+        "url": "https://artifacts.example.test/wanx-1.2.0.exe",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "sha512": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        "sizeBytes": 8192,
+        "kind": "nsis"
+      }
+    ]
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "keyId": "test-only-release-v1",
+    "signatureBase64": "RsbC0VknpaKfAB4pB/5QW0dHtJA5RRVD9OeqEeeXvNK3ajR2TyPTiTvkZkdGqqXQjLGsJyRd25VZzppD2qOQDA=="
+  }
+}

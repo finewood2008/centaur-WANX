@@ -75,6 +75,9 @@ async function rawState() {
 
 const actions = {
   ...Object.fromEntries(["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
+  "notifications.read": input => ipcRenderer.invoke("wanx-client:notifications-read", { id: input?.id, all: input?.all === true }),
+  "notifications.refresh": () => ipcRenderer.invoke("wanx-client:notifications-refresh"),
+  "notifications.open": input => ipcRenderer.invoke("wanx-client:notifications-open", { id: input?.id }),
   "wallet.quote": input => walletRequest("quote", input),
   "wallet.catalog": () => walletRequest("catalog"),
   "wallet.balance": () => walletRequest("balance"),
@@ -251,7 +254,7 @@ contextBridge.exposeInMainWorld(
     },
     onNavigate(listener) {
       const receive = (_event, page) => {
-        if (["applications", "ai-dialogue", "space", "boxes", "settings", "profile", "credits"].includes(page)) listener(page);
+        if (["applications", "ai-dialogue", "space", "boxes", "settings", "profile", "credits", "notifications"].includes(page)) listener(page);
       };
       ipcRenderer.on("wanx-client:navigate", receive);
       return () => ipcRenderer.removeListener("wanx-client:navigate", receive);

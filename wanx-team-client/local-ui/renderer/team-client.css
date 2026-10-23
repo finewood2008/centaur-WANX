@@ -1,0 +1,33 @@
+/* Team additions retain WANX's existing layout, palette and components. */
+.account-menu {display:flex;align-items:center;gap:14px}
+.team-role-control {display:flex;align-items:center;gap:7px;white-space:nowrap}
+.team-role-control > small {font-size:10px;color:var(--muted,#8f8276)}
+.team-role-control select {width:auto;min-width:85px;min-height:32px;margin:0;padding:5px 22px 5px 9px;border:1px solid var(--border,#e5ddd3);border-radius:8px;background:var(--surface,#fffdfa);font:inherit;font-size:12px;color:inherit}
+.brand-copy strong {letter-spacing:.02em}
+.brand-copy small {letter-spacing:.08em}
+.team-discussion-dialog {position:fixed;inset:0;width:min(760px,calc(100vw - 48px));max-height:calc(100vh - 64px);margin:auto;padding:32px;border:1px solid var(--border,#e5ddd3);border-radius:18px;background:var(--surface,#fffdfa);color:var(--text,#302b25);box-shadow:0 24px 90px #302b2526}
+.team-discussion-dialog::backdrop {background:#302b2560;backdrop-filter:blur(3px)}
+.team-discussion-dialog h2 {font-size:26px;margin:10px 0 14px}
+.team-discussion-dialog p {font-size:14px;line-height:1.8;color:var(--muted,#8f8276)}
+.team-discussion-close {position:absolute;right:20px;top:16px;border:0;background:transparent;font-size:25px;color:inherit;cursor:pointer}
+.team-capability-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:22px 0}
+.team-capability-grid section {border:1px solid var(--border,#e5ddd3);border-radius:12px;padding:16px}
+.team-capability-grid h3 {font-size:15px;margin:0 0 5px}
+.team-capability-grid p {font-size:12px;margin:5px 0 12px}
+.team-capability-grid small {font-size:11px;color:var(--accent,#aa5b3e)}
+.team-discussion-actions {display:flex;justify-content:flex-end;gap:8px}
+@media(max-width:1040px){.team-role-control>small{display:none}.account-menu{gap:8px}.team-role-control select{min-width:76px;font-size:11px;padding-left:6px}}
+.team-role-badge {display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:12px;line-height:1.4;white-space:nowrap;color:var(--text,#302b25)}
+.team-role-badge small {font-size:10px;color:var(--muted,#8f8276)}
+.team-real-section {margin:24px 0;padding:22px;border:1px solid var(--border,#e5ddd3);border-radius:15px;background:var(--surface,#fffdfa)}
+.team-real-section h3 {font-size:17px;margin:0 0 10px}
+.team-table-scroll {overflow:auto}.team-table {border-collapse:collapse;width:100%;font-size:13px;text-align:left}.team-table th,.team-table td {padding:13px 10px;border-bottom:1px solid var(--border,#e5ddd3)}
+.team-publish-row {display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--border,#e5ddd3);gap:20px}.team-publish-row:last-child{border:0}.team-publish-row small {display:block;color:var(--muted,#8f8276);margin-top:5px;font-size:12px}
+.team-form label {display:block;font-size:13px;font-weight:500;margin:15px 0}.team-form input,.team-form select {display:block;width:100%;margin-top:7px}.team-form input[type=checkbox]{display:inline;width:16px;margin:0 5px 0 0;min-height:16px;height:16px}.team-member-checks{border:1px solid var(--border,#e5ddd3);border-radius:8px;padding:10px 14px}.team-form-error{color:#b43c29!important}
+.team-auth-entry {margin:18px auto 0;display:flex;gap:14px;justify-content:center}.team-resources {margin:36px auto;max-width:820px;padding:28px;border:1px solid var(--border,#e5ddd3);border-radius:15px}
+.store-page .application-card-footer {grid-column:1 / -1;color:var(--muted,#8f8276);font-size:12px;border-top:1px solid var(--border,#e5ddd3);padding-top:10px}
+
+/* Keep the personal Applications layout; Company uses the same shelf styling. */
+.applications-tab:focus-visible{outline:2px solid var(--fn-color-brand);outline-offset:4px;border-radius:3px}
+.company-applications-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+@media(max-width:650px){.company-applications>.section-heading{align-items:flex-start;flex-direction:column;gap:16px}.company-applications-actions{width:100%}}

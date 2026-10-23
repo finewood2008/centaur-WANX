@@ -1,0 +1,23 @@
+{
+  "product": "WANX",
+  "version": "1.0.0",
+  "branch": "wanx1.0",
+  "backend": "shared",
+  "clients": [
+    {
+      "directory": "wanx-client",
+      "edition": "personal",
+      "name": "万象个人版",
+      "brand": "CentaurAI-WanX Mini",
+      "version": "1.0.0"
+    },
+    {
+      "directory": "wanx-team-client",
+      "edition": "team",
+      "name": "万象团队版",
+      "brand": "CentaurAI-WanX Studio",
+      "version": "1.0.0"
+    }
+  ],
+  "builderVersion": "1.0.0"
+}
