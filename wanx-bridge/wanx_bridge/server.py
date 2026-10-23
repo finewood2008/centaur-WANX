@@ -1,7 +1,8 @@
-"""Public WANX boundary; the unmodified upstream is reachable only on loopback.
+"""Public WANX boundary with leased streaming to independent HTTP services.
 
 No upstream implementation modules, database files, or signing secrets are used here.
-Only the adapter holds an ordinary upstream login session. Public callers use an
+Octop stays on loopback; native Semantica uses its separately configured origin.
+Only the adapter holds an ordinary Octop login session. Public callers use an
 opaque bridge token whose authority is checked for the entire request/stream.
 """
 
@@ -12,7 +13,7 @@ import contextlib
 import inspect
 import json
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import Headers, QueryParams
+from starlette.requests import ClientDisconnect
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
@@ -31,6 +33,9 @@ from .browser_expert import BrowserExpertPreparer
 from .config import BridgeAuthError
 from .managed_resource_guard import ManagedResourceGuard
 from .readiness import diagnose_application
+from .semantica import DEFAULT_URL as SEMANTICA_URL
+from .semantica import create_router as semantica_router
+from .semantica.desktop_routes import create_desktop_router
 from .upstream import BridgeUpstreamError
 from .version import bridge_build_metadata, version_snapshot
 from .zhijun_bootstrap import recover_private_profile
@@ -159,7 +164,10 @@ def _response_headers(response: httpx.Response, origin: str) -> dict[str, str]:
     blocked = _HOP | _SECRET_RESPONSE | connection
     output = {k: v for k, v in response.headers.items() if k.lower() not in blocked}
     if "location" in output:
-        location = urlsplit(output["location"])
+        try:
+            location = urlsplit(output["location"])
+        except ValueError as exc:
+            raise _error("BOX_PLATFORM_UPSTREAM_REDIRECT", 502) from exc
         # Never hand an upstream JWT, OAuth code, or external credential redirect
         # to a renderer. Relative ordinary app redirects remain supported.
         if location.fragment or any(
@@ -194,6 +202,9 @@ def create_app(
     adapter: Any,
     *,
     upstream_url: str = "http://127.0.0.1:18088",
+    semantica_url: str = SEMANTICA_URL,
+    semantica_config_file: Path = Path("/data/.octop/semantica.json"),
+    semantica_desktop_url: str | None = None,
     clipboard_url: str | None = "http://127.0.0.1:8092",
     http_transport: Any = None,
     lease_check_interval: float = 0.25,
@@ -441,40 +452,41 @@ def create_app(
         await live()
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
-    @app.api_route(
-        "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-    )
-    async def proxy(request: Request, path: str) -> Response:
-        path = "/" + path
-        if not _allowed(path, request.method):
-            raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
-        protected = path == "/api" or path.startswith("/api/") and path not in _PUBLIC
-        marker = _credentials(request.headers, request.query_params, required=protected)
-        session = await _call(auth.authorize, marker) if marker else None
-        token = _field(session, "upstream_token") if session else None
-        is_clipboard = path == "/api/clipboard/v1" or path.startswith("/api/clipboard/v1/")
-        service_origin = origin
-        forward_token = token
-        if is_clipboard:
-            if not clipboard_url:
-                raise _error("CLIPBOARD_SERVICE_UNAVAILABLE", 503)
-            if _field(session, "user").get("application_id", "wanx") != "wanx":
-                raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
-            service_origin = clipboard_url.rstrip("/")
-            forward_token = marker
-        if path.startswith("/assets/"):
-            asset_response = await assets.response(request, path)
-            if asset_response is not None:
-                if session:
-                    await _call(auth.assert_live, session)
-                return asset_response
+    async def forward(
+        request: Request,
+        *,
+        path: str,
+        target_origin: str,
+        session: Any,
+        token: str | None,
+        guard_resources: bool = True,
+        filter_request_headers: Callable[[list[tuple[str, str]]], list[tuple[str, str]]]
+        | None = None,
+        filter_response_headers: Callable[[dict[str, str]], dict[str, str]] | None = None,
+    ) -> Response:
         guard = asyncio.create_task(watch(session)) if session else None
         upstream = None
         pending = None
+        request_complete = asyncio.Event()
+
+        async def request_chunks() -> AsyncIterator[bytes]:
+            async for chunk in request.stream():
+                yield chunk
+            request_complete.set()
+
+        async def wait_disconnect() -> None:
+            # Only one task may consume ASGI receive while the upload is active.
+            # Once drained, detect cancellation even before upstream sends headers.
+            await request_complete.wait()
+            while True:
+                if (await request.receive())["type"] == "http.disconnect":
+                    raise ClientDisconnect()
+
+        disconnect_task = asyncio.create_task(wait_disconnect())
         try:
-            content = request.stream()
+            content = request_chunks()
             request_body = None
-            if managed_resources.needs_body(request.method, path):
+            if guard_resources and managed_resources.needs_body(request.method, path):
                 data = bytearray()
                 async with asyncio.timeout(30):
                     async for chunk in content:
@@ -485,32 +497,41 @@ def create_app(
                             await _call(auth.assert_live, session)
                 request_body = bytes(data)
                 content = request_body
-            await managed_resources.inspect_request(request.method, path, request_body)
+            if guard_resources:
+                await managed_resources.inspect_request(request.method, path, request_body)
             if session:
                 await _call(auth.assert_live, session)
-            headers = _headers(request.headers, forward_token)
-            if is_clipboard:
-                # This is an authenticated server-to-server hop, not a browser
-                # origin. The service calls this bridge's existing user/Space
-                # routes with the same lease, so each storage hop rechecks it.
-                headers = [(k, v) for k, v in headers if k.lower() != "origin"]
+            outgoing = _headers(request.headers, token)
+            if filter_request_headers is not None:
+                outgoing = filter_request_headers(outgoing)
             req = client.build_request(
                 request.method,
-                _target(service_origin, path, request.query_params, forward_token),
-                headers=headers,
+                _target(target_origin, path, request.query_params, token),
+                headers=outgoing,
                 content=content,
             )
             # AsyncClient keeps a shared response cookie jar. Never let a prior
             # upstream response attach another user's cookies to this request.
             req.headers.pop("cookie", None)
             pending = asyncio.create_task(client.send(req, stream=True))
+            waiting = {pending, disconnect_task}
             if guard:
-                done, _ = await asyncio.wait({pending, guard}, return_when=asyncio.FIRST_COMPLETED)
-                if guard in done:
-                    await guard
+                waiting.add(guard)
+            done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+            if disconnect_task in done:
+                await disconnect_task
+            if guard in done:
+                await guard
             upstream = await pending
             ontology = re.fullmatch(r"/api/agents/([^/]+)/ontology", path)
-            if session and request.method == "GET" and ontology and upstream.status_code == 404:
+            if (
+                guard_resources
+                and target_origin == origin
+                and session
+                and request.method == "GET"
+                and ontology
+                and upstream.status_code == 404
+            ):
                 # Only retry the read. Never replay ontology edits or model calls.
                 # Existing sessions may predate primary-profile provisioning.
                 async def recover() -> tuple[bytes, bool]:
@@ -540,13 +561,17 @@ def create_app(
                         return bytes(data), repaired
 
                 pending = asyncio.create_task(recover())
-                done, _ = await asyncio.wait({pending, guard}, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(
+                    {pending, guard, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if disconnect_task in done:
+                    await disconnect_task
                 if guard in done:
                     await guard
                 data, repaired = await pending
                 await upstream.aclose()
                 if not repaired:
-                    headers = _response_headers(upstream, service_origin)
+                    headers = _response_headers(upstream, target_origin)
                     for name in ("content-length", "content-encoding"):
                         headers.pop(name, None)
                     guard.cancel()
@@ -556,19 +581,27 @@ def create_app(
                 await _call(auth.assert_live, session)
                 req = client.build_request(
                     "GET",
-                    _target(service_origin, path, request.query_params, token),
+                    _target(target_origin, path, request.query_params, token),
                     headers=_headers(request.headers, token),
                 )
                 req.headers.pop("cookie", None)
                 upstream = None
                 pending = asyncio.create_task(client.send(req, stream=True))
-                done, _ = await asyncio.wait({pending, guard}, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(
+                    {pending, guard, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if disconnect_task in done:
+                    await disconnect_task
                 if guard in done:
                     await guard
                 upstream = await pending
-            headers = _response_headers(upstream, service_origin)
-            if upstream.status_code == 200 and managed_resources.needs_response(
-                request.method, path
+            headers = _response_headers(upstream, target_origin)
+            if filter_response_headers is not None:
+                headers = filter_response_headers(headers)
+            if (
+                guard_resources
+                and upstream.status_code == 200
+                and managed_resources.needs_response(request.method, path)
             ):
                 data = bytearray()
                 async with asyncio.timeout(30):
@@ -594,7 +627,7 @@ def create_app(
                     headers.pop(name, None)
                 headers["cache-control"] = "no-store"
                 return JSONResponse(filtered, headers=headers)
-        except BaseException:
+        except BaseException as exc:
             if pending and not pending.done():
                 pending.cancel()
                 with contextlib.suppress(BaseException):
@@ -608,7 +641,14 @@ def create_app(
                 guard.cancel()
                 with contextlib.suppress(BaseException):
                     await guard
+            if isinstance(exc, ClientDisconnect):
+                return Response(status_code=499)
             raise
+        finally:
+            # StreamingResponse owns disconnect monitoring after response headers.
+            disconnect_task.cancel()
+            with contextlib.suppress(BaseException):
+                await disconnect_task
 
         async def stream() -> AsyncIterator[bytes]:
             iterator = upstream.aiter_raw().__aiter__()
@@ -649,6 +689,79 @@ def create_app(
                     await upstream.aclose()
 
         return StreamingResponse(stream(), status_code=upstream.status_code, headers=headers)
+
+    async def authorize_native(request: Request) -> Any:
+        marker = _credentials(request.headers, request.query_params, required=True)
+        session = await _call(auth.authorize, marker)
+        await _call(auth.assert_live, session)
+        return session
+
+    app.include_router(
+        semantica_router(
+            service_url=semantica_url,
+            octop_url=origin,
+            client=client,
+            authorize=authorize_native,
+            forward=forward,
+        )
+    )
+
+    async def assert_semantica_live(session: Any) -> None:
+        await _call(auth.assert_live, session)
+
+    app.include_router(
+        create_desktop_router(
+            config_file=semantica_config_file,
+            service_url=semantica_desktop_url,
+            box_id=getattr(getattr(auth, "config", None), "device_id", None),
+            octop_url=origin,
+            client=client,
+            authorize=authorize_native,
+            watch=watch,
+            assert_live=assert_semantica_live,
+        )
+    )
+
+    @app.api_route(
+        "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    )
+    async def proxy(request: Request, path: str) -> Response:
+        path = "/" + path
+        if not _allowed(path, request.method):
+            raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
+        protected = path == "/api" or path.startswith("/api/") and path not in _PUBLIC
+        marker = _credentials(request.headers, request.query_params, required=protected)
+        session = await _call(auth.authorize, marker) if marker else None
+        token = _field(session, "upstream_token") if session else None
+        is_clipboard = path == "/api/clipboard/v1" or path.startswith("/api/clipboard/v1/")
+        service_origin = origin
+        forward_token = token
+        if is_clipboard:
+            if not clipboard_url:
+                raise _error("CLIPBOARD_SERVICE_UNAVAILABLE", 503)
+            if _field(session, "user").get("application_id", "wanx") != "wanx":
+                raise _error("BOX_PLATFORM_ROUTE_FORBIDDEN", 403)
+            service_origin = clipboard_url.rstrip("/")
+            forward_token = marker
+        if path.startswith("/assets/"):
+            asset_response = await assets.response(request, path)
+            if asset_response is not None:
+                if session:
+                    await _call(auth.assert_live, session)
+                return asset_response
+
+        def clipboard_headers(headers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+            # This server-to-server hop reuses the lease for each storage hop.
+            return [(k, v) for k, v in headers if k.lower() != "origin"]
+
+        return await forward(
+            request,
+            path=path,
+            target_origin=service_origin,
+            session=session,
+            token=forward_token,
+            filter_request_headers=clipboard_headers if is_clipboard else None,
+        )
 
     @app.websocket("/{path:path}")
     async def websocket_proxy(websocket: WebSocket, path: str) -> None:

@@ -33,6 +33,9 @@ from .model_provider_runtime import ModelProviderRuntime
 from .oidc import OidcError, OidcProvider, loopback_origin
 from .resources import ResourceCatalog, ResourceConfig
 from .resources_runtime import ResourceRuntime
+from .semantica import DEFAULT_URL as SEMANTICA_URL
+from .semantica import configured_origin as semantica_origin
+from .semantica.model_relay import ModelRelay
 from .server import create_app
 from .upstream import BridgeUpstreamError, OctopAdapter
 
@@ -51,6 +54,7 @@ class RuntimeConfig:
     bind_port: int
     upstream_url: str
     credentials_file: Path
+    semantica_url: str = SEMANTICA_URL
 
     @property
     def issuer(self) -> str:
@@ -69,6 +73,7 @@ class RuntimeConfig:
                 Path(
                     os.getenv("WANX_BRIDGE_ADMIN_CREDENTIAL_FILE", "/data/.octop/credential.json")
                 ),
+                semantica_origin(),
             )
             if (
                 config.oidc_host not in {"127.0.0.1", "::1"}
@@ -261,6 +266,13 @@ async def run(stop: asyncio.Event | None = None) -> None:
     provider = await asyncio.to_thread(load_provider, config, runtime)
     auth = PlatformAuthService(config)
     adapter = OctopAdapter(runtime.upstream_url, provider, runtime.credentials_file)
+    semantica_models = ModelRelay(
+        adapter,
+        runtime.credentials_file.parent / "semantica.json",
+        config.state_dir,
+        service_url=os.getenv("WANX_BRIDGE_SEMANTICA_URL"),
+        box_id=config.device_id,
+    )
     resources = None
     try:
         resource_config = ResourceConfig.from_env()
@@ -312,6 +324,7 @@ async def run(stop: asyncio.Event | None = None) -> None:
 
     try:
         private_app = create_private_app(provider)
+        semantica_models.register(private_app)
         if models is not None:
             models.register_routes(private_app)
         private = _new_server(private_app, runtime.oidc_host, runtime.oidc_port)
@@ -335,6 +348,9 @@ async def run(stop: asyncio.Event | None = None) -> None:
                 auth,
                 adapter,
                 upstream_url=runtime.upstream_url,
+                semantica_url=runtime.semantica_url,
+                semantica_config_file=runtime.credentials_file.parent / "semantica.json",
+                semantica_desktop_url=os.getenv("WANX_BRIDGE_SEMANTICA_URL"),
                 resources=resources,
                 clipboard_url=os.getenv("WANX_BRIDGE_CLIPBOARD_URL", "http://127.0.0.1:8092")
                 or None,
@@ -370,6 +386,7 @@ async def run(stop: asyncio.Event | None = None) -> None:
         if models is not None:
             await models.close()
         try:
+            await semantica_models.close()
             await adapter.close()
         finally:
             auth.close()
