@@ -78,7 +78,7 @@ function parseStatus(data) {
   return {
     enabled: true,
     phase: ready ? "ready" : recovering ? "recovering" : "unavailable",
-    reason: ready ? null : "network_unavailable",
+    reason: ready ? null : recovering && data.reason === "network_status_stale" ? "network_status_stale" : "network_unavailable",
     peers: ready || recovering ? peers : [],
   };
 }
@@ -258,13 +258,13 @@ export function createNetwork({
       // Let an existing status/start request settle before scheduling recovery.
       if (pending) await pending;
       if (!current(generation) || !proxy) return snapshot();
-      // If every active target still accepts a fresh connection, a switch did
+      // If any active target still accepts a fresh connection, a switch did
       // not invalidate the data path. Keep healthy streams and engine intact.
       const targets = [...agents.values()];
       if (targets.length && !recoveryRequired) {
         const reachable = await Promise.all(targets.map((agent) => agent.probe()));
         if (!current(generation)) return snapshot();
-        if (reachable.every(Boolean)) return refresh();
+        if (reachable.some(Boolean)) return refresh();
       }
       while (pending) await pending;
       if (!current(generation) || !proxy) return snapshot();
@@ -314,11 +314,11 @@ export function createNetwork({
         else if (next.phase === "ready") {
           for (const [url, agent] of agents) {
             const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
-            if (
-              !next.peers.some((peer) => peer.ip === host && peer.connected) &&
-              state.peers.some((peer) => peer.ip === host && peer.connected)
-            ) {
-              agent.resetConnections();
+            if (!next.peers.some((peer) => peer.ip === host)) {
+              // A removed peer loses access immediately. A connectivity hint
+              // alone must not tear down an otherwise healthy application stream.
+              agent.destroy();
+              agents.delete(url);
             }
           }
         }

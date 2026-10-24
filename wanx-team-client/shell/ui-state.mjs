@@ -61,7 +61,7 @@ export async function createUIState({
   const connected = (state) => state.account?.phase === "authenticated" &&
     state.phase === "ready" && deviceID(state.connection?.deviceId) &&
     (state.connection.mode === "local" || (state.network?.enabled !== false &&
-      state.network?.phase === "ready" && state.platform?.phase === "ready" && state.connection.mode === "netbird"));
+      ["ready", "recovering"].includes(state.network?.phase) && state.platform?.phase === "ready" && state.connection.mode === "netbird"));
   const assertIntent = (current) => {
     assertOpen();
     if (current.generation !== generation || current.identity !== identityKey()) throw fail("ACCOUNT_SESSION_CHANGED");

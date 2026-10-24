@@ -363,3 +363,14 @@ test("Windows tray click toggles only the popup and ordinary dismissal cancels o
   assert.equal(h.control.hidden, true);
   h.desktop.dispose();
 });
+
+test("tray keeps a verified box connected during management recovery", () => {
+  const h = harness();
+  h.update({ ...ready, network: { enabled: true, phase: "recovering" } });
+  assert.match(h.trays[0].menu.getMenuItemById("connection-status").label, /已连接/);
+  h.update({ ...ready, phase: "recovering", network: { enabled: true, phase: "recovering" } });
+  assert.doesNotMatch(h.trays[0].menu.getMenuItemById("connection-status").label, /已连接/);
+  h.update({ ...ready, network: { enabled: true, phase: "unavailable" } });
+  assert.doesNotMatch(h.trays[0].menu.getMenuItemById("connection-status").label, /已连接/);
+  h.desktop.dispose();
+});

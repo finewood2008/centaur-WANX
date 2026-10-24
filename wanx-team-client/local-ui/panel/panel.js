@@ -74,7 +74,7 @@
   };
   const phaseText = { opening: "正在打开…", installing: "正在安装…", uninstalling: "正在卸载…", "rolling-back": "正在回退…", selecting: "正在切换版本…" };
   const signedIn = () => state.account?.phase === "authenticated";
-  const ready = () => signedIn() && state.phase === "ready" && state.connection?.deviceId && (state.connection.mode === "local" || (state.network?.enabled !== false && state.network?.phase === "ready" && state.platform?.phase === "ready"));
+  const ready = () => signedIn() && state.phase === "ready" && state.connection?.deviceId && (state.connection.mode === "local" || (state.network?.enabled !== false && ["ready", "recovering"].includes(state.network?.phase) && state.platform?.phase === "ready"));
   const devices = () => state.devices || [];
   const available = () => devices().filter(device => device.canOpen);
   function boxStatus() {

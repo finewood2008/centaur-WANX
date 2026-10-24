@@ -147,3 +147,113 @@ test("cancellation remains requested until the device acknowledges a safe termin
   assert.equal(h.service.snapshot().operation.state, "queued");
   await assert.rejects(h.service.resume({ operationId: "op-1", confirmed: true }), { code: "UPDATE_ACTION_NOT_ALLOWED" });
 });
+
+const currentRelease = { releaseId: "installed-release", version: "1.1.0-rc.2", channel: "test",
+  components: ["wanx"], verifiedAt: inventory.observedAt };
+const completedOperation = { ...operation, state: "succeeded", lastSequence: 8, allowedActions: ["status"] };
+
+test("current release and completed history are explicit device evidence, never candidate metadata", async () => {
+  const h = await harness();
+  assert.equal(h.service.snapshot().currentRelease, null);
+  assert.equal(h.service.snapshot().latestOperation, null);
+  await h.service.check();
+  assert.equal(h.service.snapshot().currentRelease, null);
+  h.device({ inventory, currentRelease, latestOperation: completedOperation, canUpgrade: false });
+  const checked = await h.service.check();
+  assert.deepEqual(checked.currentRelease, currentRelease);
+  assert.deepEqual(checked.latestOperation, completedOperation);
+  assert.equal(checked.operation.state, "succeeded");
+  assert.equal(checked.canUpgrade, false);
+  h.device({ inventory, currentRelease, latestOperation: completedOperation, canUpgrade: true,
+    candidate: { status: "available", release: plan.release, releaseDigest: plan.releaseDigest } });
+  assert.equal((await h.service.check()).phase, "available", "historical success cannot hide a newer offered update");
+  assert.equal((await h.service.plan({ releaseId: plan.releaseId })).phase, "planned");
+  h.device({ inventory: { ...inventory, reportSequence: 4 } });
+  await h.service.check();
+  assert.equal(h.service.snapshot().currentRelease, null, "new inventory cannot inherit a prior release declaration");
+  assert.equal(h.service.snapshot().latestOperation, null);
+  h.scope({ accountId: "account-2", deviceId: "other-box" });
+  assert.equal(h.service.snapshot().currentRelease, null);
+  assert.equal(h.service.snapshot().operation, null);
+});
+
+test("current release rejects malformed or mismatched evidence and ignores stale inventory claims", async () => {
+  for (const invalid of [plan.release, { ...currentRelease, components: [] },
+    { ...currentRelease, components: ["wanx", "wanx"] }, { ...currentRelease, components: ["semantica"] },
+    { ...currentRelease, verifiedAt: "2026-10-14T11:59:00Z" }, { ...currentRelease, version: null }]) {
+    const h = await harness(); h.device({ inventory, currentRelease: invalid });
+    await assert.rejects(h.service.check(), { code: "UPDATE_INVALID_RESPONSE" });
+    assert.equal(h.service.snapshot().currentRelease, null);
+  }
+  for (const observedAt of ["2026-10-14T10:00:00Z", "2026-10-14T13:00:00Z"]) {
+    const h = await harness(); h.device({ inventory: { ...inventory, observedAt }, currentRelease: { ...currentRelease, verifiedAt: observedAt } });
+    assert.equal((await h.service.check()).currentRelease, null);
+  }
+});
+
+test("equivalent UTC timestamp spellings bind the current release to the same inventory instant", async () => {
+  for (const verifiedAt of ["2026-10-14T12:00:00Z", "2026-10-14T12:00:00.000+00:00", "2026-10-14T20:00:00+08:00"]) {
+    const h = await harness();
+    h.device({ inventory, currentRelease: { ...currentRelease, verifiedAt } });
+    assert.equal((await h.service.check()).currentRelease.verifiedAt, verifiedAt);
+  }
+  for (const verifiedAt of ["not-a-date", "2026-10-14T12:00:00.001Z"]) {
+    const h = await harness();
+    h.device({ inventory, currentRelease: { ...currentRelease, verifiedAt } });
+    await assert.rejects(h.service.check(), { code: "UPDATE_INVALID_RESPONSE" });
+  }
+});
+
+test("active operations outrank terminal history and stale history cannot replace accepted evidence", async () => {
+  const h = await harness();
+  const activeOperation = { ...operation, operationId: "op-active", state: "downloading", lastSequence: 3 };
+  h.device({ inventory, currentRelease, activeOperation, latestOperation: completedOperation });
+  assert.equal((await h.service.check()).operation.operationId, "op-active");
+  for (const latestOperation of [{ ...completedOperation, deviceId: "other-box" }, { ...completedOperation, state: "queued" },
+    { ...completedOperation, lastSequence: 7 }]) {
+    h.device({ inventory, latestOperation });
+    await assert.rejects(h.service.check(), { code: latestOperation.lastSequence === 7 ? "UPDATE_STALE_RESPONSE" : "UPDATE_INVALID_RESPONSE" });
+    assert.equal(h.service.snapshot().operation.operationId, "op-active");
+    assert.equal(h.service.snapshot().latestOperation.lastSequence, 8);
+  }
+  h.device({ inventory, activeOperation: { ...activeOperation, lastSequence: 2 }, latestOperation: completedOperation });
+  await assert.rejects(h.service.check(), { code: "UPDATE_STALE_RESPONSE" });
+  assert.equal(h.service.snapshot().operation.lastSequence, 3);
+});
+
+test("terminal status refreshes current release with inventory and cannot retain an old declaration", async () => {
+  const h = await harness(); h.device({ inventory, activeOperation: operation });
+  await h.service.check(); h.operation(completedOperation);
+  h.device({ inventory: { ...inventory, reportSequence: 4 }, currentRelease, latestOperation: completedOperation });
+  assert.deepEqual((await h.service.status({ operationId: "op-1" })).currentRelease, currentRelease);
+  h.device({ inventory: { ...inventory, reportSequence: 5 }, latestOperation: completedOperation });
+  assert.equal((await h.service.status({ operationId: "op-1" })).currentRelease, null);
+});
+
+test("new ownership clears prior upgrade evidence and permits a fresh inventory sequence", async () => {
+  const h = await harness();
+  h.device({ inventory, currentRelease, latestOperation: completedOperation });
+  await h.service.check();
+  const newInventory = { ...inventory, ownershipEpoch: inventory.ownershipEpoch + 1, reportSequence: 1 };
+  h.device({ inventory: newInventory, latestOperation: null });
+  const changed = await h.service.check();
+  assert.equal(changed.inventory.reportSequence, 1);
+  for (const key of ["operation", "latestOperation", "currentRelease", "plan"]) assert.equal(changed[key], null);
+  h.device({ inventory: { ...inventory, reportSequence: 100 }, latestOperation: completedOperation });
+  await assert.rejects(h.service.check(), { code: "UPDATE_STALE_RESPONSE" });
+  assert.equal(h.service.snapshot().inventory.ownershipEpoch, newInventory.ownershipEpoch);
+  assert.equal(h.service.snapshot().operation, null);
+  for (const ownershipEpoch of [undefined, -1, 1.5, "2"]) {
+    h.device({ inventory: { ...newInventory, ownershipEpoch } });
+    await assert.rejects(h.service.check(), { code: "UPDATE_INVALID_RESPONSE" });
+  }
+});
+
+test("ownership change during terminal status refresh clears the old task and plan", async () => {
+  const h = await harness();
+  h.device({ inventory, currentRelease, activeOperation: operation });
+  await h.service.check(); h.operation(completedOperation);
+  h.device({ inventory: { ...inventory, ownershipEpoch: inventory.ownershipEpoch + 1, reportSequence: 1 } });
+  const changed = await h.service.status({ operationId: operation.operationId });
+  for (const key of ["operation", "latestOperation", "currentRelease", "plan", "candidate"]) assert.equal(changed[key], null);
+});

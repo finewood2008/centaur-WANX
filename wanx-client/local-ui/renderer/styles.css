@@ -472,6 +472,11 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .box-identity p { margin-top: 6px; color: var(--fn-text-tertiary); font-size: 12px; }
 .box-status { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--fn-border-primary); border-radius: 20px; color: var(--fn-text-tertiary); font-size: 11px; white-space: nowrap; }
 .box-status.ready { color: #58705a; border-color: #dbe5d9; background: #f4f8f1; }
+.box-version-summary { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--fn-border-primary); }
+.box-version-copy { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+.box-version-copy strong { display: block; margin: 6px 0; font-size: 17px; font-weight: 500; }
+.box-version-copy p { margin: 5px 0 0; font-size: 12px; }
+.box-version-summary .settings-actions { flex-wrap: wrap; }
 .box-resource-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 25px; padding-top: 21px; border-top: 1px solid var(--fn-border-primary); }
 .box-resource-grid > div { min-width: 0; padding: 0 18px; border-left: 1px solid var(--fn-border-primary); }
 .box-resource-grid > div:first-child { border: 0; padding-left: 0; }
@@ -1176,3 +1181,6 @@ input:focus, select:focus { border-color: var(--fn-color-brand); }
 .brand-copy small {letter-spacing:.4px}
 @media(max-width:1100px){.topbar{gap:16px}.topbar .main-nav .nav-item{min-width:70px;padding-inline:12px}.topbar .team-role-badge{display:none}.topbar .header-personal{gap:10px}.topbar .account-menu{gap:8px}}
 @media(max-width:760px){.topbar .brand-copy{display:grid}.topbar .brand-copy strong{font-size:14px}.topbar .brand-copy small{display:block;font-size:9px}.topbar .brand-edition{font-size:9px}.topbar{gap:10px}}
+
+.update-components td div + div { margin-top: 6px; }
+.update-components td small { display: block; margin-top: 6px; }

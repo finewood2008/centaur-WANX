@@ -605,3 +605,13 @@ test('panel clears a transfer action network notice from the same batch without 
  await h.click({transfer:id,command:'pause-batch'});assert.match(h.html,/等待网络，恢复后自动继续/);assert.doesNotMatch(h.html,/notice error/);
  await h.space({...uploadState(),tasks:[{...task,phase:'paused',error:null}]});assert.match(h.html,/已暂停/);assert.doesNotMatch(h.html,/等待网络，恢复后自动继续|notice error/);
 });
+
+test("panel retains a healthy existing connection during management recovery", async () => {
+  const state = { ...connectedState(), connection: { mode: "netbird", deviceId: "box-102", name: "测试盒子" }, network: { enabled: true, phase: "recovering" } };
+  const h = await harness(state);
+  assert.match(h.html, /card-caption">已连接/);
+  await h.update({ ...state, phase: "recovering" });
+  assert.doesNotMatch(h.html, /card-caption">已连接/);
+  await h.update({ ...state, network: { enabled: true, phase: "unavailable" } });
+  assert.doesNotMatch(h.html, /card-caption">已连接/);
+});

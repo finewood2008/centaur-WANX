@@ -126,3 +126,13 @@ test("maintenance IPC rejects stale targets, arbitrary URLs and unsupported tool
   }
   assert.deepEqual(h.dashboards, []);
 });
+
+test("healthy existing box remains usable during management recovery", () => {
+  const state = { ...connected, network: { enabled: true, phase: "recovering" } };
+  const h = control(state);
+  h.invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" });
+  openConnectedDashboard({ snapshot: () => state }, { open: value => h.dashboards.push(value.connection) });
+  assert.equal(h.launched.length, 1); assert.equal(h.dashboards.length, 1);
+  assert.throws(() => control({ ...state, phase: "recovering" }).invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" }), /BOX_CONNECTION_REQUIRED/);
+  assert.throws(() => control({ ...state, network: { enabled: true, phase: "auth_required" } }).invoke("applications-launch", { applicationId: "centaurai.wanx.zhijun" }), /NETWORK_NOT_READY/);
+});

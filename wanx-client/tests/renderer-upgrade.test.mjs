@@ -187,3 +187,164 @@ test("market dependency reasons explain preparation without offering an incompat
     assert.doesNotMatch(h.app.innerHTML, /data-action="market-install"/);
   }
 });
+
+
+test("opening version settings reads once and never diagnoses unread inventory as missing bootstrap", async () => {
+  const initial = state({ phase: "unknown", reason: "INVENTORY_UNKNOWN", checkedAt: null });
+  const h = await harness(initial);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check").length, 1);
+  assert.doesNotMatch(h.app.innerHTML, /需完成管理组件引导|INVENTORY_UNKNOWN|旧盒或离线盒子/);
+  h.update(initial);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check").length, 1);
+});
+
+function reportedBox(overrides = {}) {
+  const observedAt = new Date().toISOString();
+  return { phase: "current", checkedAt: observedAt,
+    inventory: { observedAt, updaterVersion: "1.2.0", otaReady: true, suiteVersion: null,
+      components: { wanx: { installedVersion: "build-running-102", runningVersion: "build-running-102", evidenceStatus: "verified", health: "healthy" }, base: { installedVersion: "old-base", runningVersion: null, evidenceStatus: "unknown" } } },
+    currentRelease: { releaseId: "rel-102", version: "1.3.0-rc.2", channel: "test", components: ["wanx"], verifiedAt: observedAt },
+    operation: { operationId: "op-done", state: "succeeded", serviceAvailable: true, allowedActions: ["status"] }, ...overrides };
+}
+
+test("box overview shows component release and running build after successful OTA without claiming a suite", async () => {
+  const h = await harness(state(reportedBox()));
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /万象发行版本/);
+  assert.match(h.app.innerHTML, /1\.3\.0-rc\.2/);
+  assert.match(h.app.innerHTML, /build-running-102/);
+  assert.match(h.app.innerHTML, /运行版本已核验/);
+  assert.match(h.app.innerHTML, /最近升级已核验成功/);
+  assert.doesNotMatch(h.app.innerHTML, /整盒版本.*1\.3\.0-rc\.2/);
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check").length, 0);
+  await h.click("show-box-version");
+  assert.match(h.app.innerHTML, /data-detail-id="updates-box" open/);
+  assert.match(h.app.innerHTML, /管理组件/);
+});
+
+test("box overview distinguishes stale or drifted evidence from the historical OTA result", async () => {
+  for (const mode of ["stale", "drifted", "empty", "future"]) {
+    const box = reportedBox();
+    if (mode === "stale") box.inventory.observedAt = new Date(Date.now() - 3600000).toISOString();
+    if (mode === "future") box.inventory.observedAt = new Date(Date.now() + 3600000).toISOString();
+    if (mode === "drifted") box.inventory.components.wanx.evidenceStatus = "drifted";
+    if (mode === "empty") box.inventory.components.wanx.runningVersion = null;
+    const h = await harness(state(box));
+    await h.click("show-boxes");
+    assert.doesNotMatch(h.app.innerHTML, /运行版本已核验|万象发行版本/);
+    assert.match(h.app.innerHTML, /待核验/);
+  }
+});
+
+test("candidate versions and another device inventory never become current box versions", async () => {
+  const h = await harness(state(reportedBox({ deviceId: "box-2", candidate: { status: "available", release: { payload: { version: "9.9.9" } } } })));
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /build-running-102|1\.3\.0-rc\.2|9\.9\.9|最近升级已核验成功/);
+});
+
+
+test("verified current WanX is independent of the next upgrade baseline acceptance", async () => {
+  const box = reportedBox({ phase: "blocked", reason: "UPGRADE_BASELINE_UNVERIFIED", candidate: { status: "blocked", reasonCode: "UPGRADE_BASELINE_UNVERIFIED" } });
+  const h = await harness(state(box));
+  assert.match(h.app.innerHTML, /当前万象运行版本已核验/);
+  assert.match(h.app.innerHTML, /盒端万象 v1\.3\.0-rc\.2/);
+  assert.match(h.app.innerHTML, /下一次更新条件/);
+  assert.match(h.app.innerHTML, /升级路径尚未验收/);
+  assert.doesNotMatch(h.app.innerHTML, /版本待核验|暂不可更新/);
+});
+
+test("successful task without service confirmation is not presented as verified upgrade success", async () => {
+  const h = await harness(state(reportedBox({ operation: { operationId: "op-done", state: "succeeded", serviceAvailable: null } })));
+  assert.doesNotMatch(h.app.innerHTML, /已核验更新成功/);
+  assert.match(h.app.innerHTML, /服务状态待确认/);
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /最近升级已核验成功/);
+});
+
+test("automatic version read pauses on failure, manual refresh retries and never upgrades", async () => {
+  let failed = true;
+  const h = await harness(state(), async action => {
+    if (action === "updates.box.check" && failed) throw new Error("offline");
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /版本读取失败/);
+  h.update(state());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check").length, 1);
+  failed = false;
+  await h.click("updates-box-check");
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check").length, 2);
+  assert.doesNotMatch(h.app.innerHTML, /版本读取失败/);
+  assert.equal(h.calls.some(call => /^updates\.box\.(execute|plan|resume|cancel)$/.test(call.action)), false);
+});
+
+test("late automatic version read cannot replace the newly selected device", async () => {
+  let finishFirst;
+  const h = await harness(state(), async (action, input) => {
+    if (action === "updates.box.check" && input.deviceId === "box-1") return new Promise(resolve => { finishFirst = resolve; });
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  h.update({ ...state(), activeDeviceId: "box-2", upgrades: { client, box: { deviceId: "box-2", phase: "unknown" } } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check" && call.input.deviceId === "box-2").length, 0, "new scope waits for the shared service request to finish");
+  finishFirst({ ok: true, state: state(reportedBox()) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /<dd>box-2<\/dd>/);
+  assert.doesNotMatch(h.app.innerHTML, /build-running-102/);
+  assert.equal(h.calls.filter(call => call.action === "updates.box.check" && call.input.deviceId === "box-2").length, 1);
+});
+
+test("box overview keeps active task polling and exposes a paused read on failure", async () => {
+  const timers = new Map();
+  let failed = false;
+  const h = await harness(state(reportedBox({ operation: { operationId: "op-live", state: "downloading", allowedActions: ["status"] } })), async action => { if (failed && action === "updates.box.status") throw new Error("offline"); }, timers);
+  await h.click("show-boxes");
+  assert.equal(timers.size, 1);
+  const callback = [...timers.values()][0]; timers.clear();
+  await callback();
+  assert.equal(h.calls.filter(call => call.action === "updates.box.status").length, 1);
+  failed = true;
+  const retry = [...timers.values()][0]; timers.clear();
+  await retry();
+  assert.match(h.app.innerHTML, /升级进度读取失败，自动刷新已暂停/);
+  assert.equal(timers.size, 0);
+  await h.click("show-applications");
+  assert.equal(timers.size, 0);
+});
+
+
+test("equivalent report timestamp encodings retain the verified logical release", async () => {
+  const box = reportedBox();
+  box.currentRelease.verifiedAt = box.inventory.observedAt.replace("Z", "000+00:00");
+  const h = await harness(state(box));
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /万象发行版本/);
+  assert.match(h.app.innerHTML, /1\.3\.0-rc\.2/);
+});
+
+
+test("component details explain installation-only modules and missing runtime evidence without declaring failure", async () => {
+  const box = reportedBox();
+  box.inventory.components = {
+    base: { installedVersion: "base-installed", runningVersion: null, evidenceStatus: "unknown", health: "unknown", otaSupported: false },
+    docker: { installedVersion: "docker-installed", runningVersion: null, evidenceStatus: "unknown", health: "unknown", otaSupported: false },
+    discovery: { installedVersion: "discovery-installed", runningVersion: null, evidenceStatus: "unknown", health: "unknown", otaSupported: false },
+    p2p: { installedVersion: "p2p-installed", runningVersion: null, evidenceStatus: "unknown", health: "unknown", otaSupported: false },
+    wanx: { installedVersion: "build-running-102", runningVersion: "build-running-102", evidenceStatus: "verified", health: "healthy", otaSupported: true },
+    semantica: { installedVersion: "semantica-installed", runningVersion: "semantica-installed", evidenceStatus: "verified", health: "healthy", otaSupported: true },
+  };
+  const h = await harness(state(box));
+  const table = h.app.innerHTML.match(/<table class="update-components">[\s\S]*?<\/table>/)?.[0] || "";
+  assert.match(table, /安装版本 \/ 运行版本/);
+  assert.match(table, /版本核验 \/ 服务状态/);
+  assert.equal((table.match(/安装记录（不提供独立运行版本）/g) || []).length, 2);
+  assert.equal((table.match(/待核验（未取得运行版本）/g) || []).length, 2);
+  assert.equal((table.match(/缺少运行核验证据/g) || []).length, 4);
+  assert.equal((table.match(/不支持独立 OTA/g) || []).length, 4);
+  assert.equal((table.match(/已核验/g) || []).length, 2);
+  assert.equal((table.match(/运行正常/g) || []).length, 2);
+  assert.doesNotMatch(table, /unknown|healthy|verified|升级失败|需要重装/);
+  for (const name of ["base", "docker", "discovery", "p2p", "wanx", "semantica"]) assert.match(table, new RegExp(name));
+});

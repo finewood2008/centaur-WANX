@@ -1780,10 +1780,12 @@ test("box readiness follows its own connected peer during management recovery", 
   assert.equal(h.client.snapshot().devices[0].canOpen, false);
 });
 
-test('application connection seam: recovery preserves the lease, logout revokes it synchronously', async t => {
-  let connected=true;
+test('application connection seam: confirmed recovery preserves the lease, logout revokes it synchronously', async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let connected=true,healthy=true;
   const h=harness(t,{
     sidecarStatus:()=>({phase:'ready',peers:[{ip:'100.80.1.2',connected}]}),
+    probe:async()=>{if(!healthy)throw fail('health_timeout');},
     gatewayRequest:async()=>({status:200,body:Buffer.from('{"id":4}')}),
   });
   await h.client.loginPassword({phone:'13800000001',password:'test'});
@@ -1792,11 +1794,23 @@ test('application connection seam: recovery preserves the lease, logout revokes 
   const states=[];const off=lease.subscribe(()=>{try{states.push(lease.context().connection);}catch{states.push('expired');}});
   t.after(off);
   connected=false;await h.transports[0].network.refresh();
+  assert.equal(lease.context().connection,'ready','peer status alone cannot interrupt the application');
+  t.mock.timers.tick(0);await tick();
+  assert.equal(lease.context().connection,'ready');
+  assert.equal(states.includes('recovering'),false);
+  assert.equal((await lease.request({path:'/api/action'})).status,200);
+  connected=true;await h.transports[0].network.refresh();
+  healthy=false;connected=false;await h.transports[0].network.refresh();
+  assert.equal(lease.context().connection,'ready');
+  t.mock.timers.tick(0);await tick();
   assert.equal(lease.context().connection,'recovering');
   assert.throws(()=>lease.request({path:'/api/action'}),{code:'NETWORK_NOT_READY'});
-  connected=true;await h.transports[0].network.refresh();
+  connected=true;healthy=true;await h.transports[0].network.refresh();
+  assert.equal(lease.context().connection,'recovering','ready status must not clear failed data-path health');
   await h.client.retryConnection();
   assert.equal(lease.context().connection,'ready');
+  assert.equal((await lease.request({path:'/api/action'})).status,200);
+  assert.equal(h.sessions.length,1,'recovery retains the authorized application lease');
   const loggingOut=h.client.logout();
   assert.throws(()=>lease.context(),{code:'NETWORK_CHANGED'});
   assert.ok(states.includes('expired'));await loggingOut;
@@ -2385,6 +2399,8 @@ test("a native engine outage reconnects the user's box after the engine returns"
   offline = true;
   stale = true;
   await h.transports[0].network.refresh();
+  assert.equal(h.client.snapshot().phase, "ready", "status loss must first confirm data-path health");
+  t.mock.timers.tick(0); await tick();
   assert.equal(h.client.snapshot().phase, "recovering");
   assert.equal(h.client.snapshot().connection.deviceId, "box-1");
   assert.equal(h.sessions[0].closed, false, "status loss alone must not retire a valid app lease");

@@ -244,11 +244,10 @@ export function createClient({
       }
       if (connection) {
         const disrupted = ["recovering", "unavailable"].includes(state.phase) || lostPeer;
-        if (disrupted && !recovery) {
-          requestRecovery();
-          return;
-        }
-        phase = recovery || disrupted ? "recovering" : "ready";
+        // Peer/control status is advisory: an existing data path may still work.
+        // Confirm health before interrupting app views or announcing an outage.
+        if (disrupted && !recovery && !healthController) scheduleHealthCheck(epoch, 0);
+        phase = recovery ? "recovering" : "ready";
         reason = phase === "recovering" ? "network_unavailable" : null;
       }
     }

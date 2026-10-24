@@ -401,23 +401,67 @@ test("a newer box choice supersedes an earlier resolution and closes old gateway
   await client.close();
 });
 
-test("transient peer/control-plane loss preserves gateway until the health recovery budget is exhausted", async () => {
-  const { client, created, emit } = fixture();
-  await client.setNetworkEnabled(true);
-  await client.connect(overlay);
-  emit({ peers: [] });
-  assert.equal(client.snapshot().phase, "recovering");
-  assert.equal(created[0].closed, false);
-  emit({ phase: "recovering" });
-  assert.equal(created[0].closed, false);
-  emit({ phase: "ready", peers: [{ ip: "100.90.1.2", connected: true }] });
-  assert.equal(client.snapshot().phase, "ready");
-  assert.equal(created.length, 1, "recovery must not recreate login or gateway");
-  emit({ phase: "unavailable" });
-  assert.equal(created[0].closed, false);
-  assert.equal(client.snapshot().phase, "recovering");
-  assert.equal(client.snapshot().reason, "network_unavailable");
-  await client.close();
+for (const disruption of [{ peers: [] }, { phase: "recovering" }, { phase: "unavailable" }]) {
+  test(`control-plane ${JSON.stringify(disruption)} does not interrupt a healthy data path`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let probes = 0, restarts = 0;
+    const f = fixture({ probe: async () => { probes++; }, recover: async () => { restarts++; } });
+    t.after(() => f.client.close());
+    await f.client.setNetworkEnabled(true);
+    await f.client.connect(overlay);
+    const phases = []; f.client.subscribe(state => phases.push(state.phase));
+    f.emit(disruption);
+    assert.equal(f.client.snapshot().phase, "ready");
+    assert.equal(f.client.snapshot().recovery, null);
+    await advance(t, 0);
+    assert.equal(probes, 2);
+    assert.equal(f.client.snapshot().phase, "ready");
+    assert.equal(phases.includes("recovering"), false);
+    assert.equal(restarts, 0);
+    assert.equal(f.created[0].closed, false);
+  });
+}
+
+test("repeated control events do not overlap an in-flight health probe", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const wait = deferred(); let probes = 0;
+  const f = fixture({ probe: async () => { if (++probes > 1) await wait.promise; } });
+  t.after(() => f.client.close());
+  await f.client.setNetworkEnabled(true); await f.client.connect(overlay);
+  f.emit({ peers: [] }); await advance(t, 0);
+  for (let i = 0; i < 3; i++) { f.emit({ phase: "recovering" }); await advance(t, 0); }
+  assert.equal(probes, 2); assert.equal(f.client.snapshot().phase, "ready");
+  wait.resolve(); await settle();
+  assert.equal(f.client.snapshot().phase, "ready");
+});
+
+test("control-plane disruption enters recovery only after failed health and a ready status cannot clear it", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let down = false;
+  const f = fixture({ probe: async () => { if (down) throw new Error("health_timeout"); } });
+  t.after(() => f.client.close());
+  await f.client.setNetworkEnabled(true);
+  await f.client.connect(overlay);
+  down = true; f.emit({ peers: [] });
+  assert.equal(f.client.snapshot().phase, "ready");
+  await advance(t, 0);
+  assert.equal(f.client.snapshot().phase, "recovering");
+  f.emit({ phase: "ready", peers: [{ ip: "100.90.1.2", connected: true }] });
+  assert.equal(f.client.snapshot().phase, "recovering");
+  assert.equal(f.client.snapshot().connection.deviceId, overlay.deviceId);
+  assert.equal(f.created[0].closed, false);
+});
+
+test("recovery rechecks the endpoint before requesting an engine restart", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let probes = 0, restarts = 0;
+  const f = fixture({ probe: async () => { if (++probes === 2) throw new Error("health_timeout"); }, recover: async () => { restarts++; } });
+  t.after(() => f.client.close());
+  await f.client.setNetworkEnabled(true);
+  await f.client.connect(overlay);
+  await advance(t);
+  assert.equal(f.client.snapshot().phase, "ready");
+  assert.equal(restarts, 0);
 });
 
 test("invalid identifiers and modes never enter transport resolution", async () => {
@@ -519,5 +563,21 @@ for (const end of ["disabled", "auth_required"]) {
     assert.equal(client.snapshot().connection, null);
     assert.equal(created[0].closed, true);
     await client.close();
+  });
+}
+
+for (const code of ["netbird_peer_unknown", "netbird_peer_disconnected"]) {
+  test(`${code} during recovery waits for peer synchronization without restarting the engine`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let ready = true, restarts = 0;
+    const f = fixture({ probe: async () => { if (!ready) throw new Error("health_timeout"); },
+      resolveEndpoint: input => { if (!ready) throw Object.assign(new Error(code), { code }); return { url: input.url }; },
+      recover: async () => { restarts++; } });
+    t.after(() => f.client.close());
+    await f.client.setNetworkEnabled(true); await f.client.connect(overlay);
+    ready = false; await advance(t); await advance(t);
+    assert.equal(restarts, 0); assert.equal(f.client.snapshot().phase, "recovering");
+    ready = true; await advance(t);
+    assert.equal(f.client.snapshot().phase, "ready"); assert.equal(restarts, 0);
   });
 }
