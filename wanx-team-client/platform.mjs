@@ -15,6 +15,12 @@ const validDeviceID = (value) =>
   /^[A-Za-z0-9._-]{1,36}$/.test(value) &&
   value !== "." &&
   value !== "..";
+const routeFailures = new Set([
+  "health_timeout", "health_unavailable", "health_invalid",
+  "netbird_peer_unknown", "netbird_peer_disconnected", "network_unavailable",
+  "engine_timeout", "engine_exited", "engine_unavailable", "BOX_PLATFORM_TIMEOUT",
+  "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EPIPE",
+]);
 
 /** Consumer authority owns enrollment and box selection. All credentials stay in main. */
 export function createPlatformClient({
@@ -43,6 +49,8 @@ export function createPlatformClient({
   let localDevices = [], activeLocalDeviceId = null;
   let devices = [],
     boxes = [];
+  let networkDevicesRevision = 0, networkDeviceAuthority = null;
+  let connectedBox = null;
   let directory = { phase: "idle", reason: null };
   let directoryRevision = 0,
     prepareNeeded = true;
@@ -79,6 +87,14 @@ export function createPlatformClient({
     Boolean(
       networkSession && networkSession.leaseExpiresAt * 1000 > Date.now(),
     );
+  const currentDeviceAuthority = (identity) => Boolean(
+    identity && networkDeviceAuthority && usableLease() &&
+    networkDeviceAuthority.epoch === epoch &&
+    networkDeviceAuthority.accountId === identity.accountId &&
+    networkDeviceAuthority.clientId === identity.clientId &&
+    networkDeviceAuthority.sessionId === networkSession?.networkSessionId &&
+    networkDeviceAuthority.transport === transport,
+  );
   const transientError = (error) =>
     error.retryable === true ||
     error.code === "ACCOUNT_NETWORK_ERROR" ||
@@ -176,6 +192,9 @@ export function createPlatformClient({
     retryDelay = 5000;
     epoch++;
     directoryRevision++;
+    networkDevicesRevision++;
+    networkDeviceAuthority = null;
+    connectedBox = null;
     clearTimeout(timer);
     clearTimeout(leaseTimer);
     timer = null;
@@ -492,11 +511,23 @@ export function createPlatformClient({
     }
   }
   async function loadNetworkDevices(generation, signal, { requireLiveSession = false } = {}) {
-    const result = await request(
-      { path: "/app-api/network/devices" },
-      generation,
-      signal,
-    );
+    const revision = ++networkDevicesRevision;
+    const identity = authenticated(), target = transport;
+    const sessionId = networkSession?.networkSessionId;
+    const readCurrent = () => {
+      const activeIdentity = account.getIdentity();
+      return current(generation) && !signal?.aborted && revision === networkDevicesRevision &&
+        target === transport && sessionId === networkSession?.networkSessionId &&
+        activeIdentity?.accountId === identity.accountId && activeIdentity?.clientId === identity.clientId;
+    };
+    let result;
+    try {
+      result = await request({ path: "/app-api/network/devices" }, generation, signal);
+    } catch (error) {
+      if (!readCurrent()) return false;
+      throw error;
+    }
+    if (!readCurrent()) return false;
     if (!Array.isArray(result?.devices))
       throw fail("NETWORK_INVALID_RESPONSE");
     if (result.networkSessionId !== networkSession?.networkSessionId)
@@ -512,7 +543,7 @@ export function createPlatformClient({
       // restore protocol, never infer current authority from a cached lease.
       throw fail("NETWORK_SESSION_RECHECK_REQUIRED");
     }
-    devices = result.devices.map((device) => {
+    const entries = result.devices.map((device) => {
       if (
         !validDeviceID(device.deviceId) ||
         !validID(device.identityDeviceId) ||
@@ -540,6 +571,11 @@ export function createPlatformClient({
         deviceRole: device.deviceRole,
       };
     });
+    devices = entries;
+    networkDeviceAuthority = {
+      epoch: generation, accountId: identity.accountId, clientId: identity.clientId,
+      sessionId, transport: target,
+    };
     const selected = transport?.client.snapshot().connection;
     if (
       selected?.mode === "netbird" &&
@@ -550,7 +586,8 @@ export function createPlatformClient({
       )
     )
       await transport.client.disconnect();
-    return emit();
+    emit();
+    return true;
   }
   async function activateImpl(generation, signal) {
     retryActivation = false;
@@ -684,6 +721,7 @@ export function createPlatformClient({
     await target.network.refresh();
     assertCurrent(generation);
     await loadNetworkDevices(generation, signal);
+    assertCurrent(generation);
     authorizationEndpointsPending = false;
     platform = { phase: "ready", reason: null };
     void persistResume({
@@ -1077,6 +1115,7 @@ export function createPlatformClient({
     async connect(input) {
       reconnectTarget = null;
       if (input?.mode !== "direct") throw fail("NETWORK_USE_AUTHORIZED_DEVICE");
+      connectedBox = null;
       activeLocalDeviceId = null;
       const selection = ++connectionEpoch;
       selectionController?.abort();
@@ -1094,103 +1133,186 @@ export function createPlatformClient({
       return target.client.connect(input).then(() => snapshot());
     },
     async connectBox(deviceId) {
-      reconnectTarget = null;
-      const identity = authenticated();
-      const local = localDevices.find(device => device.deviceId === deviceId);
-      if (local && localBoxes) {
-        const generation = epoch, selection = ++connectionEpoch;
+      return measure("box.connect", async () => {
+        reconnectTarget = null;
+        const identity = authenticated();
+        const local = localDevices.find(device => device.deviceId === deviceId);
+        if (local && localBoxes) {
+          connectedBox = null;
+          const generation = epoch, selection = ++connectionEpoch;
+          selectionController?.abort();
+          const controller = new AbortController();
+          selectionController = controller;
+          activeLocalDeviceId = null;
+          await activeLink?.client.disconnect();
+          if (selection !== connectionEpoch || !current(generation)) return snapshot();
+          if (!directTransport) {
+            directTransport = createTransport(null);
+            unsubscribeDirect = directTransport.client.subscribe(() => emit());
+          }
+          const target = directTransport;
+          activeLink = target;
+          // Only this registered, authenticated path can project a local box.
+          activeLocalDeviceId = deviceId;
+          await target.client.connect({ deviceId, name: local.displayName, url: local.serviceUrl, mode: "direct" }, {
+            createSession: ({ url, signal }) => localBoxes.createSession(deviceId, {
+              url, signal: AbortSignal.any([signal, controller.signal]),
+              onExpired: () => { if (activeLink === target && activeLocalDeviceId === deviceId) void target.client.disconnect(); },
+            }),
+          });
+          if (selection !== connectionEpoch || !current(generation)) return snapshot();
+          selectionController = null;
+          return emit();
+        }
+        if (
+          !enabled ||
+          platform.phase !== "ready" ||
+          !usableLease() ||
+          directory.phase !== "ready" ||
+          !transport
+        )
+          throw fail("NETWORK_NOT_READY");
+        const currentDevice = devices.find(item => item.deviceId === deviceId);
+        const connected = transport.client.snapshot();
+        // Selecting an already open box preserves its live session. Unknown or
+        // changed authority always takes the normal challenge/grant path below.
+        if (connectedBox && connectedBox.selection === connectionEpoch &&
+            connectedBox.authority.epoch === epoch &&
+            connectedBox.authority.transport === transport && activeLink === transport &&
+            connectedBox.authority.accountId === identity.accountId &&
+            connectedBox.authority.clientId === identity.clientId &&
+            connectedBox.authority.sessionId === networkSession.networkSessionId &&
+            transportKey === `${identity.accountId}:${identity.clientId}:${networkSession.networkSessionId}` &&
+            currentDeviceAuthority(identity) && currentDevice &&
+            Number.isSafeInteger(currentDevice.ownershipEpoch) && currentDevice.ownershipEpoch > 0 &&
+            Number.isSafeInteger(currentDevice.authorizationVersion) && currentDevice.authorizationVersion > 0 &&
+            typeof currentDevice.deviceRole === "string" && currentDevice.deviceRole.length > 0 &&
+            ["deviceId", "identityDeviceId", "serviceUrl", "ownershipEpoch", "authorizationVersion", "deviceRole"]
+              .every(key => connectedBox.device[key] === currentDevice[key]) &&
+            boxes.some(box => box.deviceId === deviceId && box.accessState === "ready" &&
+              box.deviceRole === currentDevice.deviceRole) &&
+            connected.phase === "ready" && connected.network?.phase === "ready" &&
+            connected.connection?.mode === "netbird" && connected.connection.deviceId === deviceId &&
+            connected.connection.url === currentDevice.serviceUrl && connectedBox.session.getToken?.())
+          return measure("box.reuse", () => snapshot());
+        connectedBox = null;
+        const generation = epoch;
+        const selection = ++connectionEpoch;
         selectionController?.abort();
         const controller = new AbortController();
         selectionController = controller;
-        activeLocalDeviceId = null;
-        await activeLink?.client.disconnect();
-        if (selection !== connectionEpoch || !current(generation)) return snapshot();
-        if (!directTransport) {
-          directTransport = createTransport(null);
-          unsubscribeDirect = directTransport.client.subscribe(() => emit());
-        }
-        const target = directTransport;
-        activeLink = target;
-        // Only this registered, authenticated path can project a local box.
-        activeLocalDeviceId = deviceId;
-        await target.client.connect({ deviceId, name: local.displayName, url: local.serviceUrl, mode: "direct" }, {
-          createSession: ({ url, signal }) => localBoxes.createSession(deviceId, {
-            url, signal: AbortSignal.any([signal, controller.signal]),
-            onExpired: () => { if (activeLink === target && activeLocalDeviceId === deviceId) void target.client.disconnect(); },
-          }),
-        });
-        if (selection !== connectionEpoch || !current(generation)) return snapshot();
-        selectionController = null;
-        return emit();
-      }
-      if (
-        !enabled ||
-        platform.phase !== "ready" ||
-        !networkSession ||
-        directory.phase !== "ready" ||
-        !transport
-      )
-        throw fail("NETWORK_NOT_READY");
-      const generation = epoch;
-      const selection = ++connectionEpoch;
-      selectionController?.abort();
-      const controller = new AbortController();
-      selectionController = controller;
-      await activeLink?.client.disconnect();
-      try {
-        await loadNetworkDevices(generation, controller.signal);
-      } catch (error) {
-        if (selection !== connectionEpoch || !current(generation))
-          return snapshot();
-        devices = [];
-        emit();
-        throw error;
-      }
-      if (selection !== connectionEpoch || !current(generation))
-        return snapshot();
-      const device = devices.find((item) => item.deviceId === deviceId);
-      if (
-        !device ||
-        !boxes.some(
-          (box) => box.deviceId === deviceId && box.accessState === "ready",
-        )
-      )
-        throw fail("NETWORK_DEVICE_ACCESS_DENIED");
-      const target = transport;
-      activeLocalDeviceId = null;
-      activeLink = target;
-      const sessionId = networkSession.networkSessionId;
-      await target.client.connect(
-        {
-          deviceId,
-          name: device.displayName,
-          url: device.serviceUrl,
-          mode: "netbird",
-        },
-        {
-          createSession: ({ url, agent, signal }) =>
-            createSession({
-              url,
-              agent,
-              account,
-              device,
-              identity,
-              networkSessionId: sessionId,
-              signal,
-              measure,
-              onExpired: (reason) => {
-                if (transport === target && selection === connectionEpoch) {
-                  if (reason === "expired" && usableLease() && account.snapshot().phase === "authenticated")
-                    target.client.recoverSession();
-                  else void target.client.disconnect();
+        const target = transport;
+        const sessionId = networkSession.networkSessionId;
+        const selected = () => {
+          const activeIdentity = account.getIdentity();
+          return selection === connectionEpoch && current(generation) && !controller.signal.aborted &&
+            transport === target && networkSession?.networkSessionId === sessionId &&
+            activeIdentity?.accountId === identity.accountId && activeIdentity?.clientId === identity.clientId;
+        };
+        const requireReady = () => {
+          if (!enabled || !usableLease() || platform.phase !== "ready" || directory.phase !== "ready" ||
+              transportKey !== `${identity.accountId}:${identity.clientId}:${sessionId}`)
+            throw fail("NETWORK_NOT_READY");
+          if (!boxes.some(box => box.deviceId === deviceId && box.accessState === "ready"))
+            throw fail("NETWORK_DEVICE_ACCESS_DENIED");
+        };
+        const refresh = async () => {
+          try {
+            const loaded = await measure("box.directory", () => loadNetworkDevices(generation, controller.signal));
+            if (!selected()) return false;
+            requireReady();
+            if (!loaded) throw fail("NETWORK_CANCELLED");
+            return true;
+          } catch (error) {
+            if (!selected()) return false;
+            if (error.code !== "NETWORK_CANCELLED") {
+              devices = [];
+              networkDeviceAuthority = null;
+              emit();
+            }
+            throw error;
+          }
+        };
+        const open = async () => {
+          requireReady();
+          const device = devices.find(item => item.deviceId === deviceId);
+          if (!currentDeviceAuthority(identity) || !device)
+            throw fail("NETWORK_DEVICE_ACCESS_DENIED");
+          const sameDevice = () => devices.some(item => item.deviceId === deviceId &&
+            item.serviceUrl === device.serviceUrl && item.identityDeviceId === device.identityDeviceId);
+          activeLocalDeviceId = null;
+          activeLink = target;
+          let establishedSession;
+          await target.client.connect(
+            { deviceId, name: device.displayName, url: device.serviceUrl, mode: "netbird" },
+            {
+              createSession: async ({ url, agent, signal }) => {
+                if (!selected()) throw fail("NETWORK_CANCELLED");
+                requireReady();
+                const session = await createSession({
+                  url, agent, account, device, identity, networkSessionId: sessionId,
+                  signal: AbortSignal.any([signal, controller.signal]), measure,
+                  onExpired: (reason) => {
+                    if (transport === target && selection === connectionEpoch) {
+                      if (reason === "expired" && usableLease() && account.snapshot().phase === "authenticated")
+                        target.client.recoverSession();
+                      else void target.client.disconnect();
+                    }
+                  },
+                });
+                try {
+                  if (!selected()) throw fail("NETWORK_CANCELLED");
+                  requireReady();
+                  if (!sameDevice()) throw fail("NETWORK_DEVICE_ACCESS_DENIED");
+                } catch (error) {
+                  await session.close();
+                  throw error;
                 }
+                establishedSession = session;
+                return session;
               },
-            }),
-        },
-      );
-      return snapshot();
+            },
+          );
+          if (selected()) {
+            try {
+              requireReady();
+              if (!sameDevice()) throw fail("NETWORK_DEVICE_ACCESS_DENIED");
+              if (establishedSession) connectedBox = {
+                selection, authority: { ...networkDeviceAuthority }, device: { ...device }, session: establishedSession,
+              };
+            } catch (error) {
+              await target.client.disconnect();
+              throw error;
+            }
+          }
+        };
+        try {
+          requireReady();
+          // A read started before this selection must not overwrite its endpoint
+          // after a newer connection has already completed.
+          networkDevicesRevision++;
+          await activeLink?.client.disconnect();
+          if (!selected()) return snapshot();
+          requireReady();
+          const cached = currentDeviceAuthority(identity) && devices.some(item => item.deviceId === deviceId);
+          if (!cached && !await refresh()) return snapshot();
+          try {
+            await open();
+          } catch (error) {
+            if (!selected()) return snapshot();
+            if (!cached || error.status === 401 || error.status === 403 || !routeFailures.has(error.code)) throw error;
+            requireReady();
+            if (!await refresh()) return snapshot();
+            await open();
+          }
+          return snapshot();
+        } finally {
+          if (selectionController === controller) selectionController = null;
+        }
+      });
     },
     async disconnect() {
+      connectedBox = null;
       reconnectTarget = null;
       connectionEpoch++;
       selectionController?.abort();

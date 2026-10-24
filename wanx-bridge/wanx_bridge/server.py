@@ -718,6 +718,7 @@ def create_app(
             client=client,
             authorize=authorize_native,
             watch=watch,
+            forward=forward,
             assert_live=assert_semantica_live,
         )
     )

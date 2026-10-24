@@ -29,6 +29,58 @@ CONFIG = {
 AUTH = {"authorization": "Bearer opaque-marker"}
 
 
+@pytest.mark.parametrize(
+    "method,path,body,status",
+    [
+        ("GET", "/warehouses", None, 200),
+        ("POST", W + "/keys", {"name": "Team", "operation_id": "op-team"}, 200),
+        ("GET", "/warehouses", None, 403),
+    ],
+)
+async def test_team_requests_use_core_authority_and_key_storage(
+    tmp_path, method, path, body, status
+):
+    auth = Auth()
+    seen = []
+    result = {"items": []} if status == 200 else {"code": "SEMANTICA_ADMIN_REQUIRED"}
+
+    async def handler(request):
+        seen.append(request)
+        assert request.url == "http://127.0.0.1:18088" + BASE + path
+        assert request.headers["authorization"] == "Bearer private.upstream.jwt"
+        assert request.headers["x-wanx-data-context"] == "team"
+        assert "cookie" not in request.headers
+        assert await request.aread() == (
+            b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
+        )
+        return httpx.Response(
+            status,
+            stream=httpx.ByteStream(json.dumps(result).encode()),
+            headers={"Cache-Control": "no-store", "Content-Type": "application/json"},
+        )
+
+    app = create_app(
+        auth,
+        object(),
+        semantica_config_file=tmp_path / "absent.json",
+        http_transport=httpx.MockTransport(handler),
+        dashboard_dir=tmp_path,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://bridge"
+        ) as client:
+            response = await client.request(
+                method,
+                BASE + path,
+                headers={**AUTH, "x-wanx-data-context": "team", "cookie": "private=value"},
+                json=body,
+            )
+    assert response.status_code == status
+    assert response.json() == result
+    assert len(seen) == 1
+
+
 def claims(request):
     encoded = request.headers["x-semantica-scope"]
     assert (
@@ -36,6 +88,30 @@ def claims(request):
         == hmac.new(CONFIG["service_token"].encode(), encoded.encode(), hashlib.sha256).hexdigest()
     )
     return json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+
+
+@pytest.mark.parametrize(
+    "path", ["%2e%2e/auth/login", "%2E%2E/config", "warehouses/%2e%2e/%2e%2e/config"]
+)
+async def test_team_context_does_not_bypass_desktop_path_allowlist(tmp_path, path):
+    seen = []
+
+    async def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, stream=httpx.ByteStream(b"{}"))
+
+    app = create_app(
+        Auth(), object(), http_transport=httpx.MockTransport(handler), dashboard_dir=tmp_path
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://bridge"
+        ) as client:
+            response = await client.post(
+                BASE + "/" + path, headers={**AUTH, "x-wanx-data-context": "team"}, json={}
+            )
+    assert response.status_code == 404
+    assert seen == []
 
 
 @pytest.fixture

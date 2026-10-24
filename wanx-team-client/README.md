@@ -14,6 +14,8 @@ npm start
 
 启动前自动从 `../wanx-studio/` 生成 Builder、星图和受信桥，生成目录已加入忽略。个人版入口为 `../wanx-client/`。两个客户端具有独立安装标识和配置目录，团队版的更新渠道为 `stable-studio`。
 
+连接诊断默认写入 `userData/logs/connection-timings.jsonl`（macOS 团队版目录为 `~/Library/Application Support/wanx-studio-team-client/`）。`box.connect` 是单次连接总耗时，同次连接用随机 `connectionId` 关联；各阶段及有效租约内沿用地址、实时鉴权、旧地址刷新一次的规则见[连接耗时诊断](../wanx-client/README.md#启动耗时诊断)。两个客户端的连接源码独立维护，优化和回归测试须同步验证。
+
 ## 构建与检查
 
 ```sh

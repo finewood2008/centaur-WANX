@@ -6,6 +6,62 @@ import os from "node:os";
 import { createTimingRecorder } from "../shell/timings.mjs";
 import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
+test("grant response correlation accepts only UUID and numeric timings", async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-grant-response-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "connection.jsonl");
+  const recorder = createTimingRecorder({ filePath });
+  const requestId = "c7e65752-bde8-48cf-82cb-c4c1d04ac3a9";
+  await recorder.run("box.connect", async () => {
+    recorder.grantResponse({ requestId, serverDurationMs: 123.4, httpStatus: 200, token: "SECRET" });
+    recorder.grantResponse({ requestId: "SECRET", serverDurationMs: -1, httpStatus: "SECRET" });
+    recorder.grantResponse({ serverDurationMs: Infinity, headers: "SECRET" });
+  });
+  await recorder.flush();
+  const contents = await readFile(filePath, "utf8");
+  const rows = contents.trim().split("\n").map(JSON.parse);
+  assert.equal(rows[0].step, "account.grant.response");
+  assert.equal(rows[0].requestId, requestId);
+  assert.equal(rows[0].serverDurationMs, 123.4);
+  assert.equal(rows[0].httpStatus, 200);
+  assert.equal(rows[0].connectionId, rows.at(-1).connectionId);
+  assert.ok(rows.slice(1, 3).every(row => !Object.hasOwn(row, "requestId") && !Object.hasOwn(row, "serverDurationMs") && !Object.hasOwn(row, "httpStatus")));
+  assert.doesNotMatch(contents, /SECRET|Infinity|headers|token/);
+});
+
+test("connection spans correlate concurrent attempts without tagging later renewals", async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-connect-spans-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, "connection.jsonl");
+  const recorder = createTimingRecorder({ filePath });
+  let releaseFirst, releaseRenewal, renewal;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const renewalGate = new Promise(resolve => { releaseRenewal = resolve; });
+  const first = recorder.run("box.connect", async () => {
+    renewal = renewalGate.then(() => recorder.run("box.grant", async () => {}));
+    await firstGate;
+    await recorder.run("box.challenge", async () => "SECRET");
+  });
+  await recorder.run("box.connect", async () => {
+    await recorder.run("box.health", async () => {});
+  });
+  releaseFirst();
+  await first;
+  releaseRenewal();
+  await renewal;
+  await recorder.flush();
+  const contents = await readFile(filePath, "utf8");
+  const rows = contents.trim().split("\n").map(JSON.parse);
+  const roots = rows.filter(row => row.step === "box.connect");
+  assert.equal(roots.length, 2);
+  for (const row of roots) assert.match(row.connectionId, /^[a-f0-9-]{36}$/);
+  assert.notEqual(roots[0].connectionId, roots[1].connectionId);
+  assert.equal(rows.find(row => row.step === "box.health").connectionId, roots[0].connectionId);
+  assert.equal(rows.find(row => row.step === "box.challenge").connectionId, roots[1].connectionId);
+  assert.equal(Object.hasOwn(rows.find(row => row.step === "box.grant"), "connectionId"), false);
+  assert.doesNotMatch(contents, /SECRET/);
+});
+
 test("timings persist phase and elapsed time, never results or error details, and rotate", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "wanx-timings-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

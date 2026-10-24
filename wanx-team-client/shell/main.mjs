@@ -185,6 +185,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       const binaryPath = nativePaths.engine;
       const account = createAccount({
         measure: timed,
+        onGrantTiming: details => timings.grantResponse(details),
         ...(process.env.WANX_CONSUMER_URL
           ? { baseURL: process.env.WANX_CONSUMER_URL }
           : {}),
@@ -262,6 +263,7 @@ if (process.argv.includes("--wanx-managed-app")) {
             network,
             client: createClient({
               network,
+              measure: timed,
               onRecovery: value => timings.recovery(value),
               createGateway: (options) =>
                 createDashboardGateway({

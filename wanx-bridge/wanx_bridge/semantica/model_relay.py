@@ -1,4 +1,4 @@
-"""Private STARLINK model callback using WANX public HTTP APIs only."""
+"""Private STARLINK model callback with core-authorized team requests."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from referencing.exceptions import Unresolvable
 from starlette.requests import ClientDisconnect
 
 from ..admin_client import BridgeUpstreamError
+from ..oidc import loopback_origin
 from .desktop import APPS, DesktopConfig, DesktopError, request_json, strict_json
 from .desktop_routes import bounded_body, live_request
 
@@ -89,6 +90,51 @@ class ModelRelay:
 
     async def close(self):
         await self.client.aclose()
+
+    async def _team_callback(self, request: Request, raw: bytes) -> JSONResponse:
+        # Team ownership and the initiating administrator are distinct. The core
+        # verifies the original signature and owns admin/job checks and auditing.
+        origin = loopback_origin(self.admin.base_url)
+        headers = {
+            name: request.headers[name]
+            for name in ("x-starklink-time", "x-starklink-nonce", "x-starklink-signature")
+        }
+        headers["content-type"] = "application/json"
+
+        async def work():
+            outgoing = self.client.build_request(
+                "POST",
+                origin + "/internal/starklink/models",
+                headers=headers,
+                content=raw,
+                timeout=320,
+            )
+            outgoing.headers.pop("cookie", None)
+            response = await self.client.send(outgoing, stream=True)
+            try:
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > 2 * 1024 * 1024:
+                        raise DesktopError("MODEL_SERVICE_UNAVAILABLE")
+                try:
+                    value = strict_json(data)
+                    if not isinstance(value, dict):
+                        raise ValueError()
+                except ValueError as exc:
+                    raise DesktopError("MODEL_SERVICE_UNAVAILABLE") from exc
+                return JSONResponse(
+                    value,
+                    status_code=response.status_code,
+                    headers={"Cache-Control": "no-store"},
+                )
+            finally:
+                await response.aclose()
+
+        drained = asyncio.Event()
+        drained.set()
+        async with asyncio.timeout(320):
+            return await live_request(request, work(), asyncio.Event().wait(), drained)
 
     async def _get(self, path: str) -> list:
         response = await self.admin._admin("GET", path)
@@ -384,19 +430,19 @@ class ModelRelay:
         try:
             body = strict_json(raw)
             box, app, actor = json.loads(body["owner"])
-            app_id, user_id = actor.rsplit(":", 1)
-            if (
-                box != config.box_id
-                or app != config.application_id
-                or app_id not in APPS
-                or not user_id.isdigit()
-                or int(user_id) < 1
-            ):
+            if box != config.box_id or app != config.application_id:
                 raise ValueError()
-            actor = app_id, int(user_id)
             action = body["action"]
             if action not in {"catalog", "check", "infer"}:
                 raise ValueError()
+            if actor == "team:wanx":
+                if not signature:
+                    raise ValueError()
+                return await self._team_callback(request, raw)
+            app_id, user_id = actor.rsplit(":", 1)
+            if app_id not in APPS or not user_id.isdigit() or int(user_id) < 1:
+                raise ValueError()
+            actor = app_id, int(user_id)
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise DesktopError("MODEL_AUTH_REQUIRED", 403) from exc
         await self._user(actor[1])
@@ -483,6 +529,8 @@ class ModelRelay:
         async def callback(request: Request):
             try:
                 value = await self.invoke(request)
+                if isinstance(value, Response):
+                    return value
                 return JSONResponse(value, headers={"Cache-Control": "no-store"})
             except DesktopError as exc:
                 return JSONResponse(

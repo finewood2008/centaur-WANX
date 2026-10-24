@@ -178,6 +178,7 @@ function harness(t, options = {}) {
       return { network, client: transport };
     },
     async createSession(input) {
+      await options.onCreateSession?.(input);
       const session = {
         input,
         closed: false,
@@ -206,6 +207,351 @@ function harness(t, options = {}) {
     },
   };
 }
+
+test("selecting the same healthy box keeps its gateway and authorized session", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  await h.client.connectBox("box-1");
+  h.sessions[0].getToken = () => "live-test-token";
+  const before = h.client.snapshot();
+  const baseline = h.calls.length;
+  await h.client.connectBox("box-1");
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.sessions[0].closed, false);
+  assert.equal(h.transports[0].gatewayClosed, false);
+  assert.equal(h.calls.length, baseline);
+  assert.deepEqual(h.client.snapshot().connection, before.connection);
+});
+
+test("reselecting after an unchanged directory refresh keeps the same session", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  await h.client.connectBox("box-1");
+  h.sessions[0].getToken = () => "live-test-token";
+  await h.client.refreshDevices();
+  await h.client.connectBox("box-1");
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.sessions[0].closed, false);
+  h.sessions[0].input.onExpired("denied");
+  await tick();
+  assert.equal(h.client.snapshot().connection, null);
+});
+
+for (const state of ["missing token check", "expired token", "explicit disconnect"]) {
+  test(`same-box selection reauthorizes after ${state}`, async t => {
+    const h = harness(t);
+    await h.client.loginPassword({ phone: "account-a" });
+    await h.client.connectBox("box-1");
+    if (state !== "missing token check") h.sessions[0].getToken = () => state === "expired token" ? "" : "live-test-token";
+    if (state === "explicit disconnect") await h.client.disconnect();
+    await h.client.connectBox("box-1");
+    assert.equal(h.sessions.length, 2);
+    assert.equal(h.sessions[0].closed, true);
+    assert.equal(h.sessions[1].closed, false);
+  });
+}
+
+for (const [field, value] of [
+  ["ownershipEpoch", 2], ["authorizationVersion", 2], ["authorizationVersion", undefined],
+  ["identityDeviceId", "replacement-identity"], ["serviceUrl", "http://100.80.1.2:8089"],
+  ["deviceRole", "member"],
+]) {
+  test(`same-box selection reauthorizes after ${field} changes to ${value}`, async t => {
+    const h = harness(t);
+    await h.client.loginPassword({ phone: "account-a" });
+    await h.client.connectBox("box-1");
+    h.sessions[0].getToken = () => "live-test-token";
+    h.catalog([{ ...device, [field]: value }]);
+    await h.client.refreshDevices();
+    await h.client.connectBox("box-1");
+    assert.equal(h.sessions.length, 2);
+    assert.equal(h.sessions[0].closed, true);
+  });
+}
+
+test("same-box selection cannot preserve an expired network lease before its timer fires", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  await h.client.connectBox("box-1");
+  h.sessions[0].getToken = () => "live-test-token";
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + 301_000);
+  await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_NOT_READY" });
+  assert.equal(h.sessions.length, 1);
+});
+
+for (const field of ["accountId", "clientId"]) {
+  test(`same-box selection cannot preserve a connection after ${field} changes`, async t => {
+    const h = harness(t);
+    await h.client.loginPassword({ phone: "account-a" });
+    await h.client.connectBox("box-1");
+    h.sessions[0].getToken = () => "live-test-token";
+    h.publishAccount({ phase: "authenticated", accountId: "account-a", clientId: "client-account-a", [field]: "replacement" });
+    await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_NOT_READY" });
+    assert.equal(h.sessions.length, 1);
+  });
+}
+
+test("same-box selection does not preserve a connection while its network is recovering", async t => {
+  let recovering = false;
+  const h = harness(t, { sidecarStatus: () => recovering ? {
+    phase: "recovering", peers: [{ ip: "100.80.1.2", connected: true }],
+  } : undefined });
+  await h.client.loginPassword({ phone: "account-a" });
+  await h.client.connectBox("box-1");
+  h.sessions[0].getToken = () => "live-test-token";
+  recovering = true;
+  await h.transports[0].network.refresh();
+  await h.client.connectBox("box-1");
+  assert.equal(h.sessions.length, 2);
+  assert.equal(h.sessions[0].closed, true);
+});
+
+test("same-box selection cannot retain access after the directory removes the box", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  await h.client.connectBox("box-1");
+  h.sessions[0].getToken = () => "live-test-token";
+  h.catalog([]);
+  await h.client.refreshDevices();
+  await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_DEVICE_ACCESS_DENIED" });
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.sessions[0].closed, true);
+});
+
+for (const cancel of [false, true]) {
+  test(`expiry discovered during same-box selection cannot race a ${cancel ? "cancelled" : "fresh"} connection`, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const pending = deferred(), started = deferred();
+    let attempts = 0, expiredPhase;
+    const h = harness(t, { onCreateSession: async () => {
+      if (++attempts === 2) { started.resolve(); await pending.promise; }
+    } });
+    await h.client.loginPassword({ phone: "account-a" });
+    await h.client.connectBox("box-1");
+    const original = h.sessions[0];
+    // createPlatformSession.getToken synchronously expires and notifies its
+    // owner before returning an empty token. Team expiry schedules recovery.
+    original.getToken = () => {
+      if (!original.closed) {
+        original.close();
+        original.input.onExpired("expired");
+        expiredPhase = h.client.snapshot().phase;
+      }
+      return "";
+    };
+    const opening = h.client.connectBox("box-1");
+    try {
+      await started.promise;
+      assert.equal(expiredPhase, "recovering");
+      t.mock.timers.tick(0);
+      await tick();
+      assert.equal(attempts, 2, "the expiry recovery must not start a second grant");
+      assert.equal(original.closed, true);
+      if (cancel) await h.client.disconnect();
+    } finally {
+      pending.resolve();
+      await opening;
+    }
+    t.mock.timers.tick(1000);
+    await tick();
+    assert.equal(attempts, 2);
+    assert.equal(h.sessions.length, 2);
+    assert.equal(h.sessions[1].closed, cancel);
+    assert.equal(h.client.snapshot().connection?.deviceId ?? null, cancel ? null : "box-1");
+    assert.equal(h.client.snapshot().phase, cancel ? "disconnected" : "ready");
+  });
+}
+
+test("warm box selection does not wait for another cloud directory read", async t => {
+  const steps = [];
+  const h = harness(t, { measure: async (step, work) => { steps.push(step); return work(); } });
+  await h.client.loginPassword({ phone: "account-a" });
+  const waiting = deferred();
+  const baseline = h.calls.length;
+  h.override(input => input.path === "/app-api/network/devices" ? waiting.promise : undefined);
+  const opening = h.client.connectBox("box-1");
+  try {
+    await tick();
+    assert.equal(h.sessions.length, 1, "fresh box authentication starts without directory latency");
+    assert.equal(h.calls.slice(baseline).some(call => call.path === "/app-api/network/devices"), false);
+    assert.equal((await opening).phase, "ready");
+    assert.ok(steps.includes("box.connect"));
+    assert.equal(steps.includes("box.directory"), false);
+  } finally {
+    waiting.resolve({ networkSessionId: "enrollment-1", devices: [device] });
+    await opening;
+  }
+});
+
+test("box selection refuses an expired lease before its timer runs", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now + 301_000);
+  const baseline = h.calls.length;
+  await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_NOT_READY" });
+  assert.equal(h.sessions.length, 0);
+  assert.equal(h.calls.length, baseline);
+});
+
+test("a cached address failure refreshes the same authorized box once", async t => {
+  const probed = [], steps = [];
+  const h = harness(t, {
+    probe: async url => { probed.push(url); if (probed.length === 1) throw fail("health_unavailable"); },
+    measure: async (step, work) => { steps.push(step); return work(); },
+  });
+  await h.client.loginPassword({ phone: "account-a" });
+  const baseline = h.calls.length;
+  const moved = { ...device, serviceUrl: "http://100.80.1.2:8089" };
+  h.catalog([moved]);
+  const state = await h.client.connectBox("box-1");
+  assert.equal(state.phase, "ready");
+  assert.equal(state.connection.deviceId, "box-1");
+  assert.equal(state.connection.url, moved.serviceUrl);
+  assert.deepEqual(probed, [device.serviceUrl, moved.serviceUrl]);
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.sessions[0].input.device.deviceId, "box-1");
+  assert.equal(h.calls.slice(baseline).filter(call => call.path === "/app-api/network/devices").length, 1);
+  assert.equal(steps.filter(step => step === "box.directory").length, 1);
+});
+
+test("a fresh directory removing the selected box never retries its cached address", async t => {
+  let probes = 0;
+  const h = harness(t, { probe: async () => { probes++; throw fail("health_unavailable"); } });
+  await h.client.loginPassword({ phone: "account-a" });
+  h.catalog([]);
+  await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_DEVICE_ACCESS_DENIED" });
+  assert.equal(probes, 1);
+  assert.equal(h.sessions.length, 0);
+  assert.equal(h.client.snapshot().phase, "disconnected");
+});
+
+test("a failing refreshed route is not retried again", async t => {
+  let probes = 0;
+  const h = harness(t, { probe: async () => { probes++; throw fail("health_unavailable"); } });
+  await h.client.loginPassword({ phone: "account-a" });
+  const baseline = h.calls.length;
+  await assert.rejects(h.client.connectBox("box-1"), { code: "health_unavailable" });
+  assert.equal(probes, 2);
+  assert.equal(h.calls.slice(baseline).filter(call => call.path === "/app-api/network/devices").length, 1);
+});
+
+for (const code of ["ACCOUNT_ACCESS_DENIED", "BOX_PLATFORM_AUTH_FAILED", "NETWORK_SESSION_REVOKED", "NETWORK_REVOCATION_PENDING"]) {
+  test(`a live grant denial never falls back to cached authorization: ${code}`, async t => {
+    const h = harness(t, { onCreateSession: async () => { throw fail(code, 403); } });
+    await h.client.loginPassword({ phone: "account-a" });
+    const baseline = h.calls.length;
+    await assert.rejects(h.client.connectBox("box-1"), { code });
+    assert.equal(h.calls.length, baseline);
+    assert.equal(h.sessions.length, 0);
+    assert.equal(h.client.snapshot().phase, "disconnected");
+  });
+}
+
+test("an endpoint missing from the current session requires a fresh directory", async t => {
+  const h = harness(t);
+  h.override(input => input.path === "/app-api/network/devices"
+    ? { networkSessionId: "enrollment-1", devices: [] } : undefined);
+  await h.client.loginPassword({ phone: "account-a" });
+  const baseline = h.calls.length;
+  h.override(undefined);
+  assert.equal((await h.client.connectBox("box-1")).phase, "ready");
+  assert.equal(h.calls.slice(baseline).filter(call => call.path === "/app-api/network/devices").length, 1);
+  assert.equal(h.sessions.length, 1);
+});
+
+test("a changed account client cannot reuse the previous transport directory", async t => {
+  const h = harness(t);
+  await h.client.loginPassword({ phone: "account-a" });
+  h.publishAccount({ phase: "authenticated", accountId: "account-a", clientId: "replacement-client" });
+  await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_NOT_READY" });
+  assert.equal(h.sessions.length, 0);
+});
+
+for (const pendingStage of ["directory", "grant"]) {
+  for (const action of ["switch", "logout"]) {
+    test(`${action} during ${pendingStage} cannot open the earlier box`, async t => {
+      const waiting = deferred(), started = deferred();
+      let first = true;
+      const h = harness(t, {
+        probe: async () => {
+          if (pendingStage === "directory" && first) { first = false; throw fail("health_unavailable"); }
+        },
+        onCreateSession: async () => {
+          if (pendingStage === "grant" && first) { first = false; started.resolve(); await waiting.promise; }
+        },
+      });
+      const other = { ...device, deviceId: "box-2", identityDeviceId: "identity-2", serviceUrl: "http://100.80.1.2:8089" };
+      h.catalog([device, other]);
+      await h.client.loginPassword({ phone: "account-a" });
+      if (pendingStage === "directory") h.override(input => {
+        if (input.path === "/app-api/network/devices") { started.resolve(); return waiting.promise; }
+      });
+      const opening = h.client.connectBox("box-1");
+      try {
+        await started.promise;
+        h.override(undefined);
+        if (action === "switch") await h.client.connectBox("box-2");
+        else await h.client.logout();
+      } finally {
+        waiting.resolve({ networkSessionId: "enrollment-1", devices: [] });
+        await opening;
+      }
+      const state = h.client.snapshot();
+      assert.equal(state.connection?.deviceId || null, action === "switch" ? "box-2" : null);
+      assert.ok(h.sessions.filter(session => session.input.device.deviceId === "box-1").every(session => session.closed));
+      if (action === "switch") assert.equal(h.sessions.find(session => session.input.device.deviceId === "box-2").closed, false);
+    });
+  }
+}
+
+for (const outcome of ["removed", "denied"]) {
+  test(`a directory read predating warm selection cannot apply a late ${outcome} result`, async t => {
+    const h = harness(t), waiting = deferred(), started = deferred();
+    await h.client.loginPassword({ phone: "account-a" });
+    h.override(async input => {
+      if (input.path !== "/app-api/network/devices") return undefined;
+      started.resolve();
+      await waiting.promise;
+      if (outcome === "denied") throw fail("NETWORK_SESSION_REVOKED", 403);
+      return { networkSessionId: "enrollment-1", devices: [], phase: "ready", leaseExpiresAt: Date.now() / 1000 + 300 };
+    });
+    const refreshing = h.client.refreshDevices();
+    try {
+      await started.promise;
+      await h.client.connectBox("box-1");
+      assert.equal(h.sessions.length, 1);
+    } finally {
+      waiting.resolve();
+      await refreshing;
+    }
+    assert.equal(h.client.snapshot().phase, "ready");
+    assert.equal(h.client.snapshot().connection.deviceId, "box-1");
+    assert.equal(h.sessions[0].closed, false);
+  });
+}
+
+test("a directory removing the target while its live grant waits closes the late session", async t => {
+  const waiting = deferred(), started = deferred();
+  const h = harness(t, { onCreateSession: async () => { started.resolve(); await waiting.promise; } });
+  await h.client.loginPassword({ phone: "account-a" });
+  const opening = h.client.connectBox("box-1");
+  const rejected = assert.rejects(opening, { code: "NETWORK_DEVICE_ACCESS_DENIED" });
+  try {
+    await started.promise;
+    h.override(input => input.path === "/app-api/network/devices"
+      ? { networkSessionId: "enrollment-1", devices: [], phase: "ready", leaseExpiresAt: Date.now() / 1000 + 300 }
+      : undefined);
+    await h.client.refreshDevices();
+  } finally {
+    waiting.resolve();
+    await rejected;
+  }
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.sessions[0].closed, true);
+  assert.equal(h.client.snapshot().phase, "disconnected");
+});
 
 test("refreshing an unchanged authorized directory does not prepare or restore the network", async t => {
   const h = harness(t);
@@ -684,7 +1030,7 @@ test("lost one-time enrollment response is revoked and replaced even while enrol
 });
 
 test("disconnect cancels a pending box directory selection", async (t) => {
-  const h = harness(t),
+  const h = harness(t, { probe: async () => { throw fail("health_unavailable"); } }),
     waiting = deferred();
   await h.client.loginPassword({ phone: "13800000001", password: "test" });
   h.override((input) =>
@@ -700,7 +1046,8 @@ test("disconnect cancels a pending box directory selection", async (t) => {
 });
 
 test("a delayed earlier box selection cannot replace the latest selection", async (t) => {
-  const h = harness(t),
+  let first = true;
+  const h = harness(t, { probe: async () => { if (first) { first = false; throw fail("health_unavailable"); } } }),
     waiting = deferred();
   await h.client.loginPassword({ phone: "13800000001", password: "test" });
   h.override((input) =>

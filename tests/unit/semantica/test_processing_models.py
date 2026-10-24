@@ -100,6 +100,51 @@ async def test_disabled_user_and_bad_signature(fixture):
 
 
 @pytest.mark.asyncio
+async def test_team_callback_requires_a_real_wanx_administrator(fixture):
+    services, _, signed = fixture
+    owner = json.dumps(["box", "app", "team:wanx"])
+    raw, headers = signed(owner=owner, actor_id="wanx:1")
+    assert (await models.internal(raw, headers, services, AsyncMock(return_value=False)))["items"]
+    for actor in ("", "access-key:key-1", "semantica:1"):
+        raw, headers = signed(owner=owner, actor_id=actor)
+        with pytest.raises(SemanticaError, match="MODEL_AUTH_REQUIRED"):
+            await models.internal(raw, headers, services, AsyncMock(return_value=False))
+    services.user_repo.get = lambda _: SimpleNamespace(
+        username="member", disabled=False, role="user", permissions=["knowledge_bases"]
+    )
+    raw, headers = signed(owner=owner, actor_id="wanx:1")
+    with pytest.raises(SemanticaError, match="MODEL_AUTH_REQUIRED"):
+        await models.internal(raw, headers, services, AsyncMock(return_value=False))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "grants", [[{}], [{"authorized": False}], [{"authorized": True}, {"authorized": False}]]
+)
+async def test_team_inference_stops_when_task_authorization_is_denied(fixture, monkeypatch, grants):
+    services, _, signed = fixture
+    selected = models._catalog(services)[0][0]
+    authorize = AsyncMock(side_effect=grants)
+    generate = AsyncMock(return_value={"text": "{}", "usage": None})
+    monkeypatch.setattr(models.SemanticaClient, "request", authorize)
+    monkeypatch.setattr(models, "_generate", generate)
+    raw, headers = signed(
+        "infer",
+        owner=json.dumps(["box", "app", "team:wanx"]),
+        actor_id="wanx:1",
+        selection=selected,
+        job_id="team-job",
+        purpose="extraction",
+        text="synthetic",
+        schema={},
+    )
+    with pytest.raises(SemanticaError, match="MODEL_TASK_REVOKED"):
+        await models.internal(raw, headers, services, AsyncMock(return_value=False))
+    generate.assert_not_called()
+    assert authorize.await_count == len(grants)
+
+
+@pytest.mark.asyncio
 async def test_check_only_synthetic_text_and_unknown_usage_preserved(fixture, monkeypatch):
     services, row, signed = fixture
     selected = models._catalog(services)[0][0]
