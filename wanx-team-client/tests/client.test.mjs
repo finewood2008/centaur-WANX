@@ -14,6 +14,7 @@ function fixture({
   createGateway,
   probe = async () => ({ ok: true }),
   recover = async () => {},
+  measure,
 } = {}) {
   let state = { enabled: false, phase: "disabled", reason: null, peers: [] };
   const listeners = new Set();
@@ -47,6 +48,7 @@ function fixture({
   const client = createClient({
     network,
     probe,
+    measure,
     createGateway:
       createGateway ||
       (async ({ targetURL }) => {
@@ -86,6 +88,29 @@ const direct = {
   url: "http://127.0.0.1:8088/",
   mode: "direct",
 };
+
+test("initial connection measures real transport stages and preserves probe failure", async t => {
+  const stages = [];
+  let unhealthy = false;
+  const f = fixture({
+    probe: async () => { if (unhealthy) throw new Error("health_timeout"); },
+    measure: async (step, operation) => {
+      try { const result = await operation(); stages.push([step, "completed"]); return result; }
+      catch (error) { stages.push([step, "failed"]); throw error; }
+    },
+  });
+  t.after(() => f.client.close());
+  await f.client.connect(direct, { createSession: async () => ({ close: async () => {} }) });
+  assert.deepEqual(stages, [
+    ["box.cleanup", "completed"], ["box.endpoint", "completed"], ["box.health", "completed"],
+    ["box.session", "completed"], ["box.gateway", "completed"],
+  ]);
+  stages.length = 0;
+  unhealthy = true;
+  await assert.rejects(f.client.connect(direct), /health_timeout/);
+  assert.deepEqual(stages, [["box.cleanup", "completed"], ["box.endpoint", "completed"], ["box.health", "failed"]]);
+  assert.equal(f.client.snapshot().phase, "disconnected");
+});
 
 const settle = () => new Promise(setImmediate);
 async function advance(t, ms = 30_000) {

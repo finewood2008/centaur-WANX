@@ -1,9 +1,12 @@
 import { mkdir, stat, rename, appendFile } from "node:fs/promises";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 // Codes are an allowlist, not a pattern: even a plausible code may contain a secret.
 const errorCodes = new Set([
+  "health_unavailable", "health_timeout", "health_invalid", "NETWORK_SESSION_REVOKED",
   "LOCAL_CONNECT_TIMEOUT", "LOCAL_CONNECT_UNSUPPORTED_BOND_FLOW", "LOCAL_SELECTION_LEASE_INVALID",
   "LOCAL_DEVICE_INFO_INVALID", "LOCAL_DEVICE_INCOMPATIBLE", "LOCAL_TRANSPORT_DISCONNECTED",
   "LOCAL_USER_CANCELLED", "GATT_SERVICE_NOT_FOUND", "GATT_CHARACTERISTIC_MISMATCH",
@@ -33,10 +36,13 @@ export function createTimingRecorder({
   maxBytes = 512 * 1024,
 }) {
   let writes = Promise.resolve();
+  const connections = new AsyncLocalStorage();
   const previousStates = new Map();
   function record(step, outcome, durationMs, details = {}) {
     if (!/^[a-z]+(?:\.[a-z]+){1,3}$/.test(step)) return;
-    const event = { time: new Date().toISOString(), step, outcome, durationMs, ...details };
+    const connection = connections.getStore();
+    const event = { time: new Date().toISOString(), step, outcome, durationMs, ...details,
+      ...(connection?.active ? { connectionId: connection.id } : {}) };
     if (consoleOutput) console.info("[wanx-timing]", JSON.stringify(event));
     writes = writes
       .catch(() => {})
@@ -53,6 +59,13 @@ export function createTimingRecorder({
       .catch(() => {}); // Diagnostic I/O must never break a connection.
   }
   return {
+    grantResponse(value = {}) {
+      const details = {};
+      if (/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.requestId || "")) details.requestId = value.requestId;
+      if (Number.isFinite(value.serverDurationMs) && value.serverDurationMs >= 0) details.serverDurationMs = value.serverDurationMs;
+      if (Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599) details.httpStatus = value.httpStatus;
+      record("account.grant.response", "received", undefined, details);
+    },
     provisioning(value) {
       if (!["connect", "readDeviceInfo", "request", "subscribeStatus", "close", "closeAll"].includes(value.operation)
           || !["completed", "failed"].includes(value.outcome)) return;
@@ -106,24 +119,35 @@ export function createTimingRecorder({
         Math.round(value.durationMs), details);
     },
     async run(step, operation) {
-      const start = performance.now();
-      let outcome = "failed";
-      let details;
-      try {
-        const value = await operation();
-        outcome = "completed";
-        return value;
-      } catch (error) {
-        details = {
-          errorCode: safeCode(error?.code),
-          ...(Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
-            ? { httpStatus: error.status } : {}),
-        };
-        throw error;
-      } finally {
-        record(step, outcome, Math.round(performance.now() - start), details);
+      if (step === "box.connect") {
+        const connection = { id: randomUUID(), active: true };
+        return connections.run(connection, async () => {
+          try { return await run(step, operation); }
+          finally { connection.active = false; }
+        });
       }
+      return run(step, operation);
     },
     flush: () => writes,
   };
+
+  async function run(step, operation) {
+    const start = performance.now();
+    let outcome = "failed";
+    let details;
+    try {
+      const value = await operation();
+      outcome = "completed";
+      return value;
+    } catch (error) {
+      details = {
+        errorCode: safeCode(error?.code || error?.message),
+        ...(Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
+          ? { httpStatus: error.status } : {}),
+      };
+      throw error;
+    } finally {
+      record(step, outcome, Math.round(performance.now() - start), details);
+    }
+  }
 }

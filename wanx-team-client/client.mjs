@@ -18,6 +18,7 @@ export function createClient({
   createGateway = createDashboardGateway,
   probe = probeEndpoint,
   onRecovery = () => {},
+  measure = (_step, operation) => operation(),
 } = {}) {
   let phase = "disconnected";
   let connection = null;
@@ -264,7 +265,7 @@ export function createClient({
     ) {
       throw new Error("invalid_connection");
     }
-    const stopping = disconnect();
+    const stopping = measure("box.cleanup", () => disconnect());
     const requestEpoch = epoch;
     await stopping;
     if (closed || requestEpoch !== epoch) return snapshot();
@@ -275,32 +276,32 @@ export function createClient({
     let created;
     let platformSession;
     try {
-      const endpoint = await network.resolveEndpoint(input);
+      const endpoint = await measure("box.endpoint", () => network.resolveEndpoint(input));
       if (attempt !== epoch || closed) return snapshot();
       const controller = new AbortController();
       pendingProbe = controller;
-      await probe(endpoint.url, {
+      await measure("box.health", () => probe(endpoint.url, {
         signal: controller.signal,
         agent: endpoint.agent,
-      });
+      }));
       if (attempt !== epoch || closed) return snapshot();
       if (createSession) {
-        platformSession = await createSession({
+        platformSession = await measure("box.session", () => createSession({
           url: endpoint.url,
           agent: endpoint.agent,
           signal: controller.signal,
-        });
+        }));
         if (attempt !== epoch || closed) {
           await platformSession.close();
           return snapshot();
         }
       }
-      created = await createGateway({
+      created = await measure("box.gateway", () => createGateway({
         deviceId: input.deviceId,
         targetURL: endpoint.url,
         agent: endpoint.agent,
         session: platformSession,
-      });
+      }));
       pendingProbe = null;
       if (attempt !== epoch || closed) {
         await dispose(created);

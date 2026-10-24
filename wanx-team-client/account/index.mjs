@@ -6,6 +6,8 @@ export const DEFAULT_CONSUMER_URL = "https://boss.nexusaos.qitus.cn/prod-api";
 const failure = (code, status) =>
   Object.assign(new Error(code), { code, status });
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+const isGrantRequest = ({ method, path } = {}) => method === "POST" &&
+  /^\/app-api\/devices\/[A-Za-z0-9._-]+\/wanx\/sso-grants$/.test(path || "");
 const encode = (value) =>
   encodeURIComponent(value).replace(
     /[!'()*]/g,
@@ -96,6 +98,7 @@ export function createAccount({
   deviceModel = "万象连接",
   now = Date.now,
   measure = (_step, operation) => operation(),
+  onGrantTiming = () => {},
 } = {}) {
   let base;
   try {
@@ -223,6 +226,8 @@ export function createAccount({
   ) {
     const checkGeneration = () => { if (!detached) assert(generation); };
     const url = route(path);
+    const grantRequest = isGrantRequest({ method, path });
+    const timed = (stage, operation) => grantRequest ? measure(`account.grant.${stage}`, operation) : operation();
     const creditRoute = path.startsWith("/app-api/v1/credits/");
     checkGeneration();
     const text = body === undefined ? "" : JSON.stringify(body);
@@ -262,22 +267,30 @@ export function createAccount({
     }
     if (!detached) pending.add(controller);
     try {
-      const response = await fetcher(url, {
+      const response = await timed("headers", () => fetcher(url, {
         method,
         headers,
         ...(body !== undefined ? { body: text } : {}),
         redirect: "error",
         signal: AbortSignal.any(signals),
-      });
+      }));
       checkGeneration();
       if (
         response.redirected ||
         (response.url && new URL(response.url).origin !== base.origin)
       )
         throw failure("ACCOUNT_REDIRECT_REJECTED");
-      const reader = response.body?.getReader();
-      let responseText = "";
-      if (reader) {
+      if (grantRequest) {
+        const details = { httpStatus: response.status };
+        const requestId = response.headers.get("x-wanx-timing-id") || "";
+        if (/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestId)) details.requestId = requestId;
+        const duration = /^wanx_grant;dur=(\d+(?:\.\d+)?)$/.exec(response.headers.get("server-timing") || "");
+        if (duration && Number.isFinite(Number(duration[1]))) details.serverDurationMs = Number(duration[1]);
+        try { onGrantTiming(details); } catch {} // Diagnostics must not affect authorization.
+      }
+      const responseText = await timed("body", async () => {
+        const reader = response.body?.getReader();
+        if (!reader) return "";
         let size = 0;
         const chunks = [];
         try {
@@ -292,8 +305,8 @@ export function createAccount({
         } finally {
           await reader.cancel().catch(() => {});
         }
-        responseText = Buffer.concat(chunks).toString("utf8");
-      }
+        return Buffer.concat(chunks).toString("utf8");
+      });
       let payload;
       const missingNetworkRoute =
         response.status === 404 && path.startsWith("/app-api/network/");
@@ -462,7 +475,7 @@ export function createAccount({
     const generation = epoch,
       previous = record;
     refreshPromise = (async () => {
-      const data = await wire(
+      const data = await measure("account.refresh.http", () => wire(
         {
           method: "POST",
           path: "/app-api/auth/refresh",
@@ -470,13 +483,13 @@ export function createAccount({
           authenticated: false,
         },
         generation,
-      );
+      ));
       assert(generation);
       const session = sessionFrom(data, previous.identity);
       if (session.accountId !== previous.session.accountId)
         throw failure("ACCOUNT_INVALID_RESPONSE");
       const next = { ...previous, session };
-      await persist(next);
+      await measure("account.refresh.persist", () => persist(next));
       assert(generation);
       record = next;
       return snapshot();
@@ -516,15 +529,18 @@ export function createAccount({
   async function request(input) {
     const generation = epoch;
     if (!record?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
-    if (record.session.expiresAt <= now() + 30000) await refresh();
+    const grantRequest = isGrantRequest(input);
+    const renew = () => grantRequest ? measure("account.grant.refresh", () => refresh()) : refresh();
+    const send = () => measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
+    if (record.session.expiresAt <= now() + 30000) await renew();
     assert(generation);
     try {
-      return await measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
+      return await send();
     } catch (error) {
       if (error.status !== 401) throw error;
-      await refresh();
+      await renew();
       assert(generation);
-      return measureCreditRequest(input, () => wire({ ...input, authenticated: true }, generation));
+      return grantRequest ? measure("account.grant.retry", send) : send();
     }
   }
   async function login(input, mode) {
