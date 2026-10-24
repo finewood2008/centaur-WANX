@@ -83,7 +83,14 @@ export async function createApplicationSession({
         !["GET /api/auth/me", "PATCH /api/auth/me", "POST /api/auth/me/avatar", "DELETE /api/auth/me/avatar"].includes(`${method} ${decoded}`)) throw fail("HOST_AUTH_MANAGED", 403);
     // Credentials are supplied by the Host, never by an application URL.
     if (["token", "access_token"].some(key => endpoint.searchParams.has(key))) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
-    if (websocket && decoded !== "/api/browser-stream/ws" && !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(decoded)) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
+    // Fire owns its deterministic worker; the box still checks terminal
+    // permission and workspace ownership. Keep other apps and persistent
+    // terminal attachment out of this narrowly scoped native transport.
+    const fireTerminal = applicationId === "centaurai.wanx.huohua-publisher" &&
+      /^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/terminal\/ws$/.test(decoded) &&
+      [...endpoint.searchParams.keys()].every(key => ["cols", "rows"].includes(key)) &&
+      [...endpoint.searchParams.values()].every(value => /^\d{1,3}$/.test(value));
+    if (websocket && decoded !== "/api/browser-stream/ws" && !/^\/api\/agents\/[A-Za-z0-9_-]{1,128}\/chat\/ws$/.test(decoded) && !fireTerminal) throw fail("APPLICATION_PATH_NOT_ALLOWED", 400);
     return raw;
   }
   const headersFor = req => Object.fromEntries(Object.entries(req.headers).filter(([name]) => REQUEST_HEADERS.has(name) || (name === "x-xingtu-key" && /^\/api\/semantica\/open\/v1\//.test(req.url.split("?")[0]))));
@@ -107,7 +114,9 @@ export async function createApplicationSession({
         if (req.method !== "GET") throw fail("HOST_METHOD_NOT_ALLOWED", 405);
         if (req.url === "/__wanx/context") {
           res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-          return res.end(JSON.stringify(current));
+          return res.end(JSON.stringify(applicationId === "centaurai.wanx.huohua-publisher" ? {
+            ...current, hostFeatures: { ...current.hostFeatures, ephemeralTerminal: true },
+          } : current));
         }
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store" });
         res.write(`data: ${JSON.stringify({ type: "connection", connection: current.connection })}\n\n`);
