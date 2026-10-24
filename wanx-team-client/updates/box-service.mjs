@@ -7,9 +7,31 @@ const id = value => {
   return value;
 };
 const initial = deviceId => ({ deviceId, phase: deviceId ? "unknown" : "no_device", inventory: null,
-  candidate: null, plan: null, operation: null, canUpgrade: false, checkedAt: null, reason: deviceId ? "INVENTORY_UNKNOWN" : null, blockers: [] });
+  currentRelease: null, latestOperation: null, candidate: null, plan: null, operation: null,
+  canUpgrade: false, checkedAt: null, reason: deviceId ? "INVENTORY_UNKNOWN" : null, blockers: [] });
 const baseline = inventory => ({ deviceId: inventory.deviceId, ownershipEpoch: inventory.ownershipEpoch,
   platform: inventory.platform, components: inventory.components });
+const terminal = state => ["succeeded", "rolled_back", "failed", "needs_attention", "cancelled"].includes(state);
+const staleInventory = (inventory, now) => !inventory || !Number.isFinite(Date.parse(inventory.observedAt)) ||
+  now - Date.parse(inventory.observedAt) > 15 * 60 * 1000 || Date.parse(inventory.observedAt) > now + 60000;
+
+// This is the authenticated Admin's match against the reported running inventory,
+// not the signed candidate offer (which describes a possible future version).
+function currentReleaseView(value, inventory, now) {
+  if (value == null || staleInventory(inventory, now)) return null;
+  const label = value => typeof value === "string" && /^[A-Za-z0-9._+-]{1,128}$/.test(value);
+  const verifiedAt = Date.parse(value.verifiedAt);
+  if (!label(value.releaseId) || !label(value.version) || !label(value.channel) ||
+      !Number.isFinite(verifiedAt) || verifiedAt !== Date.parse(inventory.observedAt) || !Array.isArray(value.components) ||
+      value.components.length === 0 || value.components.length > 64 || new Set(value.components).size !== value.components.length ||
+      value.components.some(name => {
+        const component = typeof name === "string" && Object.hasOwn(inventory.components, name) ? inventory.components[name] : null;
+        return !component || component.evidenceStatus !== "verified" || component.health !== "healthy" ||
+          typeof component.runningVersion !== "string" || !component.runningVersion || component.installedVersion !== component.runningVersion;
+      })) throw updateError("UPDATE_INVALID_RESPONSE");
+  return { releaseId: value.releaseId, version: value.version, channel: value.channel,
+    components: [...value.components], verifiedAt: value.verifiedAt };
+}
 
 export async function createBoxUpdates({ request, getScope, captureSession, keys = {}, store, now = Date.now }) {
   let saved, stateInvalid = false;
@@ -47,16 +69,39 @@ export async function createBoxUpdates({ request, getScope, captureSession, keys
     catch (error) { if (!closed && captured === epoch) publish({ phase: "failed", reason: errorCode(error) }); throw error; }
     finally { if (active === task) active = null; }
   }
-  function acceptOperation(value, deviceId) {
+  function validateOperation(value, deviceId, ownershipChanged = false) {
     if (!value || value.deviceId !== deviceId || !["queued", "prechecking", "downloading", "staged", "waiting_window", "applying", "verifying", "succeeded", "rolling_back", "rolled_back", "failed", "needs_attention", "cancelled"].includes(value.state) ||
         !Array.isArray(value.allowedActions) || !Number.isSafeInteger(value.attemptGeneration) || value.attemptGeneration < 1 ||
         !Number.isSafeInteger(value.lastSequence) || value.lastSequence < 0) throw updateError("UPDATE_INVALID_RESPONSE");
     id(value.operationId);
-    const previous = state.operation;
-    if (previous?.operationId === value.operationId &&
+    for (const previous of ownershipChanged ? [] : [state.operation, state.latestOperation]) if (previous?.operationId === value.operationId &&
         (value.attemptGeneration < previous.attemptGeneration || value.attemptGeneration === previous.attemptGeneration && value.lastSequence < previous.lastSequence))
       throw updateError("UPDATE_STALE_RESPONSE");
+  }
+  function acceptOperation(value, deviceId) {
+    validateOperation(value, deviceId);
     publish({ operation: value, phase: ["succeeded", "rolled_back", "cancelled"].includes(value.state) ? "idle" : ["failed", "needs_attention"].includes(value.state) ? "failed" : "executing", reason: value.errorCode || null });
+  }
+  function inventoryOwnershipChanged(inventory, deviceId) {
+    if (!inventory) return false;
+    if (inventory.deviceId !== deviceId || inventory.schemaVersion !== 1 || !inventory.components ||
+        !Number.isSafeInteger(inventory.ownershipEpoch) || inventory.ownershipEpoch < 0 ||
+        !Number.isSafeInteger(inventory.reportSequence) || inventory.reportSequence < 0) throw updateError("UPDATE_INVALID_RESPONSE");
+    const previous = state.inventory;
+    if (previous && (inventory.ownershipEpoch < previous.ownershipEpoch ||
+        inventory.ownershipEpoch === previous.ownershipEpoch && inventory.reportSequence < previous.reportSequence))
+      throw updateError("UPDATE_STALE_RESPONSE");
+    return Boolean(previous && inventory.ownershipEpoch > previous.ownershipEpoch);
+  }
+  function deviceEvidence(result, inventory, deviceId, ownershipChanged = false) {
+    const currentRelease = currentReleaseView(result.currentRelease, inventory, now());
+    const latestOperation = result.latestOperation || null;
+    if (latestOperation) {
+      validateOperation(latestOperation, deviceId, ownershipChanged);
+      if (!terminal(latestOperation.state)) throw updateError("UPDATE_INVALID_RESPONSE");
+    }
+    if (result.activeOperation) validateOperation(result.activeOperation, deviceId, ownershipChanged);
+    return { currentRelease, latestOperation };
   }
   sync();
   return {
@@ -67,10 +112,9 @@ export async function createBoxUpdates({ request, getScope, captureSession, keys
       publish({ phase: "checking", plan: null, reason: null }); offer = null;
       const result = await request({ method: "GET", path: `${prefix}/devices/${deviceId}` }); check();
       const inventory = result?.inventory;
-      if (inventory && (inventory.deviceId !== deviceId || inventory.schemaVersion !== 1 || !inventory.components)) throw updateError("UPDATE_INVALID_RESPONSE");
-      const previous = state.inventory;
-      if (previous && inventory && inventory.reportSequence < previous.reportSequence) throw updateError("UPDATE_STALE_RESPONSE");
-      const stale = !inventory || !Number.isFinite(Date.parse(inventory.observedAt)) || now() - Date.parse(inventory.observedAt) > 15 * 60 * 1000 || Date.parse(inventory.observedAt) > now() + 60000;
+      const ownershipChanged = inventoryOwnershipChanged(inventory, deviceId);
+      const stale = staleInventory(inventory, now());
+      const evidence = deviceEvidence(result, inventory, deviceId, ownershipChanged);
       let reason = !inventory ? "INVENTORY_UNKNOWN" : stale ? "INVENTORY_STALE" : null;
       let candidate = null;
       if (result.candidate?.release && Object.keys(keys).length) {
@@ -81,8 +125,9 @@ export async function createBoxUpdates({ request, getScope, captureSession, keys
           ...(result.candidate.reasonCode ? { reasonCode: result.candidate.reasonCode } : {}) };
       } else if (result.candidate?.release) reason ||= "UPDATE_NOT_CONFIGURED";
       if (result.candidate?.status === "blocked") reason ||= result.candidate.reasonCode || "RELEASE_UNAVAILABLE";
-      publish({ inventory: inventory || null, candidate, canUpgrade: result.canUpgrade === true, checkedAt: new Date(now()).toISOString(), reason,
-        phase: reason ? "blocked" : candidate && result.candidate?.status === "available" ? "available" : "idle", operation: result.activeOperation || state.operation });
+      publish({ inventory: inventory || null, ...evidence, candidate, canUpgrade: result.canUpgrade === true, checkedAt: new Date(now()).toISOString(), reason,
+        phase: reason ? "blocked" : candidate && result.candidate?.status === "available" ? "available" : "idle",
+        operation: result.activeOperation || evidence.latestOperation || (ownershipChanged ? null : state.operation) });
       if (result.activeOperation) acceptOperation(result.activeOperation, deviceId);
       return snapshot();
     }); },
@@ -130,9 +175,13 @@ export async function createBoxUpdates({ request, getScope, captureSession, keys
       acceptOperation(operation, deviceId);
       if (["succeeded", "rolled_back"].includes(operation.state)) {
         const latest = await request({ method: "GET", path: `${prefix}/devices/${deviceId}` }); check();
-        if (latest?.inventory?.deviceId !== deviceId || latest.inventory.schemaVersion !== 1 || !latest.inventory.components ||
-            latest.inventory.reportSequence < (state.inventory?.reportSequence || 0)) throw updateError("UPDATE_STALE_RESPONSE");
-        publish({ inventory: latest.inventory, canUpgrade: latest.canUpgrade === true, checkedAt: new Date(now()).toISOString() });
+        if (!latest?.inventory) throw updateError("UPDATE_STALE_RESPONSE");
+        const ownershipChanged = inventoryOwnershipChanged(latest.inventory, deviceId);
+        const evidence = deviceEvidence(latest, latest.inventory, deviceId, ownershipChanged);
+        if (ownershipChanged) offer = null;
+        publish({ inventory: latest.inventory, ...evidence, canUpgrade: latest.canUpgrade === true, checkedAt: new Date(now()).toISOString(),
+          ...(ownershipChanged ? { operation: null, plan: null, candidate: null } : {}) });
+        if (latest.activeOperation || evidence.latestOperation) acceptOperation(latest.activeOperation || evidence.latestOperation, deviceId);
       }
       return snapshot();
     }); },

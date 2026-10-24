@@ -795,7 +795,7 @@ test("temporary recovery failure retries saved identity with backoff and stops o
 });
 
 
-test("control-plane outage preserves active transport sockets; explicit peer loss retires once", async (t) => {
+test("control and peer connectivity changes preserve sockets; peer removal retires once", async (t) => {
   let status = connected();
   const { network } = harness(t, (method) => method === "start" ? started(status) : status);
   await network.setEnabled(true);
@@ -810,7 +810,11 @@ test("control-plane outage preserves active transport sockets; explicit peer los
   status = connected([{ ip: "100.80.1.2", connected: false }]);
   await network.refresh();
   await network.refresh();
-  assert.equal(resets, 1);
+  assert.equal(resets, 0, "a connectivity hint must not close an existing stream");
+  status = connected([]);
+  await network.refresh();
+  await network.refresh();
+  assert.equal(resets, 1, "removal from the current peer map still retires transport");
 });
 
 
@@ -999,4 +1003,42 @@ test("automatic recovery stops after explicit authentication rejection", async t
   t.mock.timers.tick(120_000);
   await tick();
   assert.equal(calls.length, count);
+});
+
+ test("interface change does not restart healthy targets because another target is offline", async t => {
+  const status = connected([{ip:"100.80.1.2",connected:true},{ip:"100.80.1.3",connected:true}]);
+  const {network,calls}=harness(t, method => method === "start" || method === "recover" ? started(status) : status);
+  await network.setEnabled(true);
+  const first=await network.resolveEndpoint({url:"http://100.80.1.2:8088",mode:"netbird"});
+  const second=await network.resolveEndpoint({url:"http://100.80.1.3:8088",mode:"netbird"});
+  first.agent.probe=async()=>false;second.agent.probe=async()=>true;
+  let resets=0;
+  first.agent.resetConnections=second.agent.resetConnections=()=>{resets++};
+  await network.networkChanged();
+  assert.equal(calls.filter(c=>c.method==="recover").length,0);
+  assert.equal(resets,0);
+ });
+ test("stale native observations remain distinguishable without allowing a new target", async t => {
+  const stale={phase:"recovering",reason:"network_status_stale",peers:[]};
+  const {network}=harness(t, method => method === "start" ? started() : stale);
+  await network.setEnabled(true);
+  await network.refresh();
+  assert.equal(network.snapshot().reason,"network_status_stale");
+  await rejectsCode(network.resolveEndpoint({url:"http://100.80.1.2:8088",mode:"netbird"}),"netbird_peer_unknown");
+ });
+
+test("authoritative peer removal after a stale sample revokes existing transport", async t => {
+ let status=connected();
+ const {network}=harness(t,method=>method==="start"?started(status):status);
+ await network.setEnabled(true);
+ const input={url:"http://100.80.1.2:8088",mode:"netbird"};
+ const endpoint=await network.resolveEndpoint(input);
+ let resets=0;endpoint.agent.resetConnections=()=>{resets++};
+ status={phase:"recovering",reason:"network_status_stale",peers:[]};
+ await network.refresh();assert.equal(resets,0);
+ status=connected([]);await network.refresh();await network.refresh();
+ assert.equal(resets,1);
+ await rejectsCode(network.resolveEndpoint(input),"netbird_peer_unknown");
+ status=connected();const replacement=await network.resolveEndpoint(input);
+ assert.notEqual(replacement.agent,endpoint.agent);
 });

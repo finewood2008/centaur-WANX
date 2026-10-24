@@ -29,7 +29,7 @@ function phone(input) {
 function requireConnectedBox(state) {
   if (state.account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
   if (state.phase === "ready" && state.connection?.mode === "local" && state.connection.deviceId) return;
-  if (state.network?.enabled === false || state.platform?.phase !== "ready" || state.network?.phase !== "ready")
+  if (state.network?.enabled === false || state.platform?.phase !== "ready" || !["ready", "recovering"].includes(state.network?.phase))
     throw new Error("NETWORK_NOT_READY");
   if (state.phase !== "ready" || state.connection?.mode !== "netbird" || !state.connection.deviceId)
     throw new Error("BOX_CONNECTION_REQUIRED");

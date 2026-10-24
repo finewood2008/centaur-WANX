@@ -2939,3 +2939,19 @@ test('AI dialogue is a standard tab beside applications and the browser remains 
   assert.match(h.app.innerHTML, /id="dialogue-model-settings-host"/);
   assert.equal(h.launches.length, 0);
 });
+
+test("preload and renderer preserve an existing healthy box through management recovery", async () => {
+  const initial = state("ready", "recovering", "box-102");
+  const h = await harness(initial);
+  const projected = await h.window.wanxClient.getLocalState();
+  assert.equal(projected.canLaunchApplications, true);
+  assert.equal(projected.activeDeviceId, "box-102");
+  assert.equal(projected.networkReady, false, "management recovery must not imply new-connection readiness");
+  await h.click("applications-launch", { applicationId: application.applicationId });
+  assert.equal(h.launches.length, 1);
+  assert.equal(h.calls.some(([name]) => name === "wanx-client:connect-box"), false);
+  for (const next of [{ ...initial, phase: "recovering" }, state("ready", "unavailable", "box-102"), state("ready", "recovering")]) {
+    h.update(next);
+    assert.equal((await h.window.wanxClient.getLocalState()).canLaunchApplications, false);
+  }
+});

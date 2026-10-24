@@ -365,8 +365,15 @@ func TestHealthSamplingIsSingleFlightAndStaleObservationsCannotStayOnline(t *tes
 	s.mu.Lock()
 	s.statusAt = time.Now().Add(-statusMaxAge)
 	s.mu.Unlock()
-	if got := s.status(); got.Phase != "recovering" || len(got.Peers) != 0 {
-		t.Fatalf("stale health advertised online: %+v", got)
+	stale := make(chan networkStatus, 1)
+	go func() { stale <- s.status() }()
+	select {
+	case got := <-stale:
+		if got.Phase != "recovering" || got.Reason == nil || *got.Reason != "network_status_stale" || len(got.Peers) != 0 {
+			t.Fatalf("stale observation must be distinct from a failed network probe: %+v", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expired status RPC blocked on the pending SDK health probe")
 	}
 	close(e.release)
 	released = true

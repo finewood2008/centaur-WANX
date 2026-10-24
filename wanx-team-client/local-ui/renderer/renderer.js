@@ -106,6 +106,9 @@ let boxUpdatePollTimer;
 let boxUpdatePollKey = null;
 let boxUpdatePollError = null;
 let boxUpdatePollRequest = null;
+let boxVersionReadKey = null;
+let boxVersionReadRequest = null;
+let boxVersionReadError = null;
 let renderedMarkup = null;
 let activeInteraction = false;
 let interactionTimer;
@@ -510,6 +513,7 @@ function updateGuidance(code) {
     RELEASE_WITHDRAWN: "此版本已停止提供，请重新检查更新。",
     RECOVERY_REQUIRED: "更新需要维护人员处理，请保留当前状态并提供下方任务编号。",
     INVENTORY_UNKNOWN: "尚未取得可核验的盒端运行版本，请联系运维人员检查版本报告与部署回执。",
+    UPGRADE_BASELINE_UNVERIFIED: "当前版本到目标发行的升级路径尚未验收，请联系发布管理员；不影响查看当前运行版本。",
     INVENTORY_STALE: "盒子的版本报告已过期，请等待盒子联网后重新检查。",
     RELEASE_UNAVAILABLE: "暂时没有适用更新，请保留当前版本并稍后检查。",
     UPDATER_UNSUPPORTED: "盒端管理组件版本过旧，请联系盒主完成受控引导升级。",
@@ -573,35 +577,107 @@ function versionUpdatesView() {
   return `<section class="updates-section" aria-labelledby="updates-heading"><h3 id="updates-heading">版本与更新</h3>${clientUpdateView()}${boxUpdateView()}</section>`;
 }
 
+
+function boxVersionReadScope() {
+  return ["boxes", "settings"].includes(page) && currentState?.route !== "auth" && currentState?.activeDeviceId
+    ? JSON.stringify([marketGeneration, marketAccount, currentState.activeDeviceId]) : null;
+}
+
+function freshBoxReport(inventory) {
+  const age = Date.now() - Date.parse(inventory?.observedAt);
+  return Number.isFinite(age) && age >= -60000 && age <= 15 * 60 * 1000;
+}
+
+function currentBoxVersion() {
+  const deviceId = currentState.activeDeviceId;
+  const update = deviceId && currentState.upgrades?.box?.deviceId === deviceId ? currentState.upgrades.box : {};
+  const inventory = update.inventory;
+  const wanx = inventory?.components?.wanx;
+  const verified = freshBoxReport(inventory) && Boolean(wanx?.runningVersion) && wanx.runningVersion === wanx.installedVersion && wanx.evidenceStatus === "verified" && wanx.health === "healthy";
+  const release = verified && update.currentRelease?.components?.includes("wanx") && Date.parse(update.currentRelease.verifiedAt) === Date.parse(inventory.observedAt) ? update.currentRelease : null;
+  const unread = !inventory && !update.checkedAt && [undefined, "unknown", "checking"].includes(update.phase);
+  const reading = update.phase === "checking" || busyFor("updates.box.check") || Boolean(boxVersionReadRequest && boxVersionReadRequest.key === boxVersionReadScope());
+  return { deviceId, update, inventory, wanx, verified, release, unread, reading };
+}
+
+function boxVersionSummaryView() {
+  const { deviceId, update, inventory, wanx, verified, release, unread, reading } = currentBoxVersion();
+  if (!deviceId) return '<section class="box-version-summary" aria-label="盒端版本"><p class="muted">连接盒子后读取盒端版本。</p></section>';
+  const operation = update.operation;
+  const result = operation?.state === "succeeded" ? operation.serviceAvailable === true ? "最近升级已核验成功" : "升级任务已结束，服务状态待确认"
+    : ({ queued: "升级任务等待盒子领取", prechecking: "正在检查升级条件", downloading: "正在下载升级制品", staged: "升级制品已准备好", waiting_window: "等待升级时机", applying: "正在安装升级", verifying: "正在核验升级结果", rolled_back: "最近升级已回滚", rolling_back: "正在恢复先前程序", failed: "最近升级失败", needs_attention: "最近升级需要维护人员处理", cancelled: "最近升级已取消" })[operation?.state];
+  const reportStatus = verified ? "运行版本已核验" : inventory && !freshBoxReport(inventory) ? "报告时间无效或已过期，当前版本待核验" : inventory ? "运行版本待核验" : reading ? "正在读取版本…" : unread ? "尚未读取版本，点击刷新版本重试" : "版本报告暂不可用，请刷新重试";
+  return `<section class="box-version-summary" aria-label="盒端版本"><div class="box-version-copy"><span class="box-eyebrow">${release ? "万象发行版本" : "盒端万象运行版本"}</span><strong>${escapeHTML(release ? `v${release.version}` : wanx?.runningVersion || "待核验")}</strong><p class="muted" role="status">${escapeHTML(reportStatus)}</p>${release ? `<p class="muted">运行构建：<code>${escapeHTML(wanx.runningVersion)}</code></p>` : ""}${inventory?.observedAt ? `<p class="muted">版本报告：${escapeHTML(inventory.observedAt)}</p>` : ""}${result ? `<p class="box-version-result">${escapeHTML(result)}${operation.updatedAt ? ` · ${escapeHTML(operation.updatedAt)}` : ""}</p>` : ""}${boxUpdatePollError ? `<p class="inline-error">升级进度读取失败，自动刷新已暂停。请点击刷新版本重试。</p>` : ""}${boxVersionReadError ? `<p class="inline-error">${escapeHTML(boxVersionReadError)}</p>` : ""}</div><div class="settings-actions"><button class="button small" data-action="updates-box-check" aria-busy="${reading}" ${busy || reading ? "disabled" : ""}>${reading ? "读取中…" : "刷新版本"}</button><button class="text-button" data-action="show-box-version">版本详情</button></div></section>`;
+}
+
+function scheduleBoxVersionRead() {
+  const key = boxVersionReadScope();
+  if (!key) { boxVersionReadKey = null; boxVersionReadError = null; return; }
+  if (key === boxVersionReadKey || busy || boxVersionReadRequest) return;
+  const update = currentState.upgrades?.box?.deviceId === currentState.activeDeviceId ? currentState.upgrades.box : {};
+  if (["checking", "planning"].includes(update.phase)) return;
+  boxVersionReadKey = key;
+  boxVersionReadError = null;
+  const checkedAge = Date.now() - Date.parse(update.checkedAt);
+  if (freshBoxReport(update.inventory) && Number.isFinite(checkedAge) && checkedAge >= -60000 && checkedAge < 60000) return;
+  // Active tasks already refresh through the operation poller. Do not compete with it.
+  if (update.operation?.operationId && !["succeeded", "rolled_back", "failed", "needs_attention", "cancelled"].includes(update.operation.state)) return;
+  const request = { key, deviceId: currentState.activeDeviceId };
+  boxVersionReadRequest = request;
+  void Promise.resolve().then(async () => {
+    try {
+      if (key !== boxVersionReadScope() || boxVersionReadRequest !== request) return;
+      const response = await window.wanxClient.action("updates.box.check", { deviceId: request.deviceId });
+      if (key !== boxVersionReadScope() || boxVersionReadRequest !== request) return;
+      if (!response.ok && response.code === "UPDATE_IN_PROGRESS") return;
+      if (!response.ok) throw new Error(response.code);
+      if (response.state) acceptRemoteState(response.state);
+    } catch {
+      if (key === boxVersionReadScope() && boxVersionReadRequest === request) boxVersionReadError = "版本读取失败，请检查连接后点击刷新版本重试。";
+    } finally {
+      if (boxVersionReadRequest === request) { boxVersionReadRequest = null; render(currentState); }
+    }
+  });
+}
+
+
+function boxComponentRow(name, value) {
+  const names = { base: "基础配置", docker: "容器环境", discovery: "设备发现", p2p: "万象网络", wanx: "盒端万象", semantica: "语义服务" };
+  const evidence = { verified: "已核验", drifted: "运行状态与安装记录不一致", unknown: "缺少运行核验证据（不代表服务停止）" };
+  const health = { healthy: "运行正常", unhealthy: "运行异常", stopped: "未运行", starting: "正在启动", degraded: "运行受限", unknown: "未报告服务状态" };
+  const running = value.runningVersion || (["base", "docker"].includes(name) ? "安装记录（不提供独立运行版本）" : "待核验（未取得运行版本）");
+  const ota = value.otaSupported === true ? "支持独立 OTA（仍需预检）" : value.otaSupported === false ? "当前不支持独立 OTA" : "OTA 支持情况待确认";
+  return `<tr><td>${escapeHTML(names[name] || name)}${names[name] ? `<small class="muted">${escapeHTML(name)}</small>` : ""}</td><td><div>安装：${escapeHTML(value.installedVersion || "未记录")}</div><div>运行：${escapeHTML(running)}</div></td><td><div>核验：${escapeHTML(evidence[value.evidenceStatus || "unknown"] || "核验状态待确认")}</div><div>服务：${escapeHTML(health[value.health || "unknown"] || "服务状态待确认")}</div><small class="muted">${ota}</small></td></tr>`;
+}
+
 function boxUpdateView() {
   const deviceId = currentState.activeDeviceId;
   if (!deviceId) return `<article class="update-card"><h3>当前盒子</h3><p class="muted">尚未选择盒子。连接后可检查运行版本与更新。</p></article>`;
-  const update = currentState.upgrades?.box?.deviceId === deviceId ? currentState.upgrades.box : {};
-  const inventory = update.inventory;
+  const { update, inventory, wanx, verified: wanxVerified, release: currentRelease, unread, reading } = currentBoxVersion();
   const candidate = update.candidate;
   const release = candidate?.release?.payload;
   const components = Object.entries(inventory?.components || {});
-  const verified = components.length > 0 && components.every(([, value]) => value.evidenceStatus === "verified" && value.health === "healthy" && value.installedVersion === value.runningVersion);
-  const actual = inventory?.suiteVersion && verified ? `v${inventory.suiteVersion}` : components.some(([, value]) => value.evidenceStatus === "drifted" || value.installedVersion && value.runningVersion && value.installedVersion !== value.runningVersion) ? "部分更新 / 自定义组合" : "版本待核验";
+  const verified = freshBoxReport(inventory) && components.length > 0 && components.every(([, value]) => Boolean(value.runningVersion) && value.evidenceStatus === "verified" && value.health === "healthy" && value.installedVersion === value.runningVersion);
+  const actual = inventory?.suiteVersion && verified ? `v${inventory.suiteVersion}` : wanxVerified ? `盒端万象 ${currentRelease ? `v${currentRelease.version}` : wanx.runningVersion}` : components.some(([, value]) => value.evidenceStatus === "drifted" || value.installedVersion && value.runningVersion && value.installedVersion !== value.runningVersion) ? "部分更新 / 自定义组合" : "版本待核验";
   const operation = update.operation;
   const state = operation?.state;
   const labels = { queued: "等待盒子领取任务", prechecking: "正在检查更新条件", downloading: "正在下载", staged: "制品已准备好", waiting_window: "等待更新时机", applying: "正在安装，服务可能暂时中断", verifying: "正在核验运行版本", succeeded: "已核验更新成功", rolling_back: "正在恢复先前程序", rolled_back: "已恢复先前程序，本次更新未成功", failed: "本次更新未完成", needs_attention: "需要维护人员处理", cancelled: "更新已取消" };
-  const checking = update.phase === "checking" || busyFor("updates.box.check");
+  const checking = reading;
   const planning = update.phase === "planning" || busyFor("updates.box.plan");
   const pending = checking || planning;
   const active = operation && !["succeeded", "rolled_back", "failed", "needs_attention", "cancelled"].includes(state);
   const disabled = busy || pending ? "disabled" : "";
   const actions = operation?.allowedActions || [];
-  const status = operation ? labels[state] || "任务结果待确认" : checking ? "正在检查更新…" : planning ? "正在准备更新…" : candidate?.status === "current" && verified ? "最近检查未发现适用更新" : update.phase === "blocked" || candidate?.status === "blocked" ? "暂不可更新" : release ? `有可用版本 v${release.version}` : inventory ? "已取得版本报告" : "尚未取得运行版本";
+  const status = wanxVerified ? "当前万象运行版本已核验" : operation ? (state === "succeeded" && operation.serviceAvailable !== true ? "升级任务已结束，服务状态待确认" : labels[state] || "任务结果待确认") : checking ? "正在检查更新…" : planning ? "正在准备更新…" : candidate?.status === "current" && verified ? "最近检查未发现适用更新" : update.phase === "blocked" || candidate?.status === "blocked" ? "暂不可更新" : release ? `有可用版本 v${release.version}` : inventory ? "已取得版本报告" : "尚未取得运行版本";
   return `<article class="update-card"><div class="update-heading"><div><h3>${escapeHTML(activeDeviceName())} <span class="update-version">${escapeHTML(actual)}</span></h3><p class="muted ${pending ? "activity-status" : ""}" role="status">${pending ? '<span class="activity-spinner" aria-hidden="true"></span>' : ""}${escapeHTML(status)}</p></div><div class="settings-actions"><button class="button small ${checking ? "activity-button" : ""}" data-action="updates-box-check" aria-busy="${checking}" ${disabled}>${checking ? activityLabel("检查中…") : "检查更新"}</button>${update.canUpgrade === true && release && candidate.status === "available" && !active && state !== "needs_attention" && (state !== "rolled_back" || actions.includes("replan")) ? `<button class="button primary small ${planning ? "activity-button" : ""}" data-action="updates-box-plan" aria-busy="${planning}" ${disabled}>${planning ? activityLabel("正在准备…") : ["failed", "rolled_back"].includes(state) ? "重新预检" : "准备更新"}</button>` : ""}</div></div>
-    ${inventory?.observedAt ? `<p class="muted">版本报告时间：${escapeHTML(inventory.observedAt)}${Date.now() - Date.parse(inventory.observedAt) > 15 * 60 * 1000 ? " · 报告已过期，当前状态待核验" : ""}</p>` : ""}
+    ${inventory?.observedAt ? `<p class="muted">版本报告时间：${escapeHTML(inventory.observedAt)}${!freshBoxReport(inventory) ? " · 报告已过期或时间无效，当前状态待核验" : ""}</p>` : ""}
     ${release && candidate.status === "available" ? `<p class="update-candidate">可用版本 v${escapeHTML(release.version)} · 更新期间盒端应用可能暂时不可用</p>` : ""}
     ${release && candidate.status === "available" && update.canUpgrade !== true ? '<p class="muted">盒端更新需由盒主或受权维护人员执行，请联系盒主更新。</p>' : ""}
     ${release?.releaseNotes ? `<p class="update-notes">${escapeHTML(release.releaseNotes)}</p>` : ""}
-    ${updateIssueView(update)}${candidate?.reasonCode && !update.reason ? updateIssueView({ reason: candidate.reasonCode }) : ""}
+    ${!unread && (updateIssueView(update) || candidate?.reasonCode) ? `<div class="box-update-conditions"><span class="muted">下一次更新条件</span>${updateIssueView(update)}${candidate?.reasonCode && !update.reason ? updateIssueView({ reason: candidate.reasonCode }) : ""}</div>` : ""}${boxVersionReadError ? `<p class="inline-error">${escapeHTML(boxVersionReadError)}</p>` : ""}
     ${boxUpdatePollError ? `<p class="inline-error update-candidate">${escapeHTML(boxUpdatePollError)}</p>` : ""}
-    ${operation ? `<div class="update-operation" role="status"><p>${escapeHTML(labels[state] || state || "结果待确认")}${operation.step ? ` · ${escapeHTML(operation.step)}` : ""}</p><p class="muted">服务${operation.serviceAvailable === true ? "可用" : operation.serviceAvailable === false ? "暂不可用" : "可用性待确认"} · 任务 ${escapeHTML(operation.operationId)}</p>${operation.errorCode ? `<p class="inline-error">${escapeHTML(updateGuidance(operation.errorCode))} <span class="muted">（${escapeHTML(operation.errorCode)}）</span></p>` : ""}${state === "needs_attention" && !operation.errorCode ? '<p class="inline-error">请联系维护人员并提供任务编号，保留当前状态。</p>' : ""}<div class="market-actions"><button class="text-button" data-action="updates-box-status" ${disabled}>刷新任务状态</button>${update.canUpgrade === true && actions.includes("cancel") ? `<button class="text-button" data-action="updates-box-cancel" ${disabled}>取消更新</button>` : ""}${update.canUpgrade === true && actions.includes("resume") ? `<button class="button small" data-action="updates-box-resume" ${disabled}>继续此任务</button>` : ""}</div></div>` : ""}
-    <details class="application-details" data-detail-id="updates-box" ${expandedDetails.has("updates-box") ? "open" : ""}><summary>版本详情</summary><dl class="update-facts"><dt>设备</dt><dd>${escapeHTML(deviceId)}</dd><dt>套件报告</dt><dd>${escapeHTML(inventory?.suiteVersion || "未知")}</dd><dt>管理组件</dt><dd>${escapeHTML(inventory?.updaterVersion || "未知")} · ${inventory?.otaReady === true ? "支持检查升级条件" : inventory ? "已运行，自动更新条件待核验" : "未取得版本报告，需完成管理组件引导"}</dd><dt>最近检查</dt><dd>${escapeHTML(update.checkedAt || "尚未检查")}</dd></dl>${components.length ? `<table class="update-components"><thead><tr><th>组件</th><th>安装 / 运行</th><th>状态</th></tr></thead><tbody>${components.map(([name, value]) => `<tr><td>${escapeHTML(name)}</td><td>${escapeHTML(value.installedVersion || "未知")} / ${escapeHTML(value.runningVersion || "未知")}</td><td>${escapeHTML(value.evidenceStatus || "unknown")} / ${escapeHTML(value.health || "unknown")}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">旧盒或离线盒子尚未提供可核验的组件报告。</p>'}</details>
+    ${operation ? `<div class="update-operation" role="status"><p>${escapeHTML(state === "succeeded" && operation.serviceAvailable !== true ? "升级任务已结束，服务状态待确认" : labels[state] || state || "结果待确认")}${operation.step ? ` · ${escapeHTML(operation.step)}` : ""}</p><p class="muted">服务${operation.serviceAvailable === true ? "可用" : operation.serviceAvailable === false ? "暂不可用" : "可用性待确认"} · 任务 ${escapeHTML(operation.operationId)}</p>${operation.errorCode ? `<p class="inline-error">${escapeHTML(updateGuidance(operation.errorCode))} <span class="muted">（${escapeHTML(operation.errorCode)}）</span></p>` : ""}${state === "needs_attention" && !operation.errorCode ? '<p class="inline-error">请联系维护人员并提供任务编号，保留当前状态。</p>' : ""}<div class="market-actions"><button class="text-button" data-action="updates-box-status" ${disabled}>刷新任务状态</button>${update.canUpgrade === true && actions.includes("cancel") ? `<button class="text-button" data-action="updates-box-cancel" ${disabled}>取消更新</button>` : ""}${update.canUpgrade === true && actions.includes("resume") ? `<button class="button small" data-action="updates-box-resume" ${disabled}>继续此任务</button>` : ""}</div></div>` : ""}
+    <details class="application-details" data-detail-id="updates-box" ${expandedDetails.has("updates-box") ? "open" : ""}><summary>版本详情</summary><dl class="update-facts"><dt>设备</dt><dd>${escapeHTML(deviceId)}</dd><dt>套件报告</dt><dd>${escapeHTML(inventory?.suiteVersion || (inventory ? "分组件版本（无统一整盒版本）" : "尚未读取"))}</dd><dt>管理组件</dt><dd>${escapeHTML(inventory?.updaterVersion || "未知")} · ${inventory?.otaReady === true ? "支持检查升级条件" : inventory ? "已运行，自动更新条件待核验" : "尚未取得版本报告，暂不能判断管理组件状态"}</dd><dt>最近检查</dt><dd>${escapeHTML(update.checkedAt || "尚未检查")}</dd></dl>${components.length ? `<table class="update-components"><thead><tr><th>组件</th><th>安装版本 / 运行版本</th><th>版本核验 / 服务状态</th></tr></thead><tbody>${components.map(([name, value]) => boxComponentRow(name, value)).join("")}</tbody></table><p class="muted">安装记录不代表运行核验；未核验组件不作为 OTA 基线。</p>` : '<p class="muted">尚未读取到组件报告，请检查更新后查看。</p>'}</details>
   </article>`;
 }
 
@@ -627,7 +703,7 @@ function boxUpdateConfirmation(action) {
 function scheduleBoxUpdatePolling() {
   const update = currentState?.upgrades?.box;
   const operation = update?.operation;
-  const active = page === "settings" && currentState?.route !== "auth" && currentState?.activeDeviceId === update?.deviceId && operation?.operationId && !["succeeded", "rolled_back", "failed", "needs_attention", "cancelled"].includes(operation.state);
+  const active = ["settings", "boxes"].includes(page) && currentState?.route !== "auth" && currentState?.activeDeviceId === update?.deviceId && operation?.operationId && !["succeeded", "rolled_back", "failed", "needs_attention", "cancelled"].includes(operation.state);
   const key = active ? JSON.stringify([marketAccount, update.deviceId, operation.operationId]) : null;
   if (key !== boxUpdatePollKey) { clearTimeout(boxUpdatePollTimer); boxUpdatePollTimer = null; boxUpdatePollKey = key; boxUpdatePollError = null; }
   if (!key || boxUpdatePollTimer || boxUpdatePollRequest || boxUpdatePollError) return;
@@ -686,6 +762,7 @@ function boxesView() {
     <div class="page-heading"><div><h2>盒子</h2><p class="muted">连接设备，查看状态，维护盒子上的服务。</p></div><div class="settings-actions"><button class="button small ${refreshing ? "activity-button" : ""}" data-action="refresh" aria-busy="${refreshing}" ${busy ? "disabled" : ""}>${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在刷新…' : "刷新设备"}</button><button class="button primary small" data-action="provisioning" ${busy ? "disabled" : ""}>＋ 添加盒子</button></div></div>
     ${pendingOpenView()}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <section class="box-overview" aria-label="当前盒子"><div class="box-overview-heading"><div class="box-identity"><img src="./assets/centaurai-mark.png" alt=""/><div><span class="box-eyebrow">当前使用的盒子</span><h3 class="current-device">${currentState.selectedDeviceId || currentState.activeDeviceId ? escapeHTML(activeDeviceName()) : "尚未连接盒子"}</h3><p>${ready ? currentState.connection?.mode === "local" ? "本机万象 · 文件与服务运行在这台电脑上" : "万象网络 · 已建立盒子连接" : network.detail}</p><div class="box-addresses" aria-label="盒子 IP" title="由当前盒子查询的公网出口地址"><span>盒子 IP</span>${publicIP ? `<code>${escapeHTML(publicIP)}</code>` : `<span>${ready ? "暂未获取盒子 IP" : "连接后显示"}</span>`}</div></div></div><span class="box-status ${ready ? "ready" : ""}"><i class="status-dot ${ready ? "ready" : ""}"></i>${status}</span></div>
+    ${boxVersionSummaryView()}
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
     <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
@@ -1370,6 +1447,7 @@ function render(state) {
   studioHome.sync(state,!auth&&page==="construction",!auth&&page==="applications");
   construction.sync(state,!auth&&page==="construction");
   scheduleBoxUpdatePolling();
+  scheduleBoxVersionRead();
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
   const markup = auth ? authView() : page === "provisioning" ? provisioningView()
@@ -1936,7 +2014,8 @@ app.addEventListener("click", async (event) => {
     marketConfirmation = { title: "重启并更新万象", detail: `将安装万象 v${update.candidate.productVersion}。万象需要退出并重启，请先保存工作并关闭正在使用的应用。`, verb: "重启并更新", action: "updates.client.install", input: { confirmed: true }, updateReleaseId: update.candidate.releaseId };
     render(currentState); return;
   }
-  if (action === "updates-box-check") { boxUpdatePollError = null; if (currentState.activeDeviceId) await run("updates.box.check", { deviceId: currentState.activeDeviceId }); return; }
+  if (action === "show-box-version") { page = "settings"; expandedDetails.add("updates-box"); render(currentState); app.querySelector?.("#updates-heading")?.scrollIntoView?.({ block: "start" }); return; }
+  if (action === "updates-box-check") { boxUpdatePollError = null; boxVersionReadError = null; if (currentState.activeDeviceId) await run("updates.box.check", { deviceId: currentState.activeDeviceId }); return; }
   if (action.startsWith("updates-box-")) {
     const update = currentState.upgrades?.box;
     const deviceId = currentState.activeDeviceId;

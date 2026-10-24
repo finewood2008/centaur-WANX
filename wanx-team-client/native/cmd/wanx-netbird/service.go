@@ -55,9 +55,10 @@ func (s *service) dispatch(ctx context.Context, method string, raw json.RawMessa
 	}
 }
 
-// The SDK Status call runs STUN/TURN probes (up to 1.3s), not just a local
-// recorder read. One sampler owns that I/O; UI status reads stay local. Expired
-// observations must never keep advertising old peers as connected.
+// The SDK Status call includes a management probe (up to 5s), then STUN/TURN
+// probes (up to 1.3s), not just a local recorder read. One sampler owns that I/O;
+// UI status reads stay local. Expiry means unknown health, not a failed data
+// path; never keep advertising old peers as connected.
 const statusSampleInterval = time.Second
 const statusMaxAge = 3 * time.Second
 
@@ -86,7 +87,7 @@ func (s *service) status() networkStatus {
 		return state("disabled", "")
 	}
 	if s.statusAt.IsZero() || time.Since(s.statusAt) >= statusMaxAge {
-		return state("recovering", "network_unavailable")
+		return state("recovering", "network_status_stale")
 	}
 	return cloneStatus(s.statusValue)
 }

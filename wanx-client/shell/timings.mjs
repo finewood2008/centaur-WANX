@@ -22,7 +22,7 @@ const errorCodes = new Set([
   "NETWORK_REVOCATION_PENDING", "NETWORK_SERVICE_NOT_DEPLOYED", "NETWORK_UNAVAILABLE",
   "engine_missing", "engine_unavailable", "engine_exited", "engine_timeout",
   "engine_protocol_error", "auth_required", "auth_unsupported", "auth_failed",
-  "auth_expired", "start_failed", "invalid_status", "network_unavailable",
+  "auth_expired", "start_failed", "invalid_status", "network_unavailable", "network_status_stale",
   "network_disabled", "netbird_peer_disconnected", "netbird_peer_unknown",
 ]);
 const phases = new Set(["idle", "disabled", "checking", "enrolling", "authorizing", "ready", "recovering", "unavailable", "auth_required"]);

@@ -82,20 +82,20 @@ export function createClient({
     return snapshot();
   }
 
-  function scheduleHealthCheck(generation) {
+  function scheduleHealthCheck(generation, delayMs = HEALTH_INTERVAL_MS) {
     if (closed || generation !== epoch || !connection) return;
     clearTimeout(healthTimer);
     healthTimer = setTimeout(() => {
       const task = checkHealth(generation);
       healthChecks.add(task);
       task.then(() => healthChecks.delete(task), () => healthChecks.delete(task));
-    }, HEALTH_INTERVAL_MS);
+    }, delayMs);
     healthTimer.unref?.();
   }
 
   async function checkHealth(generation) {
     const live = () => !closed && generation === epoch && Boolean(connection);
-    if (!live()) return;
+    if (!live() || healthController) return;
     const controller = new AbortController();
     healthController = controller;
     const check = (endpoint = activeEndpoint) => probe(endpoint.url, {
@@ -122,11 +122,22 @@ export function createClient({
       try {
         // Repair only this client's path. Keep the gateway and application leases
         // alive; reconnecting via connectBox would unnecessarily require Admin SSO.
-        if (connection.mode === "netbird") await network.networkChanged();
-        if (!live()) return;
-        const endpoint = await network.resolveEndpoint(connection);
-        if (!live()) return;
-        await check(endpoint);
+        let endpoint;
+        try {
+          endpoint = await network.resolveEndpoint(connection);
+          if (!live()) return;
+          await check(endpoint);
+        } catch (error) {
+          if (!live()) return;
+          // Let a restarting engine receive its peer map before asking it to
+          // restart again. A healthy endpoint needs no engine recovery at all.
+          if (connection.mode !== "netbird" || ["netbird_peer_unknown", "netbird_peer_disconnected"].includes(error.code || error.message)) throw error;
+          await network.networkChanged();
+          if (!live()) return;
+          endpoint = await network.resolveEndpoint(connection);
+          if (!live()) return;
+          await check(endpoint);
+        }
         if (!live()) return;
         if (endpoint.agent !== activeEndpoint.agent) {
           // An engine restart destroys its old tunnel agent. Re-authorize through
@@ -203,7 +214,11 @@ export function createClient({
         return;
       }
       if (connection) {
-        phase = recovery || ["recovering", "unavailable"].includes(state.phase) || lostPeer ? "recovering" : "ready";
+        // Peer/control status is advisory: an existing data path may still work.
+        // Confirm health before interrupting app views or announcing an outage.
+        const disrupted = ["recovering", "unavailable"].includes(state.phase) || lostPeer;
+        if (disrupted && !recovery && !healthController) scheduleHealthCheck(epoch, 0);
+        phase = recovery ? "recovering" : "ready";
         reason = phase === "recovering" ? "network_unavailable" : null;
       }
     }

@@ -337,3 +337,14 @@ test("registered local connection opens applications without cloud readiness", a
   assert.equal((await h.ui.requestOpen("example.app")).state, "running");
   assert.deepEqual(h.calls, [["launch", "example.app"]]);
 });
+
+test("existing healthy box opens apps during management recovery without starting a new connection", async t => {
+  const h = await harness(t, { state: { phase: "ready", connection: { mode: "netbird", deviceId: "box-a" }, network: { enabled: true, phase: "recovering" } } });
+  assert.equal((await h.ui.requestOpen("example.app")).state, "running");
+  assert.deepEqual(h.calls, [["launch", "example.app"]]);
+  for (const patch of [{ phase: "recovering" }, { network: { enabled: true, phase: "unavailable" } }, { network: { enabled: false, phase: "recovering" } }, { platform: { phase: "unavailable" } }]) {
+    const blocked = await harness(t, { state: { phase: "ready", connection: { mode: "netbird", deviceId: "box-a" }, network: { enabled: true, phase: "recovering" }, ...patch } });
+    assert.equal((await blocked.ui.requestOpen("example.app")).phase, "confirm");
+    assert.deepEqual(blocked.calls, []);
+  }
+});

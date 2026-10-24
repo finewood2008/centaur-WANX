@@ -25,11 +25,12 @@ function projectState(raw) {
   const account = source.account || { phase: "signed_out" };
   const authenticated = account.phase === "authenticated";
   const connection = source.connection || null;
-  const networkReady =
-    source.network?.enabled !== false &&
-    source.platform?.phase === "ready" && source.network?.phase === "ready";
+  const networkAvailable = source.network?.enabled !== false &&
+    source.platform?.phase === "ready" && ["ready", "recovering"].includes(source.network?.phase);
+  const networkReady = networkAvailable && source.network?.phase === "ready";
+  // Existing connections follow confirmed data-path health, not management churn.
   const connected = authenticated && source.phase === "ready" && Boolean(connection?.deviceId) &&
-    (connection.mode === "local" || (networkReady && connection.mode === "netbird"));
+    (connection.mode === "local" || (networkAvailable && connection.mode === "netbird"));
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,

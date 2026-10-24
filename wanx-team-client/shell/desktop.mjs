@@ -186,11 +186,12 @@ export function createDesktopIntegration({
   let previous;
   function sync(state) {
     const signedIn = state.account?.phase === "authenticated";
-    const networkReady = signedIn && state.network?.enabled !== false &&
-      state.platform?.phase === "ready" && state.network?.phase === "ready";
+    const networkAvailable = signedIn && state.network?.enabled !== false &&
+      state.platform?.phase === "ready" && ["ready", "recovering"].includes(state.network?.phase);
+    const networkReady = networkAvailable && state.network?.phase === "ready";
     const connected = signedIn && state.phase === "ready" &&
       Boolean(state.connection?.deviceId && state.connection.gatewayURL) &&
-      (state.connection.mode === "local" || (networkReady && state.connection.mode === "netbird"));
+      (state.connection.mode === "local" || (networkAvailable && state.connection.mode === "netbird"));
     const unavailable = state.platform?.phase === "unavailable" || ["unavailable", "failed", "error"].includes(state.network?.phase);
     const label = !signedIn ? "尚未登录万象" : connected ? `已连接 · ${state.connection.name || state.connection.deviceId}` : state.network?.enabled === false ? "网络已关闭" :
       unavailable ? "网络暂不可用" : !networkReady ? "网络连接中" :
