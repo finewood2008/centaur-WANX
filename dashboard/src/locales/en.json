@@ -4168,6 +4168,7 @@
       "noTerminal": "Please open a terminal session first",
       "inputPlaceholder": "Ask the ops engineer...",
       "send": "Send",
+      "openDashboard": "Open this box’s Dashboard in a new window",
       "modeAssist": "Assist",
       "modeAutopilot": "Autopilot",
       "execBtn": "Run in terminal",

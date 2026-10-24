@@ -6,15 +6,16 @@ import { externalHTTPURL, isDashboardURL, sameOrigin } from "./security.mjs";
 // with either the connection window or a previously connected box.
 export function createDashboardWindows(options) {
   const surfaces = new Map();
-  return {
+  const controller = {
     open(state, destination = "dashboard") {
       if (!Object.hasOwn(dashboardRoutes, destination)) throw new Error("INVALID_MAINTENANCE_TOOL");
-      if (!surfaces.has(destination)) surfaces.set(destination, createDashboardSurface(options, dashboardRoutes[destination]));
+      if (!surfaces.has(destination)) surfaces.set(destination, createDashboardSurface({ ...options, openDashboard: state => controller.open(state, "dashboard") }, dashboardRoutes[destination]));
       return surfaces.get(destination).open(state);
     },
     sync(state) { for (const surface of surfaces.values()) surface.sync(state); },
     async close() { await Promise.all([...surfaces.values()].map(surface => surface.close())); },
   };
+  return controller;
 }
 
 function createDashboardSurface({
@@ -23,8 +24,10 @@ function createDashboardSurface({
   onError,
   requestMedia,
   openExternal,
+  openDashboard,
 }, route) {
   let current = null;
+  let latestState = null;
   const cleanup = new Set();
 
   function dispose(entry) {
@@ -42,6 +45,7 @@ function createDashboardSurface({
   }
 
   function sync(state) {
+    latestState = state;
     const connection =
       ["ready", "recovering"].includes(state.phase) &&
       (!state.account || state.account.phase === "authenticated") &&
@@ -127,6 +131,14 @@ function createDashboardSurface({
     }
     function protect(target) {
       target.webContents.setWindowOpenHandler(({ url }) => {
+        // Only the terminal's fixed Dashboard link opens a separate managed
+        // window. Keep the terminal alive and bootstrap fresh box credentials.
+        if (target === window && route === dashboardRoutes.terminal &&
+            url === new URL("/", entry.gatewayURL).href) {
+          if (current === entry && latestState?.phase === "ready")
+            Promise.resolve(openDashboard(latestState)).catch(onError);
+          return { action: "deny" };
+        }
         if (!allowedToolURL(url)) {
           openLink(url);
           return { action: "deny" };

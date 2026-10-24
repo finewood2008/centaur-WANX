@@ -1,7 +1,0 @@
-{
-  "app/integration/auth.py": "c0f4cb8ba9646d4dfd63eb41e7a5cb63a59249cfbb0eb1fb6c7b6f4e4451a199",
-  "app/services/processing_models.py": "59adf3d2122d110fe631e7d298da05ee72e4d3aeeb72fe785f2c8e08dc1cee65",
-  ".env.example": "14f8752b4d1677fd61d389d309fa6e4f6a4408d2674eecf9548add0de6e7c232",
-  "README.md": "e61529a0920bd9e84a771ae465b880f7b2a2f4696c85fb4045a6816fb264577b",
-  "tests/test_standalone_integration.py": "d2904f22b10ab041574c7abdb37b036454a9d6cc8956bc8a397e7107614adcf3"
-}
