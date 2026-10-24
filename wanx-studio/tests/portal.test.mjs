@@ -104,3 +104,14 @@ test('client exports the adopted version while a newer candidate is being built'
  assert.equal(s.adoptedArtifactHash,h);assert.equal(s.adoptedTaskId,'old');assert.equal(s.adoptedVersion,'0.1.0');assert.equal(s.latestVersion,'0.1.1');
  assert.equal(s.label,'开发中');assert.equal(s.iterationState,'building');
 });
+
+test('wrapped Electron studio errors identify the unavailable box service without exposing raw details',async()=>{
+ for(const wrapped of [false,true]){
+  const error=wrapped?new Error("Error invoking remote method 'wanx-client:studio-overview': Error: STUDIO_UNAVAILABLE"):Object.assign(new Error('STUDIO_UNAVAILABLE'),{code:'STUDIO_UNAVAILABLE'});
+  const h=homeHarness(async()=>{throw error});h.home.sync(h.state,true);await h.flush();
+  const html=h.home.render(h.state);assert.match(html,/当前盒子.*构建服务.*未就绪/);assert.match(html,/盒端构建组件/);
+  assert.doesNotMatch(html,/更新本机|模型待配置|Error invoking|操作未完成，请刷新当前项目/);
+ }
+ const h=homeHarness(async()=>{throw new Error('private upstream credential: DO_NOT_SHOW')});h.home.sync(h.state,true);await h.flush();
+ assert.match(h.home.render(h.state),/操作未完成，请刷新当前项目/);assert.doesNotMatch(h.home.render(h.state),/private upstream|DO_NOT_SHOW/);
+});

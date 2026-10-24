@@ -28,3 +28,23 @@ test('ACP settings button uses the fixed client destination and never changes a 
  const count=calls.length;await c.action('construction-unknown',{});assert.equal(calls.length,count);
  assert.equal(calls.some(([name])=>name==='studio.engines.default'||name==='studio.engines.check'),false);
 });
+
+test('unavailable engine service is distinct from a successfully read empty configuration',async()=>{
+ const window={};let unavailable=true;vm.runInNewContext(source,{window});
+ const c=window.createConstruction({request:async()=>{if(unavailable)throw new Error("Error invoking remote method 'wanx-client:studio-engines-list': Error: STUDIO_UNAVAILABLE");return{items:[],defaultId:null}},changed(){}});
+ await c.action('construction-settings',{});
+ assert.match(c.engineButton(),/暂不可用/);assert.doesNotMatch(c.engineButton(),/需配置/);
+ assert.match(c.settings(),/当前盒子.*构建服务.*未就绪/);assert.match(c.settings(),/盒端构建组件/);
+ assert.doesNotMatch(c.settings(),/Error invoking/);
+ unavailable=false;await c.action('construction-engine-refresh',{});
+ assert.match(c.engineButton(),/需配置/);assert.doesNotMatch(c.settings(),/构建服务.*未就绪/);
+ unavailable=true;await c.action('construction-engine-refresh',{});
+ assert.match(c.engineButton(),/暂不可用/);assert.doesNotMatch(c.engineButton(),/需配置/);
+});
+
+test('unknown engine read errors do not expose service response details',async()=>{
+ const window={};vm.runInNewContext(source,{window});
+ const c=window.createConstruction({request:async()=>{throw new Error('private-token DO_NOT_SHOW')},changed(){}});
+ await c.action('construction-settings',{});
+ assert.match(c.settings(),/暂时无法读取引擎配置/);assert.doesNotMatch(c.settings(),/private-token|DO_NOT_SHOW/);
+});

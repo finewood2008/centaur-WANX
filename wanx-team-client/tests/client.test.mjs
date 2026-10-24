@@ -517,17 +517,38 @@ for (const end of ["disabled", "auth_required"]) {
   });
 }
 
-test("business failure starts recovery without replaying the user's request", async t => {
+test("a failed business request checks health without dropping a healthy connection or replaying", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  let writes = 0;
+  let writes = 0, probes = 0;
   const f = fixture({createGateway: async () => ({url:'http://127.0.0.1:19800',
-    request: async () => {writes++; throw Object.assign(new Error('reset'),{code:'ECONNRESET'});}, close() {}})});
+    request: async () => {writes++; throw Object.assign(new Error('reset'),{code:'ECONNRESET'});}, close() {}}),
+    probe: async () => {probes++;}});
   t.after(()=>f.client.close());
   await f.client.connect(direct);
+  const phases=[]; f.client.subscribe(state=>phases.push(state.phase));
   await assert.rejects(f.client.request({method:'POST',path:'/api/chat',body:'one message'}),{code:'ECONNRESET'});
-  assert.equal(f.client.snapshot().phase,'recovering');
+  assert.equal(f.client.snapshot().phase,'ready');
   await advance(t,0);
   assert.equal(f.client.snapshot().phase,'ready');
+  assert.equal(phases.includes('recovering'),false);
+  assert.equal(probes,2);
+  assert.equal(writes,1);
+});
+
+test("business transport failure enters recovery only after health also fails", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let down=false,writes=0;
+  const f=fixture({probe:async()=>{if(down)throw Object.assign(new Error('health_unavailable'),{code:'health_unavailable'});},
+    createGateway:async()=>({url:'http://127.0.0.1:19800',
+      request:async()=>{writes++;throw Object.assign(new Error('reset'),{code:'ECONNRESET'});},close(){}})});
+  t.after(()=>f.client.close());
+  await f.client.connect(direct);down=true;
+  const connection=f.client.applicationConnection('ai.wanx.studio');
+  await assert.rejects(connection.request({path:'/api/app-studio/engines'}),{code:'ECONNRESET'});
+  assert.equal(f.client.snapshot().phase,'ready');
+  await advance(t,0);
+  assert.equal(f.client.snapshot().phase,'recovering');
+  assert.equal(f.client.snapshot().connection.deviceId,direct.deviceId);
   assert.equal(writes,1);
 });
 

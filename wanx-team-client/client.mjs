@@ -63,7 +63,10 @@ export function createClient({
     const generation = epoch;
     try { return await operation(); }
     catch (error) {
-      if (generation === epoch && TRANSPORT_FAILURES.has(error.code || error.message)) requestRecovery();
+      // A failed business socket does not prove the whole box is offline.
+      // Confirm health before changing the shared state and closing app views.
+      if (generation === epoch && !recovery && !healthController &&
+          TRANSPORT_FAILURES.has(error.code || error.message)) scheduleHealthCheck(generation, 0);
       throw error; // Never replay business writes, model calls, or stream messages.
     }
   }
