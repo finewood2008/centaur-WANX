@@ -26,17 +26,20 @@ export function toml(value){
 export function configArgs(config){
   return Object.entries(config).flatMap(([key,value])=>['-c',key+'='+toml(value)]);
 }
-export async function startSharedServer({binary,config,env,cwd}){
+export async function startSharedServer({binary,config,env,cwd,signal}){
+  if(signal?.aborted)throw new Error('TASK_CHANNEL_DENIED');
   const directory=await mkdtemp(path.join(os.tmpdir(),'wanx-codex-'));
   await chmod(directory,0o700);
   const socket=path.join(directory,'server.sock');
   const settings={...config,projects:{[cwd]:{trust_level:'trusted'}}};
   const child=spawn(binary,['app-server','--listen','unix://'+socket,...configArgs(settings)],
     {cwd,env,stdio:['ignore','ignore','ignore'],detached:true});
-  let closed=false;
-  const close=async()=>{if(closed)return;closed=true;await stopGroup(child);await rm(directory,{recursive:true,force:true})};
+  let closing;
+  const close=()=>closing??=(async()=>{await stopGroup(child);await rm(directory,{recursive:true,force:true})})();
+  const abort=()=>void close();signal?.addEventListener('abort',abort,{once:true});
   try{
     for(let attempt=0;attempt<100;attempt++){
+      if(signal?.aborted)throw new Error('TASK_CHANNEL_DENIED');
       if(child.exitCode!==null)throw new Error('CODEX_SHARED_SERVER_FAILED');
       const ready=await new Promise(resolve=>{
         const ws=new WebSocket(socketURL(socket));
@@ -47,4 +50,5 @@ export async function startSharedServer({binary,config,env,cwd}){
     }
     throw new Error('CODEX_SHARED_SERVER_TIMEOUT');
   }catch(error){await close();throw error}
+  finally{signal?.removeEventListener('abort',abort)}
 }

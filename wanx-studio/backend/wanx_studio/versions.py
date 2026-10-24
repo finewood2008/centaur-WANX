@@ -6,10 +6,12 @@ from .contracts import StudioError, digest
 
 ACTIVE={'queued','running','waiting'}
 
-def idle(p):
-    if any(t.get('state') in {'queued','paused'} for t in p.get('preparation',{}).get('interview',{}).get('turns',[])):raise StudioError('PRD_NOT_SYNCHRONIZED',409)
+def idle(p, pending=True):
+    direct=p.get('_edits',{}).get('enabled')
+    if direct and any(e['state'] in {'queued','preparing','building','validating','clarifying'} for e in p['_edits']['items']):raise StudioError('BUILD_ACTIVE',409)
+    if not direct and pending and any(t.get('state') in {'queued','paused'} for t in p.get('preparation',{}).get('interview',{}).get('turns',[])):raise StudioError('PRD_NOT_SYNCHRONIZED',409)
     if any(t['state'] in ACTIVE for t in p['tasks']):raise StudioError('BUILD_ACTIVE',409)
-    if p.get('preparation',{}).get('interview',{}).get('state')=='running':raise StudioError('INTERVIEW_BUSY',409)
+    if not direct and p.get('preparation',{}).get('interview',{}).get('state')=='running':raise StudioError('INTERVIEW_BUSY',409)
 
 def state(p):
     if 'versioning' in p:return deepcopy(p['versioning'])
@@ -27,7 +29,7 @@ def frozen(p):
     if x:
         evidence={k:deepcopy(x[k]) for k in ['phase','revision','references','required','gaps','gapDecisions','report'] if k in x}
         evidence['interview']={'state':'completed','sync':'saved'}
-    return deepcopy({'solution':p['solution'],'confirmation':p['confirmation'],'decisions':p['decisions'],'preparation':evidence,'contracts':deepcopy(x.get('handoff',{}).get('contracts',{})) if x else {},'engine':deepcopy(p.get('engine')),'provenance':deepcopy(x.get('provenance',[])) if x else []})
+    return deepcopy({'solution':p['solution'],'confirmation':p['confirmation'],'decisions':p['decisions'],'preparation':evidence,'contracts':deepcopy((x.get('handoff') or {}).get('contracts',{})) if x else {},'engine':deepcopy(p.get('engine')),'provenance':deepcopy(x.get('provenance',[])) if x else []})
 
 def snapshot(p,a):
     if a.get('snapshot'):return deepcopy(a['snapshot'])
@@ -48,6 +50,7 @@ def verify(a):
     expected=digest({'files':a['files'],'manifest':a['manifest'],'solutionHash':a['solutionHash'],'taskId':a['taskId']})
     if a['hash']!=expected or a.get('contentHash',digest({k:a[k] for k in ['files','manifest','bundle','css']}))!=digest({k:a[k] for k in ['files','manifest','bundle','css']}):
         raise StudioError('ARTIFACT_INTEGRITY_FAILED',409)
+    if a.get('checkpoint') and (digest(a['checkpoint'])!=a.get('checkpointHash') or a['checkpoint']['artifactHash']!=a['hash']):raise StudioError('ARTIFACT_INTEGRITY_FAILED',409)
 
 def shadow(p,a):
     snap=snapshot(p,a)
@@ -87,12 +90,23 @@ class Versions:
     def expected(self,p,body):
         if body['expectedRevision']!=state(p)['revision']:raise StudioError('VERSION_CHANGED',409)
     def guard(self,owner,p,a):
-        verify(a);q=shadow(p,a);self.svc.preparation.guard(owner,q,development=True)
+        verify(a);q=shadow(p,a);self.svc.authorize_version(owner,p,a)
         if not compatible_restore(p,a['manifest']):raise StudioError('VERSION_DATA_INCOMPATIBLE',409)
         return q
     async def authorize(self,owner,pid,h):
         p=self.svc.store.get(owner,pid);a=source_artifact(p,h);q=self.guard(owner,p,a)
-        if 'preparation' in q:await self.svc.preparation.validate_references(owner,q['preparation']['references'])
+        # Background documents helped author this version; they are not its
+        # runtime grants. Runtime knowledge access checks current app bindings.
+        if 'knowledge' in a['manifest']['capabilities']:
+            team=getattr(self.svc,'team',None)
+            if not team:raise StudioError('KNOWLEDGE_UNAVAILABLE',409)
+            bindings=(team.services.application_repo.deployment(p['appId']) or {}).get('configuration',{}).get('studio_team_data',{})
+            if not bindings:raise StudioError('KNOWLEDGE_AUTHORIZATION_REQUIRED',409)
+            from octop.infra.semantica.team_data import read_bound
+            from octop.infra.semantica.client import SemanticaError
+            try:
+                for warehouse in bindings:await read_bound(team.services,owner,p['appId'],'documents',{'warehouseId':warehouse})
+            except SemanticaError as error:raise StudioError(error.code,error.status) from None
     def read(self,owner,pid,h=None):
         p=self.svc.store.get(owner,pid)
         if not h:return {'revision':state(p)['revision'],'versions':summaries(p)}
@@ -109,20 +123,26 @@ class Versions:
             a=source_artifact(p,base);snap=snapshot(p,a)
             if not snap:raise StudioError('VERSION_SNAPSHOT_INCOMPLETE',409)
             p['solution']=deepcopy(snap['solution']);p['decisions']=deepcopy(snap['decisions']);p['confirmation']=deepcopy(snap['confirmation'])
+            p.get('_iterative',{}).pop('contractDraft',None)
             # Current authorization/report remains authoritative and is rechecked.
             if 'preparation' in p:p['preparation'].pop('entryIds',None)
         v['iteration']={'id':uuid4().hex,'baseHash':base,'goal':goal,'state':'discussing','createdAt':time.time()}
         p['acceptance']=None;p['stage']='discovery';self.bump(p)
     def iteration(self,owner,pid,body):
         def change(p):
-            self.expected(p,body);idle(p);v=ensure(p)
+            self.expected(p,body);idle(p,pending=body['action']=='begin');v=ensure(p)
             if body['action']=='begin':self.begin(p,body.get('baseHash') or v['adoptedHash'] or (p['artifacts'][-1]['hash'] if p['artifacts'] else None),body.get('goal',''))
             else:
                 if not v['iteration']:raise StudioError('ITERATION_NOT_FOUND',409)
                 v['iterations'].append({**v['iteration'],'state':'abandoned','draft':frozen(p),'at':time.time()});v['iteration']=None;self.bump(p)
         return self.svc.store.mutate(owner,pid,body['operationId'],{'action':'iteration',**body},change)
-    def task(self,p,instruction):
+    def task(self,p,instruction,*,base=None,edit_id=None):
         v=ensure(p)
+        if edit_id:
+            if v['iteration']:v['iterations'].append({**v['iteration'],'state':'continued','draft':frozen(p),'at':time.time()})
+            v['iteration']={'id':edit_id,'baseHash':base,'goal':instruction,'state':'building','createdAt':time.time()}
+            self.bump(p)
+            return deepcopy(v['iteration'])
         if not v['iteration']:
             # Compatibility for existing clients: select a baseline explicitly once.
             v['iteration']={'id':uuid4().hex,'baseHash':v['adoptedHash'] or (p['artifacts'][-1]['hash'] if p['artifacts'] else None),'goal':instruction,'state':'building','createdAt':time.time()}
@@ -138,41 +158,49 @@ class Versions:
     def adoption(self,p,a,source,operation):
         v=ensure(p);v['adoptedHash']=a['hash'];v['adoptions'].append({'artifactHash':a['hash'],'at':time.time(),'source':source,'operationId':operation})
         if v['iteration']:
-            v['iterations'].append({**v['iteration'],'state':'adopted','artifactHash':a['hash'],'at':time.time()});v['iteration']=None
+            v['iterations'].append({**v['iteration'],'state':'adopted','artifactHash':a['hash'],'draft':frozen(p),'at':time.time()});v['iteration']=None
         p['stage']='adopted';self.bump(p)
     def adopt(self,owner,pid,body):
+        self.svc.authorize_management(owner)
         def change(p):
-            self.expected(p,body);idle(p);a=source_artifact(p,body['artifactHash']);self.guard(owner,p,a)
-            v=ensure(p);it=v['iteration']
+            self.expected(p,body);idle(p,pending=False);a=source_artifact(p,body['artifactHash']);self.guard(owner,p,a)
             if not body.get('confirmedByUser'):raise StudioError('USER_ADOPTION_REQUIRED',409)
-            if a['solutionHash']!=digest(p['solution']) or a.get('confirmation')!=p['confirmation'] or (it and a.get('iterationId')!=it['id']):raise StudioError('VERSION_CHANGED',409)
             task=next((t for t in p['tasks'] if t['id']==a['taskId']),None)
             if not task or task['state']!='completed':raise StudioError('VERSION_CHANGED',409)
-            # A user may compare successful candidates from the same iteration
-            # and frozen plan. Keep legacy adoption limited to the latest task.
-            if not it and p['tasks'][-1]['id']!=a['taskId']:raise StudioError('VERSION_CHANGED',409)
             self.adoption(p,a,'user-adoption',body['operationId'])
         return self.svc.store.mutate(owner,pid,body['operationId'],{'action':'adopt',**body},change)
     def restore_check(self,owner,pid,h):
-        p=self.svc.store.get(owner,pid);idle(p);v=state(p)
-        if v['iteration']:raise StudioError('ITERATION_ACTIVE',409)
-        if not any(x['artifactHash']==h for x in v['adoptions']):raise StudioError('VERSION_NOT_ADOPTED',409)
+        p=self.svc.store.get(owner,pid);idle(p,pending=False);v=state(p)
         a=source_artifact(p,h);self.guard(owner,p,a)
+        if not any(t['id']==a['taskId'] and t['state']=='completed' for t in p['tasks']):raise StudioError('VERSION_CHANGED',409)
         return {'expectedRevision':v['revision'],'artifactHash':h,'currentHash':v['adoptedHash'],'dataPolicy':'preserve','restores':a['version'],'capabilities':a['manifest']['capabilities'],'changes':differences(p,a,v['adoptedHash']),'checkHash':digest({'revision':v['revision'],'hash':h,'current':v['adoptedHash'],'manifest':a['manifest']})}
-    def restore(self,owner,pid,body):
+    def restore(self,owner,pid,body,*,trial=False):
+        self.svc.authorize_management(owner)
         def change(p):
             self.expected(p,body);check=self.restore_check(owner,pid,body['artifactHash'])
             if check['checkHash']!=body['checkHash'] or not body.get('confirmedByUser'):raise StudioError('VERSION_CHANGED',409)
             old=source_artifact(p,body['artifactHash']);a=deepcopy(old);task_id='restore_'+uuid4().hex
             a.update({'taskId':task_id,'version':f"0.1.{len(p['artifacts'])}",'createdAt':time.time(),'restoredFrom':old['hash'],'baseHash':old['hash'],'iterationId':None,'summary':'恢复自 v'+old['version']})
             a['hash']=digest({'files':a['files'],'manifest':a['manifest'],'solutionHash':a['solutionHash'],'taskId':task_id})
-            p['tasks'].append({'id':task_id,'state':'completed','executor':'restore','solutionHash':a['solutionHash'],'createdAt':time.time(),'events':[{'type':'status','text':'复用已采用版本的代码与方案，保留当前业务数据；未调用开发模型。','at':time.time()}],'question':None,'baseHash':old['hash']})
+            if a.get('checkpoint'):
+                a['checkpoint'].update({'artifactHash':a['hash'],'parent':old['hash'],'changeId':task_id})
+                a['checkpointHash']=digest(a['checkpoint'])
+            p['tasks'].append({'id':task_id,'state':'completed','executor':'restore','solutionHash':a['solutionHash'],'createdAt':time.time(),'events':[{'type':'status','text':'复用所选版本的代码与方案，保留当前业务数据；未调用开发模型。','at':time.time()}],'question':None,'baseHash':old['hash']})
             p['artifacts'].append(a)
+            v=ensure(p)
+            if v['iteration']:
+                v['iterations'].append({**v['iteration'],'state':'abandoned','draft':frozen(p),'at':time.time()})
+                v['iteration']=None
             # Restore the working PRD as well; never restore old conversation or data.
             q=shadow(p,a);p.update({k:deepcopy(q[k]) for k in ['solution','decisions','confirmation']})
+            p.get('_iterative',{}).pop('contractDraft',None)
             if 'preparation' in p:p['preparation'].pop('entryIds',None)
-            self.adoption(p,a,'user-restore',body['operationId'])
-        return self.svc.store.mutate(owner,pid,body['operationId'],{'action':'restore-version',**body},change)
+            if trial:
+                a['iterationId']=task_id
+                v['iteration']={'id':task_id,'baseHash':old['hash'],'latestHash':a['hash'],'goal':a['summary'],'state':'trial','createdAt':time.time()}
+                p['stage']='preview';p['acceptance']=None;self.bump(p)
+            else:self.adoption(p,a,'user-restore',body['operationId'])
+        return self.svc.store.mutate(owner,pid,body['operationId'],{'action':'restore-trial' if trial else 'restore-version',**body},change)
     def payload(self,owner,pid,h):
         p=self.svc.store.get(owner,pid);v=state(p)
         if v['adoptedHash']!=h:raise StudioError('USER_ADOPTION_REQUIRED',409)

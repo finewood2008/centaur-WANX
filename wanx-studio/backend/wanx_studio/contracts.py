@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from .prd import ProductRequirement, prd_missing
 
-CAPABILITIES = {"data", "model", "files", "knowledge"}
+CAPABILITIES = {"data", "model", "files", "knowledge", "reports"}
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json"}
 
 
@@ -47,7 +47,7 @@ class Solution(Input):
     outputs: str = Field(default="", max_length=4000)
     fields: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
-    capabilities: list[Literal["data", "model", "files", "knowledge"]] = Field(default_factory=lambda: ["data", "model"])
+    capabilities: list[Literal["data", "model", "files", "knowledge", "reports"]] = Field(default_factory=lambda: ["data", "model"])
     dependencies: list[Dependency] = Field(default_factory=list)
     prd: ProductRequirement | None = None
 
@@ -106,6 +106,8 @@ def check_manifest(value: dict) -> dict:
             raise StudioError("SCHEMA_INVALID")
         if any(not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,49}", f) or t not in {"string", "number", "boolean"} for f, t in fields.items()):
             raise StudioError("SCHEMA_INVALID")
+    from .foundation import has_auth_storage
+    if has_auth_storage(collections):raise StudioError("WANX_AUTH_REQUIRED",409)
     return value
 
 

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.api.common.agent import require_agent_owner_row, require_agent_row
+from octop.infra.backend.private_workspace import PrivateStorageWorkspace
 from octop.infra.errors import ErrorCode, OctopError
 
 if TYPE_CHECKING:
@@ -54,7 +55,11 @@ async def require_running_workspace(
     checker = require_agent_owner_row if owner_only else require_agent_row
     row = checker(agent_id, user=user, as_user=as_user, server=server)
     try:
-        return require_running_agent(server, agent_id).workspace
+        return PrivateStorageWorkspace(
+            require_running_agent(server, agent_id).workspace,
+            confined=not user.is_admin,
+            agent_id=agent_id,
+        )
     except OctopError as exc:
         if exc.code is not ErrorCode.AGENT_NOT_RUNNING:
             raise
@@ -65,7 +70,9 @@ async def require_running_workspace(
         fallback = server.app_runtime.agent_registry.workspace_for_agent(agent_id)
         if fallback is None:
             raise
-        return cast("BackendWorkspace", fallback)
+        return PrivateStorageWorkspace(
+            cast("BackendWorkspace", fallback), confined=not user.is_admin, agent_id=agent_id
+        )
 
 
 async def require_agent_workspace(
@@ -88,7 +95,9 @@ async def require_agent_workspace(
     workspace = server.app_runtime.agent_registry.workspace_for_agent(agent_id)
     if workspace is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    return cast("BackendWorkspace", workspace)
+    return PrivateStorageWorkspace(
+        cast("BackendWorkspace", workspace), confined=not user.is_admin, agent_id=agent_id
+    )
 
 
 def workspace_api_path(raw: str) -> str:

@@ -40,6 +40,13 @@ class Store:
                         self.db.execute('INSERT OR IGNORE INTO task_events VALUES(?,?,?,?,?)',
                                         (p['owner'],p['id'],task['id'],seq,json.dumps(event,ensure_ascii=False)))
                 changed = False
+                for edit in p.get('_edits',{}).get('items',[]):
+                    if edit['state'] in {'preparing','building','validating'}:
+                        tasks=set(edit.get('taskIds',[]))|{t['id'] for t in p['tasks'] if t.get('editId')==edit['id']}
+                        artifact=next((a for a in p['artifacts'] if a['taskId'] in tasks),None)
+                        edit.update({'state':'completed','artifactHash':artifact['hash']} if artifact else {'state':'interrupted','error':'SERVICE_RESTARTED'})
+                        changed=True
+                finished_edits={e['id'] for e in p.get('_edits',{}).get('items',[]) if e['state'] in {'completed','no_change','discussed'}}
                 preparation=p.get('preparation',{})
                 for attempt in preparation.get('probeAttempts',[]):
                     if attempt['state']=='running':attempt['state']='interrupted';changed=True
@@ -51,6 +58,8 @@ class Store:
                         if turn.get('state')=='running':turn['state']='failed'
                     changed=True
                 for turn in interview.get('turns',[]):
+                    if turn.get('transferredTo') in finished_edits and turn.get('state')!='completed':
+                        turn['state']='completed';changed=True
                     if turn.get('state')=='queued':
                         turn['state']='paused';interview['error']='INTERVIEW_INTERRUPTED';changed=True
                 for task in p["tasks"]:
@@ -59,7 +68,8 @@ class Store:
                         task["error"] = "SERVICE_RESTARTED"
                         changed = True
                 if changed:
-                    p["stage"] = "interrupted"
+                    finished=p.get('_edits',{}).get('enabled') and p['artifacts'] and all(e['state'] in {'completed','no_change','discussed','cancelled'} for e in p['_edits']['items'])
+                    p['stage']=('adopted' if p.get('versioning',{}).get('adoptedHash')==p['artifacts'][-1]['hash'] else 'preview') if finished else 'interrupted'
                     self.save(p)
 
     @contextmanager
@@ -146,9 +156,10 @@ class Store:
 
 def public(project: dict) -> dict:
     # Source and bundled code are served only through dedicated artifact routes.
-    result = {k: v for k, v in project.items() if k not in {"owner", "callLimit", "callsUsed"}}
+    result = {k: v for k, v in project.items() if k in {"id","appId","name","nameMode","autoName","originalGoal","stage","createdAt","updatedAt","messages","solution","revisions","decisions","confirmation","tasks","artifacts","acceptance","installed","preparation","engine","versioning","versionFixture","deletedAt","example"}}
     from .versions import summaries,state
-    result["artifacts"] = [{k:v for k,v in a.items() if k not in {"files","bundle","css","snapshot"}} for a in project["artifacts"]]
+    result["artifacts"] = [{k:v for k,v in a.items() if k not in {"files","bundle","css","snapshot","checkpoint","checkpointHash"}} for a in project["artifacts"]]
+    result["tasks"]=[{k:v for k,v in t.items() if k in {"id","executor","version","state","solutionHash","createdAt","events","question","baseHash","iterationId","instruction","operationId","engine","error"}} for t in project["tasks"]]
     result["versions"]=summaries(project)
     result["versioning"]=state(project)
     result["versioning"]["iterations"]=[{k:v for k,v in item.items() if k!="draft"} for item in result["versioning"]["iterations"]]

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.api.common.workspace import require_running_workspace
 from octop.infra.errors import ErrorCode, OctopError
@@ -22,21 +24,25 @@ def _server(
 
 
 @pytest.mark.asyncio
-async def test_require_running_workspace_uses_live_handle() -> None:
-    live_ws = object()
+async def test_require_running_workspace_uses_live_handle(tmp_path: Path) -> None:
+    live_ws = MagicMock(spec=BackendWorkspace)
+    live_ws.workspace_dir = tmp_path
+    live_ws.system_files_path = ""
     row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="running")
     user = SimpleNamespace(id=1, is_admin=False)
     agent = SimpleNamespace(workspace=live_ws)
     server = _server(row=row, get_agent=lambda _aid: agent)
 
     ws = await require_running_workspace("A1", user=user, as_user=None, server=server)
-    assert ws is live_ws
+    assert ws.backend is live_ws.backend and ws.workspace_dir == tmp_path
     server.app_runtime.agent_registry.workspace_for_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_require_running_workspace_falls_back_during_rebuild() -> None:
-    fallback_ws = object()
+async def test_require_running_workspace_falls_back_during_rebuild(tmp_path: Path) -> None:
+    fallback_ws = MagicMock(spec=BackendWorkspace)
+    fallback_ws.workspace_dir = tmp_path
+    fallback_ws.system_files_path = ""
     row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="running")
     user = SimpleNamespace(id=1, is_admin=False)
     server = _server(
@@ -46,7 +52,7 @@ async def test_require_running_workspace_falls_back_during_rebuild() -> None:
     )
 
     ws = await require_running_workspace("A1", user=user, as_user=None, server=server)
-    assert ws is fallback_ws
+    assert ws.backend is fallback_ws.backend and ws.workspace_dir == tmp_path
     server.app_runtime.agent_registry.workspace_for_agent.assert_called_once_with("A1")
 
 

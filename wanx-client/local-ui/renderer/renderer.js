@@ -1059,8 +1059,10 @@ function discoverableApplications() {
   return [...new Map(marketItems.map(item => [item.applicationId, item])).values()];
 }
 function withMarketName(item) {
-  const name = marketItems.find(entry => entry.applicationId === item.applicationId)?.name;
-  // Admin owns display names; installed versions and signed manifests stay intact.
+  const names = { "centaurai.wanx.semantica": "万象·星图", "ai.wanx.studio": "万象·开物" };
+  const name = names[item.applicationId] || marketItems.find(entry => entry.applicationId === item.applicationId)?.name;
+  // Product branding overrides legacy labels; other names remain account-owned.
+  // Installed versions and signed manifests stay intact.
   return typeof name === "string" && name.trim() ? { ...item, name } : item;
 }
 function storeApplication(id) {

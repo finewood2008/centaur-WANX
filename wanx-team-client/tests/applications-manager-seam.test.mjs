@@ -6,6 +6,30 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { createApplicationManager } from "../applications/manager.mjs";
 
+test("Builder launches as an independent managed app, upgrades its bundle and reuses the live process", async t => {
+  const {readFile,rm}=await import("node:fs/promises");
+  const root=await mkdtemp(path.join(os.tmpdir(),"wanx-builder-app-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const source=path.join(root,"old");await mkdir(source);
+  await writeFile(path.join(source,"main.cjs"),"module.exports={}");
+  await writeFile(path.join(source,"application.manifest.json"),JSON.stringify({applicationId:"ai.wanx.studio",name:"旧版 Builder",version:"1.0.0",protocolVersion:1,runtime:"electron",launchMode:"shared",entrypoint:"main.cjs"}));
+  const profile=path.join(root,"apps/.runtime/ai.wanx.studio");await mkdir(profile,{recursive:true});await writeFile(path.join(profile,"existing-project.txt"),"keep");
+  let allowed=true,live=true;const children=[],messages=[];
+  const manager=await createApplicationManager({applicationRoot:path.join(root,"apps"),applicationId:"wanx-host",
+    createConnection:async()=>({context:()=>{if(!live)throw Error("SESSION_CHANGED");return{accountId:"admin",boxId:"box",user:{id:1}}},request:async()=>({status:allowed?200:403,body:JSON.stringify(allowed?{modelAvailable:false}:{code:"STUDIO_ADMIN_REQUIRED"})})}),
+    spawn:(_file,_args,options)=>{const child=new EventEmitter();child.exitCode=null;child.send=message=>messages.push(message);child.kill=()=>{child.exitCode=0;child.emit("exit",0)};children.push({child,options});queueMicrotask(()=>child.emit("message",{type:"wanx:application-ready",launchId:options.env.WANX_HOST_LAUNCH_ID}));return child},
+  });
+  t.after(()=>manager.close());await manager.install({sourceDir:source});
+  allowed=false;await assert.rejects(manager.launch("ai.wanx.studio"),/STUDIO_ADMIN_REQUIRED/);assert.equal(children.length,0);
+  allowed=true;const first=await manager.launch("ai.wanx.studio");const second=await manager.launch("ai.wanx.studio");
+  assert.equal(children.length,1);assert.equal(first.launchId,second.launchId);assert.ok(messages.some(message=>message.type==="wanx:application-activate"));
+  const installed=(await manager.listInstalled()).find(item=>item.applicationId==="ai.wanx.studio");
+  assert.equal(installed.name,"万象·开物");assert.equal(installed.version,"1.0.1");
+  assert.equal(children[0].options.env.WANX_HOST_CLIENT_APPLICATION_ID,"ai.wanx.studio");
+  assert.equal(await readFile(path.join(profile,"existing-project.txt"),"utf8"),"keep");
+  live=false;await assert.rejects(manager.launch("ai.wanx.studio"),/SESSION_CHANGED/);assert.equal(children.length,1);
+});
+
 test("manager installs and launches an application with a one-time host environment", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wanx-manager-"));
   const source = path.join(root, "source");

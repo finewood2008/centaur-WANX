@@ -670,6 +670,14 @@ class AgentManager:
 
             # Create-time: user-assigned workspace_dir wins; otherwise default+encode.
             # After insert, resolve_workspace_dir reads the DB value as source of truth.
+            if isinstance(config.get("workspace_dir"), str) and config["workspace_dir"].strip():
+                from octop.infra.agents.workspace.dir import workspace_dir_from_config
+
+                self._assert_workspace_boundary(
+                    spec.user_id,
+                    agent_id,
+                    workspace_dir_from_config(config, paths=self._paths, agent_id=agent_id),
+                )
             seed_workspace_dir_on_create(config, paths=self._paths, agent_id=agent_id)
             if spec.application_id != "wanx":
                 # A dedicated virtual filesystem prevents path aliasing with
@@ -1186,6 +1194,17 @@ class AgentManager:
         kwargs.update(extra)
         self._repos.agent_repo.update_config(agent_id, **kwargs)
 
+    def _assert_workspace_boundary(
+        self, user_id: int | None, agent_id: str, workspace: Path
+    ) -> None:
+        from octop.infra.utils.private_paths import is_untrusted_workspace
+
+        if user_id is None:
+            return
+        user = self._repos.user_repo.get(user_id)
+        if (user is None or user.role != "admin") and is_untrusted_workspace(workspace, agent_id):
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
+
     def resolve_workspace_dir(self, agent_id: str, *, persist_if_missing: bool = True) -> Path:
         """On-disk workspace for Octop host FS ops (delete, memory path, …).
 
@@ -1200,7 +1219,11 @@ class AgentManager:
         cfg = self.get_config(agent_id)
         raw = cfg.get("workspace_dir")
         if isinstance(raw, str) and raw.strip():
-            return workspace_dir_from_config(cfg, paths=self._paths, agent_id=agent_id)
+            workspace = workspace_dir_from_config(cfg, paths=self._paths, agent_id=agent_id)
+            row = self._repos.agent_repo.get(agent_id)
+            if row is not None:
+                self._assert_workspace_boundary(row.user_id, agent_id, workspace)
+            return workspace
 
         # Legacy / incomplete row: classic Octop layout only (not scoped create default).
         out = self._paths.ensure_agent_workspace(agent_id)
@@ -1423,11 +1446,17 @@ class AgentManager:
             self._track_invocation(agent_id),
         ):
             self._apply_pending_bootstrap_graph_refresh(agent_id)
-            with hitl_thread_scope(thread_id):
-                async for chunk in self._harness_manager.resume_hitl(
-                    agent_id, thread_id, decisions
-                ):
-                    yield chunk
+            from octop.infra.agents.middleware.private_storage import resuming_actor
+
+            actor_token = resuming_actor.set(user_id)
+            try:
+                with hitl_thread_scope(thread_id):
+                    async for chunk in self._harness_manager.resume_hitl(
+                        agent_id, thread_id, decisions
+                    ):
+                        yield chunk
+            finally:
+                resuming_actor.reset(actor_token)
             self._apply_pending_bootstrap_graph_refresh(agent_id)
 
     def cancel_stream(self, agent_id: str, thread_id: str) -> None:
@@ -3423,6 +3452,7 @@ class AgentManager:
             harness_workspace = workspace_dir
             cfg = self._agent_config_dict(row)
 
+        self._assert_workspace_boundary(row.user_id, row.agent_id, workspace_dir)
         backend = self._backend_spec_for_row(row, cfg=cfg, workspace_dir=workspace_dir)
         ws = self._backend_workspace_for_row(
             row,
@@ -3530,6 +3560,7 @@ class AgentManager:
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
         from octop.infra.agents.middleware.octop_ui_offload import OctopUiOffloadMiddleware
+        from octop.infra.agents.middleware.private_storage import PrivateStorageBoundary
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
         from octop.infra.agents.middleware.thread_artifacts import ThreadArtifactsMiddleware
         from octop.infra.agents.middleware.token_quota import TokenQuotaMiddleware
@@ -3546,6 +3577,7 @@ class AgentManager:
         # slimmed content consistently; it only touches octop_ui plugin envelopes,
         # disjoint from the file-tool results ThreadArtifacts cares about.
         agent_middleware: list[Any] = [
+            PrivateStorageBoundary(self._repos.user_repo, harness_workspace, agent_id=row.agent_id),
             *plugin_middleware,
             TokenQuotaMiddleware(
                 policy_repo=self._repos.user_policy_repo,

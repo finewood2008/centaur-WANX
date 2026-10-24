@@ -15,5 +15,5 @@ await build({entryPoints:[path.join(root,'shell/main.cjs')],bundle:true,platform
 await copyFile(path.join(root,'shell/preload.cjs'),path.join(studio,'shell/preload.cjs'));
 await rm(path.join(studio,'ui'),{recursive:true,force:true});
 await cp(path.join(root,'dist/ui'),path.join(studio,'ui'),{recursive:true});
-await writeFile(path.join(studio,'application.manifest.json'),JSON.stringify({applicationId:'ai.wanx.studio',name:'半人马AI-万象Builder',version,protocolVersion:1,runtime:'electron',launchMode:'shared',entrypoint:'shell/main.cjs',description:'持续沟通、试用和改进自己的万象应用。'},null,2));
+await writeFile(path.join(studio,'application.manifest.json'),JSON.stringify({applicationId:'ai.wanx.studio',name:'万象·开物',version,protocolVersion:1,runtime:'electron',launchMode:'shared',entrypoint:'shell/main.cjs',description:'WanX Builder · 从想法到应用，持续构建、试用和改进。'},null,2));
 console.log(JSON.stringify({studio,runtime}));

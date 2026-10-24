@@ -51,6 +51,8 @@ class ApplicationSessionMiddleware:
             }.get(path)
             if path.startswith("/api/agents/") and path.endswith("/terminal/ws"):
                 permission = "terminal"
+                if not user.is_admin:
+                    raise OctopError.localized(ErrorCode.FORBIDDEN)
             if permission and not user_has_permission(user, permission):
                 raise OctopError.localized(ErrorCode.FORBIDDEN)
 

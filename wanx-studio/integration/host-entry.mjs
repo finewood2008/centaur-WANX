@@ -67,6 +67,7 @@ export function createStudioEntry({ createConnection, applications, assets, open
     return { projectId: id };
   }
   return Object.freeze({
+    async authorize(){const s=await session();await s.request('/context');s.assertLive();return s.assertLive},
     async launchSuggest(input){const s=await session();return s.request('/_client/launch/suggest','POST',{text:input?.text})},
     async launchSources(input){const s=await session();if(!['warehouses','storage','references'].includes(input?.kind))throw fail('CONTEXT_REFERENCE_INVALID');return s.request('/_client/launch/sources?kind='+input.kind+'&parent='+encodeURIComponent(input.parent||'')+'&spaceId='+encodeURIComponent(input.spaceId||'personal'))},
     async launchConfigure(input){const s=await session();if(input?.projectId&&!projectId(input.projectId))throw fail('STUDIO_PROJECT_INVALID');return s.request('/_client/launch/configure','POST',input)},

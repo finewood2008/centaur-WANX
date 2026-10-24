@@ -4,7 +4,7 @@ const id='a'.repeat(32);
 function harness(){
  let respond,live=true,scope='alice',callback,loads=0;const handlers=new Map(),views=[],windows=[],requests=[],changes=[];
  const host=new EventEmitter();host.isDestroyed=()=>false;host.getContentSize=()=>[1280,800];host.show=()=>{};host.contentView={addChildView:v=>{host.child=v},removeChildView:v=>{if(host.child===v)host.child=null}};
- class View{constructor(){this.webContents=new EventEmitter();Object.assign(this.webContents,{mainFrame:{},loadFile:async()=>{loads++},setWindowOpenHandler(){},send:(name,p)=>changes.push([name,p]),isDestroyed:()=>false,close(){this.closed=true}});views.push(this)}setBounds(v){this.bounds=v}}
+ class View{constructor(){this.webContents=new EventEmitter();Object.assign(this.webContents,{mainFrame:{},loadFile:async()=>{loads++},setWindowOpenHandler(){},send:(name,p)=>changes.push([name,p]),isDestroyed:()=>false,close(){this.closed=true}});views.push(this)}setBounds(v){this.bounds=v}getBounds(){return this.bounds}}
  class Win extends EventEmitter{constructor(options){super();this.options=options;this.visible=true;this.focuses=0;this.contentView={addChildView:v=>{this.child=v},removeChildView:()=>{this.child=null}};windows.push(this)}getContentSize(){return[1280,800]}show(){this.visible=true}hide(){this.visible=false}focus(){this.focuses++}setTitle(title){this.title=title}destroy(){this.destroyed=true}}
  const c={context(){if(!live)throw Error('SESSION_CHANGED');return{accountId:scope,boxId:'box',user:{id:1}}},subscribe(fn){callback=fn;return()=>{}},async request(r){requests.push(r);if(respond)return respond(r);return{status:200,body:JSON.stringify({id,tasks:[],preparation:{interview:{state:'idle'}}})}}};
  const ipcMain={handle:(k,v)=>handlers.set(k,v),removeHandler:k=>handlers.delete(k)};
@@ -14,7 +14,7 @@ function harness(){
 
 test('Builder opens independently with brand and keeps one mounted view through close and reopen',async()=>{
  const h=harness();await h.workspace.open({protocolVersion:2,projectId:id});const view=h.views[0],win=h.windows[0];assert.equal(h.loads,1);
- assert.equal(h.host.child,undefined);assert.equal(win.child,view);assert.equal(win.options.title,'半人马AI-万象Builder');assert.match(win.options.icon,/centaurai-mark.png$/);
+ assert.equal(h.host.child,undefined);assert.equal(win.child,view);assert.equal(win.options.title,'万象·开物');assert.match(win.options.icon,/centaurai-mark.png$/);
  assert.equal((await h.call('navigation')).projectId,id);
  let prevented=false;win.emit('close',{preventDefault(){prevented=true}});assert.ok(prevented);assert.equal(win.visible,false);assert.equal(view.webContents.closed,undefined);
  h.workspace.placement({protocolVersion:1,action:'show'});assert.equal(win.visible,false,'client refresh must not reopen hidden Builder');
@@ -54,4 +54,51 @@ test('hiding the workspace retains active-task reads, while old-scope responses 
  let release;h.setResponse(()=>new Promise(r=>release=r));const old=h.call('request','/api/app-studio/context');
  h.changeScope();h.setResponse(async()=>({status:200,body:JSON.stringify({id,tasks:[]})}));await h.workspace.open({protocolVersion:2,projectId:id});
  release({status:200,body:JSON.stringify({private:'previous account'})});await assert.rejects(old,/HOST_SESSION_EXPIRED/);h.workspace.close();
+});
+
+test('transient polling failure retries instead of permanently dropping a live task',async()=>{
+ const h=harness();let calls=0;
+ h.setResponse(async()=>{calls++;if(calls===2)throw Error('HOST_REQUEST_TIMEOUT');return{status:200,body:JSON.stringify({id,tasks:[{state:calls<3?'running':'completed'}]})}});
+ try{await h.workspace.open({protocolVersion:2,projectId:id});await new Promise(r=>setTimeout(r,3200));assert.ok(calls>=3);assert.ok(h.changes.some(([name])=>name==='studio:project'))}finally{h.workspace.close()}
+});
+
+test('polling follows capability checks and queued turns between completed interviews',async()=>{
+ const h=harness();let calls=0;const phases=[{state:'running'},{state:'completed',turns:[{state:'queued'}]},{state:'completed',turns:[{state:'queued'}]},{state:'running'},{state:'completed'}];
+ h.setResponse(async()=>{const interview=phases[Math.min(calls++,4)];return{status:200,body:JSON.stringify({id,tasks:[],preparation:{interview,...(calls===3?{currentProbe:{state:'running'}}:{})}})}});
+ try{await h.workspace.open({protocolVersion:2,projectId:id});await new Promise(r=>setTimeout(r,6200));assert.ok(calls>=5);assert.ok(h.changes.filter(([name])=>name==='studio:project').length>=4)}finally{h.workspace.close()}
+});
+
+test('preview capture is restricted to trusted top frame and discarded after account changes',async()=>{
+ const h=harness();await h.workspace.open({protocolVersion:2,projectId:id});const wc=h.views[0].webContents;
+ let release;wc.capturePage=()=>new Promise(r=>release=r);
+ await assert.rejects(h.handlers.get('studio-embedded:capture-preview')({sender:wc,senderFrame:{}},{x:0,y:0,width:100,height:100}),/SENDER_DENIED/);
+ const pending=h.call('capture-preview',{x:0,y:0,width:100,height:100});h.changeScope();
+ release({getSize:()=>({width:100,height:100}),toPNG:()=>Buffer.from('png')});
+ await assert.rejects(pending,/HOST_SESSION_EXPIRED/);h.workspace.close();
+});
+
+test('runtime reads preserve a legitimate null result for an absent record',async()=>{
+ const h=harness();await h.workspace.open({protocolVersion:2,projectId:id});
+ h.setResponse(async()=>({status:200,body:'null'}));
+ assert.equal(await h.call('request','/api/app-studio/runtime/session/invoke','POST',{method:'data.get',params:{collection:'settings',id:'theme'}}),null);
+ h.workspace.close();
+});
+
+test('embedded turn requests allow automatic capability probes and normalize transport aborts',async()=>{
+ const h=harness();await h.workspace.open({protocolVersion:2,projectId:id});
+ const original=AbortSignal.timeout;const timeouts=[];AbortSignal.timeout=ms=>{timeouts.push(ms);return original(ms)};
+ try{
+  h.setResponse(async()=>{throw new DOMException('The operation was aborted','AbortError')});
+  await assert.rejects(h.call('request','/api/app-studio/projects/'+id+'/interview/turns','POST',{operationId:'synthetic',text:'继续'}),/^Error: HOST_REQUEST_TIMEOUT$/);
+  assert.equal(timeouts[0],240000);
+  h.setResponse(async()=>({status:200,body:{async *[Symbol.asyncIterator](){throw new DOMException('The operation was aborted','AbortError')}}}));
+  await assert.rejects(h.call('request','/api/app-studio/projects/'+id),/^Error: HOST_REQUEST_TIMEOUT$/);
+ }finally{AbortSignal.timeout=original;h.workspace.close()}
+});
+
+test('session changes take priority over a simultaneous aborted request',async()=>{
+ const h=harness();await h.workspace.open({protocolVersion:2,projectId:id});let reject;
+ h.setResponse(()=>new Promise((_,no)=>{reject=no}));const pending=h.call('request','/api/app-studio/projects/'+id);
+ h.changeScope();reject(new DOMException('The operation was aborted','AbortError'));
+ await assert.rejects(pending,/HOST_SESSION_EXPIRED/);h.workspace.close();
 });

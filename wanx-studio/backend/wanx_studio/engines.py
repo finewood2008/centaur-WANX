@@ -1,4 +1,4 @@
-"""Non-secret projection of WANX ACP settings; only the managed Codex adapter runs."""
+"""WANX engine selection; Codex uses the managed native app-server runtime."""
 import re
 import time
 import socket
@@ -17,7 +17,8 @@ class Engines:
   # Admin-defined executable strings are not an arbitrary-command escape hatch.
   command=raw.get('command','').split('/')[-1]
   args=raw.get('args',[])
-  return key=='codex' and command in {'npx','codex-acp'} and (command=='codex-acp' and not args or command=='npx' and args in [['-y','@zed-industries/codex-acp'],['-y','@agentclientprotocol/codex-acp']]) and not raw.get('env') and raw.get('trusted',False)
+  # Keep existing saved ACP bindings valid; their command is not executed.
+  return key=='codex' and (command=='codex' and args==['app-server'] or command=='codex-acp' and not args or command=='npx' and args in [['-y','@zed-industries/codex-acp'],['-y','@agentclientprotocol/codex-acp']]) and not raw.get('env') and raw.get('trusted',False)
  def item(self,owner,key,raw):
   fp=self.fingerprint(owner,key);check=self.checks.get((owner,key,fp))
   adapted=self.supported(key,raw)

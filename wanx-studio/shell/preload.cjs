@@ -1,5 +1,6 @@
 const{contextBridge,ipcRenderer}=require('electron');
 contextBridge.exposeInMainWorld('wanxStudio',Object.freeze({
+  capturePreview:rect=>ipcRenderer.invoke('studio:capture-preview',rect),
   setTheme:theme=>ipcRenderer.invoke('studio:theme',theme),request:(path,method,body)=>ipcRenderer.invoke('studio:request',path,method,body),
   returnToClient:destination=>ipcRenderer.invoke('studio:return',destination),
   navigation:()=>ipcRenderer.invoke('studio:navigation'),

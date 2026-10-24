@@ -1,4 +1,5 @@
 """Private client launch bridge. Existing public Studio contracts stay unchanged."""
+from .foundation import FOUNDATION_PROMPT
 import json
 from uuid import uuid4
 from fastapi import Depends
@@ -23,7 +24,9 @@ class Launch(Operation):
     references: list[dict] = Field(default_factory=list, max_length=100)
 
 
-PROMPT = '''你是需求整理助手。将用户的一段需求改写为简洁、可编辑的构建简报，一次完成，不提问，不写完整PRD。保留用户意图，按“目标、主要使用方式、核心功能、建议边界、待在Builder确认”组织。可以补充合理建议，但明确标注“建议”，不得捏造业务事实、权限、日期、接口或承诺。未知内容标为待确认。不要读取或索取资料、不要启动开发。只返回JSON：{"requirement":"整理后的中文需求，最多9000字"}。'''
+PROMPT = '''你是需求整理助手。将用户的一段需求改写为简洁、可编辑的构建简报，一次完成，不提问，不写完整PRD。正文控制在300到600个汉字以内，待在Builder确认最多3条，只列会影响首版的关键取舍。已明确的内容不要变成待确认。登录、应用授权、存储接口、试用与正式数据隔离由WANX提供，不重复询问实现方式；不要擅自增加备份、自动保存、分页或复杂权限等范围。保留用户意图，按“目标、主要使用方式、核心功能、建议边界、待在Builder确认”组织。可以补充合理建议，但明确标注“建议”，不得捏造业务事实、权限、日期、接口或承诺。未知内容标为待确认。不要读取或索取资料、不要启动开发。只返回JSON：{"requirement":"整理后的中文需求，最多9000字"}。'''
+
+PROMPT += "\n" + FOUNDATION_PROMPT
 
 
 class ClientLaunch:

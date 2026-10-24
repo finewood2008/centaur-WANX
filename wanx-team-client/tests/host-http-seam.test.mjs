@@ -311,8 +311,9 @@ test('existing Buffer uploads larger than 32 MiB reach the box unchanged', {time
   assert.equal((await f.client.context()).boxId,'102');
 });
 
+// Allow slower disks to stream 64 MiB; the assertions still verify streaming and byte integrity.
 for (const kind of ['node', 'web']) {
-test(`${kind} stream uploads a large multipart file before the source finishes`, {timeout:5000}, async t => {
+test(`${kind} stream uploads a large multipart file before the source finishes`, {timeout:15000}, async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'wanx-upload-'));
   t.after(() => rm(directory, {recursive:true, force:true}));
   const filename = path.join(directory, 'large.bin');

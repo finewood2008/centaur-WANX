@@ -40,6 +40,8 @@ class StudioService:
         self.project_root, self.model, self.files = project_root, model, files
         self.runtime_sessions: dict[str, dict] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
+        from .native_codex import NativeCodex
+        self.native_codex = NativeCodex(self)
         self.background: set[asyncio.Task] = set()
         self.chat_locks: dict[tuple, asyncio.Lock] = {}
         from .preparation import Preparation
@@ -49,6 +51,8 @@ class StudioService:
         self.engines=Engines(self)
         from .versions import Versions
         self.versions=Versions(self)
+        from .edits import Edits
+        self.edits=Edits(self)
 
     async def close(self):
         if getattr(self,'closing',False):return
@@ -59,6 +63,7 @@ class StudioService:
         for task in list(self.background):
             task.cancel()
         await asyncio.gather(*self.background, return_exceptions=True)
+        await self.native_codex.close()
         self.store.close()
         self.lease.close()
 
@@ -66,6 +71,10 @@ class StudioService:
         p = self.store.get(owner, project_id)
         result = public(p)
         result["readiness"] = readiness(p["solution"], p["decisions"])
+        from .product_questions import pending_choices
+        if pending_choices(p):
+            result['readiness']['ready']=False
+            result['readiness']['missing'].append('prd.productChoices')
         if 'preparation' in p:
             x=result['preparation'];valid=self.preparation.valid_report(owner,p,development=x['phase']=='acp')
             x['capabilitiesValid']=valid
@@ -74,6 +83,8 @@ class StudioService:
 
     @staticmethod
     def invalidate(p):
+        if any(e['state'] in {'queued','preparing','building','validating','clarifying'} for e in p.get('_edits',{}).get('items',[])):
+            raise StudioError('BUILD_ACTIVE',409)
         if any(t["state"] in {"running", "waiting", "queued"} for t in p["tasks"]):
             raise StudioError("BUILD_ACTIVE", 409)
         from .versions import ensure
@@ -81,6 +92,21 @@ class StudioService:
         p["confirmation"] = None
         p["acceptance"] = None
         p["stage"] = "discovery"
+
+    def authorize_management(self, owner):
+        team=getattr(self,'team',None)
+        if team and not team.is_admin(owner):
+            raise StudioError('STUDIO_ADMIN_REQUIRED',403)
+
+    def authorize_version(self, owner, p, artifact):
+        self.authorize_management(owner)
+        # An immutable product does not need the author's old executor or
+        # background probe fingerprint to stay usable. Invocation remains
+        # subject to live per-capability and warehouse authorization.
+        if getattr(self,'team',None) and 'preparation' in p:
+            caps=artifact['manifest']['capabilities']
+            if 'model' in caps and not self.model:raise StudioError('MODEL_UNAVAILABLE',409)
+            if 'files' in caps and not self.files:raise StudioError('FILES_UNAVAILABLE',409)
 
     def revise(self, p, solution, source):
         if p['solution'].get('prd') is not None and solution.get('prd') is None and source!='fixed-example':
@@ -105,8 +131,10 @@ class StudioService:
                         if match is not None:used.add(match)
                         new_ids.append(old_ids[match] if match is not None else uuid4().hex)
                     ids[section]=new_ids
+            old_dependencies={d['id']:d for d in p['solution']['dependencies']}
+            retained={d['id']:p['decisions'][d['id']] for d in solution['dependencies'] if d['id'] in p['decisions'] and old_dependencies.get(d['id'])==d}
             p["solution"] = solution
-            p["decisions"] = {}
+            p["decisions"] = retained
             if 'preparation' in p:
                 for dep in solution['dependencies']:
                     for decision in p['preparation'].get('gapDecisions',{}).values():
@@ -120,6 +148,41 @@ class StudioService:
                 raise StudioError("SOLUTION_CHANGED", 409)
             self.revise(p, body["solution"], "user")
         return self.store.mutate(owner,project_id,body["operationId"],{"action":"solution",**body},change)
+
+    async def change_project_metadata(self, owner, project_id, body):
+        self.authorize_management(owner)
+        if body['action']!='delete':
+            return await asyncio.to_thread(self.project_metadata,owner,project_id,body)
+        key=(owner,project_id)
+        async with self.preparation.lock(owner,project_id):
+            p=self.store.get(owner,project_id,allow_deleted=True)
+            if p.get('deletedAt'):
+                return self.project_metadata(owner,project_id,body)
+            if any(t['state'] in {'queued','running','waiting'} for t in p['tasks']):
+                raise StudioError('BUILD_ACTIVE',409)
+            self.preparation.stopping.add(key)
+            try:
+                job=self.preparation.jobs.get(key)
+                if job:
+                    job.cancel()
+                    await asyncio.gather(job,return_exceptions=True)
+                    self.preparation.jobs.pop(key,None)
+                proc=self.processes.get('interview:'+project_id)
+                if proc:
+                    await self.runner.stop(proc)
+                    self.processes.pop('interview:'+project_id,None)
+                def pause(p):
+                    s=p.get('preparation',{}).get('interview')
+                    if not s:return
+                    pending=[t for t in s['turns'] if t['state'] in {'queued','running'}]
+                    if s['state']=='running' or pending:
+                        s.update({'state':'failed','sync':'pending','error':'INTERVIEW_INTERRUPTED'})
+                    for turn in pending:turn['state']='paused'
+                self.store.mutate(owner,project_id,uuid4().hex,{'action':'pause-for-delete'},pause)
+                await self.native_codex.close_project(owner,project_id)
+                return self.project_metadata(owner,project_id,body)
+            finally:
+                self.preparation.stopping.discard(key)
 
     def project_metadata(self, owner, project_id, body):
         def change(p):
@@ -137,7 +200,7 @@ class StudioService:
             else:
                 p['nameMode']='auto'
                 p['name']=p.get('autoName') or '待命名项目'
-        return self.store.mutate(owner,project_id,body['operationId'],{'action':'metadata',**body},change,allow_deleted=body['action']=='restore')
+        return self.store.mutate(owner,project_id,body['operationId'],{'action':'metadata',**body},change,allow_deleted=body['action'] in {'delete','restore'})
 
     def used(self, owner, project_id):
         with self.store.lock:
@@ -167,6 +230,8 @@ class StudioService:
         return result
 
     async def chat(self, owner, project_id, body):
+        if self.edits.enabled(self.store.get(owner,project_id)):
+            return await self.edits.legacy(owner,project_id,body)
         async with self.chat_locks.setdefault((owner,project_id),asyncio.Lock()):
             return await self._chat(owner,project_id,body)
 
@@ -276,6 +341,7 @@ class StudioService:
         return p,a
 
     async def add_artifact(self, owner, project_id, task_id, files):
+        self.authorize_management(owner)
         # Trust-owned compiler; never executes generated code in the service.
         proc = await asyncio.create_subprocess_exec("node",str(self.project_root/"tools/compile-artifact.mjs"),stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,cwd=self.project_root)
         out,_ = await asyncio.wait_for(proc.communicate(json.dumps({"files":files}).encode()),30)
@@ -284,18 +350,42 @@ class StudioService:
         compiled = json.loads(out)
         manifest = check_manifest(compiled["manifest"])
         def change(p):
+            self.authorize_management(owner)
             task = next((t for t in p["tasks"] if t["id"] == task_id),None)
-            if not task or task["state"] != "running" or task["solutionHash"] != digest(p["solution"]) or not p["confirmation"]:
+            working=self.edits.execution_project(owner,p,task) if task and task.get('editId') else p
+            if not task or task["state"] != "running" or task["solutionHash"] != digest(working["solution"]) or not working["confirmation"]:
                 raise StudioError("BUILD_VERSION_STALE",409)
-            if not set(manifest["capabilities"]) <= set(p["solution"]["capabilities"]):
+            if not set(manifest["capabilities"]) <= set(working["solution"]["capabilities"]):
                 raise StudioError("CAPABILITY_NOT_CONFIRMED",409)
+            if task.get('change'):
+                self.engines.guard(owner,p,required=True)
+                from .iterative import enforce
+                enforce(task['change'],manifest)
             previous = next((a["manifest"] for a in p["artifacts"] if p.get("installed",{} ) and a["hash"]==p["installed"]["artifactHash"]),None)
             if not compatible(previous,manifest):
                 raise StudioError("BREAKING_SCHEMA_CHANGE",409)
+            if task.get('editId'):
+                base=next(a for a in p['artifacts'] if a['hash']==task['baseHash'])
+                if not compatible(base['manifest'],manifest):raise StudioError('BREAKING_SCHEMA_CHANGE',409)
+                # Commit the private change draft only after compilation and compatibility checks.
+                from copy import deepcopy
+                if digest(p['solution'])!=digest(working['solution']):
+                    p['revisions'].append({'number':len(p['revisions'])+1,'hash':digest(working['solution']),'solution':deepcopy(working['solution']),'source':'direct-edit','createdAt':time.time()})
+                p['solution']=deepcopy(working['solution']);p['decisions']=deepcopy(working['decisions']);p['confirmation']=deepcopy(working['confirmation'])
+                if p.get('nameMode')=='auto':p['name']=working['name']
+                if 'preparation' in p:
+                    for k in ['entryIds','provenance']:
+                        if k in working['preparation']:p['preparation'][k]=deepcopy(working['preparation'][k])
+                    p['preparation']['interview'].update({'state':'completed','sync':'saved','error':None})
             h = digest({"files":files,"manifest":manifest,"solutionHash":task["solutionHash"],"taskId":task_id})
             version = f"0.1.{len(p['artifacts'])}"
-            artifact={"hash":h,"version":version,"manifest":manifest,"solutionHash":task["solutionHash"],"confirmation":p["confirmation"],"taskId":task_id,"createdAt":time.time(),"files":files,"bundle":compiled["bundle"],"css":compiled["css"]}
+            artifact={"hash":h,"version":version,"manifest":manifest,"solutionHash":task["solutionHash"],"confirmation":working["confirmation"],"taskId":task_id,"createdAt":time.time(),"files":files,"bundle":compiled["bundle"],"css":compiled["css"]}
             self.versions.add(p,artifact,task)
+            if task.get('change'):
+                change=task['change']
+                artifact['checkpoint']={'schemaVersion':1,'artifactHash':h,'parent':task.get('baseHash'),
+                    'changeId':change['id'],'specHash':digest(change['spec']),'contract':change['contract']}
+                artifact['checkpointHash']=digest(artifact['checkpoint'])
             p["artifacts"].append(artifact)
             task["state"] = "completed"
             p["acceptance"] = None
@@ -392,11 +482,23 @@ class StudioService:
 
     async def invoke(self, owner, token, method, params):
         s = self.runtime(owner,token)
-        if method not in {"data.list","data.get","data.put","data.delete","model.generate","files.read","knowledge.search","knowledge.documents","knowledge.graph","knowledge.evidence"}:
+        if method not in {"data.list","data.get","data.put","data.delete","model.generate","files.read","knowledge.search","knowledge.documents","knowledge.graph","knowledge.evidence","reports.context","reports.list","reports.get","reports.save","reports.delete"}:
             raise StudioError("METHOD_NOT_ALLOWED",403)
         category = method.split(".")[0]
         if category not in s["manifest"]["capabilities"]:
             raise StudioError("CAPABILITY_DENIED",403)
+        if category == 'reports':
+            team=getattr(self,'team',None)
+            if not team:raise StudioError('REPORTS_UNAVAILABLE',409)
+            from octop.infra.knowledge.reports import PrivateReports
+            try:
+                result=await asyncio.to_thread(PrivateReports(team.services).invoke,team.user(owner),s['app'],s['environment'],method.split('.')[1],params)
+                self.runtime(owner,token)  # A revoked session must not receive late results.
+                return result
+            except PermissionError as exc:raise StudioError('REPORT_ACCESS_DENIED',403) from exc
+            except LookupError as exc:raise StudioError('REPORT_NOT_FOUND',404) from exc
+            except ValueError as exc:raise StudioError('REPORT_INPUT_INVALID',409) from exc
+            except RuntimeError as exc:raise StudioError('REPORT_CONFIGURATION_REQUIRED',409) from exc
         if method.startswith("knowledge."):
             if not getattr(self,"team",None):raise StudioError("KNOWLEDGE_UNAVAILABLE",409)
             if set(params)-{"warehouseId","query","document_ids","entity_types","limit","id"}:raise StudioError("KNOWLEDGE_INPUT_INVALID")

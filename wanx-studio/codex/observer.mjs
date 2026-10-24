@@ -57,5 +57,9 @@ export async function createObserver({socket,sessionId,onReady,onPolicy=()=>{}})
   });
   await new Promise((resolve,reject)=>{httpServer.once('error',reject);httpServer.listen(address,resolve)});
   await chmod(address,0o600);
-  return {socket:address,async close(){for(const peer of clients)peer.terminate();server.close();httpServer.close();await rm(address,{force:true})}};
+  return {socket:address,async close(){
+    for(const peer of clients)peer.terminate();
+    await Promise.all([new Promise(resolve=>server.close(resolve)),new Promise(resolve=>httpServer.close(resolve))]);
+    await rm(address,{force:true});
+  }};
 }

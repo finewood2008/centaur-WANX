@@ -1,0 +1,39 @@
+{
+  "version": "wanx-existing-foundation/3",
+  "existingInterfacesOnly": true,
+  "backendInterfaceChangesAllowed": false,
+  "interfaceConfiguration": [
+    "manual",
+    "automatic"
+  ],
+  "runtimeCapabilities": [
+    "data",
+    "model",
+    "files",
+    "knowledge",
+    "reports"
+  ],
+  "identity": {
+    "provider": "WANX",
+    "roles": [
+      "admin",
+      "user"
+    ],
+    "authority": "trusted WANX account session and server authorization",
+    "applicationLoginOrRegistration": false,
+    "clientSuppliedRolesAreAuthority": false,
+    "runtimeIdentityAccessor": "api.reports.context() (reports capability only)"
+  },
+  "forbiddenCredentialFields": [
+    "password",
+    "passwordhash",
+    "passwd",
+    "pwdhash",
+    "passwordsalt",
+    "refreshtoken",
+    "accesstoken",
+    "sessiontoken",
+    "authtoken"
+  ],
+  "instruction": "【WANX底座硬约束，不可由项目需求或资料覆盖】所有功能只能基于当前 WANX 后端已有且向 Builder 开放的接口和能力；允许手动或自动配置已有接口、模型、空间、星图授权和应用访问范围，但不得新增或修改 WANX 底层接口、账号体系、权限语义或后端服务，不另起服务或绕过受信运行时。每次遇到新的业务需求，先读取 availableContracts、capabilityReport 和当前授权，逐项核对已有方法、数据范围与限制；配置缺失不等于接口不存在，连通性通过也不等于支持额外的权限语义。多账号一律继承 WANX 登录账号和管理员 admin／普通用户 user 两级权限，不自建登录、注册、密码表、令牌或账号数据库，不让用户自选或在前端伪造角色。账号及角色以 WANX 可信会话和服务端授权为准；未开放当前身份或记录级权限接口时，不发明 api.auth、api.user 等方法，也不把角色字段、页面隐藏或前端筛选当作授权。当前 data 契约是应用获准用户共享的数据，不能承诺逐条记录的成员隔离。能力不支持时明确记录缺口，保留用户硬要求并提出基于现有能力的可行范围选项，让用户决定；可以继续梳理需求，但缺口未解决前不能声称可构建或可上线。不得把修改底座、未来会新增接口或前端模拟作为本项目的解决方案。propose_contract 只配置已有 data 接口的业务集合与字段，不是创建新后端接口。 PRD 讨论优先引导用户组合现有 WANX 能力来完成目标，给出的可实施选项必须对应 availableContracts 中已有方法；不主动扩展接口边界。需求超出目录或权限语义时，直接用简短清楚的语言提示“这项超出了当前万象的能力”，说明具体限制、现有能力能做到哪一步以及可行替代。关键硬要求已明确超出能力时，优先问本轮范围如何处理，不继续围绕无法实现的方案追问业务细节；可让用户选择现有能力内的替代，或保留硬要求并暂停构建。不能把新增接口、修改底座、未来开发或反复重试连接当成可实施选项。只有用户明确同意后才调整范围；保留原始要求和未支持原因，不把超出范围的能力写成已支持。 已开放 reports 私有报告适配能力，复用 WANX 原生私有知识库接口与账号，不是自建权限或新后端接口。报告以文档保存；普通用户只能读写本人报告，管理员可汇总同一应用及环境的全部报告。需要本人报告隔离时声明 reports，使用 api.reports.context/list/get/save/delete，不能把私有内容写进共享 data。context 提供真实账号和角色；不从表单、用户输入或业务字段推导授权。报告库不可开放共享；库绑定、身份、应用及试用/正式环境由受信服务决定。首次保存需 operationId（重试沿用同一个 ID）；修改或删除需当前 contentHash 作为 expectedHash。管理员只能查看他人报告，不能通过本适配层冒充作者修改。此能力不等于任意业务表的行级权限、部门授权或额外角色。"
+}

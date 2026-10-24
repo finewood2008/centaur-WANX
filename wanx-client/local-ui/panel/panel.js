@@ -86,7 +86,8 @@
     return "尚未连接";
   }
   function displayApplication(app) {
-    const name = applicationNames.get(app.applicationId);
+    const names = { "centaurai.wanx.semantica": "万象·星图", "ai.wanx.studio": "万象·开物" };
+    const name = names[app.applicationId] || applicationNames.get(app.applicationId);
     return typeof name === "string" && name.trim() ? { ...app, name } : app;
   }
   function refreshApplicationNames() {

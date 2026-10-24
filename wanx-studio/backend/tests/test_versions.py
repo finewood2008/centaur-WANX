@@ -90,22 +90,22 @@ async def test_restore_is_new_version_and_preserves_data_and_unknown_fields(svc)
 
 async def test_restore_and_adopt_checks_fence_stale_permission_integrity_and_busy(svc,monkeypatch):
     p=adopt(svc,await seeded(svc));old=p['artifacts'][0]['hash'];p=begin(svc,p)
-    with pytest.raises(StudioError,match='ITERATION_ACTIVE'):svc.versions.restore_check('alice',p['id'],old)
+    assert svc.versions.restore_check('alice',p['id'],old)['artifactHash']==old
     p=adopt(svc,await candidate(svc,p));check=svc.versions.restore_check('alice',p['id'],old)
     svc.versions.feedback('alice',p['id'],{'operationId':op(),'expectedRevision':check['expectedRevision'],'text':'新的意见'})
     with pytest.raises(StudioError,match='VERSION_CHANGED'):svc.versions.restore('alice',p['id'],{'operationId':op(),'expectedRevision':check['expectedRevision'],'checkHash':check['checkHash'],'artifactHash':old,'confirmedByUser':True})
     with pytest.raises(StudioError,match='PROJECT_NOT_FOUND'):svc.versions.read('bob',p['id'],old)
     def revoked(*_a,**_k):raise StudioError('CAPABILITY_CHECK_REQUIRED',409)
-    monkeypatch.setattr(svc.preparation,'guard',revoked)
+    monkeypatch.setattr(svc,'authorize_version',revoked)
     with pytest.raises(StudioError,match='CAPABILITY_CHECK_REQUIRED'):svc.versions.restore_check('alice',p['id'],old)
     monkeypatch.undo()
     svc.store.mutate('alice',p['id'],op(),{},lambda q:q['artifacts'][0]['files'].update({'src/app.js':'tampered'}))
     with pytest.raises(StudioError,match='ARTIFACT_INTEGRITY_FAILED'):svc.versions.restore_check('alice',p['id'],old)
 
-async def test_unadopted_and_incomplete_versions_cannot_restore_or_export(svc):
+async def test_complete_unadopted_version_can_restore_but_cannot_export_until_adopted(svc):
     p=await seeded(svc);h=p['artifacts'][0]['hash']
     with pytest.raises(StudioError,match='USER_ACCEPTANCE_REQUIRED'):svc.install_payload('alice',p['id'],h)
-    with pytest.raises(StudioError,match='VERSION_NOT_ADOPTED'):svc.versions.restore_check('alice',p['id'],h)
+    assert svc.versions.restore_check('alice',p['id'],h)['artifactHash']==h
     def incomplete(q):
         q['artifacts'][0].pop('snapshot');q['revisions']=[];q['solution']['outputs']='different'
     svc.store.mutate('alice',p['id'],op(),{},incomplete)
@@ -133,7 +133,7 @@ async def test_choose_earlier_candidate_from_same_iteration_without_replacing_da
     assert (await svc.invoke('alice',token,'data.get',{'collection':'items','id':row['_id']}))['title']=='保留业务数据'
     assert svc.install_payload('alice',p['id'],first['hash'])['artifactHash']==first['hash']
 
-async def test_earlier_candidate_still_requires_current_plan_and_completed_task(svc):
+async def test_earlier_candidate_requires_completed_task_but_not_current_draft(svc):
     p=begin(svc,await seeded(svc));p=await candidate(svc,p);first=p['artifacts'][-1];p=await candidate(svc,p)
     body={'operationId':op(),'expectedRevision':p['versioning']['revision'],'artifactHash':first['hash'],'confirmedByUser':True}
     def incomplete(q):next(t for t in q['tasks'] if t['id']==first['taskId'])['state']='failed'
@@ -142,7 +142,9 @@ async def test_earlier_candidate_still_requires_current_plan_and_completed_task(
     def completed(q):next(t for t in q['tasks'] if t['id']==first['taskId'])['state']='completed'
     svc.store.mutate('alice',p['id'],op(),{},completed)
     p=svc.update_solution('alice',p['id'],{'operationId':op(),'expectedHash':p['solutionHash'],'solution':{**p['solution'],'outputs':'新的范围'}})
-    with pytest.raises(StudioError,match='VERSION_CHANGED'):svc.versions.adopt('alice',p['id'],{**body,'operationId':op()})
+    result=svc.versions.adopt('alice',p['id'],{**body,'operationId':op()})
+    assert result['versioning']['adoptedHash']==first['hash']
+    assert result['solution']['outputs']=='新的范围'
 
 async def test_legacy_acceptance_maps_on_read_without_rewriting_project(svc):
     p=await seeded(svc);accept(svc,p)
@@ -192,3 +194,24 @@ async def test_public_history_preserves_actual_iteration_membership_without_draf
     p=adopt(svc,p)
     assert p['versioning']['iterations'][-1]['id']==iteration_id
     assert 'draft' not in p['versioning']['iterations'][-1]
+
+async def test_adoption_preserves_paused_messages_but_rejects_running_pm(svc):
+    from wanx_studio.preparation import initial
+    p=await seeded(svc)
+    def pending(q):
+        q['preparation']=initial(q)
+        q['preparation']['interview'].update({'state':'failed','sync':'failed','turns':[{'id':'later','state':'paused','text':'补充修改'}]})
+        q['confirmation']=None
+    svc.store.mutate('alice',p['id'],op(),{},pending)
+    p=svc.snapshot('alice',p['id'])
+    result=adopt(svc,p)
+    assert result['preparation']['interview']['turns'][0]['state']=='paused'
+    svc.store.mutate('alice',p['id'],op(),{},lambda q:q['preparation']['interview'].update({'state':'running'}))
+    with pytest.raises(StudioError,match='INTERVIEW_BUSY'):adopt(svc,result)
+
+async def test_adoption_rechecks_current_management_authority(svc):
+    p=await seeded(svc)
+    class Team:
+        def is_admin(self,owner):return False
+    svc.team=Team()
+    with pytest.raises(StudioError,match='STUDIO_ADMIN_REQUIRED'):adopt(svc,p)

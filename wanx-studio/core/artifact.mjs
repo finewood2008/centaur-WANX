@@ -1,4 +1,5 @@
 import path from 'node:path';
+import foundation from './wanx-foundation.json' with {type:'json'};
 import {build,transform} from 'esbuild';
 
 export const LIMITS = Object.freeze({files:64,fileBytes:512*1024,totalBytes:2*1024*1024});
@@ -22,9 +23,11 @@ export async function compileArtifact(files) {
   const manifest=JSON.parse(files['miniapp.manifest.json']||'null');
   const allowed=['schemaVersion','name','entry','capabilities','collections'];
   if(!manifest||Object.keys(manifest).some(k=>!allowed.includes(k))||manifest.schemaVersion!==1||manifest.entry!=='src/app.js'||!files[manifest.entry]||typeof manifest.name!=='string'||!manifest.name.trim()||manifest.name.length>80)throw new Error('MANIFEST_INVALID');
-  if(!Array.isArray(manifest.capabilities)||manifest.capabilities.some(c=>!['data','model','files','knowledge'].includes(c)))throw new Error('CAPABILITY_UNSUPPORTED');
+  if(!Array.isArray(manifest.capabilities)||manifest.capabilities.some(c=>!['data','model','files','knowledge','reports'].includes(c)))throw new Error('CAPABILITY_UNSUPPORTED');
   if(!manifest.collections||typeof manifest.collections!=='object'||Array.isArray(manifest.collections)||Object.keys(manifest.collections).length>20)throw new Error('SCHEMA_INVALID');
   for(const [name,fields]of Object.entries(manifest.collections)){if(!/^[a-z][a-z0-9_-]{0,49}$/.test(name)||!fields||typeof fields!=='object'||Array.isArray(fields)||!Object.keys(fields).length||Object.keys(fields).length>50||Object.entries(fields).some(([key,type])=>!/^[a-zA-Z][a-zA-Z0-9_]{0,49}$/.test(key)||!['string','number','boolean'].includes(type)))throw new Error('SCHEMA_INVALID')}
+  const forbidden=new Set(foundation.forbiddenCredentialFields);
+  if(Object.values(manifest.collections).some(fields=>Object.keys(fields).some(key=>forbidden.has(key.replace(/[_-]/g,'').toLowerCase()))))throw new Error('WANX_AUTH_REQUIRED');
   const styles=Object.keys(files).filter(name=>name.endsWith('.css')).sort();
   const styleEntry='.wanx-styles.css';
   const result=await build({entryPoints:['src/app.js',...(styles.length?[styleEntry]:[])],bundle:true,write:false,platform:'browser',format:'esm',metafile:true,target:'es2022',outdir:'out',logLevel:'silent',plugins:[{

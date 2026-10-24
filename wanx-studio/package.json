@@ -1,6 +1,6 @@
 {
   "name": "wanx-app-studio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "license": "UNLICENSED",
@@ -16,6 +16,7 @@
     "probe:codex": "node tools/probe-codex.mjs",
     "probe:dsh": "node tools/probe-dsh.mjs",
     "package": "node tools/package.mjs",
+    "package:macos": "npm run build && npm run package && node tools/package-macos.mjs",
     "pretest": "npm run build && npm run package"
   },
   "dependencies": {

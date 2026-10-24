@@ -449,6 +449,8 @@ async def terminal_context(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return system context for the AI terminal panel."""
+    if not user.is_admin:
+        raise OctopError(ErrorCode.FORBIDDEN, "host terminal requires administrator")
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
@@ -522,7 +524,7 @@ async def terminal_ws(
     except OctopError as exc:
         await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
         return
-    if not user_has_permission(user, "terminal"):
+    if not user.is_admin or not user_has_permission(user, "terminal"):
         await websocket.close(code=4003, reason="permission required")
         return
     assert server.app_runtime is not None

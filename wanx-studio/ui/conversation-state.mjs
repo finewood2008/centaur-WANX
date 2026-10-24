@@ -28,3 +28,17 @@ export function conversationMessages(project){
  if(!intake.length)return project.messages;
  return [...intake.map(m=>({...m,author:m.role==='assistant'?'任务助手':'你'})),...project.messages.filter(m=>!(m.role==='user'&&m.text===project.originalGoal))];
 }
+
+export function pendingConversationOptions(project,last){
+ if(last?.role!=='assistant')return [];
+ // The build action already answered the previous confirmation question.
+ if(project?.confirmation?.hash===project?.solutionHash&&project?.tasks?.some(t=>t.solutionHash===project.solutionHash))return [];
+ return last.question?.options||last.options||[];
+}
+
+export function interviewRetry(project){
+ const prep=project?.preparation,turns=prep?.interview?.turns||[];
+ const pending=turns.find(t=>['paused','failed','queued'].includes(t.state));
+ if(pending)return{operationId:pending.operationId,text:pending.text};
+ return !turns.length&&prep?.handoff?{operationId:'handoff_'+prep.handoff.id,text:''}:null;
+}

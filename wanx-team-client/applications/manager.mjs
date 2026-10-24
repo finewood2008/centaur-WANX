@@ -308,11 +308,15 @@ export async function createApplicationManager({
       assertOpen();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
       if (id === STUDIO_ID) {
+        // Opening the independent app from the launcher must enforce the same
+        // server-side administrator gate as opening a project from the client.
+        const assertStudioSession = await studioEntry.authorize();
         if (!studioBootstrap) studioBootstrap = (async () => {
           const sourceDir = fileURLToPath(new URL("../studio/workbench", import.meta.url));
           await installBundledWorkbench(installer, sourceDir, { signal: controller.signal });
         })().finally(() => { studioBootstrap = null; });
         await studioBootstrap; assertOpen();
+        assertStudioSession();
       }
       return track(launcher.launch(input));
     },

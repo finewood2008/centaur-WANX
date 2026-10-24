@@ -4,10 +4,11 @@
     // xingtu-store:start
     "centaurai.wanx.semantica": {
       "key": "xingtu",
-      "name": "星图",
+      "name": "万象·星图",
+      "englishName": "WanX Starlink",
       "category": "知识与数据",
       "tagline": "让知识相连，让应用有据。",
-      "introduction": "星图是你的本地知识数据仓。按项目或主题建仓，导入资料，由本机或盒子的本地模型整理为可追溯的知识图谱。你可以检索证据，也可以按仓授权，让其他应用用上这些知识。",
+      "introduction": "万象·星图（WanX Starlink）是你的本地知识数据仓。按项目或主题建仓，导入资料，由本机或盒子的本地模型整理为可追溯的知识图谱。你可以检索证据，也可以按仓授权，让其他应用用上这些知识。",
       "features": [
         [
           "用图谱看见联系",

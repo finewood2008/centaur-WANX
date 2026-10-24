@@ -235,3 +235,47 @@ async def test_xingtu_metadata_pages_use_only_fixed_document_route():
  assert page['nextParent']=='offset:201' and page['items'][0]['name']=='资料'
  assert calls==[('GET','/documents',{'limit':'200','offset':'200'})]
  with pytest.raises(StudioError,match='CONTEXT_REFERENCE_INVALID'):await source.list('alice','xingtu','https://arbitrary')
+
+async def test_delete_stops_only_owned_interview_and_restores_without_auto_resume(env):
+ svc,pid,_=env
+ p=svc.store.get('alice',pid);s=p['preparation']['interview']
+ s.update({'state':'running','sync':'pending','turnId':'live','turns':[{'id':'live','state':'running','text':'保留需求'},{'id':'next','state':'queued','text':'保留补充'}]})
+ svc.store.save(p);original=deepcopy(p)
+ started=asyncio.Event();cleanup=[]
+ async def running():
+  started.set()
+  try:await asyncio.Future()
+  finally:
+   with pytest.raises(StudioError,match='PROJECT_STOPPING'):svc.preparation.pm.live('alice',pid,'live')
+   cleanup.append('stopped')
+ job=asyncio.create_task(running());svc.preparation.jobs[('alice',pid)]=job;await started.wait()
+ other=asyncio.create_task(asyncio.sleep(60));svc.preparation.jobs[('alice','other')]=other
+ request={'operationId':op(),'action':'delete','name':''}
+ try:
+  removed=await asyncio.wait_for(svc.change_project_metadata('alice',pid,request),2)
+  assert cleanup==['stopped'] and job.done() and not other.done()
+  assert removed['deletedAt'] and not svc.store.list('alice')
+  assert removed['messages']==original['messages'] and removed['solution']==original['solution']
+  assert all(t['state']=='paused' for t in removed['preparation']['interview']['turns'])
+  assert not svc.preparation.stopping
+  repeated=await svc.change_project_metadata('alice',pid,request)
+  assert repeated['deletedAt']==removed['deletedAt']
+  restored=await svc.change_project_metadata('alice',pid,{'operationId':op(),'action':'restore','name':''})
+  assert not restored['deletedAt'] and restored['id']==pid
+  assert restored['preparation']['interview']['state']!='running'
+  assert ('alice',pid) not in svc.preparation.jobs
+ finally:
+  other.cancel();await asyncio.gather(other,return_exceptions=True)
+
+async def test_delete_recovers_stale_running_state_but_denies_other_owner_and_active_build(env):
+ svc,pid,_=env
+ p=svc.store.get('alice',pid);p['preparation']['interview']['state']='running';svc.store.save(p)
+ with pytest.raises(StudioError,match='PROJECT_NOT_FOUND'):
+  await svc.change_project_metadata('bob',pid,{'operationId':op(),'action':'delete','name':''})
+ p['tasks']=[{'id':'active','state':'running'}];svc.store.save(p)
+ with pytest.raises(StudioError,match='BUILD_ACTIVE'):
+  await svc.change_project_metadata('alice',pid,{'operationId':op(),'action':'delete','name':''})
+ assert not svc.store.get('alice',pid).get('deletedAt')
+ p['tasks']=[];svc.store.save(p)
+ removed=await svc.change_project_metadata('alice',pid,{'operationId':op(),'action':'delete','name':''})
+ assert removed['deletedAt'] and removed['preparation']['interview']['state']=='failed'

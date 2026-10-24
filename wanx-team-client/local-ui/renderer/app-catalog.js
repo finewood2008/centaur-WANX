@@ -1,13 +1,22 @@
 // Editorial metadata and bundled media only. Installation and access remain host-owned.
 (() => {
   const catalog = Object.assign(Object.create(null), {
+    "ai.wanx.studio": {
+      key: "builder", name: "万象·开物", englishName: "WanX Builder", category: "应用构建",
+      bundled: true, icon: "assets/centaurai-mark.png",
+      tagline: "从想法到应用，持续构建、试用和改进。",
+      introduction: "万象·开物（WanX Builder）是团队管理员的独立应用构建工作台。沿用万象账号和盒子能力，完善 PRD、构建产品，在预览中直接迭代。采用、安装更新和公司上架由你决定。",
+      features: [["一起完善产品方案", "从简单需求开始，通过有推荐的选择逐步形成 PRD。"], ["直接修改和试用", "说出修改要求或圈选位置，生成新版并保留历史版本。"], ["让团队用上成果", "沿用万象身份与资源授权，确认后安装或上架公司应用。"]],
+      posters: [],
+    },
     // xingtu-store:start
     "centaurai.wanx.semantica": {
       "key": "xingtu",
-      "name": "星图",
+      "name": "万象·星图",
+      "englishName": "WanX Starlink",
       "category": "知识与数据",
       "tagline": "让知识相连，让应用有据。",
-      "introduction": "星图是你的本地知识数据仓。按项目或主题建仓，导入资料，由本机或盒子的本地模型整理为可追溯的知识图谱。你可以检索证据，也可以按仓授权，让其他应用用上这些知识。",
+      "introduction": "万象·星图（WanX Starlink）是你的本地知识数据仓。按项目或主题建仓，导入资料，由本机或盒子的本地模型整理为可追溯的知识图谱。你可以检索证据，也可以按仓授权，让其他应用用上这些知识。",
       "features": [
         [
           "用图谱看见联系",
@@ -69,7 +78,7 @@
     },
   });
   for (const value of Object.values(catalog)) {
-    value.icon = `assets/app-icons/${value.key}-v1.png`;
+    value.icon ||= `assets/app-icons/${value.key}-v1.png`;
     value.features = Object.freeze(value.features.map(Object.freeze));
     value.posters = Object.freeze(value.posters.map(Object.freeze));
     Object.freeze(value);

@@ -208,22 +208,27 @@ class KnowledgeService:
         is_admin: bool = False,
     ) -> KnowledgeBaseRow:
         self.require_owner(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        if self.application_id != "wanx" and shared:
-            raise PermissionError("Zhijun knowledge bases are private")
-        if max_documents is not None and (
-            max_documents < 0 or max_documents > MAX_KB_MAX_DOCUMENTS
-        ):
-            raise ValueError(f"max_documents must be between 0 and {MAX_KB_MAX_DOCUMENTS}")
-        self._repo.update_base(
-            kb_id,
-            name=name,
-            description=description,
-            default_open=default_open,
-            shared=shared,
-            icon_name=icon_name,
-            max_documents=max_documents,
-        )
-        return self._require_base(kb_id)
+        from octop.infra.knowledge.reports import REPORT_BINDING_PREFIX, REPORT_LOCK
+
+        with REPORT_LOCK:
+            if shared and self._services.settings_repo.get(REPORT_BINDING_PREFIX + kb_id):
+                raise PermissionError("report libraries must remain private")
+            if self.application_id != "wanx" and shared:
+                raise PermissionError("Zhijun knowledge bases are private")
+            if max_documents is not None and (
+                max_documents < 0 or max_documents > MAX_KB_MAX_DOCUMENTS
+            ):
+                raise ValueError(f"max_documents must be between 0 and {MAX_KB_MAX_DOCUMENTS}")
+            self._repo.update_base(
+                kb_id,
+                name=name,
+                description=description,
+                default_open=default_open,
+                shared=shared,
+                icon_name=icon_name,
+                max_documents=max_documents,
+            )
+            return self._require_base(kb_id)
 
     def list_documents(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False, prefix: str | None = None
@@ -656,8 +661,13 @@ class KnowledgeService:
 
     def delete_base(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
         self.require_owner(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        self._repo.delete_base(kb_id)
-        delete_knowledge_base_files(kb_id)
+        from octop.infra.knowledge.reports import REPORT_BINDING_PREFIX, REPORT_LOCK
+
+        with REPORT_LOCK:
+            if self._services.settings_repo.get(REPORT_BINDING_PREFIX + kb_id):
+                raise PermissionError("bound report libraries cannot be deleted")
+            self._repo.delete_base(kb_id)
+            delete_knowledge_base_files(kb_id)
 
     def _require_base(self, kb_id: str) -> KnowledgeBaseRow:
         base = self._repo.get_base(kb_id, application_id=self.application_id)
