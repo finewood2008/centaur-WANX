@@ -1850,6 +1850,7 @@ class AgentManager:
                         name,
                     )
                     continue
+                agent.config.mcp_server_configs[name] = dict(spec)
                 if tools:
                     try:
                         agent.append_mcp_tools(tools)
@@ -1860,7 +1861,6 @@ class AgentManager:
                             name,
                         )
                         continue
-                agent.config.mcp_server_configs[name] = dict(spec)
 
         gateway_missing: list[str] = []
         if builtin_missing and uid is not None:
@@ -1946,8 +1946,8 @@ class AgentManager:
                         )
                         continue
                     if tools:
-                        agent.append_mcp_tools(tools)
                         agent.config.mcp_server_configs[name] = dict(spec)
+                        agent.append_mcp_tools(tools)
                     tool_set = getattr(agent, "_mcp_tool_name_set", frozenset())
 
         agent = self.get_agent(agent_id)

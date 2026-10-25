@@ -17,9 +17,55 @@ const publicUpload = (handle, data, size) => ({ handle, name: data.filename, med
 
 // This service owns the fixed native routes and scoped WebSocket. The renderer
 // never supplies an agent, local path, upstream URL, token, or arbitrary API route.
-export function createAIDialogue({ client, onEvent = () => {}, selectFiles, saveFile } = {}) {
+export function createAIDialogue({ client, onEvent = () => {}, selectFiles, saveFile, edition = 'personal', preferenceStore } = {}) {
   let closed = false, channelCache = null, profile = null, watcher = null;
-  let catalog = [], generation = 0;
+  let catalog = [], generation = 0, spaceGrant = null, knowledgeGrant = null, configuration = {};
+  let preferenceWrites = Promise.resolve(), preferenceMemory = {}, spaceRevision = 0, knowledgeRevision = 0;
+  async function ensureSpace(key, tid) {
+    if (!configuration.space?.enabled) throw fail('SPACE_ACCESS_DENIED');
+    const existing = spaceGrant, revision = spaceRevision;
+    let grant;
+    try { grant = await request(key, '/api/assistant/space-grant', { method: 'POST', body: { enabled: true,
+      ...(existing ? { grant_id: existing.grant_id } : { selection: configuration.space.selection }), thread_id: tid } }); }
+    catch (error) {
+      if (error.code !== 'SPACE_ACCESS_DENIED' || revision !== spaceRevision) throw error;
+      grant = await request(key, '/api/assistant/space-grant', { method: 'POST', body: { enabled: true, selection: configuration.space.selection, thread_id: tid } });
+    }
+    if (revision !== spaceRevision) {
+      await request(key, '/api/assistant/space-grant', { method: 'POST', body: { enabled: false, grant_id: grant.grant_id } });
+      throw fail('SPACE_ACCESS_DENIED');
+    }
+    if (spaceGrant === existing) spaceGrant = grant;
+    return grant;
+  }
+  async function saveConfiguration(key, delta) {
+    const pending = preferenceWrites.catch(() => {}).then(async () => {
+      assertScope(key);
+      const stored = preferenceStore ? await preferenceStore.load() || {} : preferenceMemory;
+      const next = { ...configuration, ...delta };
+      const value = { ...stored, assistantConfigurations: { ...stored.assistantConfigurations, [key]: next } };
+      if (preferenceStore) await preferenceStore.save(value); else preferenceMemory = value;
+      assertScope(key); configuration = next;
+    });
+    preferenceWrites = pending; return pending;
+  }
+  async function ensureKnowledge(key, tid) {
+    if (edition !== 'team' || !configuration.knowledge?.enabled) throw fail('ASSISTANT_KNOWLEDGE_DENIED');
+    const existing = knowledgeGrant, revision = knowledgeRevision;
+    let grant;
+    try { grant = await request(key, '/api/assistant/knowledge-grant', { method: 'POST', body: { enabled: true,
+      ...(existing ? { grant_id: existing.grant_id } : { warehouses: configuration.knowledge.warehouses.map(w => w.id) }), thread_id: tid } }); }
+    catch (error) {
+      if (error.code !== 'ASSISTANT_KNOWLEDGE_EXPIRED') throw error;
+      grant = await request(key, '/api/assistant/knowledge-grant', { method: 'POST', body: { enabled: true, warehouses: configuration.knowledge.warehouses.map(w => w.id), thread_id: tid } });
+    }
+    if (revision !== knowledgeRevision) {
+      await request(key, '/api/assistant/knowledge-grant', { method: 'POST', body: { enabled: false, grant_id: grant.grant_id } });
+      throw fail('ASSISTANT_KNOWLEDGE_DENIED');
+    }
+    if (knowledgeGrant === existing) knowledgeGrant = grant;
+    return grant;
+  }
   const requests = new Set(), uploads = new Map(), threads = new Set();
   const emit = (key, event) => { if (scope() === key) onEvent({ ...event, scope: key }); };
   function scope() {
@@ -34,9 +80,9 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     previous?.socket?.terminate();
   }
   function invalidate() {
-    generation++; unwatch();
+    generation++; spaceRevision++; knowledgeRevision++; unwatch();
     for (const controller of requests) controller.abort();
-    requests.clear(); uploads.clear(); threads.clear(); profile = null; catalog = []; channelCache = null;
+    requests.clear(); uploads.clear(); threads.clear(); profile = null; catalog = []; spaceGrant = null; knowledgeGrant = null; configuration = {}; channelCache = null;
     onEvent({ type: 'invalidated' });
   }
   const unsubscribe = client.subscribe(() => {
@@ -64,7 +110,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
       if (response.status < 200 || response.status >= 300) {
         const bytes = response.body?.[Symbol.asyncIterator] ? await collect(response.body, 65_536) : response.body;
         let data; try { data = JSON.parse(Buffer.from(bytes || '').toString()); } catch { /* sanitized below */ }
-        const code = data?.detail?.code || data?.error?.code || data?.code;
+        const code = data?.error?.details?.reason || data?.detail?.code || data?.error?.code || data?.code;
         const error = fail(/^[A-Z][A-Z0-9_]{1,80}$/.test(code || '') ? code : response.status === 403 ? 'DIALOGUE_ACCESS_DENIED' : response.status === 413 ? 'ASSISTANT_UPLOAD_TOO_LARGE' : 'ASSISTANT_REQUEST_FAILED');
         error.status = response.status; throw error;
       }
@@ -87,6 +133,10 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
   async function history(key, tid, offset = 0) {
     identifier(tid);
     const value = await request(key, `${nativePath()}/threads/${tid}/history?limit=25&offset=${offset}`);
+    if (edition === 'team') {
+      const sources = await optional(key, `/api/assistant/knowledge/sources/${tid}`, { sources: [] }).catch(() => ({ sources: [] }));
+      assertScope(key); value.knowledge_sources = sources.sources;
+    }
     threads.add(tid); return value;
   }
   async function watch(key, tid) {
@@ -137,20 +187,103 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
       if (!key) throw fail('BOX_CONNECTION_REQUIRED');
       if (method !== 'load') assertScope(input.scope);
       if (method === 'load') {
+        const stored = preferenceStore ? await preferenceStore.load() || {} : preferenceMemory;
+        assertScope(key);
+        configuration = stored.assistantConfigurations?.[key] || {};
         try { profile = await request(key, '/api/assistant/profile', { method: 'POST' }); }
         catch (error) { if (error.status === 404) throw fail('ASSISTANT_API_NOT_INSTALLED'); throw error; }
         identifier(profile.agent_id);
-        const [resolved, prefs, activeModel, recent, legacy] = await Promise.all([
+        const [resolved, prefs, activeModel, recent, legacy, organization, timezone] = await Promise.all([
           request(key, '/api/providers/resolved'), request(key, '/api/preferences'),
-          optional(key, '/api/providers/active-model', {}), request(key, `${nativePath()}/threads?limit=100`),
-          optional(key, '/api/dialogue/sessions', { sessions: [] }).catch(error => { assertScope(key); return { sessions: [], unavailable: true }; }),
+          optional(key, '/api/providers/active-model', {}), request(key, `${nativePath()}/threads?limit=10000`),
+          optional(key, '/api/dialogue/sessions?limit=10000', { sessions: [] }).catch(error => { assertScope(key); return { sessions: [], unavailable: true }; }),
+          optional(key, '/api/assistant/history', { entries: {}, unavailable: true }),
+          optional(key, '/api/settings/timezone', { timezone: 'UTC' }),
         ]);
         assertScope(key); catalog = resolved.map(publicModel);
         for (const thread of recent) threads.add(thread.thread_id);
-        const candidates = [prefs.preferred_model, profile.default_model, activeModel?.provider_name && `${activeModel.provider_name}/${activeModel.model}`];
+        const candidates = [configuration.model, prefs.preferred_model, profile.default_model, activeModel?.provider_name && `${activeModel.provider_name}/${activeModel.model}`];
         return { scope: key, agentId: profile.agent_id, models: catalog,
-          defaultModel: candidates.find(ref => catalog.some(m => m.id === ref)) || catalog[0]?.id || null,
-          sessions: recent, legacySessions: legacy.sessions || [], legacyUnavailable: legacy.unavailable === true };
+          defaultModel: configuration.model || candidates.find(ref => catalog.some(m => m.id === ref)) || catalog[0]?.id || null,
+          sessions: recent, legacySessions: legacy.sessions || [], legacyUnavailable: legacy.unavailable === true,
+          organization: organization.entries, historyManagementAvailable: !organization.unavailable, timezone: timezone.timezone || 'UTC',
+          capabilities: { knowledge: edition === 'team' }, settings: { ...configuration, ...(edition !== 'team' ? { knowledge: { enabled: false, warehouses: [] } } : {}) } };
+      }
+      if (method.startsWith('knowledge-')) {
+        if (edition !== 'team') throw fail('ASSISTANT_KNOWLEDGE_DENIED');
+        const base = '/api/assistant/knowledge';
+        if (method === 'knowledge-list') return { scope: key, ...(await request(key, base + '/warehouses')) };
+        if (method === 'knowledge-grant') {
+          knowledgeRevision++;
+          if (typeof input.enabled !== 'boolean') throw fail('ASSISTANT_INVALID_INPUT');
+          const ids = input.enabled ? input.warehouses?.map(identifier) : undefined;
+          if (input.enabled && (!ids?.length || ids.length > 100)) throw fail('ASSISTANT_INVALID_INPUT');
+          const value = await request(key, '/api/assistant/knowledge-grant', { method: 'POST', body: { enabled: input.enabled,
+            ...(knowledgeGrant ? { grant_id: knowledgeGrant.grant_id } : {}), ...(ids ? { warehouses: ids } : {}),
+            ...(input.threadId ? { thread_id: identifier(input.threadId) } : {}) } });
+          knowledgeGrant = value.enabled ? value : null;
+          await saveConfiguration(key, { knowledge: { enabled: value.enabled, warehouses: value.warehouses || [] } });
+          return { scope: key, enabled: value.enabled, warehouses: value.warehouses || [] };
+        }
+        if (method === 'knowledge-evidence') {
+          const tid = identifier(input.threadId); if (!threads.has(tid)) await history(key, tid);
+          const grant = await ensureKnowledge(key, tid);
+          return { scope: key, ...(await request(key, base + '/evidence', { method: 'POST', body: { grant_id: grant.grant_id,
+            thread_id: tid, warehouse_id: identifier(input.warehouseId), evidence_id: identifier(input.evidenceId) } })) };
+        }
+        throw fail('ASSISTANT_INVALID_INPUT');
+      }
+      if (method === 'release-context') {
+        spaceRevision++; knowledgeRevision++;
+        if (spaceGrant) { await request(key, '/api/assistant/space-grant', { method: 'POST', body: { enabled: false, grant_id: spaceGrant.grant_id } }); spaceGrant = null; }
+        if (knowledgeGrant) { await request(key, '/api/assistant/knowledge-grant', { method: 'POST', body: { enabled: false, grant_id: knowledgeGrant.grant_id } }); knowledgeGrant = null; }
+        return { scope: key };
+      }
+      if (method === 'space-list') {
+        if (!input.spaceId) {
+          const spaces = await request(key, '/api/personal-space/spaces');
+          return { scope: key, spaces: spaces.filter(s => !s.trashed).map(s => ({ id: s.id, name: s.name, root: s.root })) };
+        }
+        const sid = identifier(input.spaceId), parent = input.parent ? identifier(input.parent) : '';
+        const result = await request(key, `/api/personal-space/files?space_id=${encodeURIComponent(sid)}&parent=${encodeURIComponent(parent)}`);
+        return { scope: key, parent: result.parent, root: result.root, breadcrumbs: result.breadcrumbs,
+          folders: result.items.filter(s => s.kind === 'folder').map(s => ({ id: s.id, name: s.name })) };
+      }
+      if (method === 'space-grant') {
+        spaceRevision++;
+        if (typeof input.enabled !== 'boolean') throw fail('ASSISTANT_INVALID_INPUT');
+        let selection;
+        if (input.enabled) {
+          if (!['all', 'space', 'folder'].includes(input.selection?.mode)) throw fail('ASSISTANT_INVALID_INPUT');
+          selection = { mode: input.selection.mode,
+            ...(input.selection.mode !== 'all' ? { space_id: identifier(input.selection.space_id) } : {}),
+            ...(input.selection.mode === 'folder' ? { folder_id: identifier(input.selection.folder_id) } : {}) };
+        }
+        const result = await request(key, '/api/assistant/space-grant', { method: 'POST', body: { enabled: input.enabled,
+          ...(spaceGrant ? { grant_id: spaceGrant.grant_id } : {}), ...(selection ? { selection } : {}),
+          ...(input.threadId ? { thread_id: identifier(input.threadId) } : {}) } });
+        spaceGrant = result.enabled ? result : null;
+        await saveConfiguration(key, { space: { enabled: result.enabled, selection: result.selection || null, label: result.label || '' } });
+        return { scope: key, enabled: result.enabled, selection: result.selection, label: result.label };
+      }
+      if (method === 'history-update') {
+        const operations = ['rename', 'pin', 'unpin', 'archive', 'unarchive', 'trash', 'restore'];
+        if (!operations.includes(input.operation) || !Array.isArray(input.items) || !input.items.length || input.items.length > 100) throw fail('ASSISTANT_INVALID_INPUT');
+        const items = input.items.map(item => {
+          if (!['thread', 'legacy'].includes(item.kind)) throw fail('ASSISTANT_INVALID_INPUT');
+          return { kind: item.kind, id: identifier(item.id) };
+        });
+        if (input.operation === 'rename' && (items.length !== 1 || typeof input.title !== 'string' || !input.title.trim() || input.title.length > 100)) throw fail('ASSISTANT_INVALID_INPUT');
+        return { scope: key, ...(await request(key, '/api/assistant/history', { method: 'POST', body: { operation: input.operation, items, ...(input.operation === 'rename' ? { title: input.title.trim() } : {}) } })) };
+      }
+      if (method === 'history-export') {
+        const id = identifier(input.id);
+        if (!['thread', 'legacy'].includes(input.kind)) throw fail('ASSISTANT_INVALID_INPUT');
+        const data = await request(key, input.kind === 'legacy' ? `/api/dialogue/sessions/${id}` : `${nativePath()}/threads/${id}/history/export`);
+        if (!saveFile) throw fail('ASSISTANT_UPLOAD_UNAVAILABLE');
+        const filePath = await saveFile(`dialogue-${input.kind}-${id}.json`); assertScope(key);
+        if (filePath) await writeFile(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+        return { scope: key, saved: Boolean(filePath) };
       }
       if (method === 'unwatch') { unwatch(); return { scope: key }; }
       if (method === 'open') return { scope: key, history: await history(key, identifier(input.threadId), Number.isInteger(input.offset) && input.offset >= 0 ? input.offset : 0) };
@@ -163,6 +296,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
           if (!threads.has(tid)) await history(key, tid);
           await request(key, `${nativePath()}/threads/${tid}`, { method: 'PATCH', body: { model_ref: input.model } });
         }
+        await saveConfiguration(key, { model: input.model });
         return { scope: key };
       }
       if (method === 'send') {
@@ -170,17 +304,25 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         const handles = input.attachments || [];
         if (prompt.length > 32_000 || !Array.isArray(handles) || handles.length > 8 || new Set(handles).size !== handles.length || !prompt && !handles.length) throw fail('ASSISTANT_INVALID_INPUT');
         const files = handles.map(handle => { const item = uploads.get(handle); if (!item || item.key !== key) throw fail('ASSISTANT_ATTACHMENT_EXPIRED'); return item.data; });
+        if (input.knowledgeEnabled && edition !== 'team') throw fail('ASSISTANT_KNOWLEDGE_DENIED');
+        if (input.spaceEnabled && !configuration.space?.enabled) throw fail('ASSISTANT_SPACE_SCOPE_REQUIRED');
         await validateModel(key, input.model);
         if (files.some(file => file.media_type?.startsWith('image/')) && !catalog.find(m => m.id === input.model)?.input.includes('image')) throw fail('ASSISTANT_MODEL_NEEDS_IMAGE');
         const tid = input.threadId ? identifier(input.threadId) : identifier((await request(key, `${nativePath()}/threads`, { method: 'POST' })).thread_id);
         if (!threads.has(tid)) await history(key, tid);
         const state = await history(key, tid);
         if (state.turn_active || state.hitl_pending) throw fail('ASSISTANT_TURN_ACTIVE');
+        let turnMcp = [];
+        if (input.spaceEnabled) {
+          turnMcp = [(await ensureSpace(key, tid)).mcp_server];
+        }
+        if (input.knowledgeEnabled) turnMcp.push((await ensureKnowledge(key, tid)).mcp_server);
         const content = [...(prompt ? [{ type: 'text', text: prompt }] : []), ...files.map(file => file.media_type?.startsWith('image/') ? {
           type: 'image', source: { type: 'url', url: file.url, media_type: file.media_type }, preview_url: file.url, workspace_path: file.workspace_path, filename: file.filename,
         } : { type: 'file', filename: file.filename, media_type: file.media_type, workspace_path: file.workspace_path })];
         emit(key, { type: 'turn-submitting', threadId: tid, model: input.model });
         await sendFrame(key, tid, { type: 'user_turn', thread_id: tid, model: input.model,
+          mcp_servers: turnMcp,
           messages: [{ role: 'user', content }], conversation_mode: 'craft' });
         return { scope: key, threadId: tid };
       }

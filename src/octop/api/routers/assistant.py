@@ -1,15 +1,26 @@
-"""Owner-private native assistant bootstrap and history organization."""
+"""First-party assistant binding; native chat remains the turn transport."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import current_user, get_server
+from octop.i18n import tr
 from octop.infra.agents.assistant_history import AssistantHistory
+from octop.infra.agents.assistant_knowledge import (
+    AssistantKnowledgeGrants,
+    KnowledgeError,
+    KnowledgeReader,
+    KnowledgeSources,
+)
 from octop.infra.agents.assistant_profile import AssistantProfiles
+from octop.infra.agents.assistant_space import AssistantSpaceGrants
+from octop.infra.personal_space.service import SpaceError
+from octop.infra.semantica.client import SemanticaError
 
 router = APIRouter()
 
@@ -95,3 +106,271 @@ async def update_assistant_history(
     return await AssistantHistory(server).update(
         user, body.operation, [item.model_dump() for item in body.items], body.title
     )
+
+
+class AssistantSpaceSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["all", "space", "folder"]
+    space_id: str | None = Field(default=None, pattern=r"^(personal|[0-9a-f]{32})$")
+    folder_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+class AssistantSpaceGrantBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    grant_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    selection: AssistantSpaceSelection | None = None
+    thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class AssistantSpaceGrantResponse(BaseModel):
+    enabled: bool
+    grant_id: str | None = None
+    mcp_server: str | None = None
+    selection: AssistantSpaceSelection | None = None
+    label: str | None = None
+
+
+@router.post(
+    "/assistant/space-grant",
+    summary="Choose or revoke an assistant's read-only space scope",
+    description="Off by default. Explicitly select all owned spaces, one space, or one folder subtree. Grants are owner-bound, thread-bound on first send, expire after two hours without renewal, and are checked on every MCP read. Revocation stops subsequent reads including an ongoing turn.",
+    response_model=AssistantSpaceGrantResponse,
+)
+async def assistant_space_grant(
+    body: AssistantSpaceGrantBody,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    service = getattr(request.app.state, "assistant_space_grants", None)
+    if service is None:
+        service = AssistantSpaceGrants(server)
+        request.app.state.assistant_space_grants = service
+    try:
+        return await service.update(
+            user,
+            enabled=body.enabled,
+            grant_id=body.grant_id,
+            selection=body.selection.model_dump(exclude_none=True) if body.selection else None,
+            thread_id=body.thread_id,
+        )
+    except SpaceError as exc:
+        raise HTTPException(exc.status, detail={"code": exc.code}) from exc
+
+
+class KnowledgeWarehouse(BaseModel):
+    id: str
+    name: str
+    available: bool = True
+    code: str | None = None
+
+
+class KnowledgeWarehousesResponse(BaseModel):
+    items: list[KnowledgeWarehouse]
+
+
+def knowledge_scope(
+    x_wanx_data_context: Literal["personal", "team"] = Header(default="team"),
+) -> str:
+    return x_wanx_data_context
+
+
+class KnowledgeAccessUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    audience: Literal["none", "all", "selected"]
+    members: list[int] = Field(default_factory=list, max_length=1000)
+    revision: int = Field(ge=0)
+
+
+class KnowledgeMember(BaseModel):
+    role: str
+    id: int
+    name: str
+    disabled: bool
+
+
+class KnowledgeAccessResponse(KnowledgeAccessUpdate):
+    warehouse: KnowledgeWarehouse
+    updated_by: int | None = None
+    updated_at: int | None = None
+    users: list[KnowledgeMember]
+
+
+class KnowledgeGrantBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    grant_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    warehouses: list[str] | None = Field(default=None, min_length=1, max_length=100)
+    thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class KnowledgeGrantResponse(BaseModel):
+    enabled: bool
+    grant_id: str | None = None
+    mcp_server: str | None = None
+    warehouses: list[KnowledgeWarehouse] = Field(default_factory=list)
+
+
+class KnowledgeSourcesResponse(BaseModel):
+    sources: list[dict[str, Any]]
+
+
+@router.get(
+    "/assistant/knowledge/sources/{thread_id}",
+    summary="Read previously retrieved source references in an owned assistant conversation",
+    response_model=KnowledgeSourcesResponse,
+)
+async def knowledge_sources(
+    thread_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> dict[str, Any]:
+    def read() -> dict[str, Any]:
+        if user.application_id != "wanx":
+            raise KnowledgeError("ASSISTANT_KNOWLEDGE_DENIED", 403)
+        row = server.app_runtime.gateway.thread_registry.get_thread(thread_id)
+        profile = AssistantProfiles(server)._existing(user.id)
+        if not row or not profile or row.user_id != user.id or row.agent_id != profile.agent_id:
+            raise KnowledgeError("ASSISTANT_KNOWLEDGE_DENIED", 403)
+        return {"sources": KnowledgeSources(server.paths.root, user.id).list(thread_id)}
+
+    try:
+        return await asyncio.to_thread(read)
+    except SemanticaError as exc:
+        raise knowledge_error(exc, user) from exc
+
+
+class KnowledgeEvidenceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    grant_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    warehouse_id: str
+    evidence_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    thread_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class KnowledgeReadResponse(BaseModel):
+    warehouse: KnowledgeWarehouse
+    result: dict[str, Any]
+    assistant_knowledge_sources: list[dict[str, Any]]
+
+
+def knowledge_error(exc: SemanticaError, user: Any) -> HTTPException:
+    key = (
+        exc.code
+        if exc.code.startswith("ASSISTANT_KNOWLEDGE_")
+        else "ASSISTANT_KNOWLEDGE_UNAVAILABLE"
+    )
+    return HTTPException(
+        exc.status,
+        detail={"code": key, "message": tr("assistant.knowledge_errors." + key, user.locale)},
+    )
+
+
+@router.get(
+    "/assistant/knowledge/warehouses",
+    summary="List owned personal or authorized team knowledge warehouses",
+    response_model=KnowledgeWarehousesResponse,
+)
+async def knowledge_warehouses(
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+    data_scope: str = Depends(knowledge_scope),
+) -> dict[str, Any]:
+    try:
+        return {
+            "items": await KnowledgeReader(
+                server.paths.root,
+                server.services.db,
+                user.id,
+                application_id=user.application_id,
+                data_scope=data_scope,
+            ).catalog()
+        }
+    except SemanticaError as exc:
+        raise knowledge_error(exc, user) from exc
+
+
+@router.get(
+    "/assistant/knowledge/access/{warehouse_id}",
+    summary="Read warehouse assistant access and team members (admin)",
+    response_model=KnowledgeAccessResponse,
+)
+async def knowledge_access(
+    warehouse_id: str, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> dict[str, Any]:
+    try:
+        return await KnowledgeReader(
+            server.paths.root, server.services.db, user.id, application_id=user.application_id
+        ).access(warehouse_id)
+    except SemanticaError as exc:
+        raise knowledge_error(exc, user) from exc
+
+
+@router.put(
+    "/assistant/knowledge/access/{warehouse_id}",
+    summary="Authorize all or selected team members for assistant knowledge (admin)",
+    description="Transactional, revision-checked warehouse ACL. New members inherit all-member rules; selected rules require explicit membership. Revocation applies to ongoing MCP calls.",
+    response_model=KnowledgeAccessResponse,
+)
+async def update_knowledge_access(
+    warehouse_id: str,
+    body: KnowledgeAccessUpdate,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    try:
+        return await KnowledgeReader(
+            server.paths.root, server.services.db, user.id, application_id=user.application_id
+        ).access(warehouse_id, body.model_dump())
+    except SemanticaError as exc:
+        raise knowledge_error(exc, user) from exc
+
+
+@router.post(
+    "/assistant/knowledge-grant",
+    summary="Choose or revoke this conversation's read-only Starlink warehouses",
+    description="Off until explicitly configured. Owner and box bound, one thread, two-hour expiry renewed on send. Does not modify expert defaults or Starlink documents.",
+    response_model=KnowledgeGrantResponse,
+)
+async def knowledge_grant(
+    body: KnowledgeGrantBody,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+    data_scope: str = Depends(knowledge_scope),
+) -> dict[str, Any]:
+    service = getattr(request.app.state, "assistant_knowledge_grants", None)
+    if service is None:
+        service = AssistantKnowledgeGrants(server)
+        request.app.state.assistant_knowledge_grants = service
+    try:
+        return await service.update(user, data_scope=data_scope, **body.model_dump())
+    except SemanticaError as exc:
+        raise knowledge_error(exc, user) from exc
+
+
+@router.post(
+    "/assistant/knowledge/evidence",
+    summary="Preview protected evidence from a currently selected warehouse",
+    response_model=KnowledgeReadResponse,
+)
+async def knowledge_evidence(
+    body: KnowledgeEvidenceBody,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+    data_scope: str = Depends(knowledge_scope),
+) -> dict[str, Any]:
+    try:
+        reader = KnowledgeReader(
+            server.paths.root,
+            server.services.db,
+            user.id,
+            body.grant_id,
+            application_id=user.application_id,
+            data_scope=data_scope,
+        )
+        grant = await asyncio.to_thread(reader.store.get, body.grant_id)
+        if grant.get("thread_id") != body.thread_id:
+            raise KnowledgeError("ASSISTANT_KNOWLEDGE_DENIED", 403)
+        return await reader.read("evidence", body.warehouse_id, evidence_id=body.evidence_id)
+    except SemanticaError as exc:
+        raise knowledge_error(exc, user) from exc
