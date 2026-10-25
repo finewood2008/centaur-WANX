@@ -64,3 +64,15 @@ contextBridge.exposeInMainWorld('wanxClient',{
     return ()=>ipcRenderer.removeListener('wanx-client:panel-note-state',handler);
   },
 });
+
+const assistantMethods=new Set(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff"]);
+contextBridge.exposeInMainWorld('wanxPanelAssistant',{
+ async request(action,input={}){
+  const method=action.replace(/^dialogue\./,'');
+  if(!action.startsWith('dialogue.')||!assistantMethods.has(method))return {ok:false,code:'PANEL_ACTION_NOT_ALLOWED'};
+  try{return {ok:true,value:await ipcRenderer.invoke('wanx-client:panel-ai-dialogue-'+method,input)};}
+  catch(error){return {ok:false,code:String(error.message).match(/(?:ASSISTANT|DIALOGUE|MODEL|SPACE|BOX|ACCOUNT)_[A-Z_]+/)?.[0]||'ASSISTANT_REQUEST_FAILED'};}
+ },
+ expand:input=>ipcRenderer.invoke('wanx-client:panel-assistant-open',input),
+ onEvent(listener){const handler=(_event,value)=>listener(value);ipcRenderer.on('wanx-client:panel-ai-dialogue',handler);return()=>ipcRenderer.removeListener('wanx-client:panel-ai-dialogue',handler);}
+});

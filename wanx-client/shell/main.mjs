@@ -86,7 +86,7 @@ let panel;
 let uiState;
 let broadcast;
 let notifications;
-let aiDialogue;
+let aiDialogue, panelDialogue;
 let client;
 let unsubscribe;
 let setupRuntime;
@@ -521,7 +521,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         const code = error.code || "SPACE_LINK_START_FAILED";
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
-      aiDialogue = createAIDialogue({ client,
+      const assistantUploads = new Map();
+      aiDialogue = createAIDialogue({ client, sharedUploads: assistantUploads,
         selectFiles: async () => {
           const result = await dialog.showOpenDialog(control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
           return result.canceled ? [] : result.filePaths;
@@ -533,8 +534,20 @@ if (process.argv.includes("--wanx-managed-app")) {
         preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
         if (!control.isDestroyed()) control.webContents.send("wanx-client:ai-dialogue", event);
       } });
+      panelDialogue = createAIDialogue({ client, sharedUploads: assistantUploads,
+        selectFiles: async () => {
+          const result = await dialog.showOpenDialog(panel || control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        saveFile: async name => {
+          const result = await dialog.showSaveDialog(panel || control, { title: "保存助理产物", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+        if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-ai-dialogue", event);
+      } });
       registerControlActions({
-        aiDialogue,
+        aiDialogue, panelDialogue,
         timings,
         notifications,
         spaceLinks,
@@ -604,6 +617,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         async closeApplications() {
           uiState.invalidateOpen();
           aiDialogue?.close();
+          panelDialogue?.close();
           await deliveryScheduler.close();
           await defaultApplications.close();
           marketSession?.close();

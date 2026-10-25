@@ -64,7 +64,7 @@ export function registerControlActions({
   credits,
   creditWallet,
   accountProfile,
-  aiDialogue,
+  aiDialogue, panelDialogue,
   support,
   uiState,
   notifications,
@@ -92,10 +92,21 @@ export function registerControlActions({
         throw new Error("此页面无权操作万象连接。");
       // Keep validation synchronous; mutations also refresh both trusted windows.
       const result = action(argument);
-      if (reads.has(name) || name.startsWith("ai-dialogue-")) return result;
+      if (reads.has(name) || (name.startsWith("ai-dialogue-") || name.startsWith("panel-ai-dialogue-"))) return result;
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  for(const method of ["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff"]) {
+    const name = "panel-ai-dialogue-" + method; panelActions.add(name);
+    register(name, input => { if(!panelDialogue) throw Error("DIALOGUE_UNAVAILABLE");return panelDialogue.action(method,input); });
+  }
+  panelActions.add("panel-assistant-open");
+  register("panel-assistant-open", async input => {
+    const payload=await panelDialogue.action("handoff",input);
+    desktop?.showManagement("ai-dialogue");
+    control.webContents.send("wanx-client:ai-dialogue",{type:"handoff",...payload});
+    return {ok:true};
+  });
   const creditsRead = async action => {
     try { return await action(); }
     catch (error) {
@@ -104,7 +115,7 @@ export function registerControlActions({
       throw error;
     }
   };
-  for (const method of ["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select"]) register(`ai-dialogue-${method}`, input => {
+  for (const method of ["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff"]) register(`ai-dialogue-${method}`, input => {
     if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
     return aiDialogue.action(method, input);
   });

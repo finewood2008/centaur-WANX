@@ -8,9 +8,17 @@ import path from 'node:path';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const edition = process.argv[2];
 if (!['personal', 'team'].includes(edition)) throw Error('EDITION_REQUIRED');
+const client = path.resolve(root, edition==='personal'?'../wanx-client':'../wanx-team-client');
+for (const [folder, names] of [
+  ['local-ui/renderer', ['ai-dialogue.js','ai-dialogue.css']],
+  ['shell', ['ai-dialogue.mjs','assistant-service.mjs']],
+  ['local-ui/panel', ['panel-assistant.js','panel-assistant.css']],
+]) for (const name of names) {
+  await mkdir(path.join(client,folder),{recursive:true});
+  await cp(path.join(root,'integration/team-client',name),path.join(client,folder,name));
+}
 // Builder belongs to Studio. Mini keeps its original application/navigation surface.
 if (edition === 'personal') process.exit(0);
-const client = path.resolve(root, edition==='personal'?'../wanx-client':'../wanx-team-client');
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 for (const script of ['build', 'package']) {
   execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
