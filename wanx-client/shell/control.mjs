@@ -241,7 +241,7 @@ export function registerControlActions({
     if (target.category === "application") return { destination: "applications" };
     if (target.applicationId === DIALOGUE_APPLICATION_ID) { desktop?.showManagement("ai-dialogue"); return { destination: "ai-dialogue" }; }
     if (target.applicationId) return uiState.requestOpen(target.applicationId);
-    if (target.category === "task") return openConnectedDashboard(client, dashboards);
+    if (target.category === "task") return { destination: "notifications" };
   });
   for (const [action, method] of [["profile-save", "save"], ["profile-avatar", "chooseAvatar"], ["profile-avatar-remove", "removeAvatar"]]) {
     register(action, input => {

@@ -24,7 +24,7 @@ import type{ReviewSection}from'./prd-types';
 import{VersionHistory}from'./product-versions';
 import{selectedVersion,canAdoptVersion,confirmAndStart}from'./workspace-state.mjs';
 import{restoreWorkspace,iterationSummary}from'./iteration-state.mjs';
-import brandLogo from './assets/centaurai-mark.png';
+import brandLogo from './assets/wanx-builder.svg';
 import'./styles.css';import'./theme.css';import'./workspace.css';import'./iteration-workspace.css';import'./continuous-workbench.css';
 
 document.documentElement.dataset.theme='light';document.documentElement.style.colorScheme='light';
@@ -152,7 +152,7 @@ function App(){
  function resizeChat(value:number){patch({chatWidths:{...state.current.chatWidths,[layoutStage]:value}})}
  const workspaceTab=view.phase==='discovery'?view.iterationPane:view.phase;
  return <div className={'studio-window product-workbench iteration-workbench continuous-workbench stage-'+layoutStage+' mobile-'+view.mobilePane}>
- <header className="studio-top"><div className="builder-brand"><img src={brandLogo} alt="半人马AI"/><div><strong>万象·开物</strong><small>WanX Builder</small></div></div><div className="builder-project"><strong title={project?.name}>{project?.name||'新产品'}</strong><small title="仅基于 WANX 现有接口开发，不修改底座；账号与管理员／普通用户角色由万象提供">{adoptedArtifact?'已采用 v'+adoptedArtifact.version:'基于 WANX 底座 · 继承万象账号与角色'}</small></div><div className="workbench-header-actions"><button onClick={()=>setDrawer('preparation')}><Icon name="folder" size={15}/>资料与能力</button><button onClick={()=>void returnClient()}>返回万象<Icon name="arrow" size={14}/></button></div></header>
+ <header className="studio-top"><div className="builder-brand"><img src={brandLogo} alt="万象·开物"/><div><strong>万象·开物</strong><small>WanX Builder</small></div></div><div className="builder-project"><strong title={project?.name}>{project?.name||'新产品'}</strong><small title="仅基于 WANX 现有接口开发，不修改底座；账号与管理员／普通用户角色由万象提供">{adoptedArtifact?'已采用 v'+adoptedArtifact.version:'基于 WANX 底座 · 继承万象账号与角色'}</small></div><div className="workbench-header-actions"><button onClick={()=>setDrawer('preparation')}><Icon name="folder" size={15}/>资料与能力</button><button onClick={()=>void returnClient()}>返回万象<Icon name="arrow" size={14}/></button></div></header>
  <div className="workbench-stagebar"><ol aria-label="产品制作进度">{journey.steps.map((label:string,i:number)=><li key={label} className={i===journey.step?'current':i<journey.step?'past':''} aria-current={i===journey.step?'step':undefined}><span>{i<journey.step?'✓':i+1}</span>{label}</li>)}</ol><span className="workbench-stage-status" role="status" title={journey.detail}>{summary.status}</span></div>
  {connectionIssue&&<div className="global-alert info" role="status">连接响应较慢，正在恢复并读取最新进度。<button disabled={busy} onClick={()=>project&&void api(`/projects/${project.id}`).then(update).catch(readError)}>读取最新状态</button></div>}
  {error&&<div className="global-alert error" role="alert">{error}<button onClick={()=>setError('')}>关闭</button></div>}{notice&&<div className="global-alert info" role="status">{notice}<button onClick={()=>setNotice('')}>关闭</button></div>}

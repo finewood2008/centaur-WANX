@@ -49,7 +49,7 @@ app.whenReady().then(async()=>{
   if(!host)throw new Error('请通过万象打开万象·开物');
   await host.context();
   nativeTheme.themeSource='light';
-  const brandIcon=path.join(__dirname,'../assets/centaurai-mark.png');
+  const brandIcon=path.join(__dirname,'../assets/wanx-builder.png');
   app.dock?.setIcon(brandIcon);
   app.setAboutPanelOptions({applicationName:'万象·开物',copyright:'WanX Builder · 半人马AI',iconPath:brandIcon});
   Menu.setApplicationMenu(Menu.buildFromTemplate([

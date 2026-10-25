@@ -20,11 +20,11 @@ test('late engine checks cannot populate a different account or box',async()=>{
  assert.doesNotMatch(c.engineButton(),/Previous account engine/);
 });
 
-test('ACP settings button uses the fixed client destination and never changes a default engine',async()=>{
+test('engine settings keep daily controls without a Dashboard configuration shortcut',async()=>{
  const calls=[],window={};vm.runInNewContext(source,{window});
  const c=window.createConstruction({request:async(name,input)=>{calls.push([name,input]);return{items:[]}},changed(){}});
- await c.action('construction-settings',{});assert.match(c.settings(),/data-action="construction-open-acp"/);
- await c.action('construction-open-acp',{});assert.equal(calls.at(-1)[0],'builder.acp');assert.equal(calls.at(-1)[1],undefined);
+ await c.action('construction-settings',{});assert.match(c.settings(),/construction-engine-refresh/);assert.doesNotMatch(c.settings(),/construction-open-acp|WANX 管理配置/);
+ const previous=calls.length;await c.action('construction-open-acp',{});assert.equal(calls.length,previous);
  const count=calls.length;await c.action('construction-unknown',{});assert.equal(calls.length,count);
  assert.equal(calls.some(([name])=>name==='studio.engines.default'||name==='studio.engines.check'),false);
 });

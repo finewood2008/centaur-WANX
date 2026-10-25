@@ -17,7 +17,7 @@
     BOX_CONNECTION_REQUIRED: '连接一台盒子，即可开始 AI 对话。',
     DIALOGUE_API_NOT_INSTALLED: '当前盒子尚未安装 AI 对话接口，请更新盒子后重试。',
     DIALOGUE_ACCESS_DENIED: '当前账号暂时没有 AI 对话权限，请检查盒子授权。',
-    GATEWAY_NOT_CONFIGURED: '盒子尚未配置模型服务，请在万象控制台中配置。',
+    GATEWAY_NOT_CONFIGURED: '盒子尚未配置模型服务，请联系管理员完成配置。',
     GATEWAY_UNAVAILABLE: '模型服务暂时不可用，已发送的任务不会自动重复调用。',
     MODEL_UNAVAILABLE: '这个模型当前不可用，请刷新模型列表。',
     CONTEXT_LIMIT: '当前对话超出模型的上下文容量，请开启新对话。已有内容会保留。',
