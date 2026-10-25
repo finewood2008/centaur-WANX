@@ -17,6 +17,7 @@ for (const [folder, names] of [
   await mkdir(path.join(client,folder),{recursive:true});
   await cp(path.join(root,'integration/team-client',name),path.join(client,folder,name));
 }
+await cp(path.join(root,'integration/team-client/channel-icons'),path.join(client,'local-ui/renderer/channel-icons'),{recursive:true});
 // Builder belongs to Studio. Mini keeps its original application/navigation surface.
 if (edition === 'personal') process.exit(0);
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
