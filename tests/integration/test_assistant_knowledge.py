@@ -43,11 +43,13 @@ def starlink_transport(env_with_provider: Any, monkeypatch: Any) -> Any:
         assert claims["permissions"] == ["read"] and not claims["owner_view"]
         personal = "resource_owner" not in claims
         if personal:
+            assert "organization_permissions" not in claims
             resource = next(iter(claims["workspace_bindings"].values()))
             assert resource.startswith("personal:" + claims["actor_id"])
             ids = state["personal"].get(claims["actor_id"], [])
         else:
             assert claims["resource_owner"] == "team:wanx"
+            assert claims["organization_permissions"] == ["read"]
             ids = [A, B]
         path = request.url.path.removeprefix("/api/integration")
         if path == "/warehouses":
