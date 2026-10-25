@@ -9,6 +9,7 @@ import { createApplicationLauncher } from "./launcher.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
 import { createDefaultApplicationStore } from "./delivery.mjs";
 import { inspectZhijunData } from "./zhijun-data.mjs";
+import { applicationExecutable } from "./desktop-runtime.mjs";
 
 export async function createApplicationManager({
   applicationRoot,
@@ -219,6 +220,7 @@ export async function createApplicationManager({
     },
     spawn,
     electronPath,
+    resolveExecutable: record => applicationExecutable({record,applicationRoot,electronPath}),
     runtimeArgs,
     launcherArgs,
   });

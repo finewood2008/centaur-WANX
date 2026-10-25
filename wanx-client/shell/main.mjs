@@ -135,7 +135,7 @@ async function marketTrustedKeys() {
 if (process.platform === "win32") app.setAppUserModelId(testBuild ? TEST_APP_ID : "ai.centuarai.wanx.client");
 if (process.argv.includes("--wanx-managed-app")) {
   marketTrustedKeys().then(trustedKeys => runManagedApplication({
-    applicationRoot: path.join(app.getPath("userData"), "applications"), trustedKeys, app,
+    applicationRoot: process.env.WANX_HOST_APPLICATION_ROOT || path.join(app.getPath("userData"), "applications"), trustedKeys, app,
   })).catch(error => {
     reportError(error);
     process.send?.({ type: "wanx:application-failed", launchId: process.env.WANX_HOST_LAUNCH_ID }, () => {});

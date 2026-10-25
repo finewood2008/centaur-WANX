@@ -12,6 +12,7 @@ export function createApplicationLauncher({
   onStarted = async () => {},
   spawn = defaultSpawn,
   electronPath = process.execPath,
+  resolveExecutable,
   runtimeArgs = [],
   launcherArgs = ["--wanx-managed-app"],
 } = {}) {
@@ -81,7 +82,7 @@ export function createApplicationLauncher({
       assertActive(signal);
     }
     const bundled = record.launchMode === "bundled";
-    const executable = bundled ? await resolveApplicationEntry(record.installPath, record) : electronPath;
+    const executable = bundled ? await resolveApplicationEntry(record.installPath, record) : resolveExecutable ? await resolveExecutable(record) : electronPath;
     const userData = bundled ? path.resolve(record.installPath, "..", "..", ".runtime", record.applicationId) : null;
     if (userData) await mkdir(userData, { recursive: true, mode: 0o700 });
     assertActive(signal);
@@ -91,7 +92,7 @@ export function createApplicationLauncher({
       assertActive(signal);
       const child = spawn(executable, bundled ? [] : record.envelope ? launcherArgs : [...runtimeArgs, `--wanx-application=${record.installPath}`], {
         cwd: record.installPath,
-        env: { ...process.env, ...session.environment, ...(userData ? { WANX_HOST_USER_DATA_DIR: userData } : {}) },
+        env: { ...process.env, ...session.environment, WANX_HOST_APPLICATION_ROOT:path.dirname(path.dirname(record.installPath)), ...(userData ? { WANX_HOST_USER_DATA_DIR: userData } : {}) },
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         windowsHide: true,
         detached: false,

@@ -8,6 +8,7 @@ import { verifyEnvelope } from "./descriptor.mjs";
 import { createApplicationSession } from "../app-host/session.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
+import { applicationExecutable } from "./desktop-runtime.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
 import { createDefaultApplicationStore } from "./delivery.mjs";
 import { inspectZhijunData } from "./zhijun-data.mjs";
@@ -229,6 +230,7 @@ export async function createApplicationManager({
     },
     spawn,
     electronPath,
+    resolveExecutable: record => applicationExecutable({record,applicationRoot,electronPath}),
     runtimeArgs,
     launcherArgs,
   });
