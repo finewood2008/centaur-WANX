@@ -24,7 +24,7 @@ await serveWorker(async({emit,request})=>{
   active=config;
   try{
    const env={PATH:process.env.PATH,LANG:process.env.LANG||'en_US.UTF-8',TMPDIR:process.env.TMPDIR},settings=JSON.parse(process.env.WANX_CODEX_CONFIG);
-   native??=new NativeSession({binary:process.env.WANX_CODEX_PATH,config:settings,env,onEvent(e){
+   native??=new NativeSession({binary:process.env.WANX_CODEX_PATH,config:settings,env,onTrace(e){if(active)emit({type:'diagnostic',...e})},onEvent(e){
     if(!active)return;
     if(e.type==='message')emit({type:'text',text:e.text});
     else if(e.type==='activity')emit({type:'status',text:'正在处理：'+e.text});
