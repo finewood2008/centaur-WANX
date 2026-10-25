@@ -1,3 +1,4 @@
+import {wrapAssistantKnowledgeAccess} from './assistant-knowledge-access.js';
 import {selectGraph,layoutGraph,edgeGeometry} from './starlink/graph.mjs';
 import {openDataShare} from './data-share-view.js';
 window.createTeamDataView=({request,changed})=>{
@@ -220,3 +221,5 @@ window.createTeamDataView=({request,changed})=>{
   }
   return {sync,render,refresh,action,submit,input:(name,value)=>{if(name==='query')query=value;if(name==='filter')filter=value;if(name==='graphQuery')graphQuery=value},needsLoad:()=>scope&&!initialized&&!loading&&!error};
 };
+
+window.createTeamDataView=wrapAssistantKnowledgeAccess(window.createTeamDataView);
