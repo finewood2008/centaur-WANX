@@ -663,7 +663,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key,value]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session", "x-content-sha256", "range", "if-none-match", "if-modified-since"].includes(key) || (key === "x-space-link" && ["/api/personal-space/agent-access", "/api/personal-space/connection-access", "/api/clipboard/v1/agent-access"].includes(path.split("?")[0])) || (key === "x-wanx-data-context" && /^\/api\/semantica\//.test(path.split("?")[0]) && ["team","personal"].includes(value)) || (key === "x-xingtu-key" && /^\/api\/semantica\/open\/v1\//.test(path.split("?")[0])))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key,value]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session", "x-content-sha256", "range", "if-none-match", "if-modified-since"].includes(key) || (key === "x-space-link" && ["/api/personal-space/agent-access", "/api/personal-space/connection-access", "/api/clipboard/v1/agent-access"].includes(path.split("?")[0])) || (key === "x-wanx-data-context" && /^\/api\/semantica\//.test(path.split("?")[0]) && ["team","personal"].includes(value)) || (key === "x-wanx-data-context" && /^\/api\/assistant\/knowledge(?:\/|-)/.test(path.split("?")[0]) && ["team","personal"].includes(value)) || (key === "x-xingtu-key" && /^\/api\/semantica\/open\/v1\//.test(path.split("?")[0])))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };
@@ -759,7 +759,7 @@ export async function createDashboardGateway({
         headers: {
           host: localURL.host,
           origin: localURL.origin,
-          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session"].includes(key))),
+          ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]).filter(([key, value]) => ["accept", "accept-language", "content-type", "x-octop-agent-id", "x-wanx-metering-session"].includes(key))),
           ...(session ? { authorization: `Bearer ${marker}` } : {}),
         },
       };

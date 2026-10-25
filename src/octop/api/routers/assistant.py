@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import current_user, get_server
 from octop.i18n import tr
+from octop.infra.agents.assistant_conversations import AssistantConversations, ConversationError
 from octop.infra.agents.assistant_history import AssistantHistory
 from octop.infra.agents.assistant_knowledge import (
     AssistantKnowledgeGrants,
@@ -23,6 +24,196 @@ from octop.infra.personal_space.service import SpaceError
 from octop.infra.semantica.client import SemanticaError
 
 router = APIRouter()
+
+
+def conversations(request: Request, server: Any) -> AssistantConversations:
+    service = getattr(request.app.state, "assistant_conversations", None)
+    if service is None:
+        service = AssistantConversations(server)
+        request.app.state.assistant_conversations = service
+    return service
+
+
+class ConversationSpace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    selection: dict[str, str] | None = None
+    label: str | None = None
+
+
+class ConversationKnowledge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    warehouses: list[dict[str, str]] = Field(default_factory=list, max_length=100)
+    data_scope: Literal["personal", "team"] = "team"
+
+
+class ConversationContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    space: ConversationSpace = Field(default_factory=ConversationSpace)
+    knowledge: ConversationKnowledge = Field(default_factory=ConversationKnowledge)
+
+
+class ConversationPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=0)
+    context: ConversationContext | None = None
+    active_thread_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
+
+
+class ConversationVersion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=0)
+    source_thread_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    message_id: str = Field(min_length=1, max_length=256)
+    kind: Literal["edit", "regenerate"]
+    text: str | None = Field(default=None, max_length=32000)
+
+
+class ConversationVersionInfo(BaseModel):
+    thread_id: str
+    parent_thread_id: str | None = None
+    target_message_id: str | None = None
+    kind: Literal["original", "edit", "regenerate"]
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    active_thread_id: str
+    revision: int
+    context: ConversationContext
+    versions: list[ConversationVersionInfo]
+    validation_errors: list[dict[str, str]]
+
+
+class ConversationVersionResponse(ConversationResponse):
+    prepared_content: list[dict[str, Any]]
+
+
+def conversation_error(exc: ConversationError, user: Any) -> HTTPException:
+    return HTTPException(
+        exc.status,
+        detail={"code": exc.code, "message": tr("assistant.conversation_error", user.locale)},
+    )
+
+
+@router.post(
+    "/assistant/context/validate",
+    summary="Validate assistant draft source choices without granting access",
+)
+async def assistant_context_validate(
+    body: ConversationContext,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    if user.application_id != "wanx" or getattr(user, "disabled", False):
+        raise HTTPException(403)
+    try:
+        context, _ = await conversations(request, server).validate_context(
+            user, body.model_dump(exclude_none=True), strict=True
+        )
+        return {"context": context}
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
+
+
+@router.get(
+    "/assistant/conversations",
+    summary="List logical assistant conversations",
+    description="Owner and box scoped. Internal answer-version threads are grouped under the original conversation.",
+)
+async def assistant_conversations_list(
+    request: Request, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> dict[str, Any]:
+    try:
+        return await conversations(request, server).listing(user)
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
+
+
+@router.get(
+    "/assistant/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    summary="Read assistant conversation sources and versions",
+    description="Restores saved source choices without granting MCP access. Revalidates available sources; unavailable choices are retained with explicit validation_errors.",
+)
+async def assistant_conversation_get(
+    conversation_id: str,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    try:
+        return await conversations(request, server).get(user, conversation_id)
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
+
+
+@router.post(
+    "/assistant/conversations/{conversation_id}/open",
+    response_model=ConversationResponse,
+    summary="Remember the most recently opened assistant conversation",
+    description="Records navigation for the current account on this box after validating conversation ownership. Does not change source selections, versions or grants.",
+)
+async def assistant_conversation_open(
+    conversation_id: str,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    try:
+        return await conversations(request, server).opened(user, conversation_id)
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
+
+
+@router.patch(
+    "/assistant/conversations/{conversation_id}",
+    response_model=ConversationResponse,
+    summary="Update conversation sources or selected answer version",
+    description="Uses revision compare-and-swap. Source preferences are separate from two-hour grants. Disabling access revokes all capabilities for this conversation, including connected MCP reads. New access and version switches are blocked while a turn or confirmation is pending.",
+)
+async def assistant_conversation_patch(
+    conversation_id: str,
+    body: ConversationPatch,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    try:
+        return await conversations(request, server).patch(
+            user,
+            conversation_id,
+            body.revision,
+            body.context.model_dump(exclude_none=True) if body.context else None,
+            body.active_thread_id,
+        )
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
+
+
+@router.post(
+    "/assistant/conversations/{conversation_id}/versions",
+    response_model=ConversationVersionResponse,
+    summary="Create an edit or regenerate version without deleting history",
+    description="Clones only the history before the target request; no tool execution is replayed. Stable message IDs and ownership are required. Returns prepared_content only to the authenticated trusted client for the next native turn; this route does not invoke a model.",
+)
+async def assistant_conversation_version(
+    conversation_id: str,
+    body: ConversationVersion,
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    try:
+        if body.kind == "edit" and body.text is None:
+            raise ConversationError("ASSISTANT_INVALID_INPUT", 422)
+        return await conversations(request, server).version(
+            user, conversation_id, body.model_dump()
+        )
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
 
 
 class AssistantProfileResponse(BaseModel):
@@ -148,13 +339,22 @@ async def assistant_space_grant(
         service = AssistantSpaceGrants(server)
         request.app.state.assistant_space_grants = service
     try:
-        return await service.update(
+        async with conversations(request, server).grant_scope(
             user,
-            enabled=body.enabled,
-            grant_id=body.grant_id,
-            selection=body.selection.model_dump(exclude_none=True) if body.selection else None,
-            thread_id=body.thread_id,
-        )
+            body.thread_id,
+            "space",
+            body.enabled,
+            body.selection.model_dump(exclude_none=True) if body.selection else None,
+        ):
+            return await service.update(
+                user,
+                enabled=body.enabled,
+                grant_id=body.grant_id,
+                selection=body.selection.model_dump(exclude_none=True) if body.selection else None,
+                thread_id=body.thread_id,
+            )
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
     except SpaceError as exc:
         raise HTTPException(exc.status, detail={"code": exc.code}) from exc
 
@@ -343,7 +543,12 @@ async def knowledge_grant(
         service = AssistantKnowledgeGrants(server)
         request.app.state.assistant_knowledge_grants = service
     try:
-        return await service.update(user, data_scope=data_scope, **body.model_dump())
+        async with conversations(request, server).grant_scope(
+            user, body.thread_id, "knowledge", body.enabled, body.warehouses, data_scope
+        ):
+            return await service.update(user, data_scope=data_scope, **body.model_dump())
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
     except SemanticaError as exc:
         raise knowledge_error(exc, user) from exc
 

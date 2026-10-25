@@ -41,27 +41,55 @@
   function icon(model) {
     const name = `${model?.name || ''} ${model?.provider || ''}`.toLowerCase();
     const brand = [['deepseek', /deepseek/], ['anthropic', /claude|anthropic/], ['gemini', /gemini|google/], ['moonshot', /kimi|moonshot/], ['dashscope', /qwen|千问|通义|dashscope/], ['zhipu', /glm|智谱|zhipu/], ['minimax', /minimax/], ['volces', /doubao|豆包|volces/], ['ollama', /ollama/], ['openai', /openai|gpt|chatgpt|o[134]-/]].find(([, re]) => re.test(name))?.[0];
-    return brand ? `<img src="./assets/model-icons/${brand}.${brand === 'moonshot' ? 'webp' : brand === 'volces' ? 'svg' : 'png'}" alt="" />` : '<span aria-hidden="true">AI</span>';
+    return brand ? `<img src="${esc(window.wanxAssistantAssetBase || './assets')}/model-icons/${brand}.${brand === 'moonshot' ? 'webp' : brand === 'volces' ? 'svg' : 'png'}" alt="" />` : '<span aria-hidden="true">AI</span>';
+  }
+  const usageFields=['input_tokens','output_tokens','total_tokens','cache_read_tokens','cache_write_tokens','reasoning_tokens'];
+  function aggregateUsage(samples) {
+    const values=Object.values(samples);if(!values.length)return null;
+    const result={model_calls:values.length};
+    for(const key of usageFields){const known=values.filter(v=>Number.isFinite(v[key])&&v[key]>=0);if(known.length)result[key]=known.reduce((n,v)=>n+v[key],0);}
+    const last=values.at(-1);result.last_input_tokens=last.last_input_tokens??last.input_tokens;return result;
+  }
+  function rollupUsage(rows, leadingComplete=true) {
+    let samples={},last=null,complete=leadingComplete;
+    const flush=()=>{if(last&&complete)last.usage=aggregateUsage(samples);samples={};last=null;};
+    for(const m of rows){delete m.usage;if(m.role==='user'){flush();complete=true;samples={...(m.usageSamples||{})};}else{if(m.callUsage)samples[m.id]=m.callUsage;if(m.role==='assistant')last=m;}}flush();return rows;
+  }
+  function usageMarkup(usage) {
+    if(!usage)return '';
+    const n=key=>Number.isFinite(usage[key])?new Intl.NumberFormat('zh-CN').format(usage[key]):'—';
+    return '<details class="ai-usage"><summary>输入 '+n('input_tokens')+' · 输出 '+n('output_tokens')+' · 合计 '+n('total_tokens')+' Token</summary><div>模型调用 '+n('model_calls')+' 次'+(usage.cache_read_tokens!==undefined?' · 缓存命中 '+n('cache_read_tokens'):'')+(usage.cache_write_tokens!==undefined?' · 缓存写入 '+n('cache_write_tokens'):'')+(usage.reasoning_tokens!==undefined?' · 推理 '+n('reasoning_tokens'):'')+'</div></details>';
+  }
+  function transcriptMarkup(rows,render) {
+    let out='',turn=[];
+    const flush=()=>{if(!turn.length)return;const tools=turn.filter(m=>m.role==='tool'),others=turn.filter(m=>m.role!=='tool'&&m.role!=='usage'&&m.role!=='metadata');
+      if(tools.length){const running=tools.some(t=>t.status==='running'),failed=tools.some(t=>['error','interrupted'].includes(t.status));out+='<details class="ai-process" data-process-key="'+esc(tools[0].id)+'"><summary>'+ (running?'正在执行工具':failed?'工具执行有未完成项':'已完成 '+tools.length+' 次工具调用')+'</summary>'+tools.map(render).join('')+'</details>';}
+      out+=others.map(render).join('');turn=[];};
+    for(const row of rows){if(row.role==='user'){flush();out+=render(row);}else turn.push(row);}flush();return out;
   }
   function historyMessages(raw) {
-    let model = null; const result = [];
+    let model = null; const result = [];let samples={};
+    const flush=()=>{const last=result.findLast(m=>m.role==='assistant');if(last&&Object.keys(samples).length)last.usage=aggregateUsage(samples);samples={};};
     for (const [index, message] of (raw || []).entries()) {
       if (message.role === 'system') continue;
-      if (message.role === 'user') model = message.composer_context?.model || null;
+      if (message.role === 'user') {flush();model = message.composer_context?.model || null;}
       const blocks = Array.isArray(message.content) ? message.content : [];
       const text = textOf(message.content);
       const id = message.id || `history-${index}`;
+      if(message.role==='assistant'&&message.usage)samples[id]=message.usage;
       if (text || message.role === 'user') result.push({ id, role: message.role, text, model: message.model_ref || message.usage?.model || model,
-        files: message.inbound_attachments || [], status: message.status || 'completed' });
+        files: message.inbound_attachments || [], callUsage:message.role==='assistant'?message.usage:null,status: message.status || 'completed' });
+      else if(message.role==='assistant'&&message.usage)result.push({id,role:'usage',callUsage:message.usage});
       for (const [n, b] of blocks.entries()) {
         if (['tool_use', 'tool_call', 'tool_result'].includes(b.type)) result.push({ id: `${id}-tool-${n}`, role: 'tool', callId: b.id,
           name: b.display_name || b.name || '工具', text: typeof b.output === 'string' ? b.output : b.output == null ? JSON.stringify(b.input || b.args || {}, null, 2) : JSON.stringify(b.output, null, 2),
           status: b.error_code ? 'error' : b.type === 'tool_result' ? 'completed' : 'called' });
       }
     }
-    return result;
+    flush();return result;
   }
   function applyFrame(state, event) {
+    if(event.type==='usage'){let user=state.messages.findLast(m=>m.role==='user');if(!user){user={id:'usage-root',role:'metadata'};state.messages.unshift(user);}user.usageSamples??={};user.usageSamples[event.call_id||JSON.stringify(event.usage)]=event.usage;const answer=state.messages.findLast(m=>m.role==='assistant');if(answer){for(const m of state.messages.slice(state.messages.indexOf(user)+1))delete m.usage;answer.usage=aggregateUsage(user.usageSamples);if(event.model)answer.model=event.model;}return;}
     if (event.type === 'turn_status') { state.active = Boolean(event.active); return; }
     if (event.type === 'token') {
       state.active = true;
@@ -70,7 +98,7 @@
         last = { id: `live-${++state.sequence}`, role: 'assistant', text: '', model: state.runModel, status: 'running' };
         state.messages.push(last);
       }
-      last.text += String(event.content || '');
+      last.text += String(event.content || '');const user=state.messages.findLast(m=>m.role==='user');if(user?.usageSamples){for(const m of state.messages.slice(state.messages.indexOf(user)+1))delete m.usage;last.usage=aggregateUsage(user.usageSamples);}
     }
     if (event.type === 'tool_call_chunk') {
       state.active = true; const key = event.id || `index-${event.index ?? 0}`;
@@ -109,6 +137,11 @@
     return `【来自旧版对话的历史参考：${session.title || '旧版对话'}】\n以下内容仅作为参考，保留原作者和回答来源。\n\n` + legacyTrail(session, answerId).map(({ group, answer }) => `用户：${group.prompt}\n${answer.name || 'AI'}：${answer.text || '（没有回答内容）'}`).join('\n\n') + '\n\n【请在此补充要继续处理的问题】\n';
   }
   const errors = {
+    WAREHOUSE_NOT_FOUND:'数据仓已删除或不可访问，请重新选择。',SPACE_NOT_FOUND:'所选空间或文件夹已不存在，请重新选择。',
+    SEMANTICA_SERVICE_UNAVAILABLE:'星图服务暂时无法连接，请稍后重试。',SERVICE_UNAVAILABLE:'资料服务暂时无法连接，请稍后重试。',
+    ASSISTANT_CONVERSATION_CONFLICT:'这段对话已在其他窗口更新，请重新打开后再操作。草稿已保留。',
+    ASSISTANT_CONVERSATION_NOT_FOUND:'这段对话不可用，或不属于当前账号与盒子。',
+    ASSISTANT_MESSAGE_NOT_FOUND:'无法找到原消息，请恢复历史后重试。',
     AGENT_QUOTA_EXCEEDED: '当前账号的专家数量已达到上限，请在后台调整配额后重试。',
     FORBIDDEN: '通用专家已停用或当前账号无权访问，请联系管理员。',
     AGENT_NOT_RUNNING: '通用专家暂时未运行，请检查后台状态后恢复连接。',
@@ -139,12 +172,16 @@
     }).filter(s => (!options.status || s.status === options.status) && (!options.kind || options.kind === 'all' || s.kind === options.kind) && s.title.toLocaleLowerCase().includes(needle))
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || (options.sort === 'title' ? a.title.localeCompare(b.title, 'zh-CN') : options.sort === 'oldest' ? a.time - b.time : b.time - a.time) || a.key.localeCompare(b.key));
   }
-  window.wanxAssistantState = { esc, markdown, historyMessages, applyFrame, legacyReference, legacyTrail, historyItems };
+  window.wanxAssistantState = { esc, markdown, historyMessages, applyFrame, legacyReference, legacyTrail, historyItems, aggregateUsage, rollupUsage, transcriptMarkup };
   window.wanxDialogueState = { trail: legacyTrail, richText: markdown, isLocalModel: m => Boolean(m.is_local) };
 
-  window.createAIDialogueView = ({ request, onBoxes }) => {
+  window.createAIDialogueView = ({ request, onBoxes, compact = false, onSummary }) => {
     let root, context = null, generation = 0, epoch = 0, visible = false, connected = false, loaded = false, loading = false;
     let scope = null, models = [], selected = null, sessions = [], legacySessions = [], legacy = null, legacyId = null, legacyAnswer = null;
+    let pendingHandoff=null,handoffBusy=false;
+    let recentRequested=compact;
+    let conversationId=null, conversationRevision=0, versions=[], contextUsage=null, polishBusy=false, polishUndo=null, editingId=null;
+    const drafts=new Map();
     let threadId = null, messages = [], draft = '', attachments = [], reference = '', historyOpen = false, query = '', pickerOpen = false, modelQuery = '';
     let busy = false, uploading = false, opening = false, active = false, uncertain = false, pending = null, runModel = null, sequence = 0;
     let error = '', notice = '', hasMore = false, historyCount = 0, boxName = '', pendingPaint = '', submitted = null, refreshTimer = null;
@@ -164,8 +201,9 @@
     function stopWatch() { if (scope) void call('unwatch').catch(() => {}); }
     function release(files = attachments) { if (scope && files.length) void call('release', { handles: files.map(f => f.handle) }).catch(() => {}); }
     function reset() {
+
       clearTimeout(refreshTimer); epoch++; stopWatch(); scope = null; loaded = false; loading = false; models = []; sessions = []; legacySessions = [];
-      selected = null; legacy = null; legacyId = null; threadId = null; messages = []; draft = ''; attachments = []; reference = ''; submitted = null;
+      selected = null; legacy = null; legacyId = null; threadId = null; conversationId=null;conversationRevision=0;versions=[];contextUsage=null;polishUndo=null;editingId=null;drafts.clear(); messages = []; draft = ''; attachments = []; reference = ''; submitted = null;
       busy = false; active = false; uncertain = false; uploading = false; opening = false; pending = null; pendingPaint = ''; error = ''; notice = ''; pickerOpen = false;
       if ($('[data-chat-artifact-dialog]')?.open) $('[data-chat-artifact-dialog]').close();
       if ($('[data-chat-history-dialog]')?.open) $('[data-chat-history-dialog]').close();
@@ -177,7 +215,7 @@
       if ($('[data-chat-artifacts]')) $('[data-chat-artifacts]').innerHTML = '';
       if ($('[data-chat-input]')) $('[data-chat-input]').value = '';
       if ($('[data-chat-search]')) $('[data-chat-search]').value = '';
-      query = ''; paint();
+      query = ''; recentRequested=compact; paint();
     }
     async function load() {
       if (!connected || loading) return;
@@ -188,13 +226,17 @@
         scope = result.scope; models = result.models; sessions = result.sessions; legacySessions = result.legacySessions; loaded = true;
         knowledgeAvailable = result.capabilities?.knowledge === true;
         const settings = result.settings || {}; savedModel = settings.model || null;
-        spaceEnabled = settings.space?.enabled === true; spaceSelection = settings.space?.selection || null; spaceLabel = settings.space?.label || '';
-        knowledgeEnabled = knowledgeAvailable && settings.knowledge?.enabled === true; knowledgeWarehouses = settings.knowledge?.warehouses || [];
+        if(!threadId){spaceEnabled=false;spaceSelection=null;spaceLabel='';knowledgeEnabled=false;knowledgeWarehouses=[];}
         organization = result.organization || {}; historyAvailable = result.historyManagementAvailable === true; timezone = result.timezone || 'UTC';
         if (!selected) selected = result.defaultModel;
         else if (!models.some(m => m.id === selected)) error = errors.MODEL_UNAVAILABLE;
         if (result.legacyUnavailable) notice = '旧版记录暂时无法读取，可稍后恢复连接重试。';
-        if (threadId && turn === epoch) await openThread(threadId, false);
+        if(compact&&recentRequested&&turn===epoch&&!draft.trim()&&!attachments.length&&!active&&!pending){
+          recentRequested=false;
+          if(result.recentConversationId)await openThread(result.recentConversationId);
+          else if(threadId)await newChat();
+        }else if (threadId && turn === epoch) await openThread(threadId, false);
+
       } catch (e) { if (gen === generation) error = errorText(e); }
       finally { if (gen === generation) { loading = false; paint(); } }
     }
@@ -209,32 +251,102 @@
       }
       active = Boolean(history.turn_active); pending = history.hitl_pending || null; uncertain = false;
       hasMore = Boolean(history.has_more); historyCount = Number(history.offset || 0) + Number(history.limit || (history.messages || []).length);
+      rollupUsage(messages,!history.has_more);
       const refs = history.artifact_refs?.length ? history.artifact_refs : history.artifacts || [];
       if ($('[data-chat-artifacts]')) $('[data-chat-artifacts]').innerHTML = refs.length ? `<span>本次产物</span>${refs.map(ref => {
         const path = typeof ref === 'string' ? ref : ref.path; return `<button type="button" data-chat-action="artifact" data-path="${esc(path)}">▤ ${esc(path.split('/').at(-1))}</button>`;
       }).join('')}` : '';
     }
+    async function importHandoff() {
+      if(!pendingHandoff||handoffBusy||!loaded||!root||busy||uploading||opening)return;
+      const value=pendingHandoff;pendingHandoff=null;handoffBusy=true;
+      try{
+        if(value.scope!==scope)return;
+        if(value.conversationId)await openThread(value.conversationId);else await newChat();
+        if(!draft.trim()&&!attachments.length){draft=value.draft||'';attachments=value.attachments||[];reference=value.reference||'';$('[data-chat-input]').value=draft;}
+        else if(value.draft&&value.draft!==draft)notice='主窗口草稿已保留，迷你助理的草稿仍在托盘中。';
+        if(models.some(m=>m.id===value.model))selected=value.model;
+        if(!value.conversationId){
+          if(value.context?.space?.enabled){const result=await call('space-grant',{enabled:true,selection:value.context.space.selection});spaceEnabled=true;spaceSelection=result.selection;spaceLabel=result.label;}
+          if(value.context?.knowledge?.enabled){const result=await call('knowledge-grant',{enabled:true,warehouses:value.context.knowledge.warehouses.map(w=>w.id)});knowledgeEnabled=true;knowledgeWarehouses=result.warehouses;}
+        }
+        paint();
+      }catch(e){error=errorText(e);paintStatus();}finally{handoffBusy=false;}
+    }
+    function acceptConversation(value) {
+      if(!value)return;
+      conversationId=value.id;conversationRevision=value.revision;versions=value.versions||[];
+      const ctx=value.context||{};
+      spaceEnabled=ctx.space?.enabled===true;spaceSelection=ctx.space?.selection||null;spaceLabel=ctx.space?.label||'';
+      knowledgeEnabled=knowledgeAvailable&&ctx.knowledge?.enabled===true;knowledgeWarehouses=ctx.knowledge?.warehouses||[];
+      if(value.validation_errors?.length) error=value.validation_errors.map(v=>(v.name||'资料')+'：'+errorText({code:v.code})).join('；');
+    }
+    function stashDraft() {if(conversationId)drafts.set(conversationId,{draft,attachments:attachments.slice(),reference});}
+    async function refreshUsage() {
+      if(compact)return;
+      if(!threadId||legacy){contextUsage=null;paintUsage();return;}
+      const gen=generation,turn=epoch,id=threadId;
+      try{const value=await call('usage',{threadId:id,model:selected});if(gen===generation&&turn===epoch&&id===threadId){contextUsage=value;paintUsage();}}catch{if(gen===generation&&turn===epoch){contextUsage=null;paintUsage();}}
+    }
+    function paintUsage() {
+      const summary=$('[data-context-summary]');if(!summary)return;
+      const used=contextUsage?.used_tokens,max=contextUsage?.max_tokens,known=Number.isFinite(used)&&used>0&&Number.isFinite(max)&&max>0;
+      const number=n=>new Intl.NumberFormat('zh-CN').format(n);
+      summary.textContent=known?'上下文 '+number(used)+' / '+number(max)+' · '+Math.min(100,Math.max(1,Math.round(used/max*100)))+'%':'上下文 · 暂无统计';
+      const names={system_prompt:'系统提示',tool_definitions:'工具定义',rules:'规则',skills:'技能',mcp:'资料接入',subagent_definitions:'辅助工具',conversation:'对话内容'};
+      $('[data-context-breakdown]').innerHTML=known?'<strong>上下文占用</strong><p>最近一次模型输入占用，不等于本轮累计消耗。</p>'+((contextUsage.segments||[]).map(v=>'<div><span>'+esc(names[v.key]||v.key)+'</span><span>约 '+number(v.tokens)+'</span></div>').join('')||'<p>当前没有组成明细。</p>')+'<small>组成明细为后台估算值。</small>':'<p>后台尚未返回可用的 Token 统计。</p>';
+    }
+    function paintVersions() {
+      const node=$('[data-chat-versions]');if(!node)return;
+      node.hidden=versions.length<2||Boolean(legacy);
+      const index=versions.findIndex(v=>v.thread_id===threadId);
+      node.innerHTML='<button type="button" data-chat-action="version-prev" aria-label="上一版" '+(index<=0||active||busy||pending?'disabled':'')+'>‹</button><span>第 '+(index+1)+' / '+versions.length+' 版</span><button type="button" data-chat-action="version-next" aria-label="下一版" '+(index>=versions.length-1||active||busy||pending?'disabled':'')+'>›</button>';
+    }
+    async function changeVersion(direction) {
+      const index=versions.findIndex(v=>v.thread_id===threadId),target=versions[index+direction];if(!target||active||busy||pending)return;
+      const gen=generation,turn=epoch;busy=true;paintStatus();
+      try{const result=await call('version-select',{conversationId,revision:conversationRevision,threadId:target.thread_id});if(gen!==generation||turn!==epoch)return;stopWatch();threadId=result.history.thread_id;acceptConversation(result.conversation);acceptHistory(result.history);await call('watch',{threadId});contextUsage=null;paint();void refreshUsage();}
+      catch(e){if(gen===generation&&turn===epoch)error=errorText(e);}finally{if(gen===generation&&turn===epoch){busy=false;paint();}}
+    }
+    async function revise(kind,id,text) {
+      if(active||busy||pending||!conversationId)return;
+      const gen=generation,turn=epoch;busy=true;error='';paintStatus();
+      try{const result=await call('version',{conversationId,revision:conversationRevision,threadId,messageId:id,kind,text,model:selected});if(gen!==generation||turn!==epoch)return;threadId=result.history.thread_id;acceptConversation(result.conversation);messages=[];acceptHistory(result.history);runModel=selected;active=true;contextUsage=null;$('[data-chat-edit-dialog]').close();editingId=null;await call('watch',{threadId});refreshTimer=setTimeout(()=>void refreshCurrent(),500);}
+      catch(e){if(gen===generation&&turn===epoch){error=errorText(e);try{const restored=await call('open',{threadId:conversationId});if(gen===generation&&turn===epoch){acceptConversation(restored.conversation);threadId=restored.history.thread_id;acceptHistory(restored.history);await call('watch',{threadId});}}catch{}if($('[data-chat-edit-dialog]').open)$('[data-edit-error]').textContent=error;}}
+      finally{if(gen===generation&&turn===epoch){busy=false;paint();}}
+    }
+    async function polishDraft() {
+      if(polishBusy||!draft.trim()||active||pending)return;
+      const before=draft,gen=generation,turn=epoch;polishBusy=true;paintStatus();
+      try{const result=await call('polish',{model:selected,text:before});if(gen!==generation||turn!==epoch)return;if(draft===before){polishUndo=before;draft=result.text;$('[data-chat-input]').value=draft;notice='草稿已润色，检查后再发送。';}else notice='草稿已修改，本次润色结果未覆盖你的输入。';}
+      catch(e){if(gen===generation&&turn===epoch)error=errorText(e);}finally{if(gen===generation&&turn===epoch){polishBusy=false;paintStatus();}}
+    }
     async function openThread(id, choose = true) {
       if (!scope || busy || uploading) return;
+      if (conversationId !== id) {stashDraft();}
       if (threadId !== id && (spaceEnabled || knowledgeEnabled)) await call('release-context');
       const turn = ++epoch, gen = generation; opening = true; error = ''; stopWatch(); paintStatus();
       try {
-        const result = await call('open', { threadId: id });
+        const result = await call('open', { threadId: id, trackOpened:choose });
         if (turn !== epoch || gen !== generation) return;
-        const changedThread = threadId !== id; threadId = id; legacy = null; legacyId = null; submitted = null;
+        const changedConversation=conversationId!==result.conversation.id;
+        const changedThread = threadId !== result.history.thread_id; threadId = result.history.thread_id;acceptConversation(result.conversation);contextUsage=null;
+        if(changedConversation){const cached=drafts.get(conversationId);draft=cached?.draft||'';attachments=cached?.attachments||[];reference=cached?.reference||'';$('[data-chat-input]').value=draft;} legacy = null; legacyId = null; submitted = null;
         if (changedThread) { messages = []; sourceLinks.clear(); }
         acceptHistory(result.history);
-        if (choose && !savedModel && result.history.model_ref) selected = result.history.model_ref;
+        if (choose && result.history.model_ref) selected = result.history.model_ref;
         if (selected && !models.some(m => m.id === selected)) error = errors.MODEL_UNAVAILABLE;
-        runModel = result.history.model_ref || selected;
-        await call('watch', { threadId });
+        runModel = result.history.messages?.findLast(m=>m.role==='user')?.composer_context?.model || result.history.model_ref || selected;
+        await call('watch', { threadId });void refreshUsage();
       } catch (e) { if (turn === epoch && gen === generation) error = errorText(e); }
       finally { if (turn === epoch && gen === generation) { opening = false; paint(); } }
     }
     async function newChat() {
       if (busy || uploading) return;
+      recentRequested=false;
+
       if (spaceEnabled || knowledgeEnabled) await call('release-context');
-      epoch++; clearTimeout(refreshTimer); stopWatch(); release(); threadId = null; legacy = null; legacyId = null; legacyAnswer = null;
+      stashDraft();epoch++; clearTimeout(refreshTimer); stopWatch(); threadId = null;conversationId=null;conversationRevision=0;versions=[];contextUsage=null;polishUndo=null;spaceEnabled=false;spaceSelection=null;spaceLabel='';knowledgeEnabled=false;knowledgeWarehouses=[]; legacy = null; legacyId = null; legacyAnswer = null;
       messages = []; sourceLinks.clear(); active = false; uncertain = false; pending = null; pendingPaint = ''; draft = ''; attachments = []; reference = ''; submitted = null; hasMore = false;
       error = ''; notice = ''; if ($('[data-chat-input]')) { $('[data-chat-input]').value = ''; $('[data-chat-input]').style.height = ''; }
       if ($('[data-chat-artifacts]')) $('[data-chat-artifacts]').innerHTML = '';
@@ -246,7 +358,7 @@
       try {
         const result = await call('open', { threadId: id });
         if (gen !== generation || turn !== epoch) return;
-        acceptHistory(result.history); paint();
+        if(result.history.thread_id!==id){error=errors.ASSISTANT_CONVERSATION_CONFLICT;paintStatus();return;}acceptConversation(result.conversation);acceptHistory(result.history); paint();void refreshUsage();
         if (result.history.history_loading) refreshTimer = setTimeout(() => void refreshCurrent(), Math.max(500, result.history.history_retry_after_ms || 1000));
       } catch (e) { if (gen === generation && turn === epoch) { error = errorText(e); paintStatus(); } }
     }
@@ -255,19 +367,20 @@
       const text = draft.trim(); if (!text && !attachments.length && !reference.trim()) return;
       const prompt = reference.trim() ? `${reference.trim()}\n\n【现在的请求】\n${text}` : text;
       if (prompt.length > 32000) { error = '历史参考与消息合计最多 32000 字符，请删减参考内容后发送。'; paintStatus(); return; }
+
       const gen = generation, turn = epoch, sentFiles = attachments.slice(), sentDraft = draft, sentReference = reference;
       submitted = { draft: sentDraft, reference: sentReference, attachments: sentFiles, prompt, model: selected, ended: false, failed: false };
-      busy = true; error = ''; active = true; runModel = selected;
+      busy = true; error = ''; notice = ''; active = true; runModel = selected;
       messages.push({ id: `optimistic-${++sequence}`, role: 'user', text, reference: sentReference, files: sentFiles }); paint();
       try {
-        const result = await call('send', { threadId, model: selected, prompt, attachments: sentFiles.map(f => f.handle), spaceEnabled, knowledgeEnabled });
+        const result = await call('send', { threadId, revision:conversationRevision,model: selected, prompt, attachments: sentFiles.map(f => f.handle), spaceEnabled, knowledgeEnabled });
         if (gen !== generation || turn !== epoch) return;
-        threadId = result.threadId;
+        threadId = result.threadId;acceptConversation(result.conversation);
         if (!submitted.failed && draft === sentDraft) { draft = ''; $('[data-chat-input]').value = ''; $('[data-chat-input]').style.height = ''; }
         if (!submitted.failed && reference === sentReference) reference = '';
         if (!submitted.failed) attachments = attachments.filter(f => !sentFiles.some(item => item.handle === f.handle));
         active = !submitted.ended && !pending;
-        if (!sessions.some(s => s.thread_id === threadId)) sessions.unshift({ thread_id: threadId, title: text.slice(0, 35) || '附件对话', last_active: Date.now() / 1000 });
+        if (!sessions.some(s => s.thread_id === (conversationId || threadId))) sessions.unshift({ thread_id: conversationId || threadId, title: text.slice(0, 35) || '附件对话', last_active: Date.now() / 1000 });
         paintHistory();
       } catch (e) {
         if (gen !== generation || turn !== epoch) return;
@@ -277,22 +390,25 @@
     }
     function paintModels() {
       const node = $('[data-chat-models]'); if (!node) return;
-      const chosen = modelFor(selected), quick = models.filter(m => m.id !== selected).slice(0, 4);
-      node.innerHTML = `<div class="ai-model-current"><span class="ai-model-eyebrow">当前 AI</span><button class="ai-current-choice" data-chat-action="models" aria-haspopup="dialog" aria-expanded="${pickerOpen}"><span class="ai-model-icon">${icon(chosen)}</span><strong>${esc(selected ? chosen.name : '选择模型')}</strong><span class="ai-chevron">⌄</span></button></div><div class="ai-quick-models">${quick.map(m => `<button data-chat-action="model" data-id="${esc(m.id)}" class="ai-model"><span class="ai-model-icon">${icon(m)}</span><span>${esc(m.name)}</span></button>`).join('')}</div><button class="ai-more-models" data-chat-action="models" aria-expanded="${pickerOpen}">更多模型 <span>⌄</span></button>`;
-      const picker = $('[data-chat-model-picker]'); picker.hidden = false;
-      const needle = modelQuery.trim().toLowerCase();
-      $('[data-chat-model-options]').innerHTML = models.filter(m => `${m.name} ${m.provider}`.toLowerCase().includes(needle)).map(m => `<button data-chat-action="model" data-id="${esc(m.id)}" class="ai-model-option" aria-pressed="${m.id === selected}"><span class="ai-model-icon">${icon(m)}</span><span><strong>${esc(m.name)}</strong><small>${esc(m.provider)}</small></span>${m.id === selected ? '<span class="ai-selected-tick">✓</span>' : ''}</button>`).join('') || '<p class="ai-empty-label">没有找到可用模型</p>';
-      $('[data-chat-next-model]').textContent = active && selected !== runModel ? `下一条消息使用 ${chosen.name}，当前回答继续完成。` : '设置会记住，之后可随时在这里调整。';
+      const chosen=modelFor(selected);
+      node.innerHTML='<button type="button" class="ai-footer-model" data-chat-action="models" aria-haspopup="dialog" aria-expanded="'+pickerOpen+'"><span class="ai-model-icon">'+icon(chosen)+'</span><span>'+esc(selected?chosen.name:'选择模型')+'</span><span>⌄</span></button>';
+      $('[data-chat-model-picker]').hidden=!pickerOpen;
+      const needle=modelQuery.trim().toLowerCase();
+      $('[data-chat-model-options]').innerHTML=models.filter(m=>(m.name+' '+m.provider).toLowerCase().includes(needle)).map(m=>'<button type="button" data-chat-action="model" data-id="'+esc(m.id)+'" class="ai-model-option" aria-pressed="'+(m.id===selected)+'"><span class="ai-model-icon">'+icon(m)+'</span><span><strong>'+esc(m.name)+'</strong><small>'+esc(m.provider)+'</small></span>'+(m.id===selected?'✓':'')+'</button>').join('')||'<p class="ai-empty-label">没有找到可用模型</p>';
+      $('[data-chat-next-model]').textContent=active&&selected!==runModel?'下一轮使用 '+chosen.name+'，当前回答继续完成。':'';
     }
     function messageMarkup(message) {
       if (message.role === 'tool') return `<details class="ai-tool"><summary><span class="ai-tool-dot ${message.status}"></span>${esc(/wanx_knowledge_.*_xingtu_|Xingtu |星图知识库/i.test(message.name || '') ? '读取星图知识库' : /wanx_space_.*_space_|万象空间/i.test(message.name || '') ? '读取万象空间' : message.name || '工具')}<span>${message.status === 'running' ? '正在执行' : message.status === 'error' ? '未完成' : message.status === 'interrupted' ? '已中断' : message.status === 'called' ? '已调用' : '已完成'}</span></summary><pre>${esc(message.text || '正在处理…')}</pre></details>` + sourceButtons(message.text || '');
       const files = (message.files || []).map(f => `<span class="ai-sent-file">▤ ${esc(f.name || f.filename || '附件')}</span>`).join('');
-      if (message.role === 'user') return `<article class="ai-user-message"><div>${message.reference ? '<small>含旧版对话参考</small>' : ''}<p>${esc(message.text)}</p>${files}</div></article>`;
+      if (message.role === 'user') return `<article class="ai-user-message"><div>${message.reference ? '<small>含旧版对话参考</small>' : ''}<p>${esc(message.text)}</p>${files}${!message.id.startsWith('optimistic-')?`<button class="ai-message-edit" data-chat-action="edit" data-id="${esc(message.id)}" ${active||busy||pending?'disabled':''}>编辑重发</button>`:''}</div></article>`;
       const model = modelFor(message.model);
-      return `<article class="ai-answer"><header><span class="ai-answer-icon">${icon(model)}</span><strong>${esc(message.model ? model.name : '通用专家')}</strong>${message.status === 'running' ? '<span class="ai-answer-status">正在回答</span>' : ''}</header><div class="ai-answer-text">${markdown(message.text)}</div>${message.text ? `<footer><button data-chat-action="copy" data-id="${esc(message.id)}">复制回答</button></footer>` : ''}</article>`;
+      const usage=usageMarkup(message.usage);
+      return `<article class="ai-answer"><header><span class="ai-answer-icon">${icon(model)}</span><strong>${esc(message.model ? model.name : '通用专家')}</strong>${message.status === 'running' ? '<span class="ai-answer-status">正在回答</span>' : ''}</header><div class="ai-answer-text">${markdown(message.text)}</div>${message.text ? `${usage}<footer><button data-chat-action="copy" data-id="${esc(message.id)}">复制回答</button>${message.status !== 'running' ? `<button data-chat-action="regenerate" data-id="${esc(message.id)}" ${active||busy||pending?'disabled':''}>重新生成</button>` : ''}</footer>` : ''}</article>`;
     }
+    function paintScroll(){const area=$('[data-chat-messages]'),button=$('[data-scroll-bottom]');if(area&&button)button.hidden=area.scrollHeight-area.scrollTop-area.clientHeight<100;}
     function paintMessages() {
       const area = $('[data-chat-messages]'); if (!area) return;
+      const expanded=new Set([...area.querySelectorAll('details[open][data-process-key]')].map(n=>n.dataset.processKey));
       const follow = area.scrollHeight - area.scrollTop - area.clientHeight < 100;
       if (legacy) {
         const leaves = legacy.groups?.flatMap(g => g.answers) || [];
@@ -303,10 +419,12 @@
       if (!messages.length && !active) {
         area.innerHTML = `<div class="ai-welcome"><p class="ai-welcome-eyebrow">从一个想法，到下一步行动</p><h3>今天，想完成什么？</h3><p>把问题、材料或想法交给我，一起推进手头的工作。</p>${!connected ? '<button class="ai-connect" data-chat-action="boxes">连接万象盒子</button>' : ''}</div>`;
       } else {
-        area.innerHTML = `<div class="ai-transcript">${hasMore ? '<button class="ai-load-older" data-chat-action="older">查看更早的消息</button>' : ''}${messages.map(messageMarkup).join('')}${active && messages.at(-1)?.role !== 'assistant' ? `<div class="ai-working"><span></span>正在处理…</div>` : ''}</div>`;
+        area.innerHTML = `<div class="ai-transcript">${hasMore ? '<button class="ai-load-older" data-chat-action="older">查看更早的消息</button>' : ''}${transcriptMarkup(messages,messageMarkup)}${active && messages.at(-1)?.role !== 'assistant' ? `<div class="ai-working"><span></span>正在处理…</div>` : ''}</div>`;
       }
       if (!legacy && sourceLinks.size && !area.querySelector('.ai-knowledge-sources')) area.querySelector('.ai-transcript')?.insertAdjacentHTML('beforeend', sourceButtons(JSON.stringify({ assistant_knowledge_sources: [...sourceLinks.values()] })));
+      for(const node of area.querySelectorAll('[data-process-key]'))if(expanded.has(node.dataset.processKey))node.open=true;
       if (follow) area.scrollTop = area.scrollHeight;
+      paintScroll();
     }
     const allHistory = () => historyItems(sessions, legacySessions, organization);
     const filteredHistory = () => historyItems(sessions, legacySessions, organization, { query, status: historyStatus, kind: historyKind, sort: historySort });
@@ -319,23 +437,28 @@
       if (!$('[data-chat-history]')) return;
       $('[data-chat-history]').hidden = !historyOpen; $('.ai-dialogue').classList.toggle('history-collapsed', !historyOpen);
       for (const button of root.querySelectorAll('[data-chat-action="history"]')) button.setAttribute('aria-expanded', String(historyOpen));
-      for (const button of root.querySelectorAll('[data-history-status]')) button.setAttribute('aria-selected', String(button.dataset.historyStatus === historyStatus));
+      for (const button of root.querySelectorAll('.ai-history-views [data-history-status]')) button.setAttribute('aria-pressed', String(button.dataset.historyStatus === historyStatus));
+      $('[data-history-heading]').textContent = historyStatus === 'trash' ? '回收站' : historyStatus === 'archived' ? '已归档' : '历史';
+      $('[data-history-back]').hidden = historyStatus === 'active';
+      $('[data-history-reset]').hidden = historyKind === 'all' && historySort === 'newest';
+      if (!historyOpen) $('[data-history-options]').open = false;
       $('[data-history-kind]').value = historyKind; $('[data-history-sort]').value = historySort;
-      $('[data-history-manage]').textContent = historyBatch ? '完成' : '批量管理';
+      $('[data-history-manage]').textContent = historyBatch ? '结束批量管理' : '批量管理';
       $('[data-history-manage]').disabled = !historyAvailable || historyBusy;
       $('[data-history-refresh]').disabled = loading || historyBusy || !connected;
       const list = filteredHistory(), pages = Math.max(1, Math.ceil(list.length / 50)); historyPage = Math.min(historyPage, pages);
       const page = list.slice((historyPage - 1) * 50, historyPage * 50);
       let lastGroup;
       $('[data-chat-history-list]').innerHTML = page.map(s => {
-        const group = s.pinned ? '置顶' : historyStatus === 'trash' ? '已删除' : historyStatus === 'archived' ? '已归档' : '最近对话';
-        const caption = group !== lastGroup ? `<p class="ai-history-caption">${group}</p>` : ''; lastGroup = group;
-        const current = s.kind === 'thread' ? threadId === s.id && !legacy : legacyId === s.id;
-        return caption + `<div class="ai-history-row ${current ? 'current' : ''}">${historyBatch ? `<input type="checkbox" data-history-select="${esc(s.key)}" aria-label="选择 ${esc(s.title)}" ${historySelection.has(s.key) ? 'checked' : ''} ${historyBusy ? 'disabled' : ''}/>` : ''}<button class="ai-history-item" data-chat-action="${historyStatus === 'trash' ? 'history-menu' : s.kind === 'legacy' ? 'legacy' : 'open'}" data-id="${esc(s.id)}" data-key="${esc(s.key)}" title="${esc(s.title)}" ${current ? 'aria-current="page"' : ''}><span>${esc(s.title)}</span><small>${s.kind === 'legacy' ? '旧版 · ' : ''}${s.pinned ? '置顶 · ' : ''}${esc(historyDate(s.time))}</small></button><button class="ai-history-more" data-chat-action="history-menu" data-key="${esc(s.key)}" aria-label="管理 ${esc(s.title)}">⋯</button></div>`;
+        const group = s.pinned && historyStatus === 'active' ? '置顶' : '';
+        const caption = group && group !== lastGroup ? '<p class="ai-history-caption">置顶</p>' : !group && lastGroup === '置顶' ? '<p class="ai-history-caption">最近</p>' : ''; lastGroup = group;
+        const current = s.kind === 'thread' ? conversationId === s.id && !legacy : legacyId === s.id;
+        return caption + `<div class="ai-history-row ${current ? 'current' : ''}">${historyBatch ? `<input type="checkbox" data-history-select="${esc(s.key)}" aria-label="选择 ${esc(s.title)}" ${historySelection.has(s.key) ? 'checked' : ''} ${historyBusy ? 'disabled' : ''}/>` : ''}<button class="ai-history-item" data-chat-action="${historyStatus === 'trash' ? 'history-menu' : s.kind === 'legacy' ? 'legacy' : 'open'}" data-id="${esc(s.id)}" data-key="${esc(s.key)}" title="${esc(s.title + (s.time ? ' · ' + historyDate(s.time) : ''))}" ${current ? 'aria-current="page"' : ''}><span>${esc(s.title)}</span>${s.kind === 'legacy' ? '<small>旧版</small>' : ''}</button><button class="ai-history-more" data-chat-action="history-menu" data-key="${esc(s.key)}" aria-label="管理 ${esc(s.title)}">⋯</button></div>`;
       }).join('') || `<p class="ai-history-empty">${query ? '没有找到匹配的对话。' : historyStatus === 'trash' ? '回收站是空的。删除的对话可在这里恢复。' : historyStatus === 'archived' ? '还没有归档的对话。' : '从第一句开始，聊过的内容会留在这里。'}</p>`;
+      $('[data-history-pagination]').hidden = pages <= 1;
       $('[data-history-pagination]').innerHTML = `<span>${list.length} 段对话</span><button data-chat-action="history-prev" aria-label="上一页历史" ${historyPage === 1 ? 'disabled' : ''}>‹</button><span>${historyPage} / ${pages}</span><button data-chat-action="history-next" aria-label="下一页历史" ${historyPage === pages ? 'disabled' : ''}>›</button>`;
       $('[data-history-batch]').hidden = !historyBatch;
-      $('[data-history-batch]').innerHTML = `<div><span>已选 ${historySelection.size} 项</span><button data-chat-action="history-select-page">${page.length && page.every(s => historySelection.has(s.key)) ? '取消本页' : '选择本页'}</button></div><div>${(historyStatus === 'trash' ? [['restore', '恢复']] : [['pin', '置顶'], [historyStatus === 'archived' ? 'unarchive' : 'archive', historyStatus === 'archived' ? '取消归档' : '归档'], ['trash', '删除']]).map(([op, label]) => `<button data-chat-action="history-bulk" data-operation="${op}" ${!historySelection.size || historyBusy ? 'disabled' : ''}>${label}</button>`).join('')}</div>`;
+      $('[data-history-batch]').innerHTML = `<div><span>已选 ${historySelection.size} 项</span><button data-chat-action="history-manage">完成</button></div><div><button data-chat-action="history-select-page">${page.length && page.every(s => historySelection.has(s.key)) ? '取消本页' : '选择本页'}</button></div><div>${(historyStatus === 'trash' ? [['restore', '恢复']] : [['pin', '置顶'], [historyStatus === 'archived' ? 'unarchive' : 'archive', historyStatus === 'archived' ? '取消归档' : '归档'], ['trash', '删除']]).map(([op, label]) => `<button data-chat-action="history-bulk" data-operation="${op}" ${!historySelection.size || historyBusy ? 'disabled' : ''}>${label}</button>`).join('')}</div>`;
     }
     function openHistoryMenu(key) {
       const row = allHistory().find(s => s.key === key); if (!row) return;
@@ -362,7 +485,7 @@
         if (gen !== generation) return;
         organization = result.entries; historySelection.clear();
         if (['trash', 'archive'].includes(operation) && rows.some(s => s.kind === 'thread' && s.id === threadId || s.kind === 'legacy' && s.id === legacyId)) {
-          epoch++; stopWatch(); threadId = null; legacy = null; legacyId = null; messages = []; active = false; pending = null; pendingPaint = ''; submitted = null; hasMore = false;
+           epoch++; stopWatch(); threadId = null; legacy = null; legacyId = null; messages = []; active = false; pending = null; pendingPaint = ''; submitted = null; hasMore = false;
           $('[data-chat-artifacts]').innerHTML = ''; paintMessages(); paintPending(); paintStatus();
         }
         $('[data-chat-history-dialog]').close(); notice = operation === 'trash' ? '已移到回收站，可以随时恢复。' : '历史对话已更新。'; error = ''; paintStatus();
@@ -408,14 +531,14 @@
         if (!scopeSpaces.some(s => s.id === scopeSpaceId)) scopeSpaceId = scopeSpaces[0]?.id || 'personal';
         spaceBusy = false;
         if (scopeMode === 'folder') await browseSpace(scopeFolderId);
-        else $('[data-space-note]').textContent = '确认后才允许读取；取消勾选可随时停止后续读取。';
+        else $('[data-space-note]').textContent = '发送时按所选范围读取；取消勾选可停止后续读取。';
       } catch (e) { if (gen === generation) $('[data-space-note]').textContent = errorText(e); }
       finally { if (gen === generation) { spaceBusy = false; paintSpaceDialog(); paintStatus(); } }
     }
     async function disableSpace() {
       if (!spaceEnabled) return;
       const gen = generation; spaceBusy = true; paintStatus();
-      try { await call('space-grant', { enabled: false }); if (gen === generation) { spaceEnabled = false; spaceSelection = null; spaceLabel = ''; } }
+      try { const changed=await call('space-grant', { enabled: false,threadId });acceptConversation(changed.conversation); if (gen === generation) { spaceEnabled = false; spaceSelection = null; spaceLabel = ''; } }
       finally { if (gen === generation) { spaceBusy = false; paintStatus(); } }
     }
     async function confirmSpace() {
@@ -425,7 +548,7 @@
       try {
         const result = await call('space-grant', { enabled: true, selection, threadId });
         if (gen !== generation) return;
-        spaceEnabled = result.enabled; spaceSelection = result.selection; spaceLabel = result.label;
+        acceptConversation(result.conversation);spaceEnabled = result.enabled; spaceSelection = result.selection; spaceLabel = result.label;
         $('[data-chat-space-dialog]').close(); error = '';
       } catch (e) { if (gen === generation) $('[data-space-note]').textContent = errorText(e); }
       finally { if (gen === generation) { spaceBusy = false; paintSpaceDialog(); paintStatus(); } }
@@ -441,7 +564,7 @@
     function paintKnowledgeDialog() {
       const list = $('[data-knowledge-options]'); if (!list) return;
       const needle = knowledgeQuery.trim().toLowerCase();
-      list.innerHTML = knowledgeCatalog.filter(w => w.name.toLowerCase().includes(needle)).map(w => '<label><input type="checkbox" data-knowledge-choice value="' + esc(w.id) + '"' + (knowledgeChoices.has(w.id) ? ' checked' : '') + (!w.available || knowledgeBusy ? ' disabled' : '') + '/><span><strong>' + esc(w.name) + '</strong><small>' + (w.available ? '只读 · 检索、图谱和证据' : '暂不可用，请联系管理员') + '</small></span></label>').join('') || '<p>没有可用数据仓。请联系管理员在星图中授权。</p>';
+      list.innerHTML = knowledgeCatalog.filter(w => w.name.toLowerCase().includes(needle)).map(w => '<label><input type="checkbox" data-knowledge-choice value="' + esc(w.id) + '"' + (knowledgeChoices.has(w.id) ? ' checked' : '') + (!w.available || knowledgeBusy ? ' disabled' : '') + '/><span><strong>' + esc(w.name) + '</strong><small>' + (w.available ? '只读 · 检索、图谱和证据' : '暂不可用，请联系管理员') + '</small></span></label>').join('') || '<p>没有可用数据仓。请先在星图中准备数据仓；团队成员还需获得授权。</p>';
       $('[data-knowledge-confirm]').disabled = knowledgeBusy || !knowledgeChoices.size;
     }
     async function showKnowledgeSettings() {
@@ -462,13 +585,13 @@
       try {
         const value = await call('knowledge-grant', { enabled: true, warehouses: [...knowledgeChoices], threadId });
         if (gen !== generation) return;
-        knowledgeEnabled = value.enabled; knowledgeWarehouses = value.warehouses; error = ''; $('[data-chat-knowledge-dialog]').close();
+        acceptConversation(value.conversation);knowledgeEnabled = value.enabled; knowledgeWarehouses = value.warehouses; error = ''; $('[data-chat-knowledge-dialog]').close();
       } catch (e) { if (gen === generation) $('[data-knowledge-note]').textContent = errorText(e); }
       finally { if (gen === generation) { knowledgeBusy = false; paintKnowledgeDialog(); paintStatus(); } }
     }
     async function disableKnowledge() {
       const gen = generation; knowledgeBusy = true; paintStatus();
-      try { await call('knowledge-grant', { enabled: false }); if (gen === generation) { knowledgeEnabled = false; knowledgeWarehouses = []; } }
+      try { const changed=await call('knowledge-grant', { enabled: false,threadId });acceptConversation(changed.conversation); if (gen === generation) { knowledgeEnabled = false; knowledgeWarehouses = []; } }
       finally { if (gen === generation) { knowledgeBusy = false; paintStatus(); } }
     }
     async function previewKnowledge(key) {
@@ -494,15 +617,16 @@
     }
     function paintStatus() {
       if (!root) return;
+      onSummary?.({sources:[spaceEnabled ? (spaceLabel || '万象空间') : '',knowledgeEnabled ? '星图知识库' : ''].filter(Boolean)});
       const line = error || notice || (loading ? '正在连接助理…' : !connected ? '连接万象盒子后开始工作。' : !models.length && loaded ? '后台暂无可用的对话模型。配置后可恢复连接。' : '');
       const node = $('[data-chat-notice]'); node.hidden = !line;
       node.innerHTML = `<span>${esc(line)}</span>${connected && (error || uncertain || !models.length && loaded) ? '<button data-chat-action="reconnect">恢复连接</button>' : ''}`;
       const input = $('[data-chat-input]'); input.disabled = !connected || !scope || Boolean(legacy);
-      const send = $('[data-chat-send]'); send.disabled = !scope || busy || uploading || opening || active || uncertain || spaceBusy || knowledgeBusy || Boolean(pending) || Boolean(legacy) || !models.some(m => m.id === selected) || !draft.trim() && !attachments.length && !reference.trim();
+      const send = $('[data-chat-send]'); send.disabled = !scope || busy || uploading || opening || active || uncertain || spaceBusy || knowledgeBusy || draft.length > 32000 || Boolean(pending) || Boolean(legacy) || !models.some(m => m.id === selected) || !draft.trim() && !attachments.length && !reference.trim();
       send.textContent = busy ? '发送中' : '发送 ↑';
       $('[data-chat-stop]').hidden = !active || Boolean(legacy); $('[data-chat-stop]').disabled = busy;
       $('[data-chat-attach]').disabled = !scope || busy || uploading || Boolean(legacy) || attachments.length >= 8;
-      $('[data-chat-attach]').textContent = uploading ? '正在添加…' : '＋ 添加附件';
+      $('[data-chat-attach]').querySelector('span').textContent = uploading ? '正在添加…' : '添加附件';
       $('[data-chat-space-toggle]').checked = spaceEnabled;
       $('[data-chat-space-toggle]').disabled = !scope || spaceBusy || Boolean(legacy) || (!spaceEnabled && (active || busy || Boolean(pending)));
       $('[data-chat-space-settings]').hidden = !spaceEnabled;
@@ -514,8 +638,8 @@
       $('[data-chat-knowledge-toggle]').disabled = !scope || knowledgeBusy || Boolean(legacy) || (!knowledgeEnabled && (active || busy || Boolean(pending)));
       $('[data-chat-knowledge-settings]').hidden = !knowledgeEnabled;
       $('[data-chat-knowledge-settings]').disabled = knowledgeBusy || active || busy || Boolean(pending);
-      $('[data-chat-knowledge-settings]').textContent = knowledgeWarehouses.length ? knowledgeWarehouses.map(w => w.name).join('、') + ' ⌄' : '选择数据仓';
-      $('[data-chat-settings-open]').disabled = !scope;
+      $('[data-chat-knowledge-settings]').textContent = knowledgeWarehouses.length ? (knowledgeWarehouses.length===1?knowledgeWarehouses[0].name:'已选 '+knowledgeWarehouses.length+' 项') + ' ⌄' : '选择数据仓';
+      $('[data-chat-polish]').disabled=!scope||polishBusy||active||busy||pending||!draft.trim();$('[data-chat-polish]').textContent=polishBusy?'正在润色…':'润色草稿';$('[data-chat-polish-undo]').hidden=polishUndo===null;paintVersions();paintUsage();
       $('[data-chat-composer]').hidden = Boolean(legacy);
       $('[data-chat-attachments]').innerHTML = attachments.map(file => `<span class="ai-attachment">▤ ${esc(file.name)}<button type="button" data-chat-action="remove-file" data-id="${esc(file.handle)}" aria-label="移除 ${esc(file.name)}">×</button></span>`).join('');
       $('[data-chat-reference]').hidden = !reference;
@@ -524,12 +648,20 @@
       for (const button of root.querySelectorAll('[data-chat-action="new"]')) button.disabled = busy || uploading;
       for (const button of root.querySelectorAll('[data-chat-action="model"]')) button.disabled = !scope || opening;
     }
-    function paint() { if (!root) return; paintModels(); paintMessages(); paintHistory(); paintPending(); paintStatus(); }
+    function paint() { if (!root) return; paintModels(); paintMessages(); paintHistory(); paintPending(); paintStatus();if(pendingHandoff)void importHandoff(); }
     function mountConversationSettings() {
-      $('.ai-page-actions').insertAdjacentHTML('afterbegin', '<button class="ai-history-toggle ai-settings-trigger" data-chat-action="settings" data-chat-settings-open aria-label="对话设置">⚙ <span>设置</span></button>');
-      $('.ai-dialogue').insertAdjacentHTML('beforeend', '<dialog class="ai-settings-dialog" data-chat-settings-dialog aria-labelledby="assistant-settings-title"><header><div><h3 id="assistant-settings-title">对话设置</h3><p>按当前账号与盒子记住，日常对话无需重复配置。</p></div><button data-chat-action="settings-close" aria-label="关闭对话设置">×</button></header><section><h4>AI 模型</h4><div data-settings-model></div></section><section><h4>资料来源</h4><div data-settings-space></div><div class="ai-composer-context" data-chat-knowledge-entry hidden><label class="ai-space-toggle"><input type="checkbox" data-chat-knowledge-toggle/>星图知识库</label><button type="button" class="ai-space-scope" data-chat-action="knowledge-settings" data-chat-knowledge-settings hidden>选择数据仓</button></div><p class="ai-settings-caption">仅使用所选范围；可随时关闭接入。</p></section><footer><button data-chat-action="settings-close">完成</button></footer></dialog><dialog class="ai-space-dialog ai-knowledge-dialog" data-chat-knowledge-dialog aria-labelledby="knowledge-dialog-title"><header><div><h3 id="knowledge-dialog-title">选择星图知识库</h3><p>可同时使用多个已授权数据仓。</p></div><button data-chat-action="knowledge-close" aria-label="关闭知识库选择">×</button></header><input type="search" data-knowledge-search placeholder="搜索数据仓" aria-label="搜索数据仓"/><div class="ai-knowledge-options" data-knowledge-options></div><p class="ai-space-note" data-knowledge-note role="status"></p><footer><button data-chat-action="knowledge-close">取消</button><button data-chat-action="knowledge-confirm" data-knowledge-confirm>使用所选数据仓</button></footer></dialog>');
-      $('[data-settings-model]').append($('.ai-model-section'));
-      $('[data-settings-space]').append($('.ai-composer-context'));
+      $('[data-chat-attach]').innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8"/></svg><span>添加附件</span>';
+      $('[data-chat-attach]').setAttribute('aria-label', '添加附件');
+      $('.ai-composer-bottom>span:not([data-chat-context-summary])')?.classList.add('ai-keyboard-hint');
+      $('.ai-chat-workspace').insertAdjacentHTML('afterbegin','<div class="ai-source-bar" data-chat-source-bar><div data-top-space></div><div class="ai-composer-context" data-chat-knowledge-entry hidden><label class="ai-space-toggle"><input type="checkbox" data-chat-knowledge-toggle/>星图知识库</label><button type="button" class="ai-space-scope" data-chat-action="knowledge-settings" data-chat-knowledge-settings hidden>选择数据仓</button></div><details class="ai-context-details"><summary data-context-summary>上下文 · 暂无统计</summary><section data-context-breakdown></section></details></div><div class="ai-version-controls" data-chat-versions hidden></div>');
+      $('[data-top-space]').append($('[data-chat-space-toggle]').closest('.ai-composer-context'));
+      $('.ai-composer-bottom').insertBefore($('.ai-model-section'),$('.ai-keyboard-hint'));
+      $('[data-chat-context-summary]').remove();
+      $('.ai-composer-bottom').insertBefore(Object.assign(document.createElement('details'),{className:'ai-composer-more',innerHTML:'<summary aria-label="更多操作" title="更多操作">⋯</summary><div><button type="button" data-chat-action="polish" data-chat-polish>润色草稿</button><button type="button" data-chat-action="polish-undo" data-chat-polish-undo hidden>恢复原文</button></div>'}),$('.ai-keyboard-hint'));
+      $('.ai-dialogue').insertAdjacentHTML('beforeend', '<dialog class="ai-space-dialog ai-knowledge-dialog" data-chat-knowledge-dialog aria-labelledby="knowledge-dialog-title"><header><div><h3 id="knowledge-dialog-title">选择星图知识库</h3><p>可同时使用多个已授权数据仓。</p></div><button data-chat-action="knowledge-close" aria-label="关闭知识库选择">×</button></header><input type="search" data-knowledge-search placeholder="搜索数据仓" aria-label="搜索数据仓"/><div class="ai-knowledge-options" data-knowledge-options></div><p class="ai-space-note" data-knowledge-note role="status"></p><footer><button data-chat-action="knowledge-close">取消</button><button data-chat-action="knowledge-confirm" data-knowledge-confirm>使用所选数据仓</button></footer></dialog>');
+      $('.ai-dialogue').insertAdjacentHTML('beforeend','<dialog class="ai-history-dialog ai-edit-dialog" data-chat-edit-dialog><header><h3>编辑重发</h3><button type="button" data-chat-action="edit-close" aria-label="关闭编辑">×</button></header><p>保留原消息与回答，修改后生成新版本。</p><textarea data-edit-text rows="7" maxlength="32000" aria-label="修改消息内容"></textarea><div data-edit-files></div><p data-edit-error role="status"></p><footer><button type="button" data-chat-action="edit-close">取消</button><button type="button" data-chat-action="edit-send">保存并发送</button></footer></dialog>');
+      $('.ai-chat-workspace').insertAdjacentHTML('beforeend','<button class="ai-scroll-bottom" data-chat-action="scroll-bottom" data-scroll-bottom hidden aria-label="回到底部">↓ 回到底部</button>');
+      $('[data-chat-messages]').addEventListener('scroll',paintScroll);
       $('[data-chat-input]').rows = 1;
       $('[data-chat-knowledge-toggle]').addEventListener('change', async event => { try { if (event.target.checked) await showKnowledgeSettings(); else await disableKnowledge(); } catch (e) { error = errorText(e); } paintStatus(); });
       $('[data-knowledge-search]').addEventListener('input', event => { knowledgeQuery = event.target.value; paintKnowledgeDialog(); });
@@ -537,7 +669,7 @@
     }
     function setup(element) {
       root = element;
-      root.innerHTML = `<section class="ai-dialogue history-collapsed"><header class="ai-dialogue-heading"><div class="ai-page-title"><span class="ai-page-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 5.5h16a4 4 0 0 1 4 4v11a4 4 0 0 1-4 4H15l-7 4v-4a4 4 0 0 1-4-4v-11a4 4 0 0 1 4-4Z"/><path class="ai-mark-spark" d="m17 9 1.8 4.2L23 15l-4.2 1.8L17 21l-1.8-4.2L11 15l4.2-1.8Z"/><path d="M23 7.5v4m-2-2h4"/></svg></span><div><h2>万象·助理</h2><p>多种 AI，随时为你所用。</p></div></div><div class="ai-page-actions"><button data-chat-action="history" class="ai-history-toggle" aria-label="展开或收起历史对话">☰ <span>历史</span></button><button class="ai-sidebar-new ai-collapsed-new" data-chat-action="new">＋ 新对话</button></div></header><div class="ai-assistant-workbench"><aside class="ai-history" data-chat-history hidden><div class="ai-sidebar-heading"><div class="ai-sidebar-brand"><strong>历史对话</strong></div><button data-chat-action="history" aria-label="收起历史对话">‹</button></div><label class="ai-history-search"><span class="sr-only">搜索对话</span><input type="search" data-chat-search placeholder="搜索对话标题"/></label><nav class="ai-history-tabs" aria-label="历史对话分类"><button data-chat-action="history-filter" data-history-status="active" role="tab">对话</button><button data-chat-action="history-filter" data-history-status="archived" role="tab">已归档</button><button data-chat-action="history-filter" data-history-status="trash" role="tab">回收站</button></nav><div class="ai-history-filters"><select data-history-kind aria-label="对话类型"><option value="all">全部类型</option><option value="thread">助理会话</option><option value="legacy">旧版对话</option></select><select data-history-sort aria-label="历史排序"><option value="newest">最近使用</option><option value="oldest">最早使用</option><option value="title">按名称</option></select></div><div class="ai-history-tools"><button data-chat-action="history-manage" data-history-manage>批量管理</button><button data-chat-action="history-refresh" data-history-refresh aria-label="刷新历史对话">刷新</button></div><div class="ai-history-batch" data-history-batch hidden></div><div data-chat-history-list></div><footer class="ai-history-pagination" data-history-pagination></footer></aside><div class="ai-chat-workspace"><div class="ai-model-section"><div class="ai-model-strip" data-chat-models></div><div class="ai-model-picker" data-chat-model-picker hidden role="dialog" aria-label="选择 AI 模型"><div><strong>选择 AI 模型</strong><button data-chat-action="close-models" aria-label="关闭模型选择">×</button></div><input type="search" data-chat-model-search placeholder="搜索模型或提供商" aria-label="搜索模型或提供商"/><div data-chat-model-options></div></div><p class="ai-model-hint" data-chat-next-model></p></div><div class="ai-chat-notice" data-chat-notice role="status" hidden></div><div class="ai-messages" data-chat-messages role="log" aria-label="助理对话记录"></div><div class="ai-bottom-dock"><div class="ai-artifacts" data-chat-artifacts></div><div class="ai-pending" data-chat-pending></div><form class="ai-composer" data-chat-composer><details class="ai-reference" data-chat-reference hidden open><summary>旧版对话参考 <span data-chat-reference-count></span><button type="button" data-chat-action="remove-reference">移除</button></summary><textarea data-chat-reference-text rows="4" aria-label="编辑旧版对话参考"></textarea></details><div class="ai-composer-context"><label class="ai-space-toggle"><input type="checkbox" data-chat-space-toggle/>万象空间</label><button type="button" class="ai-space-scope" data-chat-action="space-settings" data-chat-space-settings hidden>选择访问范围</button><span class="ai-space-readonly">按所选范围只读</span></div><div class="ai-attachments" data-chat-attachments></div><textarea data-chat-input rows="2" maxlength="32000" placeholder="把问题、材料或想法交给我…" aria-label="给万象·助理发消息"></textarea><div class="ai-composer-bottom"><button type="button" data-chat-action="upload" data-chat-attach>＋ 添加附件</button><span>Enter 发送 · Shift + Enter 换行</span><button type="button" class="ai-stop" data-chat-action="stop" data-chat-stop hidden>■ 停止生成</button><button type="submit" class="ai-send" data-chat-send>发送 ↑</button></div></form></div></div></div><dialog class="ai-space-dialog" data-chat-space-dialog aria-labelledby="space-dialog-heading"><header><div><h3 id="space-dialog-heading">空间访问范围</h3><p>只读使用，配置按当前账号与盒子记住。</p></div><button data-chat-action="space-close" aria-label="关闭空间范围设置">×</button></header><fieldset class="ai-space-modes"><legend class="sr-only">选择访问范围</legend><label><input type="radio" name="assistant-space-mode" value="all" data-space-mode/>全部空间</label><label><input type="radio" name="assistant-space-mode" value="space" data-space-mode/>指定空间</label><label><input type="radio" name="assistant-space-mode" value="folder" data-space-mode/>指定文件夹</label></fieldset><label class="ai-space-choice" data-space-choice>选择空间<select data-space-select aria-label="选择空间"></select></label><div class="ai-space-directory" data-space-directory hidden><nav data-space-crumbs aria-label="文件夹路径"></nav><div data-space-folders></div></div><p class="ai-space-selection" data-space-selection></p><p class="ai-space-note" data-space-note role="status"></p><footer><button data-chat-action="space-close">取消</button><button data-chat-action="space-confirm" data-space-confirm>使用所选范围</button></footer></dialog><dialog class="ai-history-dialog" data-chat-history-dialog aria-labelledby="history-dialog-heading"><header><h3 id="history-dialog-heading">管理对话</h3><button data-chat-action="history-close" aria-label="关闭历史管理">×</button></header><p class="ai-history-dialog-title" data-history-dialog-title></p><form data-history-rename-form><label>对话名称<input data-history-rename-input maxlength="100" required aria-label="对话名称"/></label><button type="submit">保存名称</button></form><div class="ai-history-dialog-actions" data-history-dialog-actions></div><p data-history-dialog-note role="status"></p></dialog><dialog class="ai-artifact-dialog" data-chat-artifact-dialog><div class="ai-artifact-title"><strong data-artifact-name></strong><button data-chat-action="close-artifact" aria-label="关闭产物预览">×</button></div><div data-artifact-content></div><div class="ai-artifact-footer"><span data-artifact-note></span><button data-chat-action="save-artifact">保存文件</button></div></dialog></section>`;
+      root.innerHTML = `<section class="ai-dialogue history-collapsed"><header class="ai-dialogue-heading"><div class="ai-page-title"><span class="ai-page-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 5.5h16a4 4 0 0 1 4 4v11a4 4 0 0 1-4 4H15l-7 4v-4a4 4 0 0 1-4-4v-11a4 4 0 0 1 4-4Z"/><path class="ai-mark-spark" d="m17 9 1.8 4.2L23 15l-4.2 1.8L17 21l-1.8-4.2L11 15l4.2-1.8Z"/><path d="M23 7.5v4m-2-2h4"/></svg></span><div><h2>万象·助理</h2><p>多种 AI，随时为你所用。</p></div></div><div class="ai-page-actions"><button data-chat-action="history" class="ai-history-toggle" aria-label="展开或收起历史对话">☰ <span>历史</span></button><button class="ai-sidebar-new ai-collapsed-new" data-chat-action="new">＋ 新对话</button></div></header><div class="ai-assistant-workbench"><aside class="ai-history" data-chat-history hidden><div class="ai-sidebar-heading"><div class="ai-sidebar-brand"><strong data-history-heading>历史</strong></div><div class="ai-sidebar-actions"><details class="ai-history-options" data-history-options><summary aria-label="历史选项" title="历史选项">⋯</summary><div class="ai-history-menu-panel"><div class="ai-history-views" role="group" aria-label="历史分类"><button type="button" data-chat-action="history-filter" data-history-status="active" aria-pressed="true">全部对话</button><button type="button" data-chat-action="history-filter" data-history-status="archived" aria-pressed="false">已归档</button><button type="button" data-chat-action="history-filter" data-history-status="trash" aria-pressed="false">回收站</button></div><div class="ai-history-filters"><label><span>类型</span><select data-history-kind aria-label="对话类型"><option value="all">全部类型</option><option value="thread">助理会话</option><option value="legacy">旧版对话</option></select></label><label><span>排序</span><select data-history-sort aria-label="历史排序"><option value="newest">最近使用</option><option value="oldest">最早使用</option><option value="title">按名称</option></select></label></div><div class="ai-history-tools"><button type="button" data-chat-action="history-manage" data-history-manage>批量管理</button><button type="button" data-chat-action="history-refresh" data-history-refresh>刷新列表</button></div></div></details><button type="button" data-chat-action="history" aria-label="收起历史对话">‹</button></div></div><label class="ai-history-search"><span class="sr-only">搜索对话</span><input type="search" data-chat-search placeholder="搜索对话"/></label><button type="button" class="ai-history-back" data-history-back data-chat-action="history-filter" data-history-status="active" hidden>← 返回对话</button><button type="button" class="ai-history-reset" data-history-reset data-chat-action="history-reset-filters" hidden>清除筛选</button><div class="ai-history-batch" data-history-batch hidden></div><div data-chat-history-list></div><footer class="ai-history-pagination" data-history-pagination></footer></aside><div class="ai-chat-workspace"><div class="ai-model-section"><div class="ai-model-strip" data-chat-models></div><div class="ai-model-picker" data-chat-model-picker hidden role="dialog" aria-label="选择 AI 模型"><div><strong>选择 AI 模型</strong><button data-chat-action="close-models" aria-label="关闭模型选择">×</button></div><input type="search" data-chat-model-search placeholder="搜索模型或提供商" aria-label="搜索模型或提供商"/><div data-chat-model-options></div></div><p class="ai-model-hint" data-chat-next-model></p></div><div class="ai-chat-notice" data-chat-notice role="status" hidden></div><div class="ai-messages" data-chat-messages role="log" aria-label="助理对话记录"></div><div class="ai-bottom-dock"><div class="ai-artifacts" data-chat-artifacts></div><div class="ai-pending" data-chat-pending></div><form class="ai-composer" data-chat-composer><details class="ai-reference" data-chat-reference hidden open><summary>旧版对话参考 <span data-chat-reference-count></span><button type="button" data-chat-action="remove-reference">移除</button></summary><textarea data-chat-reference-text rows="4" aria-label="编辑旧版对话参考"></textarea></details><div class="ai-composer-context"><label class="ai-space-toggle"><input type="checkbox" data-chat-space-toggle/>万象空间</label><button type="button" class="ai-space-scope" data-chat-action="space-settings" data-chat-space-settings hidden>选择访问范围</button><span class="ai-space-readonly">按所选范围只读</span></div><div class="ai-attachments" data-chat-attachments></div><textarea data-chat-input rows="2" maxlength="32000" placeholder="把问题、材料或想法交给我…" aria-label="给万象·助理发消息"></textarea><div class="ai-composer-bottom"><button type="button" data-chat-action="upload" data-chat-attach>＋ 添加附件</button><span>Enter 发送 · Shift + Enter 换行</span><button type="button" class="ai-stop" data-chat-action="stop" data-chat-stop hidden>■ 停止生成</button><button type="submit" class="ai-send" data-chat-send>发送 ↑</button></div></form></div></div></div><dialog class="ai-space-dialog" data-chat-space-dialog aria-labelledby="space-dialog-heading"><header><div><h3 id="space-dialog-heading">空间访问范围</h3><p>只读使用，访问范围只绑定当前对话。</p></div><button data-chat-action="space-close" aria-label="关闭空间范围设置">×</button></header><fieldset class="ai-space-modes"><legend class="sr-only">选择访问范围</legend><label><input type="radio" name="assistant-space-mode" value="all" data-space-mode/>全部空间</label><label><input type="radio" name="assistant-space-mode" value="space" data-space-mode/>指定空间</label><label><input type="radio" name="assistant-space-mode" value="folder" data-space-mode/>指定文件夹</label></fieldset><label class="ai-space-choice" data-space-choice>选择空间<select data-space-select aria-label="选择空间"></select></label><div class="ai-space-directory" data-space-directory hidden><nav data-space-crumbs aria-label="文件夹路径"></nav><div data-space-folders></div></div><p class="ai-space-selection" data-space-selection></p><p class="ai-space-note" data-space-note role="status"></p><footer><button data-chat-action="space-close">取消</button><button data-chat-action="space-confirm" data-space-confirm>使用所选范围</button></footer></dialog><dialog class="ai-history-dialog" data-chat-history-dialog aria-labelledby="history-dialog-heading"><header><h3 id="history-dialog-heading">管理对话</h3><button data-chat-action="history-close" aria-label="关闭历史管理">×</button></header><p class="ai-history-dialog-title" data-history-dialog-title></p><form data-history-rename-form><label>对话名称<input data-history-rename-input maxlength="100" required aria-label="对话名称"/></label><button type="submit">保存名称</button></form><div class="ai-history-dialog-actions" data-history-dialog-actions></div><p data-history-dialog-note role="status"></p></dialog><dialog class="ai-artifact-dialog" data-chat-artifact-dialog><div class="ai-artifact-title"><strong data-artifact-name></strong><button data-chat-action="close-artifact" aria-label="关闭产物预览">×</button></div><div data-artifact-content></div><div class="ai-artifact-footer"><span data-artifact-note></span><button data-chat-action="save-artifact">保存文件</button></div></dialog></section>`;
       $('[data-chat-input]').value = draft;
       mountConversationSettings();
       $('[data-chat-input]').addEventListener('input', event => { draft = event.target.value; event.target.style.height = 'auto'; event.target.style.height = `${Math.min(160, event.target.scrollHeight)}px`; paintStatus(); });
@@ -555,7 +687,7 @@
       $('[data-chat-space-dialog]').addEventListener('cancel', () => { paintStatus(); });
       $('[data-space-select]').addEventListener('change', async event => { scopeSpaceId = event.target.value; scopeFolderId = ''; scopeFolders = []; scopeCrumbs = []; if (scopeMode === 'folder') await browseSpace(); else paintSpaceDialog(); });
       $('[data-chat-model-search]').addEventListener('input', event => { modelQuery = event.target.value; paintModels(); });
-      root.addEventListener('keydown', event => { if (event.key === 'Escape' && !root.querySelector('dialog[open]')) { pickerOpen = false; historyOpen = false; paintModels(); paintHistory(); } });
+      root.addEventListener('keydown', event => { if (event.key === 'Escape' && $('[data-history-options]').open) { $('[data-history-options]').open = false; event.stopPropagation(); return; } if (event.key === 'Escape' && !root.querySelector('dialog[open]')) { pickerOpen = false; historyOpen = false; paintModels(); paintHistory(); } });
       root.addEventListener('submit', async event => {
         const form = event.target.closest('[data-chat-approval]'); if (!form) return;
         event.preventDefault(); event.stopPropagation(); if (busy || !pending) return;
@@ -598,17 +730,19 @@
       }
       root.addEventListener('change', async event => { if (event.target.matches('[data-space-mode]')) { scopeMode = event.target.value; if (scopeMode === 'folder') await browseSpace(scopeFolderId); else paintSpaceDialog(); } if (event.target.dataset.historySelect) { const key = event.target.dataset.historySelect; event.target.checked ? historySelection.add(key) : historySelection.delete(key); paintHistory(); } if (event.target.dataset.legacyAnswer) legacyAnswer = event.target.dataset.legacyAnswer; });
       root.addEventListener('click', async event => {
+        const options = $('[data-history-options]'); if (options.open && !options.contains(event.target)) options.open = false;
         const button = event.target.closest('[data-chat-action]'); if (!button || button.disabled) return;
         const action = button.dataset.chatAction, id = button.dataset.id, gen = generation, turn = epoch;
         try {
           if (action === 'history') { historyOpen = !historyOpen; paintHistory(); }
           if (action === 'history-menu') openHistoryMenu(button.dataset.key);
           if (action === 'history-close') $('[data-chat-history-dialog]').close();
-          if (action === 'history-manage') { historyBatch = !historyBatch; historySelection.clear(); paintHistory(); }
-          if (action === 'history-filter') { historyStatus = button.dataset.historyStatus; historyPage = 1; historySelection.clear(); paintHistory(); }
+          if (action === 'history-manage') { historyBatch = !historyBatch; historySelection.clear(); $('[data-history-options]').open = false; paintHistory(); }
+          if (action === 'history-filter') { historyStatus = button.dataset.historyStatus; historyPage = 1; historySelection.clear(); $('[data-history-options]').open = false; paintHistory(); }
+          if (action === 'history-reset-filters') { historyKind = 'all'; historySort = 'newest'; historyPage = 1; historySelection.clear(); paintHistory(); }
           if (action === 'history-prev') { historyPage--; historySelection.clear(); paintHistory(); }
           if (action === 'history-next') { historyPage++; historySelection.clear(); paintHistory(); }
-          if (action === 'history-refresh') await load();
+          if (action === 'history-refresh') { $('[data-history-options]').open = false; await load(); }
           if (action === 'history-select-page') { const page = filteredHistory().slice((historyPage - 1) * 50, historyPage * 50), all = page.every(s => historySelection.has(s.key)); for (const row of page) all ? historySelection.delete(row.key) : historySelection.add(row.key); paintHistory(); }
           if (action === 'history-apply' && managedKey) await organizeHistory(button.dataset.operation, [managedKey]);
           if (action === 'history-bulk') await organizeHistory(button.dataset.operation, [...historySelection]);
@@ -619,8 +753,15 @@
           if (action === 'space-settings') await showSpaceSettings();
           if (action === 'space-root') await browseSpace();
           if (action === 'space-folder') await browseSpace(id);
-          if (action === 'settings') { paintModels(); paintStatus(); $('[data-chat-settings-dialog]').showModal(); }
-          if (action === 'settings-close') $('[data-chat-settings-dialog]').close();
+          if(action==='version-prev')await changeVersion(-1);
+          if(action==='version-next')await changeVersion(1);
+          if(action==='scroll-bottom'){$('[data-chat-messages]').scrollTop=$('[data-chat-messages]').scrollHeight;paintScroll();}
+          if(action==='polish'){$('.ai-composer-more').open=false;await polishDraft();}
+          if(action==='polish-undo'&&polishUndo!==null){draft=polishUndo;polishUndo=null;$('[data-chat-input]').value=draft;$('.ai-composer-more').open=false;paintStatus();}
+          if(action==='edit'&&!active&&!pending&&!busy){const m=messages.find(m=>m.id===id&&m.role==='user');if(m){editingId=id;$('[data-edit-text]').value=m.text;$('[data-edit-files]').textContent=(m.files||[]).map(f=>f.name||f.filename||'附件').join(' · ');$('[data-edit-error]').textContent='';$('[data-chat-edit-dialog]').showModal();}}
+          if(action==='edit-close')$('[data-chat-edit-dialog]').close();
+          if(action==='edit-send'&&editingId)await revise('edit',editingId,$('[data-edit-text]').value);
+          if(action==='regenerate')await revise('regenerate',id);
           if (action === 'knowledge-settings') await showKnowledgeSettings();
           if (action === 'knowledge-close') { $('[data-chat-knowledge-dialog]').close(); paintStatus(); }
           if (action === 'knowledge-confirm') await confirmKnowledge();
@@ -631,7 +772,7 @@
           if (action === 'close-models') { pickerOpen = false; paintModels(); }
           if (action === 'model' && models.some(m => m.id === id)) {
             const previous = selected; selected = id; savedModel = id; pickerOpen = false; paintModels(); paintStatus();
-            try { await call('model', { threadId: legacy ? null : threadId, model: id }); }
+            try { await call('model', { threadId: legacy ? null : threadId, model: id });void refreshUsage(); }
             catch (e) { if (gen === generation && turn === epoch && selected === id) { selected = previous; savedModel = previous; error = errorText(e); paintModels(); paintStatus(); } }
           }
           if (action === 'new') await newChat();
@@ -639,6 +780,7 @@
           if (action === 'boxes') onBoxes();
           if (action === 'open') { if (legacy) { legacy = null; legacyId = null; } await openThread(id); }
           if (action === 'legacy' && !busy && !uploading) {
+
             if (spaceEnabled || knowledgeEnabled) await call('release-context');
             epoch++; const expected = epoch; stopWatch(); opening = true; paintStatus();
             const result = await call('legacy-open', { sessionId: id });
@@ -690,9 +832,17 @@
       },
       modelsChanged() { loaded = false; if (visible && connected) void load(); },
       mount(element) { if (!element) return; if (root !== element) setup(element); if (connected && !loaded && !loading) void load(); },
-      visible(value) { if (visible === value) return; visible = value; if (!visible) stopWatch(); else if (connected && !loaded) void load(); else if (scope && threadId && !legacy) void openThread(threadId, false); },
+      visible(value) { if (visible === value) return; visible = value; if (!visible) { stopWatch();  } else if (connected && !loaded) void load(); else if (scope && threadId && !legacy) void openThread(threadId, false); },
+      snapshot(){return {scope,conversationId,draft,attachments:attachments.slice(),reference,model:selected,context:{space:{enabled:spaceEnabled,selection:spaceSelection},knowledge:{enabled:knowledgeEnabled,warehouses:knowledgeWarehouses}}};},
+      newConversation(){return newChat();},
+      restoreRecent(){
+        if(draft.trim()||attachments.length||active||pending||busy||opening)return;
+        recentRequested=true;loaded=false;if(visible&&connected&&!loading)void load();
+      },
+      showHistory(){historyOpen=!historyOpen;paintHistory();},
       event(value) {
-        if (value.type === 'invalidated') { generation++; context = null; reset(); return; }
+        if(value.type==='handoff'){pendingHandoff=value;void importHandoff();return;}
+        if (value.type === 'invalidated') { generation++; context = null; reset(); if (visible && connected) void load(); return; }
         if (value.scope !== scope) return;
         if (value.type === 'turn-submitting') { threadId = value.threadId; runModel = value.model; return; }
         if (value.threadId !== threadId || legacy) return;
@@ -717,5 +867,5 @@
   };
   // Old settings routes may still be reached by a saved navigation state. Keep
   // them harmless; model choice now lives in the persistent conversation header.
-  window.createDialogueModelSettingsView = () => ({ hostState() {}, visible() {}, mount(element) { if (element) element.innerHTML = '<p class="muted">模型现在可以在 助理顶部直接切换。</p>'; } });
+  window.createDialogueModelSettingsView = () => ({ hostState() {}, visible() {}, mount(element) { if (element) element.innerHTML = '<p class="muted">模型可以在助理输入框底部直接切换。</p>'; } });
 })();

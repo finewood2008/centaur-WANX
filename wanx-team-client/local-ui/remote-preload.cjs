@@ -81,7 +81,7 @@ const actions = {
  "wanx.mcp-copy":input=>mcpRequest("copy",input),
  ...Object.fromEntries(["share-details","create-share-key","reveal-share-key","copy-share-key","copy-share-value","release-share-key"].map(name=>["data."+name,input=>dataRequest(name,input)])),
  "data.install-starlink":input=>dataRequest("install-starlink",input),
- ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence"].map(method=>[`dialogue.${method}`,input=>ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`,input)])),
+ ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select"].map(method=>[`dialogue.${method}`,input=>ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`,input)])),
   "data.assistant-access":input=>dataRequest("assistant-access",input),
   "data.assistant-access-update":input=>dataRequest("assistant-access-update",input),
   "data.initialize":input=>dataRequest("initialize",input),
