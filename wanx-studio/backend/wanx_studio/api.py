@@ -122,6 +122,8 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
     router=APIRouter(prefix='/api/app-studio',tags=['Application studio'])
     from .iterative import mount
     mount(router,svc,identity)
+    from .delivery import mount as mount_delivery
+    mount_delivery(router, svc, identity)
 
     @router.get('/context',summary='Read authenticated studio context and capabilities')
     async def context(owner=Depends(identity)):

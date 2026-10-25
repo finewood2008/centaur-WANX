@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import {createProjectPreview} from './project-preview.mjs';
 import {exportStudioPackage} from './export-package.mjs';
 
 const fail = code => Object.assign(new Error(code), { code });
 const projectId = id => typeof id === 'string' && /^[a-f0-9]{32}$/.test(id);
 const scope = context => JSON.stringify([context.accountId, context.boxId, context.user.id]);
 
-// Only summaries cross into the client renderer. Conversations, source, and
-// runtime data remain inside the authenticated workbench service.
+// Project metadata crosses into the client renderer; executable previews use a
+// separate opaque sandbox channel. Credentials stay inside the trusted Host.
 export function projectSummary(p) {
   const states = {
     discovery: ['正在梳理需求', '继续讨论'], confirmed: ['等待确认', '继续核对方案'],
@@ -26,6 +27,7 @@ export function projectSummary(p) {
     label = '方案待确认'; action = '查看方案'; attention = '需求方案已整理好，请查看并确认';
   }
   return { id: p.id, appId: p.appId, name: p.name, goal: p.originalGoal, stage: p.stage,
+    versions:(p.versions||p.artifacts?.slice().reverse()||[]).map(v=>Object.fromEntries(['hash','version','createdAt','baseHash','summary','status','restoredFrom'].map(k=>[k,v[k]]))),
     label, action, attention, preparationPhase:p.preparation?.phase||null, updatedAt: p.updatedAt,
     adoptedArtifactHash:adopted?.hash||null,adoptedTaskId:adopted?.taskId||null,adoptedVersion:adopted?.version||null,iterationState:p.versioning?.iteration?.state||null,
     deletedAt:p.deletedAt||null, nameMode:p.nameMode||'manual', latestTaskId:p.tasks?.at(-1)?.id||null, latestArtifactHash:p.artifacts?.at(-1)?.hash||null, acceptedArtifactHash:p.acceptance?.artifactHash||null, installedVersion: p.installed?.version || null, latestVersion: p.artifacts?.at(-1)?.version || null };
@@ -57,6 +59,7 @@ export function createStudioEntry({ createConnection, applications, assets, open
     }
     return { key, request, assertLive };
   }
+  const preview=createProjectPreview(session);
   async function openIn(s, id) {
     s.assertLive();
     const target = { projectId: id, navigationId: randomUUID(), scope: s.key, assertLive: s.assertLive };
@@ -67,6 +70,17 @@ export function createStudioEntry({ createConnection, applications, assets, open
     return { projectId: id };
   }
   return Object.freeze({
+    ...preview,
+    async runtimeModel(input){
+      if(!projectId(input?.projectId))throw fail('STUDIO_PROJECT_INVALID');
+      const s=await session();
+      try{return await s.request('/_client/projects/'+input.projectId+'/runtime-model')}
+      catch(e){if(e.code==='STUDIO_UNAVAILABLE')throw fail('RUNTIME_MODEL_UPDATE_REQUIRED');throw e}
+    },
+    async runtimeModelSave(input){
+      if(!projectId(input?.projectId)||!Number.isSafeInteger(input.expectedRevision)||input.expectedRevision<0||typeof input.operationId!=='string'||(input.modelId!==null&&(typeof input.modelId!=='string'||input.modelId.length>128)))throw fail('STUDIO_REQUEST_DENIED');
+      const s=await session();return s.request('/_client/projects/'+input.projectId+'/runtime-model','PUT',{operationId:input.operationId,expectedRevision:input.expectedRevision,modelId:input.modelId});
+    },
     async authorize(){const s=await session();await s.request('/context');s.assertLive();return s.assertLive},
     async launchSuggest(input){const s=await session();return s.request('/_client/launch/suggest','POST',{text:input?.text})},
     async launchSources(input){const s=await session();if(!['warehouses','storage','references'].includes(input?.kind))throw fail('CONTEXT_REFERENCE_INVALID');return s.request('/_client/launch/sources?kind='+input.kind+'&parent='+encodeURIComponent(input.parent||'')+'&spaceId='+encodeURIComponent(input.spaceId||'personal'))},

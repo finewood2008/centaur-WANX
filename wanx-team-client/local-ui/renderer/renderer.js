@@ -29,7 +29,7 @@ const studioHome = window.createStudioHome({
   }, changed: () => { if (currentState) render(currentState); },
 });
 const construction=window.createConstruction({request:async(name,input)=>{const r=await window.wanxClient.action(name,input);if(!r.ok)throw Error(r.code);return r.value},changed:()=>{if(currentState)render(currentState)}});
-function constructionView(){return `<div class="app-layout construction-layout">${shellHeader("开物")}<div class="page-content construction-page"><div class="store-heading"><div><p class="store-eyebrow">让熟悉的工作，成为好用的产品</p><h2>开物</h2></div><div class="store-toolbar">${construction.engineButton()}<button class="button primary" data-action="studio-workspace">＋ 创建新产品</button></div></div>${construction.settings()}${studioHome.render(currentState)}</div></div>`}
+function constructionView(){return `<div class="app-layout construction-layout">${shellHeader("万象·开物")}<div class="page-content construction-page"><div class="kaiwu-surface">${construction.render({state:currentState,home:studioHome,team:teamView,canPublish:teamUIRole==='admin'})}</div></div></div>`}
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
@@ -1883,6 +1883,8 @@ app.addEventListener("click", async (event) => {
   }
   if(action==="show-data"){if(teamUIRole!=="admin")return;page="data";profileMenuOpen=false;render(currentState);void dataView.refresh();return}
   if(action==="show-construction"){page="construction";profileMenuOpen=false;render(currentState);return}
+  if(action==="construction-tab"){construction.showSection(target.dataset.tab);if(target.dataset.tab==='publishing')await teamView.action('publishing',{projectId:target.dataset.projectId});return}
+  if(action==="construction-refresh"){await Promise.all([studioHome.refresh(),teamView.refresh()]);return}
   if(action.startsWith("construction-")){await construction.action(action,target.dataset);return}
   if(action==="studio-workspace"){page="construction";render(currentState)}
   if (action === "applications-tab") {
@@ -2301,7 +2303,9 @@ async function submitConsoleClaim(scanned) {
 }
 
 app.addEventListener("input", event => {
+  if(event.target.dataset.publishingSearch!==undefined)teamView.searchPublication(event.target.value);
   if(event.target.dataset.constructionSearch!==undefined)studioHome.search(event.target.value);
+  if(event.target.dataset.studioProductField)studioHome.productField(event.target.dataset.studioProductField,event.target.value);
   if(event.target.dataset.intakeField)studioHome.field(event.target.dataset.intakeField,event.target.value);
   if(event.target.matches?.("[data-studio-name]"))studioHome.input(event.target.value);
   if (event.target.name === "goal" && event.target.closest?.('[data-form="studio-create"]')) studioHome.input(event.target.value);

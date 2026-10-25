@@ -32,7 +32,31 @@ class WanxModels:
         # Default model configuration may be completed after server startup.
         return self.resolve() is not None
 
+    def _runtime_entries(self):
+        from octop.infra.agents.providers.store import ProviderStore
+        from .contracts import digest
+        return {digest([p.id, m.id]): (p, m)
+                for p in ProviderStore(self.services.provider_repo).build_harness_configs()
+                for m in p.models}
+
+    def runtime_catalog(self):
+        entries = self._runtime_entries()
+        selected = self.resolve()
+        return {'models': [{'id': key, 'name': m.name or m.id, 'provider': p.name or p.id}
+                           for key, (p, m) in entries.items()],
+                'defaultId': next((key for key, pair in entries.items()
+                                   if selected and pair[0].id == selected[0].id and pair[1].id == selected[1].id), None)}
+
+    def for_runtime(self, model_id):
+        bound = WanxModels(self.services)
+        bound._runtime_id = model_id
+        return bound
+
     def resolve(self):
+        if getattr(self, '_runtime_id', None):
+            found = self._runtime_entries().get(self._runtime_id)
+            if found: self.selection = (found[0].id, found[1].id)
+            return found
         from octop.infra.agents.providers.store import ProviderStore
         self.selection=self.services.settings_repo.get_active_model()
         name,model_id=self.selection
@@ -58,7 +82,7 @@ class WanxModels:
         from octop_harness.llm.session_header import aclose_session_http_clients
         selected=await asyncio.to_thread(self.resolve)
         if not selected:
-            raise StudioError('MODEL_NOT_CONFIGURED',409)
+            raise StudioError('RUNTIME_MODEL_UNAVAILABLE' if getattr(self, '_runtime_id', None) else 'MODEL_NOT_CONFIGURED',409)
         provider,model=selected
         if set(body)-{'messages','tools','max_tokens','tool_choice'} or len(json.dumps(body).encode())>200000:
             raise StudioError('MODEL_INPUT_INVALID',413)
