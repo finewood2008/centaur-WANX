@@ -11,7 +11,7 @@ if (!['personal', 'team'].includes(edition)) throw Error('EDITION_REQUIRED');
 const client = path.resolve(root, edition==='personal'?'../wanx-client':'../wanx-team-client');
 for (const [folder, names] of [
   ['local-ui/renderer', ['ai-dialogue.js','ai-dialogue.css']],
-  ['shell', ['ai-dialogue.mjs','assistant-service.mjs']],
+  ['shell', ['ai-dialogue.mjs','assistant-service.mjs','assistant-channels.mjs','channel-qr.mjs','channel-qr.LICENSE']],
   ['local-ui/panel', ['panel-assistant.js','panel-assistant.css']],
 ]) for (const name of names) {
   await mkdir(path.join(client,folder),{recursive:true});

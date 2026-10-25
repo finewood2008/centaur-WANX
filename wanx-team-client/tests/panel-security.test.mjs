@@ -416,3 +416,16 @@ test('panel note preload cannot send other actions and copied blobs remain bound
  assert.equal((await api.wanxClient.clipboardFiles([{size:20*1024*1024+1}],{scope:'now'})).code,'CLIPBOARD_LIMIT');
  assert.equal(calls.length,1);
 });
+
+
+test('channel management requires the full management window and is never registered for mini',async()=>{
+  const calls=[],h=harness({aiDialogue:{action:async(...args)=>{calls.push(args);return {};}}});
+  const methods=['list','detail','save','toggle','delete','test','start','poll','cancel'];
+  for(const suffix of methods){
+    const name='channels-'+suffix,input={scope:'synthetic-owner-box'};
+    assert.throws(()=>h.invoke('ai-dialogue-'+name,input,h.panel),denied);
+    assert.equal(h.handlers.has('wanx-client:panel-ai-dialogue-'+name),false);
+    await h.invoke('ai-dialogue-'+name,input);
+    assert.deepEqual(calls.at(-1),[name,input]);
+  }
+});

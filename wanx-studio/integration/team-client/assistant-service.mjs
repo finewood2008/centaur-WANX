@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import path from 'node:path';
+import { createAssistantChannels } from './assistant-channels.mjs';
 
 export const DIALOGUE_APPLICATION_ID = 'centaurai.wanx.dialogue';
 const fail = code => Object.assign(new Error(code), { code });
@@ -89,11 +90,16 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
   }
   let currentScope = scope();
   const assertScope = key => { if (!key || scope() !== key) throw fail('DIALOGUE_CONTEXT_CHANGED'); };
+  const channelLinks = new Map();
+  const assistantChannels = createAssistantChannels({request,assertScope,
+    base:()=>{if(!profile?.agent_id)throw fail('ASSISTANT_NOT_READY');return '/api/agents/'+identifier(profile.agent_id)+'/channels';},
+    cleanup:async(key,route)=>{const link=channelLinks.get(key);if(link)await link.request({path:route,method:'POST',headers:{accept:'application/json'}});}});
   function unwatch() {
     const previous = watcher; watcher = null;
     previous?.socket?.terminate();
   }
   function invalidate() {
+    assistantChannels.reset(); channelLinks.clear();
     generation++; unwatch();
     const oldChannel=channelCache, oldGrants=[...spaceGrants.values()].map(g=>['space',g]).concat([...knowledgeGrants.values()].map(g=>['knowledge',g]));
     if(oldChannel) void oldChannel.then(async link=>{for(const [kind,g]of oldGrants) await link.request({path:'/api/assistant/'+kind+'-grant',method:'POST',headers:{'content-type':'application/json','x-wanx-data-context':edition},body:JSON.stringify({enabled:false,grant_id:g.grant_id})}).catch(()=>{});}).catch(()=>{});
@@ -115,12 +121,12 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     }
     const result = await channelCache; assertScope(key); return result;
   }
-  async function request(key, route, { method = 'GET', body, headers, stream = false, upload = false } = {}) {
+  async function request(key, route, { method = 'GET', body, headers, stream = false, upload = false, timeout = 30_000 } = {}) {
     const link = await channel(key), controller = new AbortController();
     requests.add(controller); let streaming = false;
     try {
       const response = await link.request({ path: route, method, stream,
-        signal: stream ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(upload ? 300_000 : 30_000)]),
+        signal: stream ? controller.signal : AbortSignal.any([controller.signal, AbortSignal.timeout(upload ? 300_000 : timeout)]),
         headers: { accept: stream ? '*/*' : 'application/json', ...(body && !upload ? { 'content-type': 'application/json' } : {}), ...headers,
           ...(route.startsWith('/api/assistant/knowledge') ? { 'x-wanx-data-context': edition === 'team' ? 'team' : 'personal' } : {}) },
         ...(body ? { body: upload ? body : JSON.stringify(body) } : {}) });
@@ -205,6 +211,10 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
       const key = scope();
       if (!key) throw fail('BOX_CONNECTION_REQUIRED');
       if (method !== 'load') assertScope(input.scope);
+      if (method.startsWith('channels-')) {
+        channelLinks.set(key,await channel(key));
+        return {scope:key,...await assistantChannels.action(method,input,key)};
+      }
       if(method==='handoff') {
         if(typeof input.draft!=='string'||input.draft.length>32000||typeof input.reference!=='string'||input.reference.length>32000)throw fail('ASSISTANT_INVALID_INPUT');
         const files=input.attachments||[];if(!Array.isArray(files)||files.length>8)throw fail('ASSISTANT_INVALID_INPUT');
