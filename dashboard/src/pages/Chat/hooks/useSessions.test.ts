@@ -11,7 +11,9 @@ import {
 const listMock = vi.fn();
 
 vi.mock("../../../api/modules/octopThreads", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../../api/modules/octopThreads")>(),
+  ...(await importOriginal<
+    typeof import("../../../api/modules/octopThreads")
+  >()),
   octopThreadsApi: {
     list: (...args: unknown[]) => listMock(...args),
     create: vi.fn(),

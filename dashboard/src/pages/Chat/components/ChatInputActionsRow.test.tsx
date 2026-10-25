@@ -62,8 +62,12 @@ describe("ChatInputActionsRow compact pickers", () => {
       expect(document.querySelector(".ant-popover")).toBeInTheDocument();
     });
     const popover = document.querySelector(".ant-popover");
-    expect(within(popover as HTMLElement).getByRole("button", { name: /Auto/ })).toBeInTheDocument();
-    const option = within(popover as HTMLElement).getByRole("button", { name: "Provider / Compact Model" });
+    expect(
+      within(popover as HTMLElement).getByRole("button", { name: /Auto/ }),
+    ).toBeInTheDocument();
+    const option = within(popover as HTMLElement).getByRole("button", {
+      name: "Provider / Compact Model",
+    });
     fireEvent.click(option);
     expect(onModelChange).toHaveBeenCalledWith("Provider/compact-model");
     expect(document.querySelector(".ant-drawer-content")).toBeNull();
