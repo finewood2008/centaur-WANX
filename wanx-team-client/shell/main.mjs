@@ -547,7 +547,16 @@ if (process.argv.includes("--wanx-managed-app")) {
         const code = error.code || "SPACE_LINK_START_FAILED";
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
-      aiDialogue = createAIDialogue({ client, preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+      aiDialogue = createAIDialogue({ client,
+        selectFiles: async () => {
+          const result = await dialog.showOpenDialog(control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        saveFile: async name => {
+          const result = await dialog.showSaveDialog(control, { title: "保存助理产物", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
         if (!control.isDestroyed()) control.webContents.send("wanx-client:ai-dialogue", event);
       } });
       registerControlActions({

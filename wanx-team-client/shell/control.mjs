@@ -104,7 +104,7 @@ export function registerControlActions({
       throw error;
     }
   };
-  for (const method of ["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"]) register(`ai-dialogue-${method}`, input => {
+  for (const method of ["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact"]) register(`ai-dialogue-${method}`, input => {
     if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
     return aiDialogue.action(method, input);
   });

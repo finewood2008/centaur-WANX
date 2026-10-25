@@ -75,7 +75,7 @@ async function rawState() {
 }
 
 const actions = {
-  ...Object.fromEntries(["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
+  ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
   "notifications.read": input => ipcRenderer.invoke("wanx-client:notifications-read", { id: input?.id, all: input?.all === true }),
   "notifications.refresh": () => ipcRenderer.invoke("wanx-client:notifications-refresh"),
   "notifications.open": input => ipcRenderer.invoke("wanx-client:notifications-open", { id: input?.id }),

@@ -347,6 +347,8 @@ async def prepare_dashboard_turn(
         model_ref=model_ref,
         default_model=default_model,
     )
+    if row.template_name == "default" and model_ref is not None:
+        composer_ctx = {**(composer_ctx or {}), "model": model_ref}
     return PreparedDashboardTurn(
         thread_id=thread_id,
         session_key=session_key,

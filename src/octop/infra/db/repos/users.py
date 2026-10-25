@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import builtins
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import DbRow, bool_int, insert_returning_id, map_rows, now_ts
@@ -311,6 +313,51 @@ class UserRepo:
                 "UPDATE users SET preferences_json = ? WHERE id = ?",
                 (preferences_json, user_id),
             )
+
+    def set_preference(self, user_id: int, key: str, value: str) -> None:
+        """Merge one key without overwriting concurrently saved preferences."""
+        while True:
+            with self._db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT preferences_json FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError("user not found")
+                previous = str(row["preferences_json"] or "")
+                data = json.loads(previous or "{}")
+                if not isinstance(data, dict):
+                    data = {}
+                data[key] = value
+                changed = conn.execute(
+                    "UPDATE users SET preferences_json = ? WHERE id = ? "
+                    "AND COALESCE(preferences_json, '') = ?",
+                    (json.dumps(data, ensure_ascii=False), user_id, previous),
+                ).rowcount
+                if changed:
+                    return
+
+    def mutate_preference_json(self, user_id: int, key: str, mutate: Callable[[Any], Any]) -> Any:
+        """Atomically merge a structured preference without losing other writers."""
+        while True:
+            with self._db.transaction() as conn:
+                row = conn.execute(
+                    "SELECT preferences_json FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError("user not found")
+                previous = str(row["preferences_json"] or "")
+                data = json.loads(previous or "{}")
+                if not isinstance(data, dict):
+                    data = {}
+                value = mutate(data.get(key))
+                data[key] = value
+                changed = conn.execute(
+                    "UPDATE users SET preferences_json = ? WHERE id = ? "
+                    "AND COALESCE(preferences_json, '') = ?",
+                    (json.dumps(data, ensure_ascii=False), user_id, previous),
+                ).rowcount
+                if changed:
+                    return value
 
     def set_role_name(self, user_id: int, role_name: str | None) -> None:
         with self._db.transaction() as conn:
