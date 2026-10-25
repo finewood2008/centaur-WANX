@@ -95,18 +95,17 @@ async def test_blocked_credential_source_is_explicitly_excluded_without_sending_
  svc,pid,calls,bridge,provider=launch
  await bridge.configure('alice',body(pid))
  p=svc.store.get('alice',pid);p['preparation']['phase']='acp';p['preparation']['interview'].update({'state':'running','turnId':'safe-turn'});svc.store.save(p)
- async def read(owner,project,key):
+ async def read(owner,project,key,*bounds):
   if key.startswith('xingtu:'):raise StudioError('CONTEXT_CREDENTIAL_DETECTED',403)
   return {'ref':key,'text':'safe synthetic background','nextOffset':None,'totalCharacters':25}
  svc.preparation.read_context=read
  prepared=await svc.preparation.pm.prepare_context('alice',pid,'safe-turn')
  assert len(prepared)==1 and prepared[0]['text']=='safe synthetic background'
  latest=svc.store.get('alice',pid)
- assert '已阻止读取' in latest['messages'][-1]['text']
- assert latest['messages'][-1]['source']=='context-warning'
+ assert all(part['ref'].startswith('space:') for part in prepared)
  async def denied(*args):raise StudioError('CONTEXT_NOT_SELECTED',403)
  svc.preparation.read_context=denied
- with pytest.raises(StudioError,match='CONTEXT_PREPARATION_FAILED'):await svc.preparation.pm.prepare_context('alice',pid,'safe-turn')
+ with pytest.raises(StudioError,match='CONTEXT_NOT_SELECTED'):await svc.preparation.pm.prepare_context('alice',pid,'safe-turn')
 
 async def test_known_launch_capabilities_probe_and_resume_pending_user_turn(launch):
  svc,pid,calls,bridge,provider=launch
@@ -135,3 +134,63 @@ async def test_failed_or_unsupported_probe_remains_visible_and_cannot_build(laun
  p['preparation']['gaps']=['未接入的外部连接器'];svc.store.save(p);before=len(calls)
  assert not await svc.preparation.pm.check_launch_capabilities('alice',pid)
  assert len(calls)==before and not svc.store.get('alice',pid)['tasks']
+
+
+async def test_prd_added_capability_is_checked_without_manual_flag_or_extra_interview(launch):
+ svc,pid,calls,bridge,provider=launch
+ await bridge.configure('alice',body(pid));await bridge.start('alice',pid)
+ p=svc.store.get('alice',pid);x=p['preparation']
+ p['solution']['capabilities']=['data','model','files']
+ x['interview'].update({'state':'completed','sync':'saved','turns':[]})
+ x['interview'].pop('needsCapabilities',None);x.pop('launchConfiguration',None)
+ svc.store.save(p)
+ original=svc.store.get('alice',pid)['solution']
+ assert await svc.preparation.pm.check_launch_capabilities('alice',pid)
+ p=svc.store.get('alice',pid)
+ assert svc.preparation.valid_report('alice',p,development=True)
+ assert p['solution']==original and p['preparation']['interview']['sync']=='saved'
+ assert p['preparation']['interview']['turns']==[] and not p['tasks']
+ assert not await svc.preparation.pm.check_launch_capabilities('alice',pid)
+
+async def test_build_prepares_stale_report_without_changing_selected_resources(launch):
+ svc,pid,calls,bridge,provider=launch
+ await bridge.configure('alice',body(pid));await bridge.start('alice',pid)
+ p=svc.store.get('alice',pid);p['solution']['capabilities']=['data','model','files']
+ x=p['preparation'];x['report']=None;x['interview'].update({'state':'completed','sync':'saved','turns':[]})
+ svc.store.save(p)
+ from copy import deepcopy
+ original=deepcopy(p)
+ result=await svc.preparation.ensure_development('alice',pid)
+ assert svc.preparation.valid_report('alice',result,development=True)
+ assert result['solution']==original['solution'] and result['preparation']['references']==original['preparation']['references']
+ assert result['preparation']['launchConfiguration']==original['preparation']['launchConfiguration']
+ assert result['preparation']['interview']['sync']=='saved' and not result['tasks']
+ # Repeated builds reuse the valid check rather than making extra model requests.
+ count=len(calls);await svc.preparation.ensure_development('alice',pid);assert len(calls)==count
+
+async def test_automatic_checks_report_real_failure_and_do_not_grant_knowledge(launch):
+ svc,pid,calls,bridge,provider=launch
+ await bridge.configure('alice',body(pid));await bridge.start('alice',pid)
+ p=svc.store.get('alice',pid);p['solution']['capabilities']=['model']
+ x=p['preparation'];x['report']=None;x['interview'].update({'state':'completed','sync':'saved','turns':[]});svc.store.save(p)
+ async def failed(*args):raise StudioError('MODEL_UPSTREAM_FAILED',502)
+ svc.model=failed
+ with pytest.raises(StudioError,match='MODEL_UPSTREAM_FAILED'):
+  await svc.preparation.ensure_development('alice',pid)
+ assert not svc.store.get('alice',pid)['tasks']
+ p=svc.store.get('alice',pid);p['solution']['capabilities']=['knowledge'];svc.store.save(p)
+ with pytest.raises(StudioError,match='KNOWLEDGE_UNAVAILABLE'):
+  await svc.preparation.ensure_development('alice',pid)
+ assert not svc.store.get('alice',pid)['tasks']
+
+async def test_automatic_readiness_keeps_prd_sync_and_admin_guards(launch):
+ svc,pid,calls,bridge,provider=launch
+ await bridge.configure('alice',body(pid));await bridge.start('alice',pid)
+ p=svc.store.get('alice',pid);p['preparation']['interview'].update({'state':'completed','sync':'pending'});svc.store.save(p)
+ with pytest.raises(StudioError,match='PRD_NOT_SYNCHRONIZED'):
+  await svc.preparation.ensure_development('alice',pid)
+ class Team:
+  def is_admin(self,owner):return False
+ svc.team=Team()
+ with pytest.raises(StudioError,match='STUDIO_ADMIN_REQUIRED'):
+  await svc.preparation.ensure_development('alice',pid)

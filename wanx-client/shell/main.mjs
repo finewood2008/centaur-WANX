@@ -379,11 +379,16 @@ if (process.argv.includes("--wanx-managed-app")) {
           applications.activate(applicationId);
         },
       });
+      const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+      const windowWidth = Math.round(area.width * 0.92);
+      const windowHeight = Math.round(area.height * 0.92);
       control = new BrowserWindow({
-        width: 860,
-        height: 640,
-        minWidth: 760,
-        minHeight: 560,
+        x: area.x + Math.round((area.width - windowWidth) / 2),
+        y: area.y + Math.round((area.height - windowHeight) / 2),
+        width: windowWidth,
+        height: windowHeight,
+        minWidth: Math.min(760, windowWidth),
+        minHeight: Math.min(560, windowHeight),
         show: false,
         acceptFirstMouse: true,
         title: windowName,

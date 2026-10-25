@@ -135,3 +135,36 @@ class WanxContextSources:
    return text
   except StudioError:raise
   except Exception as e:raise StudioError(getattr(e,'code','CONTEXT_UNAVAILABLE'),getattr(e,'status',409)) from None
+
+ async def search_selected(self,owner,refs,query):
+  """Warehouse retrieval, scoped to selected documents; bounded plain excerpts."""
+  from .contracts import has_credentials
+  groups={};other=[];results=[];remaining=16000
+  for ref in refs:
+   if ref['kind']=='xingtu' and ref['id'].startswith('team-'):
+    warehouse,doc=ref['id'][5:].split('__',1)
+    groups.setdefault(warehouse,{})[doc]=ref
+   else:other.append(ref)
+  for warehouse,selected in groups.items():
+   if remaining<=0:break
+   client=self.team_star(owner)
+   await client.request('GET','/warehouses/'+warehouse)
+   value=await client.request('POST','/warehouses/'+warehouse+'/search',payload={'query':query,'document_ids':list(selected),'limit':6})
+   for hit in value.get('items',value.get('results',[]))[:6]:
+    ref=selected.get(str(hit.get('document_id','')))
+    if not ref:raise StudioError('CONTEXT_NOT_SELECTED',403)
+    text=str(hit.get('text') or hit.get('excerpt') or '')
+    if has_credentials(text):raise StudioError('CONTEXT_CREDENTIAL_DETECTED',403)
+    text=text[:min(2000,remaining)];remaining-=len(text)
+    results.append({'ref':'xingtu:'+ref['id'],'name':ref['name'],'text':text,'revision':ref['revision']})
+  for ref in other[:20]:
+   if remaining<=0:break
+   current=await self.metadata(owner,ref['kind'],ref['id'])
+   if current['revision']!=ref['revision']:raise StudioError('CONTEXT_SOURCE_CHANGED',409)
+   text=await self.read(owner,ref['kind'],ref['id'])
+   if has_credentials(text):raise StudioError('CONTEXT_CREDENTIAL_DETECTED',403)
+   at=text.casefold().find(query.casefold())
+   if at>=0:
+    snippet=text[max(0,at-200):at+1600][:remaining];remaining-=len(snippet)
+    results.append({'ref':ref['kind']+':'+ref['id'],'name':ref['name'],'text':snippet,'offset':max(0,at-200)})
+  return {'items':results,'bounded':True,'maxCharacters':16000,'unsearchedFiles':max(0,len(other)-20)}

@@ -38,6 +38,7 @@ async def test_live_interview_serializes_followups_and_associates_right_turn(env
  class Output:
   def __init__(self,index):self.index=index
   async def __aiter__(self):
+   self.index=len(gates);gates.append(asyncio.Event())
    # Exercise the real tools, finish mutation and automatic dispatcher.
    p=svc.store.get('alice',pid);turn=p['preparation']['interview']['turnId'];started.append(turn)
    readbacks.append((await pm.tool('alice',pid,turn,'read_project',{}))['conversation'])
@@ -45,14 +46,17 @@ async def test_live_interview_serializes_followups_and_associates_right_turn(env
    await gates[self.index].wait()
    yield json.dumps({'type':'text','text':'本轮修改已整理 '+str(self.index)}).encode()
    yield json.dumps({'type':'complete'}).encode()
+   yield json.dumps({'type':'idle'}).encode()
  class Proc:
   def __init__(self,index):self.stdin=Input();self.stdout=Output(index);self.returncode=None
   async def wait(self):self.returncode=0;return 0
   def terminate(self):self.returncode=0
   def kill(self):self.returncode=0
  async def create(*a,**kw):
-  gates.append(asyncio.Event());return Proc(len(gates)-1)
+  return Proc(0)
  monkeypatch.setattr(asyncio,'create_subprocess_exec',create)
+ async def stop(proc):proc.terminate()
+ monkeypatch.setattr(svc.native_codex,'stop',stop)
  async def until(test):
   for _ in range(100):
    if test():return
@@ -90,7 +94,7 @@ async def test_queued_input_pauses_after_revocation_or_disconnect_and_survives_r
  from wanx_studio.versions import idle
  with pytest.raises(StudioError,match='PRD_NOT_SYNCHRONIZED'):idle(svc.store.get('alice',pid))
  await ready(svc,pid)
- svc.runner.leases={('alice',pid):time.monotonic()-30}
+ svc.runner.leases={('alice',pid):time.monotonic()-getattr(svc.runner,'LEASE_SECONDS',90)-1}
  p=svc.store.get('alice',pid);p['preparation']['interview']['turns'][0]['state']='queued';svc.store.save(p)
  await pm.drain('alice',pid)
  assert svc.snapshot('alice',pid)['preparation']['interview']['error']=='WORKBENCH_SESSION_EXPIRED'

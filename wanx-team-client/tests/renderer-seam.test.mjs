@@ -186,6 +186,7 @@ async function harness(initial = state(), installed = [application], options = {
     ipcRenderer: {
       invoke: async (name, input) => {
         calls.push([name, input]);
+        if (name === "wanx-client:team" && options.teamIdentity) return input.operation === "identity" ? options.teamIdentity : [];
         if (name === "wanx:discovery:bluetooth-state") return { status: options.bluetoothStatus || "available" };
         if (name === "wanx:discovery:open-bluetooth-settings") return { ok: true };
         if (name.startsWith("wanx:setup:")) return { ok: true, value: await options.setupRequest?.(name, input) ?? { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
@@ -2685,6 +2686,13 @@ test("catalog product pages have bundled icons, product posters and a safe back 
   const h = await harness(state(), items);
   for (const [applicationId, info] of Object.entries(catalog)) {
     await readFile(new URL("../local-ui/renderer/" + info.icon, import.meta.url));
+    // The administrator's bundled workbench has an application icon and no
+    // marketing posters; ordinary users must not receive its launch action.
+    if (info.bundled) {
+      assert.equal(applicationId,"ai.wanx.studio");assert.equal(info.posters.length,0);
+      assert.doesNotMatch(h.app.innerHTML,/data-action="applications-launch" data-application-id="ai.wanx.studio"/);
+      continue;
+    }
     assert.ok(info.posters.length >= 1 && info.posters.length <= 3);
     assert.equal(info.screenshots, undefined);
     for (const [file] of info.posters) await readFile(new URL("../local-ui/renderer/assets/posters/" + file, import.meta.url));
@@ -2712,6 +2720,20 @@ test("catalog product pages have bundled icons, product posters and a safe back 
     assert.doesNotMatch(h.app.innerHTML, /data-application-detail=/);
   }
   assert.equal(h.launches.length, 0);
+});
+
+test("administrator opens the bundled Builder from applications and sees 开物 in navigation; members cannot see it",async()=>{
+  const identity={role:"admin",displayName:"测试管理员"};
+  const h=await harness(state("ready","ready","box-102"),[],{teamIdentity:identity});
+  assert.match(h.app.innerHTML,/data-action="show-construction"[^>]*>开物/);
+  assert.match(h.app.innerHTML,/万象·开物/);assert.match(h.app.innerHTML,/打开开物/);
+  assert.doesNotMatch(h.app.innerHTML,/builder-v1.png/);
+  await h.click("applications-launch",{applicationId:"ai.wanx.studio"});
+  assert.deepEqual(h.launches,[["ai.wanx.studio",undefined]]);
+  identity.role="user";
+  h.update({...state("ready","ready","box-102"),account:{phase:"authenticated",accountId:"member"}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.doesNotMatch(h.app.innerHTML,/data-action="show-construction"|data-application="ai.wanx.studio"/);
 });
 
 test("product page revokes account-scoped actions on logout and rejects unknown posters", async () => {

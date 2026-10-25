@@ -29,7 +29,7 @@ const studioHome = window.createStudioHome({
   }, changed: () => { if (currentState) render(currentState); },
 });
 const construction=window.createConstruction({request:async(name,input)=>{const r=await window.wanxClient.action(name,input);if(!r.ok)throw Error(r.code);return r.value},changed:()=>{if(currentState)render(currentState)}});
-function constructionView(){return `<div class="app-layout construction-layout">${shellHeader("构建")}<div class="page-content construction-page"><div class="store-heading"><div><p class="store-eyebrow">让熟悉的工作，成为好用的产品</p><h2>构建</h2></div><div class="store-toolbar">${construction.engineButton()}<button class="button primary" data-action="studio-workspace">＋ 创建新产品</button></div></div>${construction.settings()}${studioHome.render(currentState)}</div></div>`}
+function constructionView(){return `<div class="app-layout construction-layout">${shellHeader("开物")}<div class="page-content construction-page"><div class="store-heading"><div><p class="store-eyebrow">让熟悉的工作，成为好用的产品</p><h2>开物</h2></div><div class="store-toolbar">${construction.engineButton()}<button class="button primary" data-action="studio-workspace">＋ 创建新产品</button></div></div>${construction.settings()}${studioHome.render(currentState)}</div></div>`}
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
@@ -378,7 +378,7 @@ function shellHeader(title) {
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">团队版</span></strong><small>CentaurAI-WanX Studio</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["construction", "构建"], ["data", "星图"], ["space", "空间"], ["boxes", "盒子"]].filter(([destination]) => teamUIRole === "admin" || !["construction","data"].includes(destination)).map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${currentState.account?.provider==="team-server"?"团队":creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["construction", "开物"], ["data", "星图"], ["space", "空间"], ["boxes", "盒子"]].filter(([destination]) => teamUIRole === "admin" || !["construction","data"].includes(destination)).map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${currentState.account?.provider==="team-server"?"团队":creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
     <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><div class="team-role-badge"><span>${escapeHTML(teamView.snapshot().identity?.displayName || "核验盒子身份…")}</span><small>${teamView.snapshot().identity ? teamUIRole === "admin" ? "管理员" : "普通用户" : "权限由服务器核验"}</small></div><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
     ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}<button data-team-action="login">登录其他团队账号<span>›</span></button>${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>`;
 }
@@ -1024,6 +1024,11 @@ function applicationPreparationStatus(item) {
   return item.resourcePreparation?.status === "pending" ? "打开时将检查盒端专家和技能包。" : "";
 }
 function applicationActions(item, installed) {
+  if (item.applicationId === "ai.wanx.studio") {
+    if (teamUIRole !== "admin") return "";
+    const opening = operationBusy(item.applicationId);
+    return `<div class="application-actions"><button class="button primary small ${opening ? "activity-button" : ""}" data-action="applications-launch" data-application-id="ai.wanx.studio" aria-busy="${opening}" ${opening ? "disabled" : ""}>${opening ? activityLabel("正在打开…") : "打开开物"}</button></div>`;
+  }
   if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="application-actions"><button class="button primary small" data-action="show-ai-dialogue">打开AI对话</button></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
@@ -1040,6 +1045,7 @@ function applicationActions(item, installed) {
     : `<div class="application-actions">${candidate?.status === "available" ? `<button class="button ${active ? "" : "primary"} small ${installing ? "activity-button" : ""}" data-action="market-install" data-application-id="${id}" aria-busy="${installing}" ${disabled}>${installing ? activityLabel(status || "正在安装…") : staged ? active ? "重试更新" : "继续安装" : active ? "更新" : "安装"}</button>` : ""}${active ? `<button class="button primary small ${opening ? "activity-button" : ""}" data-action="applications-launch" data-application-id="${id}" aria-busy="${opening}" ${disabled}>${opening ? activityLabel(status || "正在打开…") : operationBusy(item.applicationId) ? status || "处理中…" : operation?.phase === "running" ? "已打开" : "打开"}</button>${studioHome.continueButton(item.applicationId)}` : ""}</div>`;
 }
 function applicationManagement(item, installed) {
+  if(item.applicationId==="ai.wanx.studio"&&!installed)return '<div class="store-detail-body"><p>WanX Builder · 随团队客户端提供，首次打开时安装独立应用。沿用当前万象账号、盒子和管理员权限。</p></div>';
   if(item.applicationId==="centaurai.wanx.dialogue")return '<div class="store-detail-body"><p>AI 对话已内置在团队客户端，所有成员均可使用自己的账号和对话历史。</p></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const availability = item.editorialOnly && !candidate ? "暂未提供可安装版本" : candidateLabel(candidate);
@@ -1064,7 +1070,7 @@ function applicationCard(item, installed = true) {
     <div class="application-title"><h3><button class="store-title-link" data-action="store-details" data-application-id="${id}">${escapeHTML(item.name)}</button></h3></div>
     <p class="application-description">${escapeHTML(item.description || "在你的盒子上使用 AI 服务。")}</p>
     ${status || preparation ? `<p class="market-status ${operation?.error ? "inline-error" : ""}" role="status">${escapeHTML(status || preparation)}</p>` : ""}
-    ${!installed && candidate?.status !== "available" ? `<p class="market-status" role="status">${escapeHTML(candidate ? candidateLabel(candidate) : marketLoading ? "正在检查可安装版本…" : "暂未提供可安装版本")}</p>` : ""}
+    ${!installed && item.applicationId !== "ai.wanx.studio" && candidate?.status !== "available" ? `<p class="market-status" role="status">${escapeHTML(candidate ? candidateLabel(candidate) : marketLoading ? "正在检查可安装版本…" : "暂未提供可安装版本")}</p>` : ""}
     </div>${actions}
     <button class="store-detail-link" data-action="store-details" data-application-id="${id}">了解应用 <span aria-hidden="true">›</span></button>
     <details class="application-details" data-detail-id="${id}" ${expandedDetails.has(item.applicationId) ? "open" : ""}><summary>版本与管理${candidate?.status === "available" && installed ? '<span class="store-update-dot">可更新</span>' : ""}</summary>${applicationManagement(item, installed)}</details></article>`;
@@ -1074,8 +1080,10 @@ function discoverableApplications() {
   return [...new Map(marketItems.map(item => [item.applicationId, item])).values()];
 }
 function withMarketName(item) {
-  const name = marketItems.find(entry => entry.applicationId === item.applicationId)?.name;
-  // Admin owns display names; installed versions and signed manifests stay intact.
+  const names = { "centaurai.wanx.semantica": "万象·星图", "ai.wanx.studio": "万象·开物" };
+  const name = names[item.applicationId] || marketItems.find(entry => entry.applicationId === item.applicationId)?.name;
+  // Product branding overrides legacy labels; other names remain account-owned.
+  // Installed versions and signed manifests stay intact.
   return typeof name === "string" && name.trim() ? { ...item, name } : item;
 }
 function storeApplication(id) {
@@ -1128,10 +1136,12 @@ function confirmationView() {
 }
 
 function applicationsView() {
-  const applications = (currentState.applications || []).filter(item => item.applicationId !== "ai.wanx.studio");
+  const applications = (currentState.applications || []).filter(item => item.applicationId !== "ai.wanx.studio" || teamUIRole === "admin");
   const installed = new Set(applications.map((item) => item.applicationId));
+  const bundledStudio = teamUIRole === "admin" && !installed.has("ai.wanx.studio")
+    ? {applicationId:"ai.wanx.studio", name:"万象·开物", description:"WanX Builder · 从想法到应用，持续构建、试用和改进。"} : null;
   const pendingInstallations = applications.some((item) => item.installationState === "pending");
-  const available = discoverableApplications().filter((item) => !installed.has(item.applicationId));
+  const available = discoverableApplications().filter((item) => !installed.has(item.applicationId) && item.applicationId !== "ai.wanx.studio");
   const delivery = currentState.defaultApplications;
   const preparingDefaults = delivery?.status === "preparing";
   const defaultsPending = delivery?.status === "pending";
@@ -1143,7 +1153,7 @@ function applicationsView() {
     ${applicationsTab === "company" ? teamView.catalog() : `
     ${preparingDefaults || defaultsPending ? `<div class="notice" role="status">${preparingDefaults ? "正在准备随盒应用，已安装的应用可以继续使用。" : "部分随盒应用尚未准备完成，联网后会自动重试。你也可以在下方应用介绍中查看安装条件。"}</div>` : ""}
     ${storeFeatures()}
-    <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${pendingInstallations ? "部分应用待完成安装" : applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length ? `<div class="application-list">${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
+    <section class="content-section store-installed" aria-label="我的应用"><div class="section-heading"><div><h3>我的应用 <span class="count">${applications.length}</span></h3><p>熟悉的工具，随时为你准备好。</p></div><span class="store-section-note">${pendingInstallations ? "部分应用待完成安装" : applications.length ? "已安装在此电脑" : "你的应用从这里开始"}</span></div>${applications.length || bundledStudio ? `<div class="application-list">${bundledStudio ? applicationCard(bundledStudio, false) : ""}${applications.map((item) => applicationCard(item)).join("")}</div>` : '<div class="empty-state"><h3>安装你的第一个应用</h3><p>从下方选择应用，安装后即可在菜单栏打开。</p></div>'}</section>
     <section class="content-section market-section" aria-labelledby="market-heading" aria-busy="${marketLoading}"><div class="section-heading"><div><h3 id="market-heading">发现应用</h3><p>让 AI 融入你喜欢的事。</p></div></div>
     ${marketError ? `<div class="notice error" role="status">${escapeHTML(marketError)} <button class="text-button ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在刷新…") : "刷新重试"}</button></div>` : ""}
     ${available.length ? `<div class="application-list">${available.map((item) => applicationCard(item, false)).join("")}</div>` : `<p class="market-empty" role="status">${marketLoading ? "正在加载应用…" : marketError ? "稍后刷新即可重试。" : marketItems.length ? "商店中的应用均已安装。" : "暂无已上架应用。"}</p>`}</section>

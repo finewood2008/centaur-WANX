@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import Field, ValidationError
 from .contracts import Input, Solution, readiness
 from .prd import ProductRequirement
+from .foundation import FOUNDATION_PROMPT
 
 TOPICS=[
     ('context','理解真实问题',['prd.problem','prd.currentApproach','audience']),
@@ -57,7 +58,7 @@ def response_schema():
 
 
 def interview_prompt():
-    return SYSTEM_PROMPT+'\n以下是实际响应 JSON Schema，字段、类型和结构必须一致。完整返回七部分 PRD，不得为了适应输出长度省略或删减已明确的功能、流程、字段、规则、异常、验收条件和待答问题。\n'+json.dumps(response_schema(),ensure_ascii=False,separators=(',',':'))
+    return SYSTEM_PROMPT+'\n'+FOUNDATION_PROMPT+'\n以下是实际响应 JSON Schema，字段、类型和结构必须一致。完整返回七部分 PRD，不得为了适应输出长度省略或删减已明确的功能、流程、字段、规则、异常、验收条件和待答问题。\n'+json.dumps(response_schema(),ensure_ascii=False,separators=(',',':'))
 
 
 def parse_interview_response(result):

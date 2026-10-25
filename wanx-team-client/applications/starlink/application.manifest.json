@@ -1,10 +1,10 @@
 {
   "applicationId": "centaurai.wanx.semantica",
-  "name": "星图",
-  "version": "0.2.23",
+  "name": "万象·星图",
+  "version": "0.2.24",
   "protocolVersion": 1,
   "runtime": "electron",
   "launchMode": "shared",
   "entrypoint": "shell/main.mjs",
-  "description": "建立本地知识数据仓，导入资料，选择模型连接知识图谱，再通过可撤销的只读接口开放给应用。"
+  "description": "WanX Starlink · 本地知识数据仓，连接资料、证据与知识图谱。"
 }

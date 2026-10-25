@@ -214,12 +214,20 @@ def _sent_messages(ws: _FakeWS) -> list[dict[str, object]]:
     return [json.loads(t) for t in ws.sent]
 
 
-def _patch_user(monkeypatch, user_id: int = 1) -> None:
+def _patch_user(monkeypatch, user_id: int = 1, *, admin: bool = True) -> None:
     monkeypatch.setattr(
         terminal,
         "resolve_user_from_token",
-        lambda _s, _t: SimpleNamespace(id=user_id, is_admin=False, permissions=["terminal"]),
+        lambda _s, _t: SimpleNamespace(id=user_id, is_admin=admin, permissions=["terminal"]),
     )
+
+
+async def test_non_admin_cannot_execute_host_terminal_even_with_module_grant(monkeypatch) -> None:
+    server, _ = _make_server()
+    _patch_user(monkeypatch, admin=False)
+    ws = _FakeWS(server)
+    await terminal.terminal_ws(ws, agent_id="a1", token="ok", cols=80, rows=24)
+    assert ws.close_code == 4003
 
 
 def _patch_spawn(monkeypatch, spawned: list[terminal._PtySession]) -> None:

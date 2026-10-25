@@ -317,6 +317,10 @@ def rename_host_dir(
     source = assert_safe_host_path(
         path, restrict_to_home=restrict_to_home, restrict_to_root=restrict_to_root
     )
+    from octop.infra.utils.paths import PathLayout
+
+    if PathLayout.from_env().root.resolve().is_relative_to(source):
+        raise ValueError(_NOT_ALLOWED_MSG)
     if not source.is_dir():
         raise ValueError(f"not a directory: {path}")
     name = _validate_dir_basename(new_name)

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-const APP_NAMES = { 'centaurai.wanx.centaurloop': '半人马环', 'centaurai.wanx.zhijun': '知君', 'centaurai.wanx.dialogue': '众见', 'centaurai.wanx.semantica': '星图', 'centaurai.wanx.superadvisors': '个人议事厅', 'centaurai.wanx.ai-browser': '万象 AI 浏览器', 'centaurai.wanx.new-media-toolkit': '火花' };
+const APP_NAMES = { 'centaurai.wanx.centaurloop': '半人马环', 'centaurai.wanx.zhijun': '知君', 'centaurai.wanx.dialogue': '众见', 'centaurai.wanx.semantica': '万象·星图', 'ai.wanx.studio': '万象·开物', 'centaurai.wanx.superadvisors': '个人议事厅', 'centaurai.wanx.ai-browser': '万象 AI 浏览器', 'centaurai.wanx.new-media-toolkit': '火花' };
 const clean = (value, max = 4000) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 const digest = value => createHash('sha256').update(value).digest('hex');
 

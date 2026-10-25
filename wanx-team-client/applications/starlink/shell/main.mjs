@@ -17,7 +17,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const page = pathToFileURL(path.join(root, "ui/index.html")).href;
 if (process.env.WANX_HOST_USER_DATA_DIR) attachElectronHost();
 const host = fromEnvironment();
-app.setName("星图 STARLINK");
+app.setName("万象·星图 · WanX Starlink");
 nativeTheme.themeSource = "light";
 if (!host)
   app.setPath(
@@ -31,7 +31,7 @@ app
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
         {
-          label: "星图",
+          label: "万象·星图",
           submenu: [{ role: "about" }, { type: "separator" }, { role: "quit" }],
         },
         {
@@ -57,7 +57,7 @@ app
       height: 960,
       minWidth: 760,
       minHeight: 620,
-      title: "星图 STARLINK · 本地知识数据仓",
+      title: "万象·星图 · WanX Starlink · 本地知识数据仓",
       icon: path.join(root, "resources/icon.png"),
       backgroundColor: "#faf7f2",
       webPreferences: {
@@ -71,7 +71,7 @@ app
     if (process.platform === "darwin")
       app.dock.setIcon(path.join(root, "resources/icon.png"));
     app.setAboutPanelOptions({
-      applicationName: "星图 STARLINK",
+      applicationName: "万象·星图 · WanX Starlink",
       applicationVersion: app.getVersion(),
       copyright: "半人马AI",
     });

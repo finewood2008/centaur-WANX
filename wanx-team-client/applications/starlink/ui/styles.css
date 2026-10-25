@@ -3694,8 +3694,8 @@ dialog.warehouse-picker {
 @media (max-height: 760px) { .space-entries { max-height: 150px; } #import-dialog #file-list { max-height: 100px; } }
 
 .brand-english {
-  display: inline-block;
-  margin-left: 4px;
+  display: block;
+  margin-top: 4px;
   font-family: var(--font-sans, sans-serif);
   font-size: 12px;
   font-weight: 400;

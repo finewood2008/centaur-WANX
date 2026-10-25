@@ -15,7 +15,7 @@ import { createApplicationBackend } from "../applications/backend.mjs";
 import { createApplicationReleaseAccess } from "../applications/release-access.mjs";
 import {
   app,
-  BrowserWindow, WebContentsView,
+  BrowserWindow,
   ipcMain,
   safeStorage as osSafeStorage,
   clipboard,
@@ -47,7 +47,6 @@ import { createAccount, DEFAULT_CONSUMER_URL } from "../account/index.mjs";
 import { createSetupRuntime } from "./setup.mjs";
 import { createSecureAccountStore } from "../account/store.mjs";
 import { createLocalBoxes } from "../octop/local-boxes.mjs";
-import {createEmbeddedWorkspace} from "../studio/embedded-workspace.mjs";
 import { createPlatformClient } from "../platform.mjs";
 import { createApplicationManager } from "../applications/manager.mjs";
 import { createApplicationMarket } from "../applications/market.mjs";
@@ -87,7 +86,6 @@ if (!testBuild && process.env.WANX_SMOKE_USER_DATA) {
   mkdirSync(isolated, { recursive: true });
   app.setPath("userData", isolated);
 }
-let workspace;
 let control;
 let panel;
 let uiState;
@@ -295,7 +293,6 @@ if (process.argv.includes("--wanx-managed-app")) {
         prepareApplication,
         authorizeRelease,
         onStudioInstalled:()=>{studioChanged++;return broadcast?.publish()},
-        openStudioWorkspace:input=>workspace.open(input),placeStudioWorkspace:input=>workspace.placement(input),
         chooseStudioExport:async name=>{const r=await dialog.showSaveDialog(control,{title:"导出当前采用版本",defaultPath:name,filters:[{name:"万象应用安装包",extensions:["zip"]}]});return r.canceled?null:r.filePath},
         returnToStudioClient:async destination=>{control.webContents.send("wanx-client:navigate",destination==="projects"?"studio-projects":destination);control.show();control.focus()},
         launcherArgs: [
@@ -392,11 +389,16 @@ if (process.argv.includes("--wanx-managed-app")) {
           applications.activate(applicationId);
         },
       });
+      const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+      const windowWidth = Math.round(area.width * 0.92);
+      const windowHeight = Math.round(area.height * 0.92);
       control = new BrowserWindow({
-        width: 860,
-        height: 640,
-        minWidth: 760,
-        minHeight: 560,
+        x: area.x + Math.round((area.width - windowWidth) / 2),
+        y: area.y + Math.round((area.height - windowHeight) / 2),
+        width: windowWidth,
+        height: windowHeight,
+        minWidth: Math.min(760, windowWidth),
+        minHeight: Math.min(560, windowHeight),
         show: false,
         acceptFirstMouse: true,
         title: windowName,
@@ -448,7 +450,6 @@ if (process.argv.includes("--wanx-managed-app")) {
         }catch(error){return {ok:false,code:error.code||"MCP_UNAVAILABLE"}}
       });
       ipcMain.handle("wanx-client:data",async(event,{action,input}={})=>{if(!teamTrusted(event))return {ok:false,code:"TEAM_ORIGIN_DENIED"};try{return {ok:true,value:await teamDataService.action(action,input)}}catch(error){return {ok:false,code:error.code||"TEAM_DATA_REQUEST_FAILED"}}});
-      workspace=createEmbeddedWorkspace({BrowserWindow,WebContentsView,ipcMain,control,createConnection:id=>client.applicationConnection(id),assets:path.join(app.getAppPath(),"studio"),onChanged:()=>{studioChanged++;void broadcast?.publish()},onNavigate:destination=>{control.webContents.send("wanx-client:navigate",destination==="projects"?"studio-projects":destination)}});
       broadcast = createUIBroadcast({
         client, applications, uiState, startup, updates, defaultApplications, notifications, studioRevision:()=>studioChanged, windows: () => [control, panel], onError: reportError,
       });

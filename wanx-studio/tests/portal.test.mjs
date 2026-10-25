@@ -82,6 +82,14 @@ test('workspace launch performs read-only checks and rejects missing model/versi
  await assert.rejects(()=>h.entry.workspace({protocolVersion:1}),/HOST_BRIDGE_UPDATE_REQUIRED/);
 });
 
+test('independent launch authorization is read-only, server checked and fenced to the account and box',async()=>{
+ const h=entryHarness();const check=await h.entry.authorize();check();
+ assert.equal(h.requests.length,1);assert.equal(h.requests[0].path,'/api/app-studio/context');assert.equal(h.requests[0].method,'GET');
+ h.invalidate();assert.throws(check,/SESSION_CHANGED/);
+ const denied=entryHarness();denied.connection.request=async()=>({status:403,body:JSON.stringify({code:'STUDIO_ADMIN_REQUIRED'})});
+ await assert.rejects(denied.entry.authorize(),/STUDIO_ADMIN_REQUIRED/);assert.equal(denied.opened.length,0);
+});
+
 test('daily client starts task preparation before Builder and resumes an unfinished intake',async()=>{
  const opened=[],calls=[];
  const h=homeHarness(async(name,input)=>{calls.push([name,input]);return{protocolVersion:2,projects:[{...projectSummary(project()),preparationPhase:'intake'}],modelAvailable:true}},()=>({sync(){},open:async id=>opened.push(id)}));

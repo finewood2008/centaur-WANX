@@ -11,8 +11,8 @@ test('current product preview stays pinned while new output becomes available',a
  const old={hash:'old',taskId:'a',solutionHash:'s'},next={hash:'next',taskId:'b',solutionHash:'s'};
  const project={...p(),confirmation:{hash:'s'},artifacts:[old,next],tasks:[{id:'a',state:'completed'},{id:'b',state:'completed'}],versioning:{adoptedHash:'old',iteration:{id:'i',baseHash:'old',latestHash:'next'}},versions:[{hash:'next',status:'trial'}]};
  assert.equal(selectedVersion(project).hash,'next');assert.equal(selectedVersion(project,'old').hash,'old');
- assert.equal(canAdoptVersion(project,next),true);assert.equal(canAdoptVersion(project,old),false);
- const draft={...project,solutionHash:'changed'};assert.equal(canAdoptVersion(draft,next),false);
+ assert.equal(canAdoptVersion(project,next),true);assert.equal(canAdoptVersion(project,old),true);
+ const draft={...project,solutionHash:'changed'};assert.equal(canAdoptVersion(draft,next),true);
 });
 
 test('user may choose an earlier successful candidate from this iteration and frozen plan',async()=>{
@@ -20,8 +20,8 @@ test('user may choose an earlier successful candidate from this iteration and fr
  const first={hash:'first',taskId:'a',solutionHash:'s'},next={hash:'next',taskId:'b',solutionHash:'s'};
  const project={...p(),confirmation:{hash:'s'},artifacts:[first,next],tasks:[{id:'a',state:'completed'},{id:'b',state:'completed'}],versioning:{iteration:{id:'i',latestHash:'next'}},versions:[{hash:'first',status:'trial'},{hash:'next',status:'trial'}]};
  assert.equal(canAdoptVersion(project,first),true);assert.equal(canAdoptVersion(project,next),true);
- assert.equal(canAdoptVersion({...project,solutionHash:'changed'},first),false);
- assert.equal(canAdoptVersion({...project,versions:[{hash:'first',status:'historical'}]},first),false);
+ assert.equal(canAdoptVersion({...project,solutionHash:'changed'},first),true);
+ assert.equal(canAdoptVersion({...project,versions:[{hash:'first',status:'historical'}]},first),true);
  assert.equal(canAdoptVersion({...project,tasks:[{id:'a',state:'failed'},{id:'b',state:'completed'}]},first),false);
  assert.equal(canAdoptVersion({...project,tasks:[...project.tasks,{id:'c',state:'running'}]},first),false);
 });

@@ -56,7 +56,7 @@ test('Codex task MCP exposes only fixed tools, rejects arbitrary operations and 
   try{
     assert.ok((await rpc('initialize',{protocolVersion:'2024-11-05'})).result.capabilities.tools);
     const tools=(await rpc('tools/list')).result.tools;
-    assert.deepEqual(tools.map(t=>t.name),['read_material','list_sources','read_source','update_plan','write_source','validate_app','require_plan']);
+    assert.deepEqual(tools.map(t=>t.name),['read_material','list_sources','read_source','update_plan','patch_source','write_source','validate_app','require_plan']);
     assert.ok(!JSON.stringify(tools).includes('synthetic-task-token'));
     assert.ok((await rpc('tools/call',{name:'ask_product',arguments:{}})).error);
     assert.ok((await rpc('tools/call',{name:'read_source',arguments:{path:'src/app.js',owner:'another-user'}})).error);

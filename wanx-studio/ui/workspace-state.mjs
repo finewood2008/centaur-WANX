@@ -26,6 +26,5 @@ export function selectedVersion(project, hash='') {
   return project.artifacts.find(a=>a.hash===it?.latestHash)||project.artifacts.find(a=>a.hash===project.versioning?.adoptedHash)||project.artifacts.at(-1)||null;
 }
 export function canAdoptVersion(project, artifact) {
-  const it=project.versioning?.iteration;
-  return Boolean(artifact && !project.preparation?.interview?.turns?.some(t=>['queued','paused'].includes(t.state)) && project.tasks.find(t=>t.id===artifact.taskId)?.state==='completed' && !project.tasks.some(t=>['running','waiting','queued'].includes(t.state)) && project.preparation?.interview?.state!=='running' && artifact.solutionHash===project.solutionHash && project.confirmation?.hash===project.solutionHash && (it ? project.versions?.find(v=>v.hash===artifact.hash)?.status==='trial' : project.tasks.at(-1)?.id===artifact.taskId));
+  return Boolean(artifact && project.tasks.find(t=>t.id===artifact.taskId)?.state==='completed' && !project.tasks.some(t=>['running','waiting','queued'].includes(t.state)) && project.preparation?.interview?.state!=='running' && project.versions?.find(v=>v.hash===artifact.hash)?.snapshotAvailable!==false);
 }

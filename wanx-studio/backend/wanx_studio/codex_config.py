@@ -21,4 +21,5 @@ def runtime_config(allowed_server='wanx_task'):
         'tools':{'view_image':False},'web_search':'disabled','notify':[],'hooks':{},'check_for_update_on_startup':False,'suppress_unstable_features_warning':True,
         'mcp_servers':{name:{'enabled':False} for name in settings.get('mcp_servers',{}) if name!=allowed_server},
     }
-    return {'WANX_CODEX_PATH':binary,'WANX_CODEX_CONFIG':json.dumps(config)}
+    return {'WANX_CODEX_PATH':binary,'WANX_CODEX_CONFIG':json.dumps(config),
+            'WANX_CODEX_CONFIG_STAMP':str(config_path.stat().st_mtime_ns if config_path.exists() else 0)}

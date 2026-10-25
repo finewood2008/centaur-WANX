@@ -1,6 +1,6 @@
 import{test}from'node:test';
 import assert from'node:assert/strict';
-import{conversationParagraphs,conversationFollows,conversationStatus,conversationInput}from'../ui/conversation-state.mjs';
+import{conversationParagraphs,conversationFollows,conversationStatus,conversationInput,interviewRetry}from'../ui/conversation-state.mjs';
 
 test('notes drafted during a reply remain visible when new choices arrive and never send implicitly',()=>{
  const note={draft:'先记下下一步想法\n还没有发送',choice:'',extra:''};
@@ -45,4 +45,19 @@ test('conversation sync status does not claim a running or failed round is saved
  assert.equal(conversationStatus({interview:{state:'failed',sync:'saved'}}),'本轮尚未同步，请重试');
  assert.equal(conversationStatus({interview:{state:'idle',sync:'saved'}}),'产品方案已保存');
  assert.equal(conversationStatus(undefined),'边聊边整理完整方案');
+});
+
+test('starting a confirmed build retires its old answer choices but keeps new discussion choices',async()=>{
+ const {pendingConversationOptions}=await import('../ui/conversation-state.mjs');
+ const last={role:'assistant',question:{options:['确认构建','继续调整']}};const p={solutionHash:'current',confirmation:{hash:'current'},tasks:[{solutionHash:'current'}]};
+ assert.deepEqual(pendingConversationOptions(p,last),[]);
+ assert.deepEqual(pendingConversationOptions({...p,confirmation:null},last),last.question.options);
+});
+
+
+test('retry uses the saved operation and words instead of inserting a generic extra turn',()=>{
+ const p={preparation:{handoff:{id:'original'},interview:{turns:[{operationId:'done',text:'已回答',state:'completed'},{operationId:'saved',text:'定期工作汇报',state:'paused'}]}}};
+ assert.deepEqual(interviewRetry(p),{operationId:'saved',text:'定期工作汇报'});
+ p.preparation.interview.turns[1].state='completed';assert.equal(interviewRetry(p),null);
+ p.preparation.interview.turns=[];assert.deepEqual(interviewRetry(p),{operationId:'handoff_original',text:''});
 });

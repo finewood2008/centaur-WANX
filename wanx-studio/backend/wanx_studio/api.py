@@ -120,10 +120,12 @@ class SelectFiles(Input):
 
 def create_router(svc: StudioService, identity, *, local_preview=False):
     router=APIRouter(prefix='/api/app-studio',tags=['Application studio'])
+    from .iterative import mount
+    mount(router,svc,identity)
 
     @router.get('/context',summary='Read authenticated studio context and capabilities')
     async def context(owner=Depends(identity)):
-        return {'protocolVersion':2,'mode':'local-preview' if local_preview else 'wanx','scopeId':digest({'owner':owner,'instance':str(svc.store.root.resolve())}), 'ownerLabel':'隔离验证用户' if local_preview else '万象用户','modelAvailable':bool(svc.model),'filesAvailable':svc.files is not None,'capabilities':['data','model','files'],'features':{'taskPreparation':1,'codexInterview':1,'productVersions':1,'continuousWorkspace':1,'engines':1,**({'teamPublishing':1} if getattr(svc,'team',None) else {})}}
+        return {'protocolVersion':2,'mode':'local-preview' if local_preview else 'wanx','scopeId':digest({'owner':owner,'instance':str(svc.store.root.resolve())}), 'ownerLabel':'隔离验证用户' if local_preview else '万象用户','modelAvailable':bool(svc.model),'filesAvailable':svc.files is not None,'capabilities':['data','model','files',*(['reports'] if getattr(svc,'team',None) else [])],'features':{'taskPreparation':1,'codexInterview':1,'productVersions':1,'continuousWorkspace':1,'engines':1,**({'teamPublishing':1} if getattr(svc,'team',None) else {})}}
 
     @router.get('/engines')
     async def engines(owner=Depends(identity)):
@@ -147,7 +149,7 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
             if p.get('preparation'):p['preparation']['report']=None
         return svc.store.mutate(owner,project_id,body.operationId,body.model_dump(),change)
 
-    @router.get('/preflight',summary='Probe Codex ACP and its output-only native CLI without model calls')
+    @router.get('/preflight',summary='Check native Codex app-server connectivity without model calls')
     async def preflight(owner=Depends(identity)):
         return {**await svc.runner.preflight(),'maxExecutionSeconds':svc.runner.TASK_TIMEOUT_SECONDS}
 
@@ -227,12 +229,12 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
 
     @router.put('/projects/{project_id}/metadata',summary='Rename or reversibly remove an owned project without changing its PRD')
     async def metadata(project_id:str,body:Metadata,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.project_metadata,owner,project_id,body.model_dump())
+        return await svc.change_project_metadata(owner,project_id,body.model_dump())
 
     @router.get('/projects/{project_id}',summary='Restore a project and its version-bound state')
     async def get(project_id:str,owner=Depends(identity)):
         result=await asyncio.to_thread(svc.snapshot,owner,project_id)
-        svc.runner.touch(owner,project_id)
+        if not svc.edits.enabled(svc.store.get(owner,project_id)) or svc.edits.contexts.get((owner,project_id),('',''))[1].startswith('legacy:'):svc.runner.touch(owner,project_id)
         return result
 
     @router.post('/projects/{project_id}/chat',summary='Save a user fact and request the next interview turn')
@@ -360,4 +362,6 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
             return await svc.runner.example(owner,project_id,body.operationId)
     from .client_launch import mount_client_launch
     mount_client_launch(router, svc, identity)
+    from .edit_api import mount_edits
+    mount_edits(router,svc,identity)
     return router

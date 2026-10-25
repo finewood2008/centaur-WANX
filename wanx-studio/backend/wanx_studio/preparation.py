@@ -1,4 +1,5 @@
 """Trusted project intake, fixed capability probes, and versioned handoff."""
+from .foundation import FOUNDATION_PROMPT
 import asyncio
 from copy import deepcopy
 import json
@@ -12,6 +13,7 @@ from .prd_patch import rows
 
 CONTRACT_VERSION='wanx-app-capabilities/1'
 CATALOG={
+ 'reports':{'label':'私有报告与管理员汇总','methods':['reports.context','reports.list','reports.get','reports.save','reports.delete'],'limits':'复用 WANX 私有库；普通用户仅本人，管理员可查看本应用及环境全部报告。保存文档而非任意业务表。身份、私有库绑定与环境由服务端决定；不可共享。创建需 operationId，修改/删除需 expectedHash。','example':{'method':'reports.save','params':{'operationId':'每次新建生成唯一ID，重试沿用','title':'工作报告','content':'报告正文'}}},
  'data':{'label':'保存和维护应用数据','methods':['data.list','data.get','data.put','data.delete'],'limits':'只访问当前应用和环境的数据；更新、删除需 expectedRevision。','example':{'method':'data.put','params':{'collection':'items','value':{'title':'合成示例'},'expectedRevision':0}}},
  'model':{'label':'使用 WANX 模型生成内容','methods':['model.generate'],'limits':'用户主动触发；AI 建议需核对确认后才写入业务记录。','example':{'method':'model.generate','params':{'prompt':'请整理这段文字'},'result':{'text':'生成结果'}}},
  'knowledge':{'label':'读取获准的团队数据仓','methods':['knowledge.search','knowledge.documents','knowledge.graph','knowledge.evidence'],'limits':'管理员在星图中按应用授权；只读且遵循保护规则；不把 Key 放入代码。','example':{'method':'knowledge.search','params':{'warehouseId':'已授权仓ID','query':'具体问题'}}},
@@ -40,7 +42,9 @@ class IntakeReply(Input):
  options:list[str]=Field(default_factory=list,max_length=4)
  projectName:str=Field(default='',max_length=40)
 
-INTAKE_PROMPT='''你是万象客户端的轻量产品经理。只依据本次用户对话把任务讲清楚：具体场景、现有做法、最困难之处、期待的改变和已明确边界。围绕用户最新表达深挖，每轮最多一个值得问的主问题；不按字段轮询，不问工程细节，不生成完整 PRD。自然语言为主，涉及真实取舍才提供2—4个短选项，不添加“其他”（界面统一提供）。每个选项用可独立理解的完整表述，避免只写“再加某字段”而省略基础内容。不强迫固定轮数，未知保持为空或待讨论。未经用户采纳的建议不得加入范围。你看不到所选资料，不要索取资料正文。capabilities 只能从 data/model/files/knowledge 选择：持久保存数据=data，用户主动AI生成=model，生成的应用需选择和读取文件=files。应用运行时需要团队知识检索=knowledge；需先由管理员在星图中授权。用户为产品经理选背景资料不代表应用要files权限。只有用户已经明确要求、但尚无运行契约的能力才能列入gaps，每项必须有requirement、reason和逐字引用用户原话的evidence。没有采纳的建议、后置或明确不做的能力绝不能列入gaps。不要提出无关提醒/通知建议，不要发明接口、不宣布检查通过。回答严格JSON，匹配以下结构：'''+json.dumps(IntakeReply.model_json_schema(),ensure_ascii=False)
+INTAKE_PROMPT='''你是万象客户端的轻量产品经理。只依据本次用户对话把任务讲清楚：具体场景、现有做法、最困难之处、期待的改变和已明确边界。围绕用户最新表达深挖，每轮最多一个值得问的主问题；不按字段轮询，不问工程细节，不生成完整 PRD。自然语言为主，涉及真实取舍才提供2—4个短选项，不添加“其他”（界面统一提供）。每个选项用可独立理解的完整表述，避免只写“再加某字段”而省略基础内容。不强迫固定轮数，未知保持为空或待讨论。未经用户采纳的建议不得加入范围。你看不到所选资料，不要索取资料正文。capabilities 只能从 data/model/files/knowledge/reports 选择：持久保存数据=data，用户主动AI生成=model，生成的应用需选择和读取文件=files。应用运行时需要团队知识检索=knowledge；需先由管理员在星图中授权。用户为产品经理选背景资料不代表应用要files权限。只有用户已经明确要求、但尚无运行契约的能力才能列入gaps，每项必须有requirement、reason和逐字引用用户原话的evidence。没有采纳的建议、后置或明确不做的能力绝不能列入gaps。不要提出无关提醒/通知建议，不要发明接口、不宣布检查通过。回答严格JSON，匹配以下结构：'''+json.dumps(IntakeReply.model_json_schema(),ensure_ascii=False)
+
+INTAKE_PROMPT += "\n" + FOUNDATION_PROMPT
 
 
 def initial(project):
@@ -48,7 +52,7 @@ def initial(project):
 
 class Preparation:
  def __init__(self,service):
-  self.svc=service; self.locks={}; self.jobs={}; self.agents={}
+  self.svc=service; self.locks={}; self.jobs={}; self.agents={}; self.stopping=set()
   from .product_manager import ProductManager
   self.pm=ProductManager(self)
  def get(self,owner,pid):
@@ -102,7 +106,7 @@ class Preparation:
     raw=choice['message']['content'].strip()
     if raw.startswith('```'):raw=raw.split('\n',1)[1].rsplit('```',1)[0]
     reply=IntakeReply.model_validate(json.loads(raw))
-    if not set(reply.capabilities)<={'data','model','files','knowledge'}:raise ValueError()
+    if not set(reply.capabilities)<={'data','model','files','knowledge','reports'}:raise ValueError()
    except Exception as error:
     code=error.code if isinstance(error,StudioError) else 'INTAKE_RESPONSE_INVALID'
     self.mutate(owner,pid,'intake-failed',lambda p:self.event(p,'intake.failed',operationId=op,code=code))
@@ -139,12 +143,12 @@ class Preparation:
    x=p['preparation'];x.setdefault('gapDecisions',{})[body['gapId']]={'requirement':gap,'choice':'defer','detail':body['detail'],'source':'user-action','at':time.time()};x['revision']+=1;x['report']=None
    self.event(p,'capability.deferred',gapId=body['gapId'])
   return self.mutate(owner,pid,'defer-gap',change,body['operationId'])
- def valid_report(self,owner,p,development=False):
+ def valid_report(self,owner,p,development=False,*,allow_gaps=False):
   x=p['preparation'];r=x.get('report')
-  if x.get('currentProbe',{}).get('state')=='running' or self.gaps(p) or not r or r['fingerprint']!=self.fingerprint(owner,p):return False
+  if x.get('currentProbe',{}).get('state')=='running' or (self.gaps(p) and not allow_gaps) or not r or r['fingerprint']!=self.fingerprint(owner,p):return False
   required=self.required(p,development)
   return set(required)<=set(r['required']) and all(r['results'].get(k,{}).get('status')=='passed' for k in required) and r.get('codex',{}).get('available') is True
- def guard(self,owner,p,development=False):
+ def guard(self,owner,p,development=False,*,planning=False):
   self.svc.engines.guard(owner,p)
   if 'preparation' not in p:return
   x=p['preparation']
@@ -152,10 +156,38 @@ class Preparation:
   if development and x['interview']['state']=='running':raise StudioError('INTERVIEW_BUSY',409)
   if development and any(t.get('state') in {'queued','paused'} for t in x['interview'].get('turns',[])):raise StudioError('PRD_NOT_SYNCHRONIZED',409)
   if development and x['interview']['sync']!='saved':raise StudioError('PRD_NOT_SYNCHRONIZED',409)
-  if not self.valid_report(owner,p,development):raise StudioError('CAPABILITY_CHECK_REQUIRED',409)
- async def guard_async(self,owner,p,development=False):
-  self.guard(owner,p,development)
+  if development:
+   from .product_questions import pending_choices
+   if pending_choices(p):raise StudioError('PRODUCT_CHOICES_REQUIRED',409)
+  if not self.valid_report(owner,p,development,allow_gaps=planning):raise StudioError('CAPABILITY_CHECK_REQUIRED',409)
+ async def guard_async(self,owner,p,development=False,*,planning=False):
+  self.guard(owner,p,development,planning=planning)
   if 'preparation' in p:await self.validate_references(owner,p['preparation']['references'])
+ async def ensure_development(self,owner,pid):
+  """Prepare supported interfaces automatically without broadening resource grants."""
+  self.svc.authorize_management(owner)
+  p=self.get(owner,pid);x=p['preparation'];s=x['interview']
+  if x['phase']!='acp':raise StudioError('HANDOFF_REQUIRED',409)
+  if s['state']=='running':raise StudioError('INTERVIEW_BUSY',409)
+  if s['sync']!='saved' or any(t['state'] in {'queued','paused'} for t in s['turns']):raise StudioError('PRD_NOT_SYNCHRONIZED',409)
+  if self.gaps(p):raise StudioError('SOLUTION_NOT_READY',409)
+  if not self.valid_report(owner,p,development=True):
+   await self.check(owner,pid,{'operationId':uuid4().hex})
+   p=self.get(owner,pid)
+  if not self.valid_report(owner,p,development=True):
+   report=p['preparation'].get('report') or {}
+   for cap in self.required(p,development=True):
+    result=report.get('results',{}).get(cap,{})
+    if result.get('status')!='passed':raise StudioError(result.get('code') or 'CAPABILITY_PROBE_FAILED',409)
+   raise StudioError(report.get('codex',{}).get('code') or 'CODEX_NOT_CONFIGURED',409)
+  # Only the technical report changes; the user's selected sources and PRD stay intact.
+  def refresh(p):
+   x=p['preparation'];x['interview']['needsCapabilities']=False
+   if x.get('handoff'):
+    x['handoff']['report']=deepcopy(x['report'])
+    x['handoff']['contracts']={k:CATALOG[k] for k in x['report']['required']}
+  self.mutate(owner,pid,'automatic-build-readiness',refresh)
+  return self.get(owner,pid)
  async def sources(self,owner,kind,parent=''):
   if kind not in {'space','xingtu'}:raise StudioError('CONTEXT_KIND_INVALID')
   provider=getattr(self.svc,'context_provider',None)
@@ -199,11 +231,13 @@ class Preparation:
   if not isinstance(query,str) or not 1<=len(query)<=1000:raise StudioError('CONTEXT_QUERY_INVALID')
   p=self.get(owner,pid)
   if p['preparation']['phase']!='acp':raise StudioError('CONTEXT_NOT_HANDED_OFF',403)
+  provider=self.svc.context_provider
+  if hasattr(provider,'search_selected'):
+   self.svc.authorize_management(owner)
+   return await provider.search_selected(owner,p['preparation']['references'],query)
   results=[]
-  for ref in p['preparation']['references']:
+  for ref in p['preparation']['references'][:20]:
    part=await self.read_context(owner,pid,ref['kind']+':'+ref['id'],0,24000);text=part['text']
-   while part['nextOffset'] is not None:
-    part=await self.read_context(owner,pid,ref['kind']+':'+ref['id'],part['nextOffset'],24000);text+=part['text']
    at=text.casefold().find(query.casefold())
    if at>=0:results.append({'ref':ref['kind']+':'+ref['id'],'name':ref['name'],'offset':max(0,at-300),'text':text[max(0,at-300):at+1500]})
   return {'items':results}
@@ -236,6 +270,11 @@ class Preparation:
     if not bindings:raise StudioError('KNOWLEDGE_AUTHORIZATION_REQUIRED',409)
     session['app']=target_app
     await invoke('knowledge.documents',{'warehouseId':next(iter(bindings))})
+   elif cap=='reports':
+    context=await invoke('reports.context',{})
+    if not context.get('writeAvailable'):raise StudioError('REPORT_CONFIGURATION_REQUIRED',409)
+    await invoke('reports.list',{})
+    return {'status':'passed','coverage':'真实账号及空列表读取；写入和跨用户隔离另行验收','methods':['reports.context','reports.list'],'at':time.time()}
    elif cap=='files':
     if not self.svc.files:raise StudioError('FILES_UNAVAILABLE',409)
     try:await invoke('files.read',{'id':file_id})
@@ -270,7 +309,7 @@ class Preparation:
    for cap in required:
     self.mutate(owner,pid,'probe-start',lambda p:self.event(p,'capability.checking',capability=cap,operationId=op))
     try:
-     if cap in {'data','model','files','knowledge'}:results[cap]=await self.probe_runtime(owner,pid,cap)
+     if cap in {'data','model','files','knowledge','reports'}:results[cap]=await self.probe_runtime(owner,pid,cap)
      elif cap in CATALOG:
       refs=[r for r in x['references'] if 'background.'+r['kind']==cap]
       await self.validate_references(owner,refs)

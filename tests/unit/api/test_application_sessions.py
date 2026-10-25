@@ -145,10 +145,10 @@ async def test_concurrent_revocation_closes_once_and_reaps_both_tasks(
 
 
 @pytest.mark.parametrize("revocation_trigger", ["input", "idle"])
-async def test_terminal_permission_revocation_closes_existing_session(
+async def test_terminal_admin_demotion_closes_existing_session(
     monkeypatch: pytest.MonkeyPatch, revocation_trigger: str
 ) -> None:
-    """A still-valid WANX login cannot retain a revoked native module grant."""
+    """A still-valid login and terminal grant cannot retain former host privileges."""
     app = FastAPI()
     state: dict[str, Any] = {"revoked": False, "cleaned": False, "inputs": []}
     identities: list[User] = []
@@ -157,10 +157,10 @@ async def test_terminal_permission_revocation_closes_existing_session(
         user = User(
             id=3,
             username="operator",
-            role="user",
+            role="user" if state["revoked"] else "admin",
             display_name=None,
             application_id="wanx",
-            permissions=[] if state["revoked"] else ["terminal"],
+            permissions=["terminal"],
         )
         identities.append(user)
         return user
@@ -196,5 +196,6 @@ async def test_terminal_permission_revocation_closes_existing_session(
     assert state["inputs"] == [{"type": "input", "data": "allowed-before-revocation"}]
     assert state["cleaned"]
     assert identities[0].permissions == ["terminal"]
-    assert identities[-1].permissions == []
+    assert identities[-1].permissions == ["terminal"]
+    assert identities[0].role == "admin" and identities[-1].role == "user"
     assert identities[-1] is not identities[0]
