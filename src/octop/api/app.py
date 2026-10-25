@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,15 +102,20 @@ def _install_exception_handlers(app: FastAPI) -> None:
 def build_app(server: OctopServer) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        try:
-            yield
-        finally:
-            svc = getattr(application.state, "dialogue_service", None)
-            if svc is not None:
-                await svc.close()
-            studio = getattr(application.state, "app_studio", None)
-            if studio is not None:
-                await studio.close()
+        async with AsyncExitStack() as stack:
+            for name in ("space_mcp", "starlink_mcp"):
+                mcp = getattr(application.state, name, None)
+                if mcp is not None:
+                    await stack.enter_async_context(mcp.session_manager.run())
+            try:
+                yield
+            finally:
+                svc = getattr(application.state, "dialogue_service", None)
+                if svc is not None:
+                    await svc.close()
+                studio = getattr(application.state, "app_studio", None)
+                if studio is not None:
+                    await studio.close()
 
     cfg = server.services.config if server.services else getattr(server, "config", None)
     enable_dashboard = cfg.enable_dashboard if cfg else True
@@ -221,6 +226,8 @@ def build_app(server: OctopServer) -> FastAPI:
         skills,
         slash,
         space_links,
+        space_agents,
+        space_mcp,
         subagents,
         teams,
         terminal,
@@ -254,6 +261,8 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(preferences.router, "/api", ["auth"]),
             _RouterMount(personal_space.router, "/api/personal-space", ["personal-space"]),
             _RouterMount(space_links.router, "/api/personal-space", ["personal-space"]),
+            _RouterMount(space_agents.router, "/api/_client/space-agents", ["personal-space"]),
+            _RouterMount(space_mcp.router, "/api/_client/space-mcp", ["personal-space"]),
             _RouterMount(i18n.router, "/api", ["i18n"]),
             _RouterMount(health.router, "/api/health", ["health"]),
             _RouterMount(invites.admin_router, "/api/users/invites", ["users"]),
@@ -345,6 +354,13 @@ def build_app(server: OctopServer) -> FastAPI:
     from octop.api.studio import mount_studio
 
     mount_studio(app, server)
+
+    from octop.api.space_mcp import mount_space_mcp
+
+    mount_space_mcp(app, server)
+    from octop.api.starlink_mcp import mount_starlink_mcp
+
+    mount_starlink_mcp(app, server)
 
     if enable_dashboard:
         dashboard_dir = Path(__file__).parent.parent / "dashboard"
