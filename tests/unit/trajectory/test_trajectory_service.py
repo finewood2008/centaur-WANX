@@ -138,6 +138,25 @@ def test_finish_turn_persists_usage_and_marks_final_live_snapshot(tmp_path: Path
     assert published[-1]["_final"] is True
 
 
+def test_tool_result_keeps_executed_name_after_scoped_reroute(tmp_path: Path) -> None:
+    service, _bus = _service(tmp_path)
+    old = "wanx_knowledge_" + "a" * 32 + "_xingtu_search"
+    current = "wanx_knowledge_" + "b" * 32 + "_xingtu_search"
+    service.observe_chunk(
+        "A1", "T1", {"type": "tool_call_chunk", "id": "reroute", "name": old, "args": "{}"}
+    )
+    service.observe_chunk("A1", "T1", {"type": "tool_call_chunk", "id": "reroute", "name": current})
+    service.observe_chunk(
+        "A1",
+        "T1",
+        {"type": "tool_result", "id": "reroute", "name": current, "content": "[MASKED] evidence"},
+    )
+    events = service.list_events("T1", before_seq=None, limit=10, kinds=None)
+    event = next(row for row in events if row.kind == "tool")
+    assert event.payload["name"] == current
+    assert event.payload["result"] == "[MASKED] evidence"
+
+
 def test_finish_turn_attaches_usage_when_tools_follow_assistant(tmp_path: Path) -> None:
     service, _bus = _service(tmp_path)
     service.observe_chunk("A1", "T1", {"type": "token", "content": "checking"})

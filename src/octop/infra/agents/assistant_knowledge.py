@@ -15,9 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from octop.i18n import tr
-from octop.infra.agents.assistant_profile import AssistantProfiles
 from octop.infra.agents.assistant_space import SpaceGrantStore
-from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos.assistant_knowledge import KnowledgeAccessConflict, KnowledgeAccessRepo
 from octop.infra.db.repos.users import UserRepo
@@ -304,6 +302,9 @@ class AssistantKnowledgeGrants:
         thread_id: str | None,
         data_scope: str = "team",
     ) -> dict[str, Any]:
+        from octop.infra.agents.assistant_profile import AssistantProfiles
+        from octop.infra.connectors.service import ConnectorService
+
         if user.application_id != "wanx":
             raise KnowledgeError("ASSISTANT_KNOWLEDGE_DENIED", 403)
         async with self.locks.setdefault(user.id, asyncio.Lock()):

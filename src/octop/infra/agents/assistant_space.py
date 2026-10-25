@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from octop.i18n import tr
-from octop.infra.connectors.service import ConnectorService
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.personal_space.service import SpaceError
 from octop.infra.personal_space.workspaces import Workspaces
@@ -132,6 +131,7 @@ class AssistantSpaceGrants:
         thread_id: str | None,
     ) -> dict[str, Any]:
         from octop.infra.agents.assistant_profile import AssistantProfiles
+        from octop.infra.connectors.service import ConnectorService
 
         profile = AssistantProfiles(self.server)._existing(user.id)
         if profile is None:
