@@ -631,7 +631,8 @@ function boxComponentRow(name, value) {
   const health = { healthy: "运行正常", unhealthy: "运行异常", stopped: "未运行", starting: "正在启动", degraded: "运行受限", unknown: "未报告服务状态" };
   const running = value.runningVersion || (["base", "docker"].includes(name) ? "安装记录（不提供独立运行版本）" : "待核验（未取得运行版本）");
   const ota = value.otaSupported === true ? "支持独立 OTA（仍需预检）" : value.otaSupported === false ? "当前不支持独立 OTA" : "OTA 支持情况待确认";
-  return `<tr><td>${escapeHTML(names[name] || name)}${names[name] ? `<small class="muted">${escapeHTML(name)}</small>` : ""}</td><td><div>安装：${escapeHTML(value.installedVersion || "未记录")}</div><div>运行：${escapeHTML(running)}</div></td><td><div>核验：${escapeHTML(evidence[value.evidenceStatus || "unknown"] || "核验状态待确认")}</div><div>服务：${escapeHTML(health[value.health || "unknown"] || "服务状态待确认")}</div><small class="muted">${ota}</small></td></tr>`;
+  const installationOnly = ["base", "docker"].includes(name) && Boolean(value.installedVersion) && !value.runningVersion && (!value.evidenceStatus || value.evidenceStatus === "unknown") && (!value.health || value.health === "unknown");
+  return `<tr><td>${escapeHTML(names[name] || name)}${names[name] ? `<small class="muted">${escapeHTML(name)}</small>` : ""}</td><td><div>安装：${escapeHTML(value.installedVersion || "未记录")}</div><div>运行：${escapeHTML(running)}</div></td><td>${installationOnly ? "<div>记录：历史部署回执</div><div>核验方式：受控维护</div>" : `<div>核验：${escapeHTML(evidence[value.evidenceStatus || "unknown"] || "核验状态待确认")}</div><div>服务：${escapeHTML(health[value.health || "unknown"] || "服务状态待确认")}</div>`}<small class="muted">${ota}</small></td></tr>`;
 }
 
 function boxUpdateView() {
