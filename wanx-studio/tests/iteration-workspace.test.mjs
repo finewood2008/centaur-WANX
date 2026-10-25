@@ -11,6 +11,10 @@ test('restoring older workspace preferences retains independent drafts without l
  const a={draft:'未发送',extra:'补充',choice:'other',feedback:'改进想法',scroll:{prd:230},phase:'versions'};
  const restored=restoreWorkspace(p(),a);assert.equal(restored.phase,'versions');assert.equal(restored.draft,a.draft);assert.equal(restored.scroll.prd,230);
  const fresh=restoreWorkspace({...p(),tasks:[{state:'running'}]});assert.equal(fresh.draft,undefined);assert.equal(fresh.phase,'discovery');
+ for(const state of ['queued','running','waiting'])for(const phase of ['discovery','product','versions']){
+  const active=restoreWorkspace({...p(),tasks:[{id:'new-task',state}]},{...a,phase,iterationPane:'plan',taskId:'old-task',mobilePane:'chat'});
+  assert.equal(active.phase,'discovery');assert.equal(active.iterationPane,'process');assert.equal(active.taskId,'');assert.equal(active.mobilePane,'workspace');assert.equal(active.draft,a.draft);assert.equal(active.scroll.prd,230);
+ }
  const legacy=restoreWorkspace(p(),{phase:'execution',chatWidth:32});assert.equal(legacy.phase,'product');assert.equal(legacy.chatWidth,35);
  initialWorkspace({...p(),artifacts:[{hash:'new'}]});assert.equal(restored.phase,'versions');assert.equal(restored.feedback,a.feedback);
 });

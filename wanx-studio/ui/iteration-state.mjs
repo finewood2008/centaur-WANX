@@ -11,6 +11,11 @@ export function restoreWorkspace(project,saved={}) {
   if(!['split','chat','plan'].includes(next.planMode))next.planMode='split';
   next.chatWidths=Object.fromEntries(Object.entries(saved.chatWidths||{}).filter(([stage,width])=>['discuss','review','build','preview','history'].includes(stage)&&Number.isFinite(width)&&width>=0&&width<=100));
   next.mobilePane=['chat','workspace'].includes(saved.mobilePane)?saved.mobilePane:'chat';
+  // Opening an active build defaults to its live process, not a stale PRD tab.
+  // Ordinary project updates do not call restoreWorkspace or change user tabs.
+  if(project?.tasks.some(t=>['queued','running','waiting'].includes(t.state))){
+    next.phase='discovery';next.iterationPane='process';next.taskId='';next.mobilePane='workspace';
+  }
   next.chatWidth=Math.max(35,Math.min(70,Number(next.chatWidth)||60));
   return next;
 }

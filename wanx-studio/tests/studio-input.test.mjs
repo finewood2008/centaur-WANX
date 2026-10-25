@@ -59,3 +59,28 @@ test('new scope or changed project-menu actions never restore stale menu nodes',
   assert.equal(h.root.menu,next);assert.equal(h.document.activeElement,null);
  }
 });
+
+
+test('a second focused field survives refresh instead of being replaced by the first field',()=>{
+ const h=harness(),second=h.field('project:requirement','已补全的需求'),first=h.original;
+ h.document.activeElement=second;
+ h.root.querySelectorAll=selector=>selector==='[data-studio-edit-key]'?[h.root.field,second]:[];
+ const restore=h.editor.capture();const nextSecond=h.field('project:requirement','已补全的需求');let retained;
+ nextSecond.replaceWith=node=>{retained=node};h.root.querySelectorAll=selector=>selector==='[data-studio-edit-key]'?[first,nextSecond]:[];
+ h.document.activeElement=null;restore();assert.equal(retained,second);assert.equal(h.document.activeElement,second);
+});
+
+test('focused model select survives refresh without a textarea selection API',()=>{
+ const h=harness();delete h.original.setSelectionRange;const restore=h.editor.capture();h.redraw(h.field());assert.doesNotThrow(restore);assert.equal(h.root.field,h.original);assert.equal(h.document.activeElement,h.original);
+});
+
+test('preview frames move through a connected parking node and never cross handles',()=>{
+ for(const matches of [true,false]){
+  let parked=false,moved=false,removed=false;const old={dataset:{studioFrameKey:'scope:handle'},scroll:18};
+  const parking={moveBefore(node){assert.equal(node,old);parked=true},remove(){removed=true}};
+  const owner={activeElement:null,body:{moveBefore(){},append(node){assert.equal(node,parking)}},createElement(){return parking}};
+  const root={ownerDocument:owner,slot:old,addEventListener(){},querySelector(){return null},querySelectorAll(selector){return selector==='[data-studio-frame-key]'?[this.slot]:[]}};
+  const window={};vm.runInNewContext(source,{window,setTimeout});const retention=window.createStudioInputRetention(root,()=>{}),restore=retention.capture();assert.equal(parked,true);
+  const next={dataset:{studioFrameKey:matches?'scope:handle':'other:handle'},parentElement:{moveBefore(node){assert.equal(node,old);moved=true}},remove(){}};root.slot=next;restore();assert.equal(moved,matches);assert.equal(removed,true);assert.equal(old.scroll,18);
+ }
+});
