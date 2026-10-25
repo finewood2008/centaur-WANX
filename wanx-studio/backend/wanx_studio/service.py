@@ -70,7 +70,6 @@ class StudioService:
     def snapshot(self, owner, project_id):
         p = self.store.get(owner, project_id)
         result = public(p)
-        result["readiness"] = readiness(p["solution"], p["decisions"])
         from .product_questions import pending_choices
         if pending_choices(p):
             result['readiness']['ready']=False
@@ -323,6 +322,9 @@ class StudioService:
             if body["solutionHash"] != digest(p["solution"]):
                 raise StudioError("SOLUTION_CHANGED",409)
             self.preparation.guard(owner,p,development=True)
+            if 'preparation' in p and not p['artifacts']:
+                from .iterative import proposal
+                if not proposal(p)['ready']:raise StudioError('SOLUTION_NOT_READY',409)
             if not readiness(p["solution"],p["decisions"])["ready"]:
                 raise StudioError("SOLUTION_NOT_READY",409)
             if p['solution'].get('prd') is not None and (len(body.get('reviewedSections',[]))!=len(PRD_REVIEW_SECTIONS) or set(body.get('reviewedSections',[]))!=set(PRD_REVIEW_SECTIONS)):
