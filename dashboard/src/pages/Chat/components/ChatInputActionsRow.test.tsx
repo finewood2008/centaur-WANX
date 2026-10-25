@@ -1,4 +1,4 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ResolvedModel } from "../../../api/types";
@@ -21,6 +21,7 @@ const models: ResolvedModel[] = [
 
 describe("ChatInputActionsRow compact pickers", () => {
   it("uses a popover instead of a full-width drawer on narrow desktop", async () => {
+    const onModelChange = vi.fn();
     const { container } = render(
       <MemoryRouter>
         <ChatInputActionsRow
@@ -33,7 +34,7 @@ describe("ChatInputActionsRow compact pickers", () => {
           recording={false}
           transcribing={false}
           availableModels={models}
-          onModelChange={vi.fn()}
+          onModelChange={onModelChange}
           slashPickerGroups={null}
           slashMenuItems={[]}
           onSlashShortcutSelect={vi.fn()}
@@ -61,8 +62,10 @@ describe("ChatInputActionsRow compact pickers", () => {
       expect(document.querySelector(".ant-popover")).toBeInTheDocument();
     });
     const popover = document.querySelector(".ant-popover");
-    expect(popover?.querySelector("svg.lucide-sparkles")).not.toBeNull();
-    expect(popover?.querySelector("img")).not.toBeNull();
+    expect(within(popover as HTMLElement).getByRole("button", { name: /Auto/ })).toBeInTheDocument();
+    const option = within(popover as HTMLElement).getByRole("button", { name: "Provider / Compact Model" });
+    fireEvent.click(option);
+    expect(onModelChange).toHaveBeenCalledWith("Provider/compact-model");
     expect(document.querySelector(".ant-drawer-content")).toBeNull();
   });
 });
