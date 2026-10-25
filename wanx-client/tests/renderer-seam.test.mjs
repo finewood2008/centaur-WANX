@@ -2925,7 +2925,7 @@ test("pending network cleanup explains server recovery instead of blaming the lo
   assert.doesNotMatch(h.app.innerHTML, /请检查本机网络后重试连接/);
 });
 
-test('AI dialogue is a standard tab beside applications and the browser remains independent', async () => {
+test('assistant is a standard tab beside applications and the browser remains independent', async () => {
   const h = await harness();
   const nav = h.app.innerHTML.match(/<nav class="main-nav"[\s\S]*?<\/nav>/)[0];
   assert.deepEqual([...nav.matchAll(/data-action="show-([a-z-]+)"/g)].map(match => match[1]), ['applications', 'ai-dialogue', 'space', 'boxes']);
@@ -2934,7 +2934,6 @@ test('AI dialogue is a standard tab beside applications and the browser remains 
   assert.match(h.app.innerHTML, /id="ai-dialogue-host"/);
   assert.equal(h.launches.length, 0);
   await h.click('show-settings');
-  assert.match(h.app.innerHTML, /AI 对话模型/);
   await h.click('show-dialogue-models');
   assert.match(h.app.innerHTML, /id="dialogue-model-settings-host"/);
   assert.equal(h.launches.length, 0);

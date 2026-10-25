@@ -14,7 +14,7 @@ test('dialogue transcript follows only chosen ancestors and generated content st
   const window = {}; vm.runInNewContext(source, { window });
   assert.equal(window.wanxDialogueState.isLocalModel({ name: 'Qwen', is_local: true }), true);
   assert.equal(window.wanxDialogueState.isLocalModel({ name: 'Qwen', is_local: false }), false);
-  assert.equal(window.wanxDialogueState.isLocalModel({ name: 'Qwen · 本机', provider: 'Ollama' }), true);
+  assert.equal(window.wanxDialogueState.isLocalModel({ name: 'Qwen · 本机', provider: 'Ollama' }), false);
   assert.equal(window.wanxDialogueState.isLocalModel({ name: 'Qwen', provider: '通义千问' }), false);
   const session = { groups: [{ id: 'g1', prompt: 'p1', answers: [{ id: 'a', model: 'm1' }, { id: 'sibling', model: 'm2' }] }, { id: 'g2', parent_answer: 'a', prompt: 'p2', answers: [{ id: 'b', model: 'm3' }] }] };
   assert.deepEqual(Array.from(window.wanxDialogueState.trail(session, 'b'), row => row.answer.id), ['a', 'b']);
@@ -23,7 +23,7 @@ test('dialogue transcript follows only chosen ancestors and generated content st
   assert.match(markup, /&lt;script&gt;/);
 });
 
-test('compact native UI starts a new conversation on model switch, keeps drafts and clears old accounts', {
+test('native assistant keeps its conversation on model switch, keeps drafts and clears old accounts', {
   skip: process.env.WANX_TEST_ELECTRON !== '1', timeout: 30000,
 }, async t => {
   const profile = await mkdtemp(join(tmpdir(), 'wanx-ai-dialogue-'));

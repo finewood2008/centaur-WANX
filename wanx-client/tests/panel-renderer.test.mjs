@@ -75,7 +75,7 @@ async function harness(initial = baseState(), getBalance = async () => ({ availa
   vm.runInNewContext(source, {
     window: { wanxPanel: api, addEventListener: (name, fn) => focusEvents.set(name, fn) },
     document: {
-      body:{classList:{toggle(){}}},
+      body:{classList:{toggle(name, yes){ if(yes) classes.add(name); else classes.delete(name); },contains(name){return classes.has(name);}}},
       getElementById(id) { return id === "panel" ? root : id === "panel-drop" && initialSpace ? overlay : null; },
       addEventListener(name, fn) { documentEvents.set(name, fn); },
     },
@@ -388,7 +388,7 @@ test("whole panel drop overlay is stable through updates and submits multiple fi
   assert.deepEqual(h.calls.at(-1), ["transfer", "resume", "a".repeat(32), "scope-a"]);
   await h.space({ ...uploadState(), tasks: [{ name: "file.bin", size: 100, offset: 100, phase: "complete" }] });
   assert.doesNotMatch(h.html, /panel-transfers|value="100"|已将.*加入上传队列/);
-  assert.match(h.html, /class="space-entry" data-page="space"/);
+  assert.match(h.html, /class="space-entry" data-assistant-open/);
   assert.match(h.html, /class="apps-link" data-page="applications"/);
   await h.click({ page: "space" });
   assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "space" }]);
@@ -416,7 +416,7 @@ for (const [label, connection, storage] of [
   await h.drag("drop", { files: [{ name: "one.txt" }] }); assert.equal(h.uploads.length, 0);
 });
 
-test("completed history disappears while the app heading entry and dedicated space footer remain", async () => {
+test("completed history disappears while the app heading entry and dedicated assistant footer remain", async () => {
   const h = await harness(connectedState(), undefined, { ...uploadState(), tasks: [
     { id: "a".repeat(32), name: "already-complete.txt", phase: "complete", size: 10, offset: 10 },
   ] });
@@ -424,13 +424,13 @@ test("completed history disappears while the app heading entry and dedicated spa
   const apps = h.html.match(/<section class="my-apps"[\s\S]*?<\/section>/)?.[0];
   assert.match(apps, /class="apps-link" data-page="applications"/);
   const footer = h.html.match(/<footer[\s\S]*?<\/footer>/)?.[0];
-  assert.match(footer, /class="space-entry" data-page="space"/);
-  assert.match(footer, /本机万象 · 全部文件/);
-  assert.match(footer, /已就绪/);
+  assert.match(footer, /class="space-entry" data-assistant-open/);
+  assert.match(footer, /打开迷你助理/);
+  assert.match(footer, /随时问，接着做/);
   assert.match(footer, /class="note-entry" data-action="clipboard-toggle"/);
   assert.match(footer, /打开便签/);
   assert.doesNotMatch(footer, /class="space-drop-hint/);
-  assert.match(footer, /拖入文件，保存到空间/);
+  assert.match(footer, /文字 · 图片/);
   assert.doesNotMatch(footer, /data-page="applications"/);
   await h.click({ page: "applications" });
   assert.deepEqual(h.actions().at(-1), ["desktop-open", { page: "applications" }]);

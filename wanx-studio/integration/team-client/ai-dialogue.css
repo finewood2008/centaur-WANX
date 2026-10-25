@@ -238,13 +238,10 @@
 .ai-composer-meta>span:not(.ai-composer-model-icon){overflow:hidden;text-overflow:ellipsis;max-width:220px}
 .ai-composer-model-icon{display:flex;align-items:center;opacity:.8;flex:none}.ai-composer-model-icon img{width:14px;height:14px;object-fit:contain}.ai-composer-meta small{font-size:9px;border:1px solid #e9e3d9;border-radius:5px;padding:2px 5px;color:#9b8f7d;flex:none}
 .ai-composer-bottom>.ai-keyboard-hint{flex:none;margin-left:auto;color:#b7ae9f;font-size:9px}
-.ai-composer-bottom>.ai-send{padding:8px 13px;border-radius:10px}.ai-composer-bottom>.ai-send:disabled{background:#c9c1b3;opacity:.7}
-{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:9px;border-radius:10px;background:#f3f0e8;color:#81745f;font-size:11px}{display:none}{flex:1}{border:0;border-radius:6px;background:#fffdf8;color:#81745f;font-size:10px;padding:6px 9px}{background:#e8dfcf;color:#5b4d39}
-{display:flex;align-items:center;gap:2px;height:18px}{width:2px;height:8px;background:#ad8f68;border-radius:2px;animation:ai-voice-level 1s ease-in-out infinite}{height:15px;animation-delay:-.4s}{height:12px;animation-delay:-.6s}{animation-delay:-.2s}
-{color:#a26448;background:#f1e8db}.ai-answer footer button[aria-pressed="true"]{color:#a66b49;background:#f4ede1}
+.ai-composer-bottom>.ai-send{padding:8px 13px;border-radius:10px}.ai-composer-bottom>.ai-send:disabled{background:#c9c1b3;opacity:.7}.ai-answer footer button[aria-pressed="true"]{color:#a66b49;background:#f4ede1}
 @media(max-width:900px){.ai-composer-bottom>.ai-keyboard-hint{display:none}.ai-composer-meta>span:not(.ai-composer-model-icon){max-width:170px}}
-@media(max-width:520px){.ai-dialogue .ai-composer{padding:11px 11px 8px;border-radius:13px}.ai-dialogue .ai-composer textarea[data-chat-input]{min-height:48px}.ai-composer-bottom{gap:3px}.ai-composer-bottom>[data-chat-attach]>span{display:none}.ai-composer-bottom>.ai-composer-meta{margin-left:5px;font-size:9px;gap:4px}.ai-composer-meta>span:not(.ai-composer-model-icon){max-width:100px}.ai-composer-meta small{padding:2px 3px;font-size:8px}.ai-composer-bottom>.ai-send{margin-left:4px;padding:7px 10px;font-size:11px}{gap:6px;font-size:10px;padding:8px}{padding:5px 7px}}
-@media(prefers-reduced-motion:reduce){{animation:none}.ai-dialogue .ai-composer{transition:none}}
+@media(max-width:520px){.ai-dialogue .ai-composer{padding:11px 11px 8px;border-radius:13px}.ai-dialogue .ai-composer textarea[data-chat-input]{min-height:48px}.ai-composer-bottom{gap:3px}.ai-composer-bottom>[data-chat-attach]>span{display:none}.ai-composer-bottom>.ai-composer-meta{margin-left:5px;font-size:9px;gap:4px}.ai-composer-meta>span:not(.ai-composer-model-icon){max-width:100px}.ai-composer-meta small{padding:2px 3px;font-size:8px}.ai-composer-bottom>.ai-send{margin-left:4px;padding:7px 10px;font-size:11px}}
+@media(prefers-reduced-motion:reduce){.ai-dialogue .ai-composer{transition:none}}
 /* Compact history: search and titles first, management on demand. */
 @media(min-width:960px){.ai-assistant-workbench{grid-template-columns:208px minmax(0,1fr)}}
 .ai-history{box-sizing:border-box;padding:13px 9px 10px}

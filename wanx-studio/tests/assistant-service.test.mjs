@@ -50,7 +50,6 @@ function fixture(options = {}) {
   const service = createAIDialogue({ client, onEvent: event => events.push(event), selectFiles: async () => [], ...options });
   return { service, routes, sockets, events, history, respond(route, handler) { responses.set(route, handler); }, setModels(value) { modelRows = value; }, recoverNetwork(phase) { state.phase = phase; for (const fn of listeners) fn(); }, switchBox() { state.connection.deviceId = 'different-box'; for (const fn of listeners) fn(); } };
 }
-const syntheticWav = () => { const b = Buffer.alloc(48); b.write('RIFF'); b.write('WAVE', 8); b.write('data', 36); b.writeUInt32LE(0xffffffff, 4); b.writeUInt32LE(0xffffffff, 40); return b.toString('base64'); };
 test('mini handoff keeps trusted attachment metadata and source scope, rejecting stale handles', async () => {
   const sharedUploads = new Map(), f = fixture({sharedUploads}), {scope} = await f.service.action('load');
   sharedUploads.set('uploaded', {key:scope, data:{filename:'synthetic.txt', media_type:'text/plain'}});
