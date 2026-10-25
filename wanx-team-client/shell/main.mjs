@@ -445,7 +445,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           if(action==="details")return {ok:true,value:details};
           if(action!=="copy")throw Error("MCP_ACTION_DENIED");
           let text=input.kind==="url"?details.url:input.kind==="config"?JSON.stringify(details.configuration,null,2):null;
-          if(input.kind==="space-key")text=await spaceLinks.mcpSpaceKey(input.id);
+
           if(!text)throw Error("MCP_ACTION_DENIED");clipboard.writeText(text);return {ok:true,value:{copied:true}};
         }catch(error){return {ok:false,code:error.code||"MCP_UNAVAILABLE"}}
       });
@@ -487,6 +487,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       personalSpace = await createPersonalSpace({
+        driveCatalog: () => { if(!spaceLinks)throw Object.assign(new Error("BOX_CONNECTION_REQUIRED"),{code:"BOX_CONNECTION_REQUIRED"});return spaceLinks.manage("mcp-drives"); },
         onEvent: event => timings.transfer(event),
         client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         store: createSecureAccountStore({ filePath: path.join(userData, "space-transfers.enc"), safeStorage }),
@@ -526,7 +527,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         spaceLinks = await createSpaceLinkBridge({
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
-          profileDirectory: path.join(userData, "space-agent-profiles"),
+          agentHubOptions: {team: true},
+          copyText: text => clipboard.writeText(text),
           chooseStorageDirectory: async () => {
             const result = await dialog.showOpenDialog(control, {
               title: "选择空间存储文件夹", buttonLabel: "选择此文件夹",
@@ -534,11 +536,6 @@ if (process.argv.includes("--wanx-managed-app")) {
             });
             return result.canceled ? null : result.filePaths[0];
           },
-          mcpConfig: { mcpServers: { "wanx-space": {
-            command: process.execPath,
-            args: [fileURLToPath(new URL("./space-links-mcp.mjs", import.meta.url))],
-            env: { ELECTRON_RUN_AS_NODE: "1" },
-          } } },
           onChanged: () => {
             if (control && !control.isDestroyed()) control.webContents.send("wanx-client:space-content-changed");
           },

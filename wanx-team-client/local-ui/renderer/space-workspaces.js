@@ -33,14 +33,14 @@
   }
   async function refresh() {
     const before=epoch;
-    try { const result=await manage('spaces'); if(Array.isArray(result)) spaces=result; requests=await manage('requests'); }
+    try { const result=await manage('spaces'); if(Array.isArray(result)) spaces=result; requests=[]; }
     catch(error) { if(before!==epoch)throw error; if(!String(error.message).includes('UPGRADE')&&!String(error.message).includes('404'))throw error; }
     cache.clear();
     await Promise.all([...new Set([...expanded,...automatic])].map(async k=>{const [space,id]=k.split(':');if(!spaces.some(s=>s.id===space&&!s.trashed)){expanded.delete(k);return;}try{await children(space,id);}catch(error){if(before!==epoch)throw error;expanded.delete(k);}}));
     const resolved=await Promise.all(favorites.map(async f=>{
       const space=spaces.find(s=>s.id===f.space);
       if(space && f.id===space.root)return {...f,name:space.name,unavailable:Boolean(space.trashed)};
-      try { const item=await call('stat',{id:f.id});return {...f,space:item.space_id || 'personal',name:item.name,unavailable:false}; }
+      try { const item=await call('stat',{id:f.id,space_id:f.space});return {...f,space:item.space_id || 'personal',name:item.name,unavailable:false}; }
       catch(error) { if(before!==epoch)throw error;return {...f,name:f.name || '位置暂不可用',unavailable:true}; }
     }));
     if(before!==epoch)return;
@@ -75,7 +75,7 @@
   }
   function sidebar() {
     const own=spaces.find(s=>s.id==='personal') || personal(),pending=requests.filter(r=>r.status==='pending').length;
-    return `<nav class="space-tree" aria-label="空间位置"><section class="space-nav-section" aria-label="常用位置"><h3 class="space-sidebar-caption">常用位置</h3>${favorites.map(f=>{const data=`data-id="${esc(f.id)}" data-space="${esc(f.space)}" data-name="${esc(f.name)}"`;return `<div class="space-favorite" data-sidebar-kind="favorite" ${data}><button class="space-nav ${!position.trash&&position.space===f.space&&position.parent===f.id?'active':''}" data-action="space-folder" ${data} title="${esc(f.name)}${f.unavailable?' · 位置暂不可用':''}" ${f.unavailable?'disabled':''}>${icon('star')}<span>${esc(f.name || '位置暂不可用')}</span></button><button class="space-tree-more" data-workspace-action="menu" data-sidebar-kind="favorite" ${data} aria-label="${esc(f.name)}的快捷入口操作" title="更多操作" aria-haspopup="menu">${icon('more')}</button></div>`;}).join('') || '<p class="space-sidebar-note">尚未固定位置</p>'}</section><section class="space-nav-section" aria-label="我的空间">${tree(own.id,own.root,'我的空间')}</section><section class="space-nav-section" aria-label="来源"><div class="space-sidebar-caption space-source-heading"><h3>来源</h3><button class="space-source-add" data-workspace-action="requests" aria-label="Agent 接入${pending?`，${pending} 个待确认`:''}" title="接入 Agent 或处理申请">${icon('plus')}${pending?`<span class="space-request-count">${pending}</span>`:''}</button></div>${spaces.filter(s=>s.id!=='personal'&&!s.trashed).map(s=>tree(s.id,s.root,s.name)).join('')}</section></nav>`;
+    return `<nav class="space-tree" aria-label="空间位置"><section class="space-nav-section" aria-label="常用位置"><h3 class="space-sidebar-caption">常用位置</h3>${favorites.map(f=>{const data=`data-id="${esc(f.id)}" data-space="${esc(f.space)}" data-name="${esc(f.name)}"`;return `<div class="space-favorite" data-sidebar-kind="favorite" ${data}><button class="space-nav ${!position.trash&&position.space===f.space&&position.parent===f.id?'active':''}" data-action="space-folder" ${data} title="${esc(f.name)}${f.unavailable?' · 位置暂不可用':''}" ${f.unavailable?'disabled':''}>${icon('star')}<span>${esc(f.name || '位置暂不可用')}</span></button><button class="space-tree-more" data-workspace-action="menu" data-sidebar-kind="favorite" ${data} aria-label="${esc(f.name)}的快捷入口操作" title="更多操作" aria-haspopup="menu">${icon('more')}</button></div>`;}).join('') || '<p class="space-sidebar-note">尚未固定位置</p>'}</section><section class="space-nav-section" aria-label="我的空间">${tree(own.id,own.root,'我的空间')}</section>${spaces.filter(s=>s.id!=='personal').map(s=>`<section class="space-nav-section" aria-label="${esc(s.name)}专属盘">${tree(s.id,s.root,s.name)}<p class="space-sidebar-note">${esc(s.member)} · ${s.domain==='company'?'公司可见':'个人专属'}${s.writable?'':' · 只读'}</p></section>`).join('')}</nav>`;
   }
   function footerNavigation() {return `<button class="space-nav space-recycle-entry ${position.trash?'active':''}" data-action="space-recycle" ${position.trash?'aria-current="page"':''}>${icon('trash')}<span>回收站</span></button>`;}
   function dismissMenu() {menu=null;document.querySelector('.space-sidebar-menu')?.remove?.();}
@@ -88,7 +88,9 @@
   function menuView() {
     if(!menu||modal)return '';
     const t=menu,choice=(text,command,danger=false)=>`<button role="menuitem" data-workspace-action="menu-command" data-command="${command}" ${danger?'class="danger-text"':''}>${esc(text)}</button>`;
-    let items=choice(t.kind==='folder'?'打开文件夹':'打开','open');
+    const disk=spaces.find(s=>s.id===t.space);
+    if(disk?.kind==='agent-drive'&&t.id===disk.root)return `<div class="space-context-menu space-sidebar-menu" role="menu" style="left:${t.x}px;top:${t.y}px">${choice('打开专属盘','open')}${choice('接入详情…','manage')}${choice(pinned(t.space,t.id)?'取消固定':'固定到常用位置',pinned(t.space,t.id)?'unpin':'pin')}</div>`;
+    let items=choice(t.kind==='folder'?'打开文件夹':'打开','open')+choice('提供给 Agent…','agent-provide');
     if(t.kind==='favorite')items+=choice('在空间中显示','locate')+'<hr role="separator">'+choice('取消固定','unpin');
     else {
       items+=choice(pinned(t.space,t.id)?'取消固定':'固定到常用位置',pinned(t.space,t.id)?'unpin':'pin');
@@ -103,7 +105,7 @@
       if(!space)throw Error('SPACE_NOT_FOUND');
       return {...target,space:space.id,id:space.root,name:space.name};
     }
-    const item=await call('stat',{id:target.id});
+    const item=await call('stat',{id:target.id,space_id:target.space});
     if(item.kind!=='folder'||(target.kind!=='favorite'&&item.space_id!==target.space))throw Error('SPACE_CONTEXT_CHANGED');
     return {...target,space:item.space_id || 'personal',name:item.name,item};
   }
@@ -112,6 +114,7 @@
     if(command==='unpin'){await handle('unpin',{space:target.space,id:target.id});return;}
     const resolved=await resolveTarget(target);
     if(command==='open'||command==='locate'){await options.navigate(resolved.id,false,resolved.space);return;}
+    if(command==='agent-provide'){await window.wanxAgentHub?.open({resource:{root:resolved.id,name:resolved.name,kind:'folder',domain:spaces.find(s=>s.id===resolved.space)?.domain||'personal',permission:'read'}});return;}
     if(command==='pin'){await handle('pin',{space:resolved.space,id:resolved.id,name:resolved.name});return;}
     if(target.kind==='folder'){await options.fileAction(command,resolved.item);return;}
     if(command==='manage'){await showSpace(resolved.space);return;}
@@ -127,7 +130,7 @@
     if(next.trash||next.parent===live.root)return next;
     for(const id of [...new Set([next.parent,...ancestors.map(c=>c.id).reverse(),live.root])]) {
       if(id===live.root)return {...next,parent:id};
-      try {const item=await call('stat',{id});if(item.kind==='folder'&&item.space_id===next.space)return {...next,parent:id};}
+      try {const item=await call('stat',{id,space_id:next.space});if(item.kind==='folder'&&item.space_id===next.space)return {...next,parent:id};}
       catch(error){if(!String(error.message).includes('SPACE_NOT_FOUND'))throw error;}
       invalidated([{space:next.space,id}]);
     }
@@ -137,12 +140,14 @@
   function storageView() {
     if(position.trash)return '';
     const space=current(),location=space.storage;
+    if(space.kind==='agent-drive')return `<div class="space-storage-location"><strong>Agent 专属盘</strong><small>${space.domain==='company'?'公司成员可见':'个人账号可见'} · ${space.writable?'可读写':'只读'}</small><small>${bytes(space.bytes||0)} 已使用</small></div>`;
     return `<div class="space-storage-location"><div><small>存储位置</small><button class="text-button" data-workspace-action="storage" data-space="${esc(space.id)}" aria-label="设置当前空间存储目录">设置</button></div><span title="${esc(location?.directory || '')}">${esc(location?.path || '默认位置')}</span>${location?.available===false?'<small class="danger-text">目录暂不可用</small>':''}</div>`;
   }
   function recycled() { return spaces.filter(s=>s.trashed).map(s=>`<div class="space-recycled"><strong>${esc(s.name)}</strong><span>空间 · ${bytes(s.bytes+s.pending_bytes)}</span>${button('恢复空间','restore',`data-space="${s.id}"`)}</div>`).join(''); }
   function setModal(value) { dismissMenu();modal=value; composing=false;options.render();const input=document.querySelector('#workspace-name');input?.focus();input?.select(); }
   function close() {modal=null;dismissMenu();composing=false;options.render();}
   async function showSpace(id) {
+    const disk=spaces.find(s=>s.id===id);if(disk?.kind==='agent-drive'){await window.wanxAgentHub.open({id:disk.connection_id,tab:'connections'});return;}
     await refresh();const space=spaces.find(s=>s.id===id);if(!space)return;
     const connections=await Promise.all(space.connections.map(async c=>({...c,grants:await manage('grants',{id:c.id})})));
     setModal({kind:'manage',title:space.name,space,connections});
@@ -199,7 +204,7 @@
     if(action==='expand'){const k=nodeKey(data.space,data.id);if(expanded.has(k)||(automatic.has(k)&&!collapsed.has(k))){expanded.delete(k);collapsed.add(k);}else{await children(data.space,data.id);expanded.add(k);collapsed.delete(k);}return;}
     if(action==='menu-command'){await menuCommand(data.command);return;}
     if(action==='back'||action==='forward'){index+=action==='back'?-1:1;index=Math.max(0,Math.min(history.length-1,index));const p=history[index];if(p)await options.navigate(p.parent,p.trash,p.space,false);return;}
-    if(action==='requests'){await refresh();setModal({kind:'requests',title:'Agent 接入'});return;}
+    if(action==='requests'){await window.wanxAgentHub?.open({tab:'connections'});return;}
     if(action==='config'){setModal({kind:'info',title:'通用 MCP 接入配置',text:JSON.stringify(await manage('agent-config'),null,2)});return;}
     if(action==='copy-info'){await navigator.clipboard.writeText(modal.text);return;}
     if(action==='approve-form'){const r=requests.find(r=>r.id===data.id);if(r)setModal({kind:'approve',id:r.id,title:'确认来源与空间',name:r.name,space_id:r.status==='disconnected'?r.space_id:'',policy:syncDefault()});return;}
@@ -272,5 +277,5 @@
     document.addEventListener('keydown',e=>{if(modal&&e.key==='Escape'&&!composing&&!e.isComposing&&!modal.saving&&!modal.choosing){e.preventDefault();close();}});
   }
   window.wanxWorkspaces={bind,reset,storageScope,refresh,observe,sidebar,navigation,footerNavigation,menuView,dismissMenu,invalidated,reconcile,storageView,recycled,dialogView,retainEditor,current,spaces:()=>spaces,modalOpen:()=>Boolean(modal),blocked:()=>Boolean(modal||menu),root:()=>current().root,updateSync,
-    async grant(item){await refresh();setModal({kind:'grant',title:'授予额外读写权限',item});},pin(item){return handle('pin',{space:position.space,id:item.id,name:item.name});},close};
+    openRequests:()=>handle('requests'),async grant(item){if(window.wanxAgentHub)return window.wanxAgentHub.open({resource:{root:item.id,name:item.name,kind:item.kind,domain:'personal',permission:'read'}});await refresh();setModal({kind:'grant',title:'授予额外读写权限',item});},pin(item){return handle('pin',{space:position.space,id:item.id,name:item.name});},close};
 })();

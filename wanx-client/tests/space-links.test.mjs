@@ -1,53 +1,79 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import http from "node:http";
 import { createSpaceLinkBridge } from "../shell/space-links.mjs";
 
-const get = (url, options = {}) => fetch(url, { ...options, headers: { Connection: "close", ...options.headers } });
 function fixture() {
-  let saved = null, calls = [], listener, box = "box-a", account = "a";
-  const client = { snapshot: () => ({ phase: "ready", account: { phase: account ? "authenticated" : "out", accountId: account }, connection: { deviceId: box } }),
+  let listener, saved, account = "owner", box = "box-a", response;
+  const calls = [], copies = [];
+  const connection = { id: "a".repeat(32), name: "Test Agent", status: "active",
+    drive: { id: "b".repeat(32), root: "c".repeat(32), directories: { memory: "d".repeat(32) } }, grants: [] };
+  const client = {
+    snapshot: () => ({ phase: "ready", account: { phase: account ? "authenticated" : "signed_out", accountId: account },
+      connection: { deviceId: box, url: "http://100.98.0.5:8088/" } }),
     subscribe(fn) { listener = fn; return () => {}; },
     applicationConnection: async () => ({ context() {}, request: async input => {
       calls.push(input);
-      const value = input.path.endsWith("/agent-links") && input.method === "POST" ? { id: "a".repeat(32), token: "backend-secret", root: "b".repeat(32), expires: null }
-        : input.path.endsWith("/agent-links") ? [{ id: "a".repeat(32), root: "b".repeat(32) }] : { id: "b".repeat(32), kind: "file", version: 1 };
-      return { status: 200, headers: {}, body: Buffer.from(JSON.stringify(value)) };
+      const value = response ? await response(input) : input.method === "POST" ? connection : { connections: [connection], archives: [] };
+      return { status: 200, body: Buffer.from(JSON.stringify(value)) };
     } }),
   };
-  return { client, store: { load: async () => saved, save: async value => { saved = structuredClone(value); } },
-    serviceURL: "https://consumer.test", calls, get saved() { return saved; },
-    change(newBox = box, newAccount = account) { box = newBox; account = newAccount; listener(); } };
+  return { client, serviceURL: "https://consumer.test", calls, copies,
+    store: { load: async () => saved, save: async v => { saved = structuredClone(v); } },
+    copyText: async value => copies.push(value), agentHubOptions: { team: true },
+    get saved() { return saved; },
+    respond(fn) { response = fn; },
+    change(nextAccount = account, nextBox = box) { account = nextAccount; box = nextBox; listener(); },
+  };
 }
-test("stable local link, restart, logout, box binding, revocation, origin and method boundary", async t => {
-  const f = fixture(); let bridge = await createSpaceLinkBridge(f); t.after(() => bridge.close());
-  const link = await bridge.manage("create", { root: "b".repeat(32) });
-  assert.equal((await get(link.url)).status, 200);
-  assert.equal((await get(link.url, { headers: { Origin: "https://evil.test" } })).status, 403);
-  assert.equal((await get(link.url + "?action=trash")).status, 405);
-  assert.equal((await get(link.url, { method: "POST", body: "{}" })).status, 415);
-  assert.equal((await get(link.url + "?owner=2")).status, 400);
-  assert.ok(!JSON.stringify(await (await get(link.url)).json()).includes("backend-secret"));
-  f.change("box-b"); assert.equal((await get(link.url)).status, 409);
-  f.change("box-a", null); assert.equal((await get(link.url)).status, 503);
-  f.change("box-a", "a"); assert.equal((await get(link.url)).status, 200);
-  await bridge.close(); bridge = await createSpaceLinkBridge(f);
-  assert.equal((await bridge.manage("list"))[0].url, link.url);
-  assert.equal((await get(link.url)).status, 200);
-  await bridge.manage("revoke", { id: link.id }); assert.equal((await get(link.url)).status, 403);
+
+test("retired desktop enrollment and bearer links cannot create a local access surface", async t => {
+  const f = fixture(), bridge = await createSpaceLinkBridge(f);
+  t.after(() => bridge.close());
+  for (const action of ["create", "list", "revoke", "agent-config", "requests", "approve", "reject", "grant"])
+    await assert.rejects(bridge.manage(action, { root: "b".repeat(32), name: "untrusted" }), /SPACE_ACTION_INVALID/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.saved, undefined);
+  assert.equal((await bridge.mcpDetails()).url, "http://100.98.0.5:8088/mcp/space");
+  assert.equal((await bridge.mcpDetails("starlink")).url, "http://100.98.0.5:8088/mcp/starlink");
+  await assert.rejects(bridge.mcpDetails("other"), /MCP_SURFACE_INVALID/);
 });
-test("occupied persisted port fails without silently changing URLs", async t => {
-  const f = fixture(), first = await createSpaceLinkBridge(f); t.after(() => first.close());
-  const before = f.saved.port;
-  await assert.rejects(createSpaceLinkBridge(f), /SPACE_LINK_PORT_IN_USE/);
-  assert.equal(f.saved.port, before);
+
+test("MCP access binds the box drive to a persistent connection and keeps credentials out of renderer state", async t => {
+  const f = fixture(), bridge = await createSpaceLinkBridge(f);
+  t.after(() => bridge.close());
+  const created = await bridge.manage("mcp-issue", { name: "Test Agent" });
+  const request = f.calls.at(-1), body = JSON.parse(request.body);
+  assert.equal(request.path, "/api/_client/space-mcp/connections");
+  assert.equal(body.destination, "company");
+  assert.equal(body.name, "Test Agent");
+  assert.ok(body.credential);
+  assert.equal(body.credential, f.saved.spaceMcp[0].credential);
+  assert.ok(!JSON.stringify(created).includes(body.credential));
+  const state = await bridge.manage("mcp-state");
+  assert.equal(state.connections[0].drive.root, "c".repeat(32));
+  assert.ok(!JSON.stringify(state).includes(body.credential));
+  await bridge.manage("mcp-copy", { id: "a".repeat(32), kind: "config" });
+  const config = JSON.parse(f.copies[0]).mcpServers["wanx-space"];
+  assert.equal(config.url, "http://100.98.0.5:8088/mcp/space");
+  assert.equal(config.headers.Authorization, "Bearer " + body.credential);
+  f.change("other-owner");
+  await assert.rejects(bridge.manage("mcp-copy", { id: "a".repeat(32), kind: "key" }), /MCP_KEY_NOT_ON_THIS_CLIENT/);
 });
-test("Host header rejects DNS rebinding and corrupt encrypted state fails closed", async t => {
-  const f = fixture(), bridge = await createSpaceLinkBridge(f); t.after(() => bridge.close());
-  const link = await bridge.manage("create", { root: "b".repeat(32) });
-  const status = await new Promise((resolve, reject) => {
-    http.get(link.url, { headers: { Host: "evil.test" } }, res => { res.resume(); resolve(res.statusCode); }).on("error", reject);
-  });
-  assert.equal(status, 403);
-  await assert.rejects(createSpaceLinkBridge({ ...f, store: { load: async () => ({ version: 2 }) } }), /SPACE_LINK_STORE_INVALID/);
+
+test("account or box switches discard delayed MCP results and logout prevents further access", async t => {
+  const f = fixture(), bridge = await createSpaceLinkBridge(f);
+  t.after(() => bridge.close());
+  for (const switchBox of [false, true]) {
+    let release;
+    f.respond(() => new Promise(resolve => { release = resolve; }));
+    const read = bridge.manage("mcp-state");
+    await new Promise(resolve => setImmediate(resolve));
+    f.change(switchBox ? "other" : "second", switchBox ? "box-b" : "box-a");
+    release({ connections: [{ id: "old-account-secret" }], archives: [] });
+    await assert.rejects(read, /SPACE_CONTEXT_CHANGED/);
+  }
+  const before = f.calls.length;
+  f.change(null);
+  await assert.rejects(bridge.manage("mcp-state"), /BOX_CONNECTION_REQUIRED/);
+  assert.equal(f.calls.length, before);
 });

@@ -42,14 +42,7 @@ test('same labels do not merge sources; lazy hierarchy and history retain space 
  assert.deepEqual(h.positions.at(-1),['folder',false,'agent',false]);await h.click('forward');assert.deepEqual(h.positions.at(-1),['other-root',false,'other',false]);
  assert.ok(h.calls.some(([m,i])=>m==='list'&&i.space_id==='agent'&&i.parent==='agent-root'));
 });
-test('approval of same-name requests uses the selected persistent identity and explicit user name',async()=>{
- const h=setup();await h.click('requests');await h.click('approve-form',{id:'two'});
- assert.match(h.w.dialogView(),/approve:two/);
- h.events.input({target:{id:'workspace-name',value:'资料整理'}});
- h.events.submit({target:{hasAttribute:()=>true},preventDefault(){}});
- await new Promise(r=>setImmediate(r));
- const approval=h.calls.find(([m])=>m==='links-approve');assert.equal(approval[1].id,'two');assert.equal(approval[1].name,'资料整理');assert.equal(approval[1].space_id,'');
-});
+
 test('a stale favorite lookup cannot refill a switched account',async()=>{
  const h=setup();await h.w.refresh();await h.w.pin({id:'folder',name:'秘密资料'});h.delay();const pending=h.w.refresh();await new Promise(r=>setImmediate(r));h.w.reset('new-account');h.resolve({id:'folder',name:'旧账号',space_id:'agent'});await assert.rejects(pending,/SPACE_CONTEXT_CHANGED/);assert.doesNotMatch(h.w.sidebar(),/秘密资料|旧账号/);
 });
@@ -124,18 +117,6 @@ test('stale sidebar folder resolution cannot act after an account switch or afte
  h.delay();await h.click('menu',sidebarTarget('folder','agent','folder','原名'));const pending=h.click('menu-command',{command:'trash'});await new Promise(r=>setImmediate(r));h.w.reset('new-account');h.resolve({id:'folder',kind:'folder',space_id:'agent'});await pending;assert.equal(h.fileActions.length,0);assert.equal(h.w.menuView(),'');
 });
 
-test('new approval selects task context/progress/outcome and persists user choices per identity',async()=>{
- const h=setup();await h.click('requests');await h.click('approve-form',{id:'one'});
- const html=h.w.dialogView();
- for(const category of ['context','progress','outcome'])assert.match(html,new RegExp(`data-sync-option="${category}" checked`));
- for(const category of ['project_memory','user_memory'])assert.doesNotMatch(html,new RegExp(`data-sync-option="${category}" checked`));
- h.events.change({target:{dataset:{syncOption:'outcome'},checked:false}});
- await h.w.refresh();
- assert.doesNotMatch(h.w.dialogView(),/data-sync-option="outcome" checked/);
- h.events.submit({target:{hasAttribute:()=>true},preventDefault(){}});await new Promise(r=>setImmediate(r));
- const approval=h.calls.find(([m])=>m==='links-approve')[1];
- assert.equal(approval.id,'one');assert.equal(approval.sync_policy.context,true);assert.equal(approval.sync_policy.outcome,false);
-});
 
 test('sync view distinguishes selected rules, stored receipts, unsupported memory and stale scope',async()=>{
  const h=setup();
@@ -149,4 +130,8 @@ test('sync view distinguishes selected rules, stored receipts, unsupported memor
  data.delivery={state:'failed'};await h.w.updateSync();assert.match(h.w.dialogView(),/同步失败/);
  data.connection_state='paused';await h.w.updateSync();assert.match(h.w.dialogView(),/已暂停/);
  h.w.reset('new-account');await h.w.updateSync();assert.equal(h.w.dialogView(),'');
+});
+
+test('Agent connections use the generic MCP surface, not a pending-request approval wizard',async()=>{
+ const h=setup();await h.w.openRequests();assert.equal(h.w.dialogView(),'');assert.ok(!h.calls.some(([method])=>method==='links-requests'||method==='links-agent-config'));
 });

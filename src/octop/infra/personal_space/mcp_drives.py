@@ -255,9 +255,7 @@ class McpDrives(AgentHub):
                         raw = base64.b64decode(p["data"], validate=True)
                     except (ValueError, binascii.Error) as error:
                         raise SpaceError("SPACE_CHUNK_INVALID") from error
-                    return store.upload_chunk(
-                        item, p["offset"], raw, p["digest"]
-                    )
+                    return store.upload_chunk(item, p["offset"], raw, p["digest"])
                 if action == "upload-complete":
                     return store.upload_complete(item, p["digest"])
                 store.upload_cancel(item)

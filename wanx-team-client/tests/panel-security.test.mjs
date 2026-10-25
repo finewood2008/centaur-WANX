@@ -297,14 +297,14 @@ test("panel preload exposes a fixed balance reader, retaining the generic-action
   await assert.rejects(api.action("profile-save"), /PANEL_ACTION_NOT_ALLOWED/);
 });
 
-test("link management is limited to the trusted main window", async () => {
+test("server MCP and drive management are limited to the trusted main window", async () => {
   const actions = [];
   const h = harness({ spaceLinks: { manage: async (...args) => { actions.push(args); return {}; } } });
-  for (const name of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
+  for (const name of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives", "mcp-manage", "mcp-rotate", "mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"]) {
     assert.throws(() => h.invoke("space-links-"+name, {}, h.panel), denied);
     await h.invoke("space-links-"+name, {});
   }
-  assert.equal(actions.length, 19);
+  assert.equal(actions.length, 17);
 });
 
 
