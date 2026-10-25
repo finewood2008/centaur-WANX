@@ -346,10 +346,25 @@ test("component details explain installation-only modules and missing runtime ev
   assert.match(table, /版本核验 \/ 服务状态/);
   assert.equal((table.match(/安装记录（不提供独立运行版本）/g) || []).length, 2);
   assert.equal((table.match(/待核验（未取得运行版本）/g) || []).length, 2);
-  assert.equal((table.match(/缺少运行核验证据/g) || []).length, 4);
+  assert.equal((table.match(/缺少运行核验证据/g) || []).length, 2);
+  assert.equal((table.match(/记录：历史部署回执/g) || []).length, 2);
+  assert.equal((table.match(/核验方式：受控维护/g) || []).length, 2);
   assert.equal((table.match(/不支持独立 OTA/g) || []).length, 4);
   assert.equal((table.match(/已核验/g) || []).length, 2);
   assert.equal((table.match(/运行正常/g) || []).length, 2);
   assert.doesNotMatch(table, /unknown|healthy|verified|升级失败|需要重装/);
   for (const name of ["base", "docker", "discovery", "p2p", "wanx", "semantica"]) assert.match(table, new RegExp(name));
+});
+
+
+test("installation-only presentation never hides a reported base drift or invents a receipt", async () => {
+  const box = reportedBox();
+  box.inventory.components.base = { installedVersion: "base-1", runningVersion: null, evidenceStatus: "drifted", health: "unhealthy", otaSupported: false };
+  box.inventory.components.docker = { installedVersion: null, runningVersion: null, evidenceStatus: "unknown", health: "unknown", otaSupported: false };
+  const h = await harness(state(box));
+  const table = h.app.innerHTML.match(/<table class="update-components">[\s\S]*?<\/table>/)?.[0] || "";
+  assert.match(table, /运行状态与安装记录不一致/);
+  assert.match(table, /运行异常/);
+  assert.match(table, /缺少运行核验证据/);
+  assert.doesNotMatch(table, /历史部署回执/);
 });
