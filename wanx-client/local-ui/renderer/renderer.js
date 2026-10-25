@@ -517,7 +517,8 @@ function updateGuidance(code) {
     UPDATE_ARTIFACT_MISMATCH: "下载内容与发行不一致，已保留当前版本，请重新检查更新。",
     APPLICATIONS_RUNNING: "请保存工作并关闭正在运行的应用，再重启更新。",
   };
-  return messages[String(code || "").toUpperCase()] || "请重新检查更新；若仍失败，请联系维护人员并提供错误代码。";
+  const key = String(code || "").toUpperCase().match(/(?:^|ERROR: )([A-Z][A-Z0-9_]{1,80})$/)?.[1];
+  return messages[key] || "请重新检查更新；若仍失败，请联系维护人员并提供错误代码。";
 }
 
 function updateIssueView(update) {
@@ -616,8 +617,8 @@ function scheduleBoxVersionRead() {
       if (!response.ok && response.code === "UPDATE_IN_PROGRESS") return;
       if (!response.ok) throw new Error(response.code);
       if (response.state) acceptRemoteState(response.state);
-    } catch {
-      if (key === boxVersionReadScope() && boxVersionReadRequest === request) boxVersionReadError = "版本读取失败，请检查连接后点击刷新版本重试。";
+    } catch (error) {
+      if (key === boxVersionReadScope() && boxVersionReadRequest === request) boxVersionReadError = `版本读取失败：${updateGuidance(error?.code || error?.message)}`;
     } finally {
       if (boxVersionReadRequest === request) { boxVersionReadRequest = null; render(currentState); }
     }
