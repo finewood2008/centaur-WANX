@@ -290,3 +290,10 @@
 @container(max-width:650px){.ai-source-bar{gap:5px 12px}.ai-context-details{font-size:9px}.ai-composer-bottom>[data-chat-attach] span,.ai-composer-bottom>.ai-keyboard-hint{display:none}.ai-composer-bottom .ai-model-section{max-width:48%}.ai-composer-bottom{gap:5px}.ai-composer-bottom>.ai-send{margin-left:auto}.ai-source-bar .ai-space-scope{max-width:135px}.ai-footer-model{font-size:10px}.ai-context-details>section{right:0}}
 
 .ai-composer-bottom>.ai-send{margin-left:auto}.ai-composer-bottom>.ai-stop{margin-left:auto}
+
+/* History stays at the leading edge of the full assistant. */
+.ai-heading-left{display:flex;align-items:center;gap:14px;min-width:0}
+.ai-history-leading{flex:none;font-family:inherit;white-space:nowrap}
+.ai-history-leading>svg{display:block;flex:none;width:14px;height:14px;stroke-linecap:round;stroke-linejoin:round}
+.ai-history-leading[aria-expanded="true"]{background:#f0e9de;border-color:#d5c5b1;color:#80654d}
+@media(max-width:700px){.ai-heading-left{gap:9px}.ai-history-leading span{display:none}}

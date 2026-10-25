@@ -15,7 +15,7 @@ async function verify() {
     await control.webContents.executeJavaScript(`
       window.calls = []; window.scope = 'synthetic-scope';
       window.box = { phase:'ready', account:{phase:'authenticated',accountId:'synthetic-owner',clientId:'pc'}, connection:{deviceId:'synthetic-box',gatewayURL:'http://127.0.0.1',name:'Synthetic box'} };
-      window.ui = createAIDialogueView({ request:async(method,input)=>{
+      window.ui = createAIDialogueView({ request:window.nativeRequest=async(method,input)=>{
         calls.push({method,input});let value={scope};
         if(method==='dialogue.load')value={scope,models:[{id:'fixture/one',name:'One',provider:'fixture',input:['text']},{id:'fixture/two',name:'Two',provider:'fixture',input:['text']}],defaultModel:'fixture/one',sessions:[{thread_id:'thread-1',title:'Synthetic conversation'}],legacySessions:[]};
         if(method==='dialogue.open')value={scope,conversation:{id:'thread-1',active_thread_id:'thread-1',revision:0,context:{space:{enabled:false},knowledge:{enabled:false,warehouses:[]}},versions:[{thread_id:'thread-1',kind:'original'}]},history:{thread_id:'thread-1',messages:[],model_ref:'fixture/one',turn_active:false,hitl_pending:null}};
@@ -28,6 +28,11 @@ async function verify() {
     `);
     await control.webContents.executeJavaScript(`(async()=>{
       await until(()=>document.querySelector('[data-chat-action="open"][data-id="thread-1"]'));
+      const history=document.querySelector('[data-chat-history]'),leading=document.querySelector('.ai-heading-left [data-chat-action="history"]'),title=document.querySelector('.ai-page-title');
+      check(leading&&leading.getBoundingClientRect().left<title.getBoundingClientRect().left,'history action is not before the title');
+      check(!history.hidden&&leading.getAttribute('aria-expanded')==='true','full assistant history must start expanded');
+      leading.click();check(history.hidden,'history did not collapse');leading.click();check(!history.hidden,'history did not expand');
+      check(document.documentElement.scrollWidth<=innerWidth,'assistant overflows horizontally');
       document.querySelector('[data-chat-action="open"][data-id="thread-1"]').click();
       await until(()=>ui.snapshot().conversationId==='thread-1');
       await until(()=>!document.querySelector('[data-chat-input]').disabled);
@@ -41,6 +46,12 @@ async function verify() {
       check(ui.snapshot().scope===null&&ui.snapshot().draft===''&&ui.snapshot().conversationId===null,'sign out retained private state');
       ui.hostState(box);await until(()=>ui.snapshot().scope==='synthetic-scope');
       check(ui.snapshot().draft===''&&ui.snapshot().conversationId===null,'reconnect restored another account draft');
+      check(!document.querySelector('[data-chat-history]').hidden,'reconnected full assistant must restore the default history state');
+      const miniHost=document.createElement('div');miniHost.id='assistant-mini-host';document.body.append(miniHost);
+      const mini=createAIDialogueView({compact:true,request:nativeRequest});mini.hostState(box);mini.visible(true);mini.mount(miniHost);
+      await until(()=>mini.snapshot().scope==='synthetic-scope');
+      check(miniHost.querySelector('[data-chat-history]').hidden,'mini assistant history must start collapsed');
+      mini.hostState({...box,account:{...box.account,phase:'signed_out'}});
     })().catch(error=>{console.error(error.stack);throw error})`);
     process.stdout.write('AI_DIALOGUE_UI_PASS\n');app.exit(0);
   } catch(error) { console.error(error);app.exit(1); }
