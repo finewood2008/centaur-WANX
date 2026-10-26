@@ -64,7 +64,7 @@ export function registerControlActions({
   credits,
   creditWallet,
   accountProfile,
-  aiDialogue,
+  aiDialogue, panelDialogue,
   support,
   uiState,
   notifications,
@@ -84,7 +84,7 @@ export function registerControlActions({
     "desktop-open", "desktop-hide", "desktop-resize", "desktop-about", "panel-balance", "panel-application-names",
     "panel-space-snapshot", "panel-space-refresh", "panel-space-upload", "panel-space-transfer", "panel-note",
   ]);
-  const reads = new Set(["panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "studio-overview", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize", "credit-payment-timing"]);
+  const reads = new Set(["space-links-mcp-state", "space-links-mcp-folders", "space-links-mcp-archive", "space-links-mcp-prompt", "panel-note", "panel-application-names", "support-current", "panel-space-snapshot", "panel-space-refresh", "panel-balance", "credits-tasks", "credits-balance", "credits-transactions", "credits-reservation", "get-state", "discovery-devices", "console-claim-status", "remembered-login-get", "applications-list", "studio-overview", "studio-preview-open", "studio-preview-invoke", "studio-preview-close", "studio-runtime-model", "market-list", "market-candidate", "desktop-startup-get", "desktop-resize", "credit-payment-timing"]);
   const register = (name, action) => {
     ipcMain.handle(`wanx-client:${name}`, (event, argument) => {
       const management = isControlSender(event, control, controlURL);
@@ -92,10 +92,21 @@ export function registerControlActions({
         throw new Error("此页面无权操作万象连接。");
       // Keep validation synchronous; mutations also refresh both trusted windows.
       const result = action(argument);
-      if (reads.has(name) || name.startsWith("ai-dialogue-")) return result;
+      if (reads.has(name) || (name.startsWith("ai-dialogue-") || name.startsWith("panel-ai-dialogue-"))) return result;
       return Promise.resolve(result).finally(() => publishState());
     });
   };
+  for(const method of ["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff"]) {
+    const name = "panel-ai-dialogue-" + method; panelActions.add(name);
+    register(name, input => { if(!panelDialogue) throw Error("DIALOGUE_UNAVAILABLE");return panelDialogue.action(method,input); });
+  }
+  panelActions.add("panel-assistant-open");
+  register("panel-assistant-open", async input => {
+    const payload=await panelDialogue.action("handoff",input);
+    desktop?.showManagement("ai-dialogue");
+    control.webContents.send("wanx-client:ai-dialogue",{type:"handoff",...payload});
+    return {ok:true};
+  });
   const creditsRead = async action => {
     try { return await action(); }
     catch (error) {
@@ -104,11 +115,11 @@ export function registerControlActions({
       throw error;
     }
   };
-  for (const method of ["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"]) register(`ai-dialogue-${method}`, input => {
+  for (const method of ["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff","channels-list","channels-detail","channels-save","channels-toggle","channels-delete","channels-test","channels-start","channels-poll","channels-cancel"]) register(`ai-dialogue-${method}`, input => {
     if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
     return aiDialogue.action(method, input);
   });
-  for (const action of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"]) {
+  for (const action of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
       return spaceLinks.manage(action, input);
@@ -369,7 +380,7 @@ export function registerControlActions({
       return applications.studio[operation](input);
     });
   }
-  for(const [action,method]of Object.entries({"launch-suggest":"launchSuggest","launch-sources":"launchSources","launch-configure":"launchConfigure","launch-start":"launchStart","engines-list":"enginesList","engines-check":"enginesCheck","engines-default":"enginesDefault","intake-open":"intakeOpen","intake-send":"intakeSend","intake-state":"intakeState","intake-events":"intakeEvents","intake-handoff":"intakeHandoff","context-sources":"contextSources","context-select":"contextSelect","capabilities-list":"capabilitiesList","capabilities-decide":"capabilitiesDecide","capabilities-check":"capabilitiesCheck","capabilities-state":"capabilitiesState"}))register("studio-"+action,input=>{requireConnectedBox(client.snapshot());return applications.studio[method](input)});
+  for(const [action,method]of Object.entries({"preview-open":"previewOpen","preview-invoke":"previewInvoke","preview-close":"previewClose","runtime-model":"runtimeModel","runtime-model-save":"runtimeModelSave","launch-suggest":"launchSuggest","launch-sources":"launchSources","launch-configure":"launchConfigure","launch-start":"launchStart","engines-list":"enginesList","engines-check":"enginesCheck","engines-default":"enginesDefault","intake-open":"intakeOpen","intake-send":"intakeSend","intake-state":"intakeState","intake-events":"intakeEvents","intake-handoff":"intakeHandoff","context-sources":"contextSources","context-select":"contextSelect","capabilities-list":"capabilitiesList","capabilities-decide":"capabilitiesDecide","capabilities-check":"capabilitiesCheck","capabilities-state":"capabilitiesState"}))register("studio-"+action,input=>{requireConnectedBox(client.snapshot());return applications.studio[method](input)});
   for(const [action,route]of Object.entries({"builder-models":"models","builder-acp":"acp","builder-connectors":"connectors","builder-skills":"skills"}))register(action,()=>openConnectedDashboard(client,dashboards,route,client.snapshot().connection?.deviceId));
   register("applications-list", () => applications?.listInstalled() || []);
   register("applications-install", (input) => {

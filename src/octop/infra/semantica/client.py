@@ -89,6 +89,7 @@ class SemanticaClient:
         self.base_url = str(config["service_url"]).rstrip("/")
         self.actor = f"{application_id}:{actor_id}"
         self.team = team
+        self.organization_permissions: list[str] = []
         self.resource = "team:wanx" if team else f"personal:{self.actor}"
         identity = json.dumps(
             [config["box_id"], config["application_id"], self.resource], separators=(",", ":")
@@ -141,6 +142,8 @@ class SemanticaClient:
             "operation_id": operation_id,
             "expires_at": int(time.time()) + 120,
         }
+        if self.organization_permissions:
+            claims["organization_permissions"] = self.organization_permissions
         if self.team:
             claims["resource_owner"] = "team:wanx"
         encoded = (

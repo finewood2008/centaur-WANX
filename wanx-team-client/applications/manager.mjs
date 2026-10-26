@@ -8,6 +8,7 @@ import { verifyEnvelope } from "./descriptor.mjs";
 import { createApplicationSession } from "../app-host/session.mjs";
 import { createApplicationInstaller } from "./installer.mjs";
 import { createApplicationLauncher } from "./launcher.mjs";
+import { applicationExecutable } from "./desktop-runtime.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
 import { createDefaultApplicationStore } from "./delivery.mjs";
 import { inspectZhijunData } from "./zhijun-data.mjs";
@@ -229,6 +230,7 @@ export async function createApplicationManager({
     },
     spawn,
     electronPath,
+    resolveExecutable: record => applicationExecutable({record,applicationRoot,electronPath}),
     runtimeArgs,
     launcherArgs,
   });
@@ -264,6 +266,7 @@ export async function createApplicationManager({
       return track(installer.selectCurrent(id, version, { signal: controller.signal }));
     },
     studio: Object.freeze({
+      previewOpen:input=>studioEntry.previewOpen(input),previewInvoke:input=>studioEntry.previewInvoke(input),previewClose:input=>studioEntry.previewClose(input),runtimeModel:input=>studioEntry.runtimeModel(input),runtimeModelSave:input=>studioEntry.runtimeModelSave(input),
       launchSuggest:input=>studioEntry.launchSuggest(input), launchSources:input=>studioEntry.launchSources(input), launchConfigure:input=>studioEntry.launchConfigure(input), launchStart:input=>studioEntry.launchStart(input), placement: input=>studioEntry.placement(input), enginesList:()=>studioEntry.enginesList(), enginesCheck:input=>studioEntry.enginesCheck(input), enginesDefault:input=>studioEntry.enginesDefault(input), intakeOpen:input=>studioEntry.intakeOpen(input), intakeSend:input=>studioEntry.intakeSend(input), intakeState:input=>studioEntry.intakeState(input), intakeEvents:input=>studioEntry.intakeEvents(input), contextSources:input=>studioEntry.contextSources(input), contextSelect:input=>studioEntry.contextSelect(input), capabilitiesList:()=>studioEntry.capabilitiesList(), capabilitiesState:input=>studioEntry.capabilitiesState(input), capabilitiesCheck:input=>studioEntry.capabilitiesCheck(input), capabilitiesDecide:input=>studioEntry.capabilitiesDecide(input), intakeHandoff:input=>studioEntry.intakeHandoff(input), workspace:input=>studioEntry.workspace(input), metadata:input=>studioEntry.metadata(input), export:input=>studioEntry.export(input),
       overview: () => studioEntry.overview(), create: input => studioEntry.create(input), open: input => studioEntry.open(input),
     }),

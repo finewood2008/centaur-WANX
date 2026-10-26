@@ -136,6 +136,9 @@ def usage_dict_from_message(msg: Any) -> dict[str, Any] | None:
     usage = getattr(msg, "usage_metadata", None)
     if usage is None and isinstance(msg, dict):
         usage = msg.get("usage_metadata")
+    if usage is None and kwargs:
+        # LangChain dict replay can retain provider fields inside additional_kwargs.
+        usage = kwargs.get("usage_metadata")
     mapped_usage = _as_mapping(usage)
     if inp == 0 and out == 0:
         inp, out = _io_from_mapping(mapped_usage)
@@ -143,6 +146,8 @@ def usage_dict_from_message(msg: Any) -> dict[str, Any] | None:
     rm = getattr(msg, "response_metadata", None)
     if rm is None and isinstance(msg, dict):
         rm = msg.get("response_metadata")
+    if not rm and kwargs:
+        rm = kwargs.get("response_metadata")
     mapped_response = _as_mapping(rm)
     if inp == 0 and out == 0:
         inp, out = _io_from_mapping(mapped_response)

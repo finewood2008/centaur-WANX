@@ -10,14 +10,14 @@ from test_studio import svc,seeded,op,accept
 def adopt(svc,p):
     return svc.versions.adopt('alice',p['id'],{'operationId':op(),'expectedRevision':p['versioning']['revision'],'artifactHash':p['artifacts'][-1]['hash'],'confirmedByUser':True})
 
-async def candidate(svc,p,files=None):
+async def candidate(svc,p,files=None,owner='alice'):
     task_id=op()
     def change(q):
         it=svc.versions.task(q,'只调整界面')
         q['tasks'].append({'id':task_id,'state':'running','solutionHash':digest(q['solution']),'baseHash':it['baseHash'],'iterationId':it['id'],'instruction':'只调整界面','events':[],'question':None})
-    svc.store.mutate('alice',p['id'],op(),{},change)
-    previous=svc.store.get('alice',p['id'])['artifacts'][-1]
-    return await svc.add_artifact('alice',p['id'],task_id,files or deepcopy(previous['files']))
+    svc.store.mutate(owner,p['id'],op(),{},change)
+    previous=svc.store.get(owner,p['id'])['artifacts'][-1]
+    return await svc.add_artifact(owner,p['id'],task_id,files or deepcopy(previous['files']))
 
 async def test_compiled_launch_archive_receives_private_files_not_public_summary(svc):
     from wanx_studio.client_launch import ClientLaunch
@@ -215,3 +215,92 @@ async def test_adoption_rechecks_current_management_authority(svc):
         def is_admin(self,owner):return False
     svc.team=Team()
     with pytest.raises(StudioError,match='STUDIO_ADMIN_REQUIRED'):adopt(svc,p)
+
+async def test_restore_without_adoption_compares_latest_successful_preview(svc):
+    p=await seeded(svc);old=p['artifacts'][0]['hash']
+    files=deepcopy(svc.store.get('alice',p['id'])['artifacts'][0]['files'])
+    files['src/app.js']+='\n// preview-only iteration\n'
+    p=await candidate(svc,p,files);latest=p['artifacts'][-1]['hash']
+    assert p['versioning']['adoptedHash'] is None
+    before=svc.store.db.execute('select body from projects where id=?',(p['id'],)).fetchone()[0]
+    check=svc.versions.restore_check('alice',p['id'],old)
+    assert check['changes']=={'sections':[],'addedFields':[],'hiddenFields':[],'changedFields':[],'addedCapabilities':[],'removedCapabilities':[]}
+    assert check['currentHash'] is None
+    assert check['comparisonHash']==latest and check['comparisonVersion']==p['artifacts'][-1]['version']
+    assert before==svc.store.db.execute('select body from projects where id=?',(p['id'],)).fetchone()[0]
+    # Older clients omit the optional baseline; restore still preserves history.
+    restored=svc.versions.restore('alice',p['id'],{'operationId':op(),'expectedRevision':check['expectedRevision'],'artifactHash':old,'checkHash':check['checkHash'],'confirmedByUser':True},trial=True)
+    assert len(restored['artifacts'])==3 and restored['versioning']['adoptedHash'] is None
+
+async def test_restore_uses_selected_preview_and_binds_confirmation_to_it(svc):
+    p=adopt(svc,await seeded(svc));old=p['artifacts'][0]['hash']
+    files=deepcopy(svc.store.get('alice',p['id'])['artifacts'][0]['files'])
+    manifest=json.loads(files['miniapp.manifest.json']);manifest['capabilities']=['data']
+    files['miniapp.manifest.json']=json.dumps(manifest)
+    files['src/app.js']='export function mount(root,api){root.textContent="Synthetic preview"}'
+    p=await candidate(svc,p,files);latest=p['artifacts'][-1]['hash']
+    check=svc.versions.restore_check('alice',p['id'],old,latest)
+    assert check['currentHash']==old and check['comparisonHash']==latest
+    assert check['changes']['addedCapabilities']==['files','model']
+    assert check['changes']['removedCapabilities']==[]
+    same=svc.versions.restore_check('alice',p['id'],old,old)
+    assert same['changes']['addedCapabilities']==[] and same['checkHash']!=check['checkHash']
+    body={'operationId':op(),'expectedRevision':check['expectedRevision'],'artifactHash':old,'comparisonHash':old,'checkHash':check['checkHash'],'confirmedByUser':True}
+    with pytest.raises(StudioError,match='VERSION_CHANGED'):svc.versions.restore('alice',p['id'],body,trial=True)
+    assert len(svc.store.get('alice',p['id'])['artifacts'])==2
+    with pytest.raises(StudioError,match='ARTIFACT_NOT_FOUND'):svc.versions.restore_check('alice',p['id'],old,'f'*64)
+    # A present but unfinished baseline must not be treated as a successful preview.
+    svc.store.mutate('alice',p['id'],op(),{},lambda q:q['tasks'][-1].update({'state':'failed'}))
+    with pytest.raises(StudioError,match='VERSION_CHANGED'):svc.versions.restore_check('alice',p['id'],old,latest)
+    assert svc.versions.restore_check('alice',p['id'],old)['comparisonHash']==old
+
+async def test_restore_rejects_corrupted_comparison_snapshot(svc):
+    p=await seeded(svc);old=p['artifacts'][0]['hash']
+    p=await candidate(svc,p);latest=p['artifacts'][-1]['hash']
+    svc.store.mutate('alice',p['id'],op(),{},lambda q:q['artifacts'][-1]['snapshot']['solution'].update({'outputs':'tampered'}))
+    with pytest.raises(StudioError,match='ARTIFACT_INTEGRITY_FAILED'):svc.versions.restore_check('alice',p['id'],old,latest)
+
+async def test_restore_compares_frozen_prd_instead_of_empty_or_current_draft(svc):
+    from test_discovery import solution
+    p=await seeded(svc)
+    draft=solution();draft['dependencies']=[]
+    p=svc.update_solution('alice',p['id'],{'operationId':op(),'expectedHash':p['solutionHash'],'solution':draft})
+    svc.confirm('alice',p['id'],{'operationId':op(),'solutionHash':p['solutionHash'],'reviewedSections':['goal','flow','scope','pages','data','rules','acceptance']})
+    p=await candidate(svc,p);old=p['artifacts'][-1]['hash']
+    p=await candidate(svc,p);latest=p['artifacts'][-1]['hash']
+    assert svc.versions.restore_check('alice',p['id'],old,latest)['changes']['sections']==[]
+    draft=deepcopy(p['solution']);draft['prd']['rules'].append('保存失败时保留草稿并允许重试')
+    p=svc.update_solution('alice',p['id'],{'operationId':op(),'expectedHash':p['solutionHash'],'solution':draft})
+    # An unbuilt draft is not the baseline for frozen artifact comparison.
+    assert svc.versions.restore_check('alice',p['id'],old,latest)['changes']['sections']==[]
+    svc.confirm('alice',p['id'],{'operationId':op(),'solutionHash':p['solutionHash'],'reviewedSections':['goal','flow','scope','pages','data','rules','acceptance']})
+    p=await candidate(svc,p)
+    assert svc.versions.restore_check('alice',p['id'],old)['changes']['sections']==['规则与异常']
+
+@pytest.mark.parametrize('private',[False,True])
+async def test_http_restore_preview_baseline_validation_and_confirmation(tmp_path,private):
+    from httpx import ASGITransport,AsyncClient
+    from wanx_studio.local import build_local
+    app=build_local(tmp_path);service=app.state.studio
+    try:
+        p=await seeded(service,'synthetic-local-user');old=p['artifacts'][0]['hash']
+        files=deepcopy(service.store.get('synthetic-local-user',p['id'])['artifacts'][0]['files'])
+        files['src/app.js']+='\n// synthetic HTTP preview\n'
+        p=await candidate(service,p,files,'synthetic-local-user');latest=p['artifacts'][-1]['hash']
+        path=f'/api/app-studio/projects/{p["id"]}/versions/{old}/restore-check'
+        async with AsyncClient(transport=ASGITransport(app=app),base_url='http://testserver') as c:
+            assert (await c.get(path)).status_code==401
+            await c.get('/api/app-studio/session')
+            assert (await c.get(path,params={'comparisonHash':'bad'})).status_code==422
+            assert (await c.get(path,params={'comparisonHash':'f'*64})).status_code==404
+            check=(await c.get(path,params={'comparisonHash':latest})).json()
+            assert check['comparisonHash']==latest and check['changes']['addedCapabilities']==[]
+            if private:service.edits.get('synthetic-local-user',p['id'])
+            restore=f'/api/app-studio/{"_builder/" if private else ""}projects/{p["id"]}/restore-version'
+            body={'operationId':op(),'expectedRevision':check['expectedRevision'],'artifactHash':old,'comparisonHash':latest,'checkHash':check['checkHash'],'confirmedByUser':True}
+            assert (await c.post(restore,json={**body,'comparisonHash':'bad'})).status_code==422
+            assert (await c.post(restore,json={**body,'comparisonHash':old})).status_code==409
+            result=await c.post(restore,json=body);assert result.status_code==200,result.text
+            restored=result.json();assert len(restored['artifacts'])==3
+            assert restored['versioning']['adoptedHash']==(None if private else restored['artifacts'][-1]['hash'])
+    finally:await service.close()

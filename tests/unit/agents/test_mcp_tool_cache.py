@@ -139,7 +139,10 @@ async def test_get_or_load_misses_on_fingerprint_change() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prepare_chat_mcp_injects_custom_from_cache() -> None:
+@pytest.mark.parametrize("known_server", [False, True])
+async def test_prepare_chat_mcp_injects_custom_from_cache(known_server: bool) -> None:
+    from octop_harness.middleware.mcp_tools import MCPToolMiddleware
+
     from octop.infra.agents.manager import AgentManager
 
     mgr = object.__new__(AgentManager)
@@ -158,14 +161,25 @@ async def test_prepare_chat_mcp_injects_custom_from_cache() -> None:
 
     agent = MagicMock()
     agent._mcp_tool_name_set = frozenset()
-    agent.config.mcp_server_configs = {"deepwiki": {}}
-    agent.append_mcp_tools = MagicMock(
-        side_effect=lambda tools: setattr(
-            agent,
-            "_mcp_tool_name_set",
-            frozenset(getattr(t, "name", "") for t in tools) | frozenset(agent._mcp_tool_name_set),
+    agent.config.mcp_server_configs = {"deepwiki": {}} if known_server else {}
+    visible: list[str] = []
+
+    def compile_tools(tools: list[Any]) -> None:
+        agent._mcp_tool_name_set |= frozenset(t.name for t in tools)
+        middleware = MCPToolMiddleware(
+            server_names=frozenset(agent.config.mcp_server_configs),
+            mcp_tool_names=agent._mcp_tool_name_set,
+            default_servers=None,
         )
-    )
+        request = MagicMock(tools=tools)
+        request.override.side_effect = lambda **kwargs: kwargs["tools"]
+        with patch(
+            "octop_harness.middleware.mcp_tools.runtime_config",
+            return_value={"configurable": {"mcp_servers": ["deepwiki"]}},
+        ):
+            visible.extend(t.name for t in middleware._apply_filter(request))
+
+    agent.append_mcp_tools = MagicMock(side_effect=compile_tools)
 
     row = MagicMock()
     mgr.get_agent = MagicMock(return_value=agent)
@@ -189,6 +203,7 @@ async def test_prepare_chat_mcp_injects_custom_from_cache() -> None:
     assert failed2 == []
     assert aload.await_count == 1
     assert agent.append_mcp_tools.call_count == 1
+    assert visible == ["deepwiki_ask"]
     mgr.reload_connectors.assert_not_awaited()
     assert agent.config.mcp_server_configs["deepwiki"]["transport"] == "streamable_http"
     injected = agent.append_mcp_tools.call_args.args[0]

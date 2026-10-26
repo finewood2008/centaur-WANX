@@ -30,6 +30,21 @@ export function createTeamService({client,applications,assets}){
       const p=deployment.configuration?.studio_team;if(p)items.push({id:p.projectId,appId:product.application_id,name:product.name,installed:{artifactHash:p.artifactHash},enabled:deployment.enabled,audience:p.audience});
     }return items;
   }
+  async function publication(s,input){
+    await ready(s);if(!/^ai\.wanx\.selfmade\.[a-f0-9]{32}$/.test(input.applicationId))throw fail('TEAM_INPUT_INVALID');
+    const route='/api/admin/applications/'+input.applicationId;
+    const product=await s.request(route),deployment=await s.request(route+'/deployment');
+    if(!deployment.configuration?.studio_team)throw fail('TEAM_APPLICATION_UNAVAILABLE');
+    return {route,product,deployment};
+  }
+  function audienceMembers(input,members){
+    const selected=[...new Set(input.members||[])];
+    if(!['all','selected'].includes(input.audience)||input.audience==='selected'&&(!selected.length||selected.some(id=>!integer(id)||!members.some(m=>m.id===id&&!m.disabled))))throw fail('TEAM_MEMBERS_REQUIRED');
+    return selected;
+  }
+  async function writeAudience(s,route,input,members,selected){
+    for(const member of members.filter(m=>!m.disabled))await s.request(route+'/access','PUT',{user_id:member.id,enabled:input.audience==='all'||selected.includes(member.id)||member.id===s.me.id});
+  }
   return {async action(operation,input={}){
     if(operation==='login')return client.teamLogin(input);
     if(operation==='join')return client.teamJoin(input);
@@ -55,19 +70,35 @@ export function createTeamService({client,applications,assets}){
       if('role'in input){if(!['admin','user'].includes(input.role))throw fail('TEAM_INPUT_INVALID');body.role=input.role}
       if(!Object.keys(body).length)throw fail('TEAM_INPUT_INVALID');return s.request('/api/users/'+input.id,'PATCH',body);
     }
+    if(operation==='publication'){
+      const {route,product,deployment}=await publication(s,input),access=await s.request(route+'/access');
+      const p=deployment.configuration.studio_team;
+      return {applicationId:input.applicationId,artifactHash:p.artifactHash,audience:p.audience,enabled:deployment.enabled,canPublish:product.created_by===s.me.id,members:access.filter(a=>a.enabled).map(a=>a.user_id)};
+    }
+    if(operation==='publication-audience'){
+      const {route,product,deployment}=await publication(s,input);
+      if(product.created_by!==s.me.id)throw fail('TEAM_PUBLISHER_MISMATCH');
+      if(input.artifactHash!==deployment.configuration.studio_team.artifactHash)throw fail('TEAM_PUBLICATION_CHANGED');
+      let payload;try{payload=await s.request(`/api/app-studio/projects/${deployment.configuration.studio_team.projectId}/install/${input.artifactHash}`)}catch(e){if(['USER_ADOPTION_REQUIRED','USER_ACCEPTANCE_REQUIRED'].includes(e.code))throw fail('TEAM_SCOPE_REQUIRES_CURRENT');throw e}
+      const members=await s.request('/api/users'),selected=audienceMembers(input,members);
+      const next={enabled:false,resource_bindings:deployment.resource_bindings||{},configuration:{...deployment.configuration,studio_team:{...deployment.configuration.studio_team,audience:input.audience}}};
+      await s.request(route+'/deployment','PUT',next);
+      await writeAudience(s,route,input,members,selected);
+      await s.request(`/api/app-studio/projects/${deployment.configuration.studio_team.projectId}/installed`,'POST',{operationId:randomUUID(),artifactHash:payload.artifactHash,applicationId:input.applicationId,version:payload.version});
+      return s.request(route+'/deployment','PUT',{...next,enabled:deployment.enabled});
+    }
     if(operation==='projects'){await ready(s);return (await s.request('/api/app-studio/projects')).projects}
     if(operation==='publish'){
       await ready(s);
       if(!/^[a-f0-9]{32}$/.test(input.projectId)||!/^[a-f0-9]{64}$/.test(input.artifactHash)||!['all','selected'].includes(input.audience))throw fail('TEAM_INPUT_INVALID');
       const payload=await s.request(`/api/app-studio/projects/${input.projectId}/install/${input.artifactHash}`),id=payload.applicationId;
-      const members=await s.request('/api/users');const selected=[...new Set(input.members||[])];
-      if(input.audience==='selected'&&(!selected.length||selected.some(id=>!integer(id)||!members.some(m=>m.id===id&&!m.disabled))))throw fail('TEAM_MEMBERS_REQUIRED');
+      const members=await s.request('/api/users'),selected=audienceMembers(input,members);
       let product;try{product=await s.request('/api/admin/applications/'+id)}catch(e){if(e.status!==404)throw e;product=await s.request('/api/admin/applications','POST',{application_id:id,name:payload.name,description:'团队内部应用',capabilities:[],agent_template:{},resource_requirements:{}})}
       if(product.created_by!==s.me.id)throw fail('TEAM_PUBLISHER_MISMATCH');
       const previous=await s.request('/api/admin/applications/'+id+'/deployment');
       const deployment={enabled:false,resource_bindings:previous.resource_bindings||{},configuration:{...previous.configuration,studio_team:{projectId:input.projectId,artifactHash:input.artifactHash,audience:input.audience}}};
       await s.request('/api/admin/applications/'+id+'/deployment','PUT',deployment);
-      if(input.audience==='selected')for(const member of members.filter(m=>!m.disabled))await s.request('/api/admin/applications/'+id+'/access','PUT',{user_id:member.id,enabled:selected.includes(member.id)||member.id===s.me.id});
+      await writeAudience(s,'/api/admin/applications/'+id,input,members,selected);
       await s.request(`/api/app-studio/projects/${input.projectId}/installed`,'POST',{operationId:randomUUID(),artifactHash:payload.artifactHash,applicationId:id,version:payload.version});
       await s.request('/api/admin/applications/'+id+'/deployment','PUT',{...deployment,enabled:true});
       return {applicationId:id,version:payload.version,published:true};

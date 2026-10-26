@@ -412,6 +412,9 @@ class Edits:
                     try:result = await self.tool(owner, pid, eid, e['method'], e.get('args', {})); reply = {'id': e['id'], 'result': result}
                     except Exception as error:reply = {'id': e['id'], 'error': error.code if isinstance(error, StudioError) else 'INTERVIEW_TOOL_INVALID'}
                     proc.stdin.write((json.dumps(reply, ensure_ascii=False)+'\n').encode()); await proc.stdin.drain()
+                elif e['type'] == 'diagnostic':
+                    with self.svc.store.transaction():
+                        self.svc.store.append_event(owner,pid,'edit:'+eid,{**e,'at':time.time()})
                 elif e['type'] == 'session':self.mutate(owner, pid, eid, lambda p, a: a.update({'sessionId': e['sessionId']}))
                 elif e['type'] == 'text':self.mutate(owner, pid, eid, lambda p, a: a.update({'stream': a['stream']+e['text']}))
                 elif e['type'] == 'complete':completed = True

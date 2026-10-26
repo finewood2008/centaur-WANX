@@ -154,7 +154,7 @@
     const problem = dropProblem();
     const location = state.connection?.name || "尚未连接盒子";
     const status = !signedIn() ? "未登录" : !ready() ? "未连接" : !sameSpace() ? "准备中" : space.phase === "unsupported" ? "需升级" : space.storageError ? "暂不可用" : "已就绪";
-    return `<footer class="space-footer dual-footer" aria-label="空间与便签"><div class="panel-destinations"><button class="space-entry" data-page="space" aria-label="打开文件空间" title="拖入文件，保存到空间"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18"/></svg></span><span class="destination-copy"><strong>空间</strong><small title="${escape(location)} · 全部文件">${escape(location)}</small></span><span class="dot ${problem?'':'ready'}" title="${status}" aria-label="${status}"></span><svg class="destination-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-label="支持拖入文件"><path d="M5 16v4h14v-4M12 16V4m-5 5 5-5 5 5"/></svg></button><button class="note-entry" data-action="clipboard-toggle" aria-label="打开便签" title="文字与图片，自动保存"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/></svg></span><span class="destination-copy"><strong>便签</strong><small>文字 · 图片</small></span><span class="destination-arrow" aria-hidden="true">›</span></button></div>${renderTransfers()}</footer>`;
+    return `<footer class="space-footer dual-footer" aria-label="助理与便签"><div class="panel-destinations"><button class="space-entry" data-assistant-open aria-label="打开迷你助理"><span class="destination-icon assistant-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 3h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-8l-6 4v-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="m13 6 1.3 3.2 3.2 1.3-3.2 1.3L13 15l-1.3-3.2-3.2-1.3 3.2-1.3Z"/></svg></span><span class="destination-copy"><strong>助理</strong><small>随时问，接着做</small></span><span class="destination-arrow" aria-hidden="true">›</span></button><button class="note-entry" data-action="clipboard-toggle" aria-label="打开便签" title="文字与图片，自动保存"><span class="destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/></svg></span><span class="destination-copy"><strong>便签</strong><small>文字 · 图片</small></span><span class="destination-arrow" aria-hidden="true">›</span></button></div>${renderTransfers()}</footer>`;
   }
   function paintOverlay() {
     if (!overlay) return;
@@ -294,7 +294,7 @@
     setTimeout(() => { if (pendingRender) render(); }, 0);
   });
   document.addEventListener("pointercancel", () => { interacting = false; if (pendingRender) render(); });
-  document.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); clearDrag(); void act("desktop-hide"); } });
+  document.addEventListener("keydown", event => { if (event.key === "Escape") { if(document.body.classList.contains("assistant-view"))return; event.preventDefault(); clearDrag(); void act("desktop-hide"); } });
   window.addEventListener?.('wanx-note-view',event=>{
     const next=event.detail.opened;if(next===noteView)return;noteView=next;
     document.body.classList.toggle('note-view',noteView);if(noteView)clearDrag();resize();
@@ -303,7 +303,7 @@
   function resize() {
     requestAnimationFrame(() => {
       if (dragDepth) return;
-      const height = noteView ? 560 : Math.max(240, Math.min(560, surface.scrollHeight));
+      const height = document.body.classList.contains("assistant-view") ? 560 : noteView ? 560 : Math.max(240, Math.min(560, surface.scrollHeight));
       if (height !== lastHeight) { lastHeight = height; void api.action("desktop-resize", { height }).catch(() => {}); }
     });
   }

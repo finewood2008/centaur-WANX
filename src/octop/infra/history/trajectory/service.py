@@ -358,9 +358,12 @@ def _merge_assistant(current: TrajectoryEvent, incoming: TrajectoryEvent) -> Tra
 def _merge_tool(current: TrajectoryEvent, incoming: TrajectoryEvent) -> TrajectoryEvent:
     payload = dict(current.payload)
     incoming_payload = incoming.payload
-    payload["name"] = _merge_name(
-        str(payload.get("name") or ""),
-        str(incoming_payload.get("name") or ""),
+    incoming_name = str(incoming_payload.get("name") or "")
+    # A result carries the complete executed name, including any scoped reroute.
+    payload["name"] = (
+        incoming_name
+        if "result" in incoming_payload and incoming_name not in {"", "tool"}
+        else _merge_name(str(payload.get("name") or ""), incoming_name)
     )
     if "args" in incoming_payload:
         payload["args"] = _merge_args(payload.get("args"), incoming_payload.get("args"))

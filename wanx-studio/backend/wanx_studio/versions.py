@@ -169,15 +169,21 @@ class Versions:
             if not task or task['state']!='completed':raise StudioError('VERSION_CHANGED',409)
             self.adoption(p,a,'user-adoption',body['operationId'])
         return self.svc.store.mutate(owner,pid,body['operationId'],{'action':'adopt',**body},change)
-    def restore_check(self,owner,pid,h):
+    def restore_check(self,owner,pid,h,comparison_hash=None):
         p=self.svc.store.get(owner,pid);idle(p,pending=False);v=state(p)
         a=source_artifact(p,h);self.guard(owner,p,a)
-        if not any(t['id']==a['taskId'] and t['state']=='completed' for t in p['tasks']):raise StudioError('VERSION_CHANGED',409)
-        return {'expectedRevision':v['revision'],'artifactHash':h,'currentHash':v['adoptedHash'],'dataPolicy':'preserve','restores':a['version'],'capabilities':a['manifest']['capabilities'],'changes':differences(p,a,v['adoptedHash']),'checkHash':digest({'revision':v['revision'],'hash':h,'current':v['adoptedHash'],'manifest':a['manifest']})}
+        completed={t['id'] for t in p['tasks'] if t['state']=='completed'}
+        if a['taskId'] not in completed:raise StudioError('VERSION_CHANGED',409)
+        # Compare to the selected preview, even before any version was adopted.
+        # Older clients omit the baseline: use the latest successful artifact.
+        base=source_artifact(p,comparison_hash) if comparison_hash else next(b for b in reversed(p['artifacts']) if b['taskId'] in completed)
+        if base['taskId'] not in completed:raise StudioError('VERSION_CHANGED',409)
+        verify(base);shadow(p,base)
+        return {'expectedRevision':v['revision'],'artifactHash':h,'currentHash':v['adoptedHash'],'comparisonHash':base['hash'],'comparisonVersion':base['version'],'dataPolicy':'preserve','restores':a['version'],'capabilities':a['manifest']['capabilities'],'changes':differences(p,a,base['hash']),'checkHash':digest({'revision':v['revision'],'hash':h,'current':v['adoptedHash'],'comparison':base['hash'],'manifest':a['manifest']})}
     def restore(self,owner,pid,body,*,trial=False):
         self.svc.authorize_management(owner)
         def change(p):
-            self.expected(p,body);check=self.restore_check(owner,pid,body['artifactHash'])
+            self.expected(p,body);check=self.restore_check(owner,pid,body['artifactHash'],body.get('comparisonHash'))
             if check['checkHash']!=body['checkHash'] or not body.get('confirmedByUser'):raise StudioError('VERSION_CHANGED',409)
             old=source_artifact(p,body['artifactHash']);a=deepcopy(old);task_id='restore_'+uuid4().hex
             a.update({'taskId':task_id,'version':f"0.1.{len(p['artifacts'])}",'createdAt':time.time(),'restoredFrom':old['hash'],'baseHash':old['hash'],'iterationId':None,'summary':'恢复自 v'+old['version']})

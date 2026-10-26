@@ -9,7 +9,8 @@ export function requireCurrentBaseline(baseline, archiveHash) {
 export const builderClientFiles = Object.freeze([
   'local-ui/renderer/studio-home.js', 'local-ui/renderer/studio-intake.js',
   'local-ui/renderer/studio-input.js', 'local-ui/renderer/studio-home.css',
-  'local-ui/renderer/construction.js', 'local-ui/renderer/construction.css',
+  'local-ui/renderer/assets/wanx-builder.svg',
+  'local-ui/renderer/studio-product.js', 'local-ui/renderer/construction.js', 'local-ui/renderer/construction.css',
   'applications/studio.mjs', 'studio/embedded-workspace.mjs', 'studio/embedded-preload.cjs',
 ]);
 export const builderClientDirectories = Object.freeze(['studio/workbench/', 'applications/studio-runtime/']);

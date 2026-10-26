@@ -75,7 +75,7 @@ async function rawState() {
 }
 
 const actions = {
-  ...Object.fromEntries(["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
+  ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff","channels-list","channels-detail","channels-save","channels-toggle","channels-delete","channels-test","channels-start","channels-poll","channels-cancel"].map(method => [`dialogue.${method}`, input => ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`, input)])),
   "notifications.read": input => ipcRenderer.invoke("wanx-client:notifications-read", { id: input?.id, all: input?.all === true }),
   "notifications.refresh": () => ipcRenderer.invoke("wanx-client:notifications-refresh"),
   "notifications.open": input => ipcRenderer.invoke("wanx-client:notifications-open", { id: input?.id }),
@@ -166,7 +166,7 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
+for (const method of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
 
 for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])

@@ -45,30 +45,38 @@ def baseline(p):
     return next((a for a in p['artifacts'] if a['hash']==key),None)
 
 
-def proposal(p):
+def proposal(p, *, require_review=True):
     s=p['solution'];prd=s.get('prd') or {};c=contract(p);base=baseline(p)
     missing=[]
     from .product_questions import pending_choices
     if pending_choices(p):missing.append('请先回答本轮产品选择，再阅读完整 PRD')
-    if not p['artifacts'] and not readiness(s,p['decisions'])['ready']:
+    if not p['artifacts'] and readiness(s,p['decisions'])['missing']:
         missing.append('完整 PRD（流程、页面、数据与验收）')
     if not (prd.get('problem') or p['originalGoal']).strip():missing.append('要解决的问题')
     if not s['workflow'].strip():missing.append('主要使用流程')
     if not s['acceptance']:missing.append('可试用的验收目标')
     if prd.get('openQuestions'):missing.append('尚未决定的问题')
-    if any(p['decisions'].get(d['id'],{}).get('choice') not in {'manual','defer'} for d in s['dependencies']):missing.append('能力缺口的处理方式')
+    unresolved=[d['requirement'] for d in s['dependencies'] if p['decisions'].get(d['id'],{}).get('choice') not in {'manual','defer'}]
+    if unresolved:missing.append('能力缺口尚未记录取舍：'+'、'.join(unresolved))
     if c is None:missing.append('数据保存方式（由产品经理整理）')
     prep=p.get('preparation',{})
-    if any(digest(g) not in prep.get('gapDecisions',{}) for g in prep.get('gaps',[])):missing.append('现有 WANX 能力尚不支持的需求（请调整本轮范围）')
+    gaps=[g.split('：',1)[0] for g in prep.get('gaps',[]) if digest(g) not in prep.get('gapDecisions',{})]
+    if gaps:missing.append('现有 WANX 能力尚不支持，尚未记录本轮范围决定：'+'、'.join(gaps))
     old=base.get('checkpoint',{}).get('contract') if base else None
     if base and not old:
         old={'collections':base['manifest']['collections'],'capabilities':sorted(base['manifest']['capabilities']),'visibility':'application-access'}
     spec={'schemaVersion':1,'hash':digest(s),'intent':p['originalGoal'],'foundationConstraints':foundation_policy(),
           'behavior':deepcopy(s),'contract':c,'decisions':deepcopy(p['decisions'])}
     impact=digest({'spec':spec,'base':base['hash'] if base else None})
+    needs_review=False
+    if require_review:
+        from .prd_review import review_missing
+        review=review_missing(p,impact)
+        needs_review=not missing and review==['产品经理尚未完成信息完备性检查'] and not p.get('preparation',{}).get('interview',{}).get('readinessPolicy')
+        missing.extend(review)
     return {'schemaVersion':1,'specHash':digest(s),'impactHash':impact,
             'baseCheckpoint':base['hash'] if base else None,'contract':c,'previousContract':old,
-            'needsContractConfirmation':False,'ready':not missing,'missing':missing,
+            'needsContractConfirmation':False,'ready':not missing,'missing':missing,'needsCompletenessReview':needs_review,
             'spec':spec}
 
 

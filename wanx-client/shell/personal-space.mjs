@@ -1,3 +1,4 @@
+import { createDriveRouting } from "./space-drive-routing.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { open, stat, lstat, rename, unlink, mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -23,7 +24,7 @@ const fileStat = file => stat(file).catch(error => { if (error.code === "ENOENT"
 
 // Lives in the main process. Local paths come from a native picker or preload's
 // File conversion; credentials, remote URLs and user ids never come from the renderer.
-export async function createPersonalSpace({ client, store, serviceURL, chooseUploads, chooseDownload, chooseDownloadDirectory, onChanged = () => {}, onEvent = () => {}, retryBaseMs = 1000, maxRetries = 6, recoveryCooldownMs = 30_000, random = Math.random }) {
+export async function createPersonalSpace({ client, store, serviceURL, chooseUploads, chooseDownload, chooseDownloadDirectory, driveCatalog, onChanged = () => {}, onEvent = () => {}, retryBaseMs = 1000, maxRetries = 6, recoveryCooldownMs = 30_000, random = Math.random }) {
   let restored = [], storageError = null;
   try { restored = await store.load() || []; if (!Array.isArray(restored)) throw new Error("Invalid transfer records"); }
   catch { storageError = "SECURE_STORAGE_READ_FAILED"; restored = []; }
@@ -108,9 +109,14 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     }
     return connectionPromise;
   }
-  async function request(connection, route, { method = "GET", body, signal, raw = false, headers = {}, prefix = PREFIX } = {}) {
+  const driveRouting = createDriveRouting({catalog:driveCatalog,scope:scopeKey,send:async(aid,action,params,signal)=>{
+    const connection=await connect();
+    return request(connection,`/drives/${aid}/files`,{prefix:"/api/_client/space-mcp",method:"POST",body:{action,params},signal});
+  }});
+  async function request(connection, route, { method = "GET", body, signal, raw = false, headers = {}, prefix = PREFIX, spaceId } = {}) {
     if (signal?.aborted) throw fail("SPACE_PAUSED");
     connection.context();
+    if(prefix===PREFIX){const d=await driveRouting.route(route,{method,body,signal,raw,headers,spaceId});if(d.handled)return d.value;}
     const deadline = AbortSignal.timeout(route.endsWith("/complete") ? 120_000 : 60_000);
     let response;
     try {
@@ -135,6 +141,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
   }
   async function refresh() {
     sync();
+    driveRouting.invalidate();
     const epoch = generation, current = () => epoch === generation && !closed;
     try {
       const connection = await connect();
@@ -157,7 +164,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const connection = await connect();
     switch (action) {
       case "restore-version": return request(connection, `/files/${id(input.id)}/previous`, { method: "POST", body: { expected: input.expected } });
-      case "stat": return metadata(connection, input.id);
+      case "stat": return metadata(connection, input.id, input.space_id);
       case "list": return request(connection, `/files?parent=${folder(input.parent || "")}&trash=${input.trash === true}&space_id=${input.space_id && input.space_id !== "personal" ? id(input.space_id) : "personal"}`);
       case "mkdir": return request(connection, "/folders", { method: "POST", body: { parent: folder(input.parent || ""), name: name(input.name), space_id: input.space_id || "personal" } });
       case "move": return request(connection, `/files/${id(input.id)}`, { method: "PATCH", body: { parent: folder(input.parent || ""), name: name(input.name) } });
@@ -167,7 +174,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
       default: throw fail("SPACE_ACTION_INVALID");
     }
   }
-  async function metadata(connection, itemId) { return request(connection, `/files/${id(itemId)}`); }
+  async function metadata(connection, itemId, spaceId) { return request(connection, `/files/${id(itemId)}`, {spaceId}); }
   async function digestFile(file, signal) {
     const digest = createHash("sha256");
     const handle = await open(file, "r");
@@ -227,7 +234,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const connection = await connect();
     const transferRequest = async (route, options) => {
       const start = performance.now(); let failure;
-      try { return await request(connection, route, options); }
+      try { driveRouting.remember(task.itemId||task.id,task.spaceId); return await request(connection, route, {...options,spaceId:task.spaceId}); }
       catch (cause) { failure = cause; throw cause; }
       finally { event(task, "request", { stage: route.endsWith("/complete") ? "commit" : options?.method === "PUT" ? "chunk" : "reconcile", durationMs: Math.round(performance.now() - start), errorCode: failure ? errorCode(failure) : undefined, httpStatus: failure?.status,
         transportPhase: failure?.transportPhase, requestBytes: failure?.requestBytes, responseBytes: failure?.responseBytes, reusedSocket: failure?.reusedSocket }); }
@@ -422,7 +429,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const taskId = randomUUID().replaceAll("-", "");
     const destinationStamp = stamp(await fileStat(localPath));
     if (epoch !== generation || scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
-    tasks.push({ recoveryVersion: 1, autoResume: true, id: taskId, scope, direction: "download", itemId, name: entry.name, size: entry.size, digest: entry.digest,
+    tasks.push({ recoveryVersion: 1, autoResume: true, id: taskId, scope, direction: "download", itemId, spaceId: entry.space_id, name: entry.name, size: entry.size, digest: entry.digest,
       localPath, destinationStamp, partialPath: path.join(path.dirname(localPath), `.wanx-${taskId}.part`), offset: 0, phase: "queued" });
     try { await persist(); } catch (cause) { for (const t of tasks) if (t.phase === "queued") { t.phase = "paused"; t.autoResume = false; t.pauseReason = "error"; } throw cause; }
     notify(); pump();
@@ -467,7 +474,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
         for (const child of listing.items) await collect(child, localPath);
       } else if (entry.kind === "file") {
         const taskId = randomUUID().replaceAll("-", "");
-        planned.push({ recoveryVersion: 1, autoResume: true, id: taskId, scope, direction: "download", itemId: entry.id, name: entry.name, size: entry.size, digest: entry.digest,
+        planned.push({ recoveryVersion: 1, autoResume: true, id: taskId, scope, direction: "download", itemId: entry.id, spaceId: entry.space_id, name: entry.name, size: entry.size, digest: entry.digest,
           localPath, destinationStamp: null, partialPath: path.join(base, `.wanx-${taskId}.part`), offset: 0, phase: "queued" });
       } else throw fail("SPACE_NOT_FILE");
     }
@@ -545,7 +552,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
         if (task.kind !== "folder" && task.kind !== "scan-error" && !task.preflightError) {
           const connection = await connect();
           if (epoch !== generation || task.scope !== scopeKey()) throw fail("SPACE_CONTEXT_CHANGED");
-          try { await request(connection, `/uploads/${task.id}`, { method: "DELETE" }); } catch (cause) { if (cause.status !== 404) throw cause; }
+          try { await request(connection, `/uploads/${task.id}`, { method: "DELETE", spaceId: task.spaceId }); } catch (cause) { if (cause.status !== 404) throw cause; }
         }
       }
       else await unlink(task.partialPath).catch(e => { if (e.code !== "ENOENT") throw e; });
