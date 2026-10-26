@@ -30,7 +30,8 @@ export function createPlatformClient({
   localBoxes,
   localDataAccess,
   creditsServiceURL = "",
-  managementURL = "https://p2p.qeeshu.com",
+  consumerURL,
+  managementURL = consumerURL ? null : "https://p2p.qeeshu.com",
   readPreference = async () => true,
   writePreference = async () => {},
   renewIntervalMs = 60_000,
@@ -39,6 +40,20 @@ export function createPlatformClient({
   resumeStore,
   measure = (_step, operation) => operation(),
 } = {}) {
+  let selectedManagementURL = managementURL;
+  const acceptsManagementURL = (value) => {
+    if (managementURL) return value === managementURL;
+    try {
+      const target = new URL(value), authority = new URL(consumerURL);
+      // The configured Consumer may use a separate TLS port on its own host.
+      // Preserve the existing production network pin; never trust an arbitrary
+      // third-party host returned in a response or a cached resume record.
+      return typeof value === "string" && authority.protocol === "https:" &&
+        target.protocol === "https:" && target.origin === value &&
+        target.port !== "0" && (target.hostname === authority.hostname ||
+          value === "https://p2p.qeeshu.com");
+    } catch { return false; }
+  };
   let enabled = true;
   let transport = null,
     transportKey = null,
@@ -106,6 +121,7 @@ export function createPlatformClient({
       value?.version === 1 &&
       value.accountId === identity.accountId &&
       value.clientId === identity.clientId &&
+      Boolean(managementURL) &&
       value.managementURL === managementURL &&
       validID(value.networkSessionId)
     );
@@ -248,8 +264,9 @@ export function createPlatformClient({
     return closing;
   }
   function ensureTransport(identity, sessionId, generation) {
+    const endpoint = selectedManagementURL;
     const key = identity
-      ? `${identity.accountId}:${identity.clientId}:${sessionId || "direct"}`
+      ? `${identity.accountId}:${identity.clientId}:${sessionId || "direct"}:${endpoint}`
       : "direct";
     const operation = switching
       .catch(() => {})
@@ -261,6 +278,7 @@ export function createPlatformClient({
         assertCurrent(generation);
         transport = createTransport(
           identity ? { ...identity, networkSessionId: sessionId } : null,
+          { managementURL: endpoint },
         );
         transportKey = key;
         const target = transport;
@@ -289,12 +307,13 @@ export function createPlatformClient({
       throw fail("ACCOUNT_LOGIN_REQUIRED");
     return identity;
   };
-  function validateSession(value) {
+  function validateSession(value, expectedEndpoint) {
     if (
       !value ||
       !validID(value.enrollmentId) ||
       !validID(value.networkSessionId) ||
-      value.managementUrl !== managementURL ||
+      !acceptsManagementURL(value.managementUrl) ||
+      (expectedEndpoint && value.managementUrl !== expectedEndpoint) ||
       !["enrolling", "ready", "revoked", "revocation_pending"].includes(
         value.phase,
       )
@@ -309,6 +328,7 @@ export function createPlatformClient({
         value.leaseExpiresAt * 1000 <= Date.now())
     )
       throw fail("NETWORK_LEASE_EXPIRED");
+    selectedManagementURL = value.managementUrl;
     return value;
   }
   async function request(input, generation, signal) {
@@ -713,6 +733,7 @@ export function createPlatformClient({
           generation,
           signal,
         ),
+        enrollment.managementUrl,
       );
     }
     if (enrollment.phase !== "ready") throw fail("NETWORK_ENROLLMENT_TIMEOUT");
@@ -729,7 +750,7 @@ export function createPlatformClient({
       accountId: identity.accountId,
       clientId: identity.clientId,
       networkSessionId: enrollment.networkSessionId,
-      managementURL,
+      managementURL: enrollment.managementUrl,
     });
     retryDelay = 5000;
     schedule(generation);
@@ -1261,7 +1282,7 @@ export function createPlatformClient({
             connectedBox.authority.accountId === identity.accountId &&
             connectedBox.authority.clientId === identity.clientId &&
             connectedBox.authority.sessionId === networkSession.networkSessionId &&
-            transportKey === `${identity.accountId}:${identity.clientId}:${networkSession.networkSessionId}` &&
+            transportKey === `${identity.accountId}:${identity.clientId}:${networkSession.networkSessionId}:${networkSession.managementUrl}` &&
             currentDeviceAuthority(identity) && currentDevice &&
             Number.isSafeInteger(currentDevice.ownershipEpoch) && currentDevice.ownershipEpoch > 0 &&
             Number.isSafeInteger(currentDevice.authorizationVersion) && currentDevice.authorizationVersion > 0 &&
@@ -1290,7 +1311,7 @@ export function createPlatformClient({
         };
         const requireReady = () => {
           if (!enabled || !usableLease() || platform.phase !== "ready" || directory.phase !== "ready" ||
-              transportKey !== `${identity.accountId}:${identity.clientId}:${sessionId}`)
+              transportKey !== `${identity.accountId}:${identity.clientId}:${sessionId}:${networkSession.managementUrl}`)
             throw fail("NETWORK_NOT_READY");
           if (!boxes.some(box => box.deviceId === deviceId && box.accessState === "ready"))
             throw fail("NETWORK_DEVICE_ACCESS_DENIED");
