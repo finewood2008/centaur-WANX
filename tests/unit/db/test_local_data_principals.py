@@ -34,7 +34,7 @@ def test_version_30_upgrade_preserves_business_identity(tmp_path, monkeypatch):
             123,
         )
         assert row["local_data_marker"] is None
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 33
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 34
     local = LocalDataPrincipalRepo(db).resolve("a" * 43, "b" * 43, 1, "principal")
     assert local != uid
     db.close()

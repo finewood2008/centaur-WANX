@@ -91,7 +91,15 @@ class ProductManager:
    next(t for t in s['turns'] if t['id']==turn)['state']='running'
    self.prep.event(p,'interview.started',turnId=turn)
   self.prep.mutate(owner,pid,'interview-begin',begin)
-  job=asyncio.create_task(self.run(owner,pid,turn,text));self.prep.jobs[(owner,pid)]=job
+  from .local_authority import start_background
+  try:job=await start_background(self.svc,owner,pid,turn,'interview',lambda:self.run(owner,pid,turn,text))
+  except BaseException:
+   def denied(p):
+    state=p['preparation']['interview'];state.update(state='failed',error='STUDIO_TASK_AUTHORIZATION_DENIED')
+    next(t for t in state['turns'] if t['id']==turn)['state']='paused'
+   self.prep.mutate(owner,pid,'interview-denied',denied)
+   raise
+  self.prep.jobs[(owner,pid)]=job
   self.svc.background.add(job);job.add_done_callback(self.svc.background.discard)
  def pause(self,owner,pid,code):
   if not any(t.get('state')=='queued' for t in self.svc.store.get(owner,pid).get('preparation',{}).get('interview',{}).get('turns',[])):return

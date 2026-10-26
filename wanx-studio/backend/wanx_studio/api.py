@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from .local_authority import to_thread
 import json
 import time
 from pathlib import Path
@@ -222,12 +223,12 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
 
     @router.get('/projects',summary='List your development projects')
     async def projects(includeDeleted:bool=False,owner=Depends(identity)):
-        return {'projects':await asyncio.to_thread(svc.list_projects,owner,includeDeleted)}
+        return {'projects':await to_thread(svc.list_projects,owner,includeDeleted)}
 
     @router.post('/projects',summary='Create a private project idempotently')
     async def create(body:Create,owner=Depends(identity)):
         if body.intake and has_credentials(body.goal):raise StudioError('INPUT_CREDENTIAL_DETECTED')
-        p=await asyncio.to_thread(svc.store.create,owner,body.name,body.goal,body.operationId)
+        p=await to_thread(svc.store.create,owner,body.name,body.goal,body.operationId)
         return svc.preparation.enable(owner,p['id']) if body.intake else p
 
     @router.put('/projects/{project_id}/metadata',summary='Rename or reversibly remove an owned project without changing its PRD')
@@ -236,7 +237,7 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
 
     @router.get('/projects/{project_id}',summary='Restore a project and its version-bound state')
     async def get(project_id:str,owner=Depends(identity)):
-        result=await asyncio.to_thread(svc.snapshot,owner,project_id)
+        result=await to_thread(svc.snapshot,owner,project_id)
         if not svc.edits.enabled(svc.store.get(owner,project_id)) or svc.edits.contexts.get((owner,project_id),('',''))[1].startswith('legacy:'):svc.runner.touch(owner,project_id)
         return result
 
@@ -250,16 +251,16 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
 
     @router.put('/projects/{project_id}/solution',summary='Save an explicit user revision; invalidate previous confirmation')
     async def solution(project_id:str,body:UpdateSolution,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.update_solution,owner,project_id,body.model_dump(exclude_none=True))
+        return await to_thread(svc.update_solution,owner,project_id,body.model_dump(exclude_none=True))
 
     @router.post('/projects/{project_id}/decisions',summary='Record a user decision about one unsupported dependency')
     async def decision(project_id:str,body:Decision,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.decide,owner,project_id,body.model_dump())
+        return await to_thread(svc.decide,owner,project_id,body.model_dump())
 
     @router.post('/projects/{project_id}/confirm',summary='Freeze the current solution after dependency decisions')
     async def confirm(project_id:str,body:Confirm,owner=Depends(identity)):
         await svc.preparation.guard_async(owner,svc.store.get(owner,project_id),development=True)
-        return await asyncio.to_thread(svc.confirm,owner,project_id,body.model_dump())
+        return await to_thread(svc.confirm,owner,project_id,body.model_dump())
 
     @router.post('/projects/{project_id}/build',summary='Start Codex against the exact confirmed version')
     async def build(project_id:str,body:Build,owner=Depends(identity)):
@@ -271,57 +272,57 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
 
     @router.get('/projects/{project_id}/tasks/{task_id}/events',summary='Read the complete ordered development history, including earlier pages')
     async def task_events(project_id:str,task_id:str,after:int=0,limit:int=100,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.store.task_events,owner,project_id,task_id,after,limit)
+        return await to_thread(svc.store.task_events,owner,project_id,task_id,after,limit)
 
     @router.post('/projects/{project_id}/tasks/{task_id}/terminal/{operation}',summary='Reject terminal input, paste, keys and other control operations')
     async def readonly_terminal(project_id:str,task_id:str,operation:str,owner=Depends(identity)):
-        await asyncio.to_thread(svc.store.task_events,owner,project_id,task_id,0,1)
+        await to_thread(svc.store.task_events,owner,project_id,task_id,0,1)
         raise StudioError('TERMINAL_READ_ONLY',403)
 
     @router.get('/projects/{project_id}/versions')
     async def versions(project_id:str,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.versions.read,owner,project_id)
+        return await to_thread(svc.versions.read,owner,project_id)
 
     @router.get('/projects/{project_id}/versions/{artifact_hash}')
     async def version(project_id:str,artifact_hash:str,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.versions.read,owner,project_id,artifact_hash)
+        return await to_thread(svc.versions.read,owner,project_id,artifact_hash)
 
     @router.put('/projects/{project_id}/feedback')
     async def feedback(project_id:str,body:Feedback,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.versions.feedback,owner,project_id,body.model_dump())
+        return await to_thread(svc.versions.feedback,owner,project_id,body.model_dump())
 
     @router.post('/projects/{project_id}/iterations')
     async def iteration(project_id:str,body:IterationOperation,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.versions.iteration,owner,project_id,body.model_dump())
+        return await to_thread(svc.versions.iteration,owner,project_id,body.model_dump())
 
     @router.post('/projects/{project_id}/adopt')
     async def adopt(project_id:str,body:Adopt,owner=Depends(identity)):
         await svc.versions.authorize(owner,project_id,body.artifactHash)
-        return await asyncio.to_thread(svc.versions.adopt,owner,project_id,body.model_dump())
+        return await to_thread(svc.versions.adopt,owner,project_id,body.model_dump())
 
     @router.get('/projects/{project_id}/versions/{artifact_hash}/restore-check')
     async def restore_check(project_id:str,artifact_hash:str,comparisonHash:str | None=Query(default=None,pattern=r'^[a-f0-9]{64}$'),owner=Depends(identity)):
         await svc.versions.authorize(owner,project_id,artifact_hash)
-        return await asyncio.to_thread(svc.versions.restore_check,owner,project_id,artifact_hash,comparisonHash)
+        return await to_thread(svc.versions.restore_check,owner,project_id,artifact_hash,comparisonHash)
 
     @router.post('/projects/{project_id}/restore-version')
     async def restore_version(project_id:str,body:RestoreVersion,owner=Depends(identity)):
         await svc.versions.authorize(owner,project_id,body.artifactHash)
-        return await asyncio.to_thread(svc.versions.restore,owner,project_id,body.model_dump())
+        return await to_thread(svc.versions.restore,owner,project_id,body.model_dump())
 
     @router.post('/projects/{project_id}/accept',summary='Record the owner acceptance for every criterion of this artifact')
     async def accept(project_id:str,body:Accept,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.accept,owner,project_id,body.model_dump())
+        return await to_thread(svc.accept,owner,project_id,body.model_dump())
 
     @router.get('/projects/{project_id}/install/{artifact_hash}',summary='Obtain an accepted data-free artifact for the trusted Host installer')
     async def install(project_id:str,artifact_hash:str,owner=Depends(identity)):
         if not getattr(svc,'team',None) or svc.team.is_admin(owner):
             if 'versioning' in svc.store.get(owner,project_id):await svc.versions.authorize(owner,project_id,artifact_hash)
-        return await asyncio.to_thread(svc.install_payload,owner,project_id,artifact_hash)
+        return await to_thread(svc.install_payload,owner,project_id,artifact_hash)
 
     @router.post('/projects/{project_id}/installed',summary='Commit a matching Host installation receipt')
     async def installed(project_id:str,body:Installed,owner=Depends(identity)):
-        return await asyncio.to_thread(svc.installed,owner,project_id,body.model_dump())
+        return await to_thread(svc.installed,owner,project_id,body.model_dump())
 
     @router.post('/projects/{project_id}/runtime',summary='Create a short-lived runtime bound to your app and environment')
     async def runtime(project_id:str,body:Runtime,owner=Depends(identity)):
@@ -334,6 +335,19 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
     @router.post('/apps/{app_id}/runtime',summary='Open an installed app by its portable application identity')
     async def installed_runtime(app_id:str,body:Runtime,owner=Depends(identity)):
         return svc.open_installed_runtime(owner,app_id,body.artifactHash,body.environment)
+
+    @router.get('/apps/{app_id}',summary='Read metadata for one currently authorized company application')
+    async def published_application(app_id:str,owner=Depends(identity)):
+        team=getattr(svc,'team',None)
+        if team is None:raise StudioError('TEAM_APPLICATION_UNAVAILABLE',404)
+        return {'project':team.summary(team.resolve(owner,app_id=app_id))}
+
+    @router.get('/apps/{app_id}/install',summary='Read the sealed package for one authorized company application')
+    async def published_install(app_id:str,owner=Depends(identity)):
+        team=getattr(svc,'team',None)
+        if team is None:raise StudioError('TEAM_APPLICATION_UNAVAILABLE',404)
+        publication=team.resolve(owner,app_id=app_id)
+        return team.payload(owner,publication['project'],publication['artifact'])
 
     @router.post('/runtime/{session}/files',summary='Explicitly select owner-controlled text files for this runtime')
     async def select(session:str,body:SelectFiles,owner=Depends(identity)):

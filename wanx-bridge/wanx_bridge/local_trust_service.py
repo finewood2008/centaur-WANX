@@ -28,6 +28,18 @@ OPERATIONS = {
     "requests/cancel": ("cancel_request", ("cancelProof",), "management"),
 }
 V2_OPERATIONS = {
+    "team/policy": ("team_policy", (), "public"),
+    "team/requests": (
+        "submit_team_request",
+        ("requestProof", "approvalProof", "cloudProof"),
+        "team_requests",
+    ),
+    "team/requests/read": ("read_team_request", ("proof",), "team_requests"),
+    "team/requests/consent": (
+        "consent_team_request",
+        ("requestId", "targetAccessProof", "targetApprovalProof"),
+        "team_requests",
+    ),
     "operations/restore-key": (
         "receive_restore_key",
         ("operationId", "archiveSha256", "dataKey", "proof"),
@@ -74,6 +86,7 @@ V2_OPERATIONS.update(
 )
 OPERATIONS.update({"v2/" + key: value for key, value in V2_OPERATIONS.items()})
 CONCURRENCY = {
+    "team_requests": 4,
     "public": 4,
     "management": 8,
     "data": 32,
@@ -83,6 +96,7 @@ CONCURRENCY = {
     "backup_io": 4,
 }
 SOURCE_PER_MINUTE = {
+    "team_requests": 120,
     "public": 60,
     "management": 120,
     "nonce": 60,

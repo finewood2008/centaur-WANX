@@ -82,6 +82,11 @@ def _resolve(server: Any, context: Any) -> User:
     if user.is_admin or user.username != "local_" + context.principal_namespace:
         raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
     permissions = list(_PERSONAL_PERMISSIONS) if claims["resourceId"] == "wanx" else []
+    if re.fullmatch(r"team:knowledge:[A-Z0-9]{6}", claims["resourceId"]) and claims["action"] in {
+        "write",
+        "execute",
+    }:
+        permissions.append("knowledge_bases")
     if claims["action"] == "execute":
         permissions += _EXECUTE_PERMISSIONS
     app = {"centaurai.wanx.zhijun": "zhijun", "centaurai.wanx.superadvisors": "super-advisory"}.get(
@@ -89,7 +94,15 @@ def _resolve(server: Any, context: Any) -> User:
     )
     return cast(
         User,
-        replace(user, role="user", permissions=permissions, application_id=app, local_data=True),
+        replace(
+            user,
+            role="user",
+            permissions=permissions,
+            application_id=app,
+            local_data=True,
+            local_team=claims.get("team"),
+            local_team_context=context if claims.get("team") else None,
+        ),
     )
 
 
@@ -124,6 +137,14 @@ def install(app: Any, server: Any) -> None:
 
         check_octop_request(scope, context.claims)
         user = await asyncio.to_thread(_resolve, server, context)
+        if user.local_team is not None:
+            from types import MappingProxyType
+
+            from octop.infra.users.team_resources import resource_record
+
+            record = await asyncio.to_thread(resource_record, server.services, user)
+            if record is not None:
+                user = replace(user, local_resource=MappingProxyType(record))
         await _check_configuration(scope, context, server, user)
         await asyncio.to_thread(_check_private_resources, server, scope, context, user)
         scope.setdefault("state", {})["octop_user"] = user
@@ -182,13 +203,37 @@ def _check_private_resources(server: Any, scope: dict[str, Any], context: Any, u
         if row is None:
             raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
         try:
-            assert_agent_owner(row, user)
+            from octop.infra.users.team_resources import may_access
+
+            shared = may_access(user, "agent", identifier, write=context.claims["action"] != "read")
+            if shared:
+                assert user.local_resource is not None
+                if row.user_id != user.local_resource["owner_user_id"]:
+                    raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+            if not shared:
+                assert_agent_owner(row, user)
         except OctopError:
             raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED") from None
     knowledge = re.fullmatch(r"/api/knowledge-bases/([A-Z0-9]{6})(?:/.*)?", path)
     if knowledge:
         row = server.services.knowledge_repo.get_base(knowledge[1], application_id=None)
-        if row is None or row.owner_user_id != user.id or row.application_id != user.application_id:
+        from octop.infra.users.team_resources import may_access
+
+        if (
+            row is None
+            or row.application_id != user.application_id
+            or (
+                row.owner_user_id != user.id
+                and not may_access(
+                    user, "knowledge", knowledge[1], write=context.claims["action"] != "read"
+                )
+            )
+        ):
+            raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+        if (
+            user.local_resource is not None
+            and row.owner_user_id != user.local_resource["owner_user_id"]
+        ):
             raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
 
 

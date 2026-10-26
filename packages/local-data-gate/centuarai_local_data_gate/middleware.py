@@ -307,7 +307,9 @@ class LocalDataGateMiddleware:
             if context:
                 with contextlib.suppress(DataProtocolError):
                     await context.closed(outcome)
-                self._operations.discard(claims["operationId"])
+                if not context.physical_close_uncertain:
+                    self._operations.discard(claims["operationId"])
                 await self._report()
-                self.active -= 1
-                self.reserved -= reserved
+                if not context.physical_close_uncertain:
+                    self.active -= 1
+                    self.reserved -= reserved

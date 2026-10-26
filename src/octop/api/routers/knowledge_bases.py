@@ -296,7 +296,11 @@ class KnowledgeTextPageResponse(BaseModel):
 def _knowledge_service(server: OctopServer, user: User) -> KnowledgeService:
     if server.services is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "knowledge services are not initialized")
-    return KnowledgeService(server.services, application_id=application_id(user))
+    return KnowledgeService(
+        server.services,
+        application_id=application_id(user),
+        local_user=user if getattr(user, "local_data", False) else None,
+    )
 
 
 async def _knowledge_editor(user: User = Depends(current_user)) -> User:
@@ -723,7 +727,9 @@ async def list_bases(
         for base in _knowledge_service(server, user).list_visible_bases(
             actor_user_id=user.id, is_admin=_is_admin(user)
         )
-        if not getattr(user, "local_data", False) or base.owner_user_id == user.id
+        if not getattr(user, "local_data", False)
+        or base.owner_user_id == user.id
+        or getattr(user, "local_resource", None) is not None
     ]
 
 

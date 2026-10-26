@@ -14,6 +14,7 @@ from .observations import header_pairs, observed_headers
 from .protocol import (
     DataProtocolError,
     canonical,
+    digest,
     encode,
     gateway_proof_digest,
     verify_gateway_lease,
@@ -39,6 +40,8 @@ def get_context(scope):
 class BrokerClient:
     def __init__(self, config, *, async_transport=None, sync_transport=None):
         self.config = config
+        self._tasks_lock = threading.Lock()
+        self._task_operations = {}
         headers = {"X-Centuarai-Native-Audience": config.audience}
         limits = httpx.Limits(max_connections=64, max_keepalive_connections=16)
         self.async_client = httpx.AsyncClient(
@@ -82,10 +85,16 @@ class BrokerClient:
         """Report a native inventory; this receipt grants no data permission."""
         from .protocol import verify_gateway_observation
 
+        with self._tasks_lock:
+            tasks = {
+                identifier
+                for identifier, native_generation in self._task_operations.items()
+                if native_generation == generation
+            }
         body = {
             "nativeGateGeneration": generation,
             "gateNonce": secrets.token_urlsafe(32),
-            "activeOperationIds": sorted(active_operation_ids),
+            "activeOperationIds": sorted(set(active_operation_ids) | tasks),
         }
         proof = await self.call("observe", body)
         receipt = verify_gateway_observation(
@@ -119,8 +128,10 @@ class GateContext:
         self._deadline = 0.0
         self._state = "staging"
         self._closed = False
+        self._physical_close_uncertain = False
         self._lock = threading.Lock()
         self.staged = None
+        self.authorized_resources = ()
 
     def _body(self):
         return {
@@ -135,6 +146,13 @@ class GateContext:
         return self._accept_payload(lease, body, expected, now)
 
     def _accept_payload(self, lease, body, expected, now):
+        team = self.claims.get("team")
+        if (
+            lease["schemaVersion"] != self.claims["schemaVersion"]
+            or team is not None
+            and lease.get("teamDigest") != digest(_thaw(team))
+        ):
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
         for name in (
             "audience",
             "gatewayId",
@@ -172,7 +190,7 @@ class GateContext:
 
     def check_cached(self):
         with self._lock:
-            if self._closed or time.monotonic() >= self._deadline:
+            if self._closed or self._physical_close_uncertain or time.monotonic() >= self._deadline:
                 raise DataProtocolError("LOCAL_DATA_SESSION_CLOSED")
 
     async def admit(self):
@@ -206,27 +224,130 @@ class GateContext:
     async def authorize_resources(self, grants):
         """Freeze additional application-resource requirements on this request."""
         from .protocol import grants as validate_grants
-        from .protocol import verify_gateway_resources
 
         self.check_cached()
         validate_grants(grants)
         body = {**self._body(), "grants": grants}
         proof = await self.broker.call("authorize-resources", body)
+        return self._accept_resources(proof, body)
+
+    def authorize_resources_sync(self, grants):
+        from .protocol import grants as validate_grants
+
+        self.check_cached()
+        validate_grants(grants)
+        body = {**self._body(), "grants": grants}
+        return self._accept_resources(self.broker.call_sync("authorize-resources", body), body)
+
+    def _accept_resources(self, proof, body):
+        from .protocol import verify_gateway_resources
+        from .team import merge_grants
+
         now = int(time.time() * 1000)
         lease = verify_gateway_resources(proof, self.config.gateway_key, now)
-        if lease["grants"] != grants or lease["requestDigest"] != encode(
-            hashlib.sha256(canonical(body)).digest()
-        ):
+        if merge_grants(lease["grants"], body["grants"]) != lease["grants"] or lease[
+            "requestDigest"
+        ] != encode(hashlib.sha256(canonical(body)).digest()):
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        self._accept_payload(lease, body, {"active"}, now)
+        self.check_cached()
+        self.authorized_resources = freeze(
+            merge_grants(_thaw(self.authorized_resources), lease["grants"])
+        )
+        return self.authorized_resources
+
+    async def closed(self, outcome):
+        with self._lock:
+            if self._physical_close_uncertain:
+                raise DataProtocolError("LOCAL_DATA_UNAVAILABLE")
+            self._closed = True
+        body = {**self._body(), "outcome": outcome}
+        self._accept(await self.broker.call("closed", body), body, {"closed"})
+
+    def mark_physical_close_uncertain(self):
+        """Monotonic denial of positive cleanup evidence after an undrained worker."""
+        with self._lock:
+            self._physical_close_uncertain = True
+
+    @property
+    def physical_close_uncertain(self):
+        with self._lock:
+            return self._physical_close_uncertain
+
+    def _members(self, proof, body):
+        from .protocol import verify_gateway_members
+
+        now = int(time.time() * 1000)
+        lease = verify_gateway_members(proof, self.config.gateway_key, now)
+        if lease["requestDigest"] != digest(body):
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        self._accept_payload(lease, body, {"active"}, now)
+        self.check_cached()
+        return freeze(lease["members"])
+
+    async def team_members(self):
+        self.check_cached()
+        body = self._body()
+        return self._members(await self.broker.call("team-members", body), body)
+
+    def team_members_sync(self):
+        self.check_cached()
+        body = self._body()
+        return self._members(self.broker.call_sync("team-members", body), body)
+
+    def _grants(self, proof, body):
+        from .protocol import verify_gateway_grants
+
+        now = int(time.time() * 1000)
+        lease = verify_gateway_grants(proof, self.config.gateway_key, now)
+        if lease["requestDigest"] != digest(body):
             raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
         self._accept_payload(lease, body, {"active"}, now)
         self.check_cached()
         return freeze(lease["grants"])
 
-    async def closed(self, outcome):
-        with self._lock:
-            self._closed = True
-        body = {**self._body(), "outcome": outcome}
-        self._accept(await self.broker.call("closed", body), body, {"closed"})
+    async def current_grants(self):
+        self.check_cached()
+        body = self._body()
+        return self._grants(await self.broker.call("resource-grants", body), body)
+
+    def current_grants_sync(self):
+        self.check_cached()
+        body = self._body()
+        return self._grants(self.broker.call_sync("resource-grants", body), body)
+
+    async def start_task(self, *, project_id, task_id, purpose):
+        from .protocol import verify_gateway_task
+
+        self.check_cached()
+        body = {**self._body(), "projectId": project_id, "taskId": task_id, "taskPurpose": purpose}
+        proof = await self.broker.call("task-start", body)
+        lease = verify_gateway_task(proof, self.config.gateway_key, int(time.time() * 1000))
+        if lease["parentRequestId"] != self.claims["operationId"]:
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        for name in ("projectId", "taskId", "taskPurpose"):
+            if lease[name] != body[name]:
+                raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        claims = _thaw(self.claims)
+        claims.update(operationId=lease["operationId"], parentOperationId=None)
+        task = GateTaskContext(
+            self.config,
+            self.broker,
+            claims,
+            self.gateway_proof,
+            self.native_generation,
+            task_identity={
+                key: lease[key] for key in ("parentRequestId", "projectId", "taskId", "taskPurpose")
+            },
+        )
+        if lease["grants"] != _thaw(self.authorized_resources):
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        task.authorized_resources = freeze(lease["grants"])
+        task._accept(proof, body, {"active"})
+        with self.broker._tasks_lock:
+            self.broker._task_operations[task.claims["operationId"]] = self.native_generation
+        self.check_cached()
+        return task
 
     async def read_body(self, limit=2 * 1024 * 1024):
         return await self.staged.read(limit) if self.staged else b""
@@ -275,6 +396,84 @@ class GateContext:
                 raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
         if child["parentOperationId"] != self.claims["operationId"]:
             raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        if child.get("team") != _thaw(self.claims.get("team")):
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
         clean["x-centuarai-gateway-proof"] = proof
         clean["content-length"] = str(len(body))
         return clean
+
+
+def _thaw(value):
+    if isinstance(value, (dict, MappingProxyType)):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw(item) for item in value]
+    return value
+
+
+class GateTaskContext(GateContext):
+    """One bounded Studio task; no HTTP/child-hop/session minting authority."""
+
+    def __init__(self, *args, task_identity, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.task_identity = freeze(task_identity)
+
+    def _accept(self, proof, body, expected):
+        from .protocol import verify_gateway_task
+
+        now = int(time.time() * 1000)
+        lease = verify_gateway_task(proof, self.config.gateway_key, now)
+        if any(lease[key] != value for key, value in self.task_identity.items()) or lease[
+            "grants"
+        ] != _thaw(self.authorized_resources):
+            raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
+        return self._accept_payload(lease, body, expected, now)
+
+    async def check(self):
+        self.check_cached()
+        body = self._body()
+        self._accept(await self.broker.call("task-check", body), body, {"active"})
+
+    def require_live(self):
+        self.check_cached()
+        body = self._body()
+        self._accept(self.broker.call_sync("task-check", body), body, {"active"})
+        self.check_cached()
+
+    async def closed(self, outcome):
+        with self._lock:
+            if self._physical_close_uncertain:
+                raise DataProtocolError("LOCAL_DATA_UNAVAILABLE")
+            self._closed = True
+        body = {**self._body(), "outcome": outcome}
+        self._accept(await self.broker.call("task-close", body), body, {"closed"})
+        with self.broker._tasks_lock:
+            self.broker._task_operations.pop(self.claims["operationId"], None)
+
+    def child_headers(self, **kwargs):
+        if kwargs.get("audience") != "semantica" or kwargs.get("method") not in {"GET", "POST"}:
+            raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+        return super().child_headers(**kwargs)
+
+    async def start_task(self, **_kwargs):
+        raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+
+    async def authorize_resources(self, _grants):
+        raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+
+    def authorize_resources_sync(self, _grants):
+        raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+
+    async def team_members(self):
+        raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+
+    def team_members_sync(self):
+        raise DataProtocolError("LOCAL_DATA_SCOPE_DENIED")
+
+    async def current_grants(self):
+        self.check_cached()
+        return self.authorized_resources
+
+    def current_grants_sync(self):
+        self.check_cached()
+        return self.authorized_resources

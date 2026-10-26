@@ -4,6 +4,7 @@ import { applicationIcon } from "./desktop-runtime.mjs";
 import { pathToFileURL } from "node:url";
 import { verifyEnvelope, marketFailure, validApplicationId, matchesApplicationTarget } from "./descriptor.mjs";
 import { validateApplicationManifest } from "./manifest.mjs";
+import { applicationProfilePath, prepareApplicationProfile } from "./data-profile.mjs";
 
 /** Invoked by the shell before acquiring the WANX single-instance lock. */
 export async function runManagedApplication({
@@ -62,7 +63,11 @@ async function bootstrapInstalledApplication({
   // Give the child its own Chromium state before any app code can create a
   // window or take a single-instance lock. Apps may choose a narrower profile.
   let userData = path.join(root, ".runtime", manifest.applicationId);
-  try { await access(userData); } catch {
+  if (environment.WANX_HOST_DATA_PROFILE) {
+    const expected = applicationProfilePath(root, manifest.applicationId, environment.WANX_HOST_DATA_PROFILE);
+    if (environment.WANX_HOST_USER_DATA_DIR !== expected) throw invalid();
+    userData = await prepareApplicationProfile(root, manifest.applicationId, environment.WANX_HOST_DATA_PROFILE);
+  } else try { await access(userData); } catch {
     const legacyMarketData = path.join(path.dirname(root), "application-data", manifest.applicationId);
     try { await access(legacyMarketData); userData = legacyMarketData; } catch { /* First launch uses the shared application profile. */ }
   }
@@ -74,7 +79,9 @@ async function bootstrapInstalledApplication({
   app.setPath("userData", userData);
   app.setPath("sessionData", userData);
   const windows = new Set();
+  let revoked = false;
   const activate = () => {
+    if (revoked) return;
     const window = [...windows].find(item => !item.isDestroyed());
     if (!window) return;
     if (window.isMinimized()) window.restore();
@@ -83,6 +90,12 @@ async function bootstrapInstalledApplication({
     app.focus({ steal: true });
   };
   receive(message => {
+    if (message?.type === "wanx:application-invalidate" && message.launchId === environment.WANX_HOST_LAUNCH_ID) {
+      revoked = true;
+      for (const window of windows) if (!window.isDestroyed()) { window.hide(); window.destroy(); }
+      app.exit(0);
+      return;
+    }
     if (message?.type === "wanx:application-activate" && message.launchId === environment.WANX_HOST_LAUNCH_ID) activate();
   });
   let reported = false;
@@ -92,6 +105,7 @@ async function bootstrapInstalledApplication({
     send({ type, launchId: environment.WANX_HOST_LAUNCH_ID });
   };
   app.on("browser-window-created", (_event, window) => {
+    if (revoked) { window.hide(); window.destroy(); return; }
     if(icon&&process.platform!=='darwin')window.setIcon?.(icon);
     if (process.platform === "win32") {
       window.setMenu(null);

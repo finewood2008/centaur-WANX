@@ -281,3 +281,16 @@ async def test_duplicate_failed_interview_does_not_retry_model(svc):
         await svc.chat('alice',p['id'],body)
     await svc.chat('alice',p['id'],body)
     assert svc.used('alice',p['id'])==1
+
+
+async def test_denied_native_task_lease_does_not_leave_build_queued(svc,monkeypatch):
+    p=await seeded(svc);svc.model=object()
+    async def denied(*args,**kwargs):
+        raise StudioError('STUDIO_TASK_AUTHORIZATION_DENIED',403)
+    monkeypatch.setattr('wanx_studio.local_authority.start_background',denied)
+    for _ in range(2):
+        with pytest.raises(StudioError,match='STUDIO_TASK_AUTHORIZATION_DENIED'):
+            await svc.runner.start('alice',p['id'],{'operationId':op(),'solutionHash':p['solutionHash'],'instruction':''})
+    tasks=svc.store.get('alice',p['id'])['tasks'][len(p['tasks']):]
+    assert len(tasks)==2 and all(t['state']=='failed' for t in tasks)
+    assert not svc.runner.jobs and not svc.background

@@ -9,14 +9,14 @@ window.createTeamView=({request,changed})=>{
     try{
       const next=await call('identity');if(revision!==epoch)return;identity=next;error=null;
       try{const apps=await call('catalog');if(revision!==epoch)return;catalog=apps}catch(e){if(revision!==epoch)return;catalog=[];error=message(e)}
-      if(management&&identity.role==='admin'){
+      if(management&&identity.permissions?.includes('applications.manage')){
         const rows=await Promise.all([call('members'),call('projects'),management==='team'?call('invites'):Promise.resolve([])]);if(revision!==epoch)return;[members,projects,invites]=rows;
-      }else if(identity.role!=='admin'){members=[];projects=[];invites=[];management=false;pubSelected='';pubDetail=false;document.querySelectorAll?.('[data-team-modal]').forEach(d=>d.close())}
+      }else if(!identity.permissions?.includes('applications.manage')){members=[];projects=[];invites=[];management=false;pubSelected='';pubDetail=false;document.querySelectorAll?.('[data-team-modal]').forEach(d=>d.close())}
     }catch(e){if(revision!==epoch)return;identity=null;error=message(e);catalog=[];members=[];projects=[];invites=[]}
     finally{if(revision===epoch){loading=false;changed()}}
   }
   function sync(state){
-    const next=state.canLaunchApplications?JSON.stringify([state.account?.accountId,state.account?.clientId,state.activeDeviceId]):null;
+    const next=state.canLaunchApplications?JSON.stringify([state.dataIdentity?.profileId,state.dataIdentity?.generation,state.dataIdentity?.selected?.principalId,state.dataIdentity?.selected?.bindingId,state.connection?.deviceId]):null;
     if(next===key)return;
     epoch++;key=next;identity=null;catalog=[];members=[];projects=[];invites=[];error=null;loading=false;management=false;pubQuery='';pubFilter='available';pubSelected='';pubDetail=false;document.querySelectorAll?.('[data-team-modal]').forEach(d=>d.close());clearInterval(timer);timer=null;
     if(key){void refresh();timer=setInterval(()=>void refresh(),15000)}
@@ -28,14 +28,11 @@ window.createTeamView=({request,changed})=>{
     d.querySelector('form').onsubmit=async event=>{event.preventDefault();const form=event.currentTarget;const button=form.querySelector('[type=submit]');button.disabled=true;try{if(modalEpoch!==epoch)throw Error('TEAM_SESSION_CHANGED');await submit(new FormData(form),d);if(modalEpoch!==epoch)return;d.close();await refresh()}catch(e){d.querySelector('.team-form-error').textContent=message(e)}finally{button.disabled=false}};
     document.body.append(d);d.showModal();return d;
   }
-  function login(join=false){
-    const d=modal(join?'接受邀请，加入团队':'登录团队服务器',`<p>使用这台盒子已有的团队账号。每位成员独立登录，权限由服务器核验。</p><label>服务器地址<input name="serverURL" type="url" placeholder="https://wanx.example.com；本机可用 http://127.0.0.1:8089" required></label>${join?'<label>邀请码<input name="code" autocomplete="off" required></label>':''}<label>账号<input name="username" autocomplete="username" required maxlength="64"></label><label>密码<input name="password" type="password" autocomplete="${join?'new-password':'current-password'}" required maxlength="200"></label>`,async data=>{await call(join?'join':'login',Object.fromEntries(data))});
-    d.querySelector('[type=submit]').textContent=join?'接受邀请并加入':'登录';
-  }
+  function login(){return call('security')}
   function appCards(){
-    if(!key)return '<div class="empty-state"><h3>请先连接团队盒子</h3><p>公司应用由所连接盒子的管理员上架。</p><button class="button primary" data-team-action="login">登录团队服务器</button></div>';
+    if(!key)return '<div class="empty-state"><h3>请先连接团队盒子</h3><p>公司应用由所连接盒子的管理员上架。</p><button class="button primary" data-team-action="login">云账号与设备批准</button></div>';
     const available=catalog.filter(a=>a.enabled!==false);
-    const content=available.length?`<div class="application-list">${available.map(a=>`<article class="application-card"><div class="application-icon" aria-hidden="true">▦</div><div class="application-copy"><h3>${esc(a.name)}</h3><p>团队内部应用${a.installed?.version?' · v'+esc(a.installed.version):''}</p></div><div class="application-actions"><button class="button small" data-team-action="open" data-project="${esc(a.id)}" data-hash="${esc(a.installed.artifactHash)}">打开</button></div><div class="application-card-footer"><span>使用团队共享业务数据</span></div></article>`).join('')}</div>`:loading?'<div class="empty-state" role="status"><h3>正在读取公司应用…</h3><p>正在核验当前账号与盒子的应用授权。</p></div>':error?'':'<div class="empty-state"><h3>暂无获准的公司应用</h3><p>管理员上架应用并授权后，即可在这里直接使用。</p></div>';
+    const content=available.length?`<div class="application-list">${available.map(a=>`<article class="application-card"><div class="application-icon" aria-hidden="true">▦</div><div class="application-copy"><h3>${esc(a.name)}</h3><p>团队内部应用${a.installed?.version?' · v'+esc(a.installed.version):''}</p></div><div class="application-actions"><button class="button small" data-team-action="open" data-project="${esc(a.id)}" data-app="${esc(a.appId)}" data-hash="${esc(a.installed.artifactHash)}">打开</button></div><div class="application-card-footer"><span>使用团队共享业务数据</span></div></article>`).join('')}</div>`:loading?'<div class="empty-state" role="status"><h3>正在读取公司应用…</h3><p>正在核验当前账号与盒子的应用授权。</p></div>':error?'':'<div class="empty-state"><h3>暂无获准的公司应用</h3><p>管理员上架应用并授权后，即可在这里直接使用。</p></div>';
     return `<section class="content-section company-applications" aria-label="公司应用" aria-busy="${loading}"><div class="section-heading"><div><h3>公司应用 ${!loading||available.length?`<span class="count">${available.length}</span>`:''}</h3><p>由管理员验收并上架，获准成员可在当前盒子直接使用。</p></div><div class="company-applications-actions"><button class="button small" data-team-action="refresh" ${loading?'disabled':''}>${loading?'正在刷新…':'刷新公司应用'}</button></div></div>${error?`<div class="notice error" role="alert">${esc(error)}</div>`:''}${content}</section>`;
   }
   function publicationItems(){
@@ -46,7 +43,7 @@ window.createTeamView=({request,changed})=>{
   const publicationVersion=row=>{const hash=row.publication?.installed?.artifactHash;return row.project?.artifacts?.find(a=>a.hash===hash)?.version||null};
   function publishing(){
     if(!key)return '<div class="kaiwu-empty"><h3>请先连接团队盒子</h3><p>连接后读取当前团队的上架状态。</p></div>';
-    if(identity?.role!=='admin')return `<div class="kaiwu-empty"><h3>${loading?'正在核验管理员身份…':'仅管理员可管理上架'}</h3>${error?`<p role="alert">${esc(error)}</p>`:''}</div>`;
+    if(!identity?.permissions?.includes('applications.manage'))return `<div class="kaiwu-empty"><h3>${loading?'正在核验管理员身份…':'仅管理员可管理上架'}</h3>${error?`<p role="alert">${esc(error)}</p>`:''}</div>`;
     const rows=publicationItems().filter(r=>(!pubQuery||r.name.toLowerCase().includes(pubQuery.toLowerCase()))&&(pubFilter==='published'?r.publication?.enabled:pubFilter==='unpublished'?r.publication&&!r.publication.enabled:r.project&&(!r.publication?.enabled||r.publication.installed?.artifactHash!==r.project.versioning.adoptedHash)));
     if(!rows.some(r=>r.id===pubSelected))pubSelected=rows[0]?.id||'';
     const row=rows.find(r=>r.id===pubSelected),p=row?.project,a=row?.publication,adopted=p?.artifacts?.find(v=>v.hash===p.versioning.adoptedHash),published=row&&publicationVersion(row),disabled=loading?'disabled':'';
@@ -56,21 +53,21 @@ window.createTeamView=({request,changed})=>{
     const g=epoch,a=row.publication,p=row.project;let details=null;
     if(a){details=await call('publication',{applicationId:a.appId});if(g!==epoch)throw Error('TEAM_SESSION_CHANGED')}
     const hash=audienceOnly?a.installed.artifactHash:p.versioning.adoptedHash,artifact=p?.artifacts?.find(v=>v.hash===hash),audience=details?.audience||'all';
-    const d=modal(audienceOnly?'调整使用范围':a?.enabled?'更新公司应用':'内部上架',`<div class="kaiwu-publish-confirm"><strong>${esc(row.name)}</strong><br/>${audienceOnly?'保留当前发布版本':'发布已采用版本'}：${artifact?'v'+esc(artifact.version):'待核验'}<br/><small>产物 ${esc(hash.slice(0,12))}</small></div><label>可使用范围<select name="audience"><option value="all" ${audience==='all'?'selected':''}>全部成员（含后续加入的成员）</option><option value="selected" ${audience==='selected'?'selected':''}>指定成员</option></select></label><fieldset class="team-member-checks"><legend>指定成员</legend>${members.filter(m=>!m.disabled).map(m=>`<label><input type="checkbox" name="members" value="${m.id}" ${details?.members?.includes(m.id)?'checked':''}> ${esc(m.display_name||m.username)}</label>`).join('')}</fieldset><small class="kaiwu-members-caption">管理员本人保留访问。选择全部成员会将现有有效成员纳入使用范围；选择指定成员会按本次勾选重新授权。</small>`,async form=>{
+    const d=modal(audienceOnly?'调整使用范围':a?.enabled?'更新公司应用':'内部上架',`<div class="kaiwu-publish-confirm"><strong>${esc(row.name)}</strong><br/>${audienceOnly?'保留当前发布版本':'发布已采用版本'}：${artifact?'v'+esc(artifact.version):'待核验'}<br/><small>产物 ${esc(hash.slice(0,12))}</small></div><label>可使用范围<select name="audience"><option value="all" ${audience==='all'?'selected':''}>全部成员（含后续加入的成员）</option><option value="selected" ${audience==='selected'?'selected':''}>指定成员</option></select></label><fieldset class="team-member-checks"><legend>指定成员</legend>${members.filter(m=>m.status==='active').map(m=>`<label><input type="checkbox" name="members" value="${esc(m.membershipId)}" ${details?.members?.includes(m.membershipId)?'checked':''}> ${esc(m.subject)}</label>`).join('')}</fieldset><small class="kaiwu-members-caption">管理员本人保留访问。选择全部成员会将现有有效成员纳入使用范围；选择指定成员会按本次勾选重新授权。</small>`,async form=>{
       if(g!==epoch)throw Error('TEAM_SESSION_CHANGED');
       if(form.get('audience')==='selected'&&!form.getAll('members').length)throw Error('TEAM_MEMBERS_REQUIRED');
-      await call(audienceOnly?'publication-audience':'publish',audienceOnly?{applicationId:a.appId,artifactHash:hash,audience:form.get('audience'),members:form.getAll('members').map(Number)}:{projectId:p.id,artifactHash:hash,audience:form.get('audience'),members:form.getAll('members').map(Number)});
+      await call(audienceOnly?'publication-audience':'publish',audienceOnly?{applicationId:a.appId,artifactHash:hash,audience:form.get('audience'),members:form.getAll('members')}:{projectId:p.id,artifactHash:hash,audience:form.get('audience'),members:form.getAll('members')});
       if(g!==epoch)throw Error('TEAM_SESSION_CHANGED');pubSelected=row.id;pubFilter=audienceOnly&&!a.enabled?'unpublished':'published';pubDetail=true;
     });
     const select=d.querySelector('[name=audience]'),checks=d.querySelector('fieldset');const update=()=>{checks.hidden=select.value!=='selected'};select.addEventListener('change',update);update();
   }
 
   function page(){
-    if(identity?.role!=='admin')return '<div class="empty-state"><h3>仅管理员可管理团队</h3><p>请使用管理员账号登录这台盒子。</p></div>';
-    return `<div class="store-heading"><div><p class="store-eyebrow">${esc(identity.displayName)} · 管理员</p><h2>团队管理</h2></div><div class="store-toolbar"><button class="button" data-team-action="refresh">刷新</button><button class="button primary" data-team-action="invite">创建邀请</button></div></div>${error?`<div class="notice">${esc(error)}</div>`:''}<section class="team-real-section"><h3>团队成员 <span class="count">${members.length}</span></h3><p class="muted">使用盒子已有用户与角色。停用立即阻止该成员访问，保留其个人数据。</p><div class="team-table-scroll"><table class="team-table"><thead><tr><th>成员</th><th>账号</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>${members.map(m=>`<tr><td>${esc(m.display_name||m.username)}</td><td>${esc(m.username)}</td><td>${m.role==='admin'?'管理员':'普通用户'}</td><td>${m.disabled?'已停用':'正常'}</td><td>${m.id!==identity.id?`<button class="text-button" data-team-action="member" data-id="${m.id}" data-disabled="${!m.disabled}">${m.disabled?'恢复':'停用'}</button>`:'当前账号'}</td></tr>`).join('')}</tbody></table></div></section><section class="team-real-section"><h3>邀请记录</h3><p class="muted">成员使用服务器地址和邀请码加入，随后用自己的账号登录。</p>${invites.map(i=>`<div class="team-publish-row"><div><strong>${esc(i.note||'团队成员邀请')}</strong><small>邀请码：${esc(i.code)} · ${esc(i.status||'')}</small></div>${i.status==='active'||i.status==='pending'?`<button class="button small" data-team-action="invite-revoke" data-id="${i.id}">撤销</button>`:''}</div>`).join('')||'<p class="muted">暂无邀请。</p>'}</section>`;
+    if(!identity?.permissions?.includes('applications.manage'))return '<div class="empty-state"><h3>仅管理员可管理团队</h3><p>请使用管理员账号登录这台盒子。</p></div>';
+    return `<div class="store-heading"><div><p class="store-eyebrow">${esc(identity.displayName)} · 管理员</p><h2>团队管理</h2></div><div class="store-toolbar"><button class="button" data-team-action="refresh">刷新</button><button class="button primary" data-team-action="invite">创建邀请</button></div></div>${error?`<div class="notice">${esc(error)}</div>`:''}<section class="team-real-section"><h3>团队成员 <span class="count">${members.length}</span></h3><p class="muted">成员通过云账号注册登录，并由已批准的管理设备核验后入组。成员操作在独立安全窗口完成。</p><div class="team-table-scroll"><table class="team-table"><thead><tr><th>成员</th><th>账号</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>${members.map(m=>`<tr><td>${esc(m.subject)}</td><td>${esc(m.subject)}</td><td>${m.roleId==='owner'||m.roleId==='manager'?'管理员':'普通用户'}</td><td>${m.status==='active'?'正常':m.status}</td><td>${m.membershipId!==identity.membershipId?`<button class="text-button" data-team-action="member" data-id="${esc(m.membershipId)}" data-disabled="${m.status==='active'}">${'管理权限'}</button>`:'当前账号'}</td></tr>`).join('')}</tbody></table></div></section><section class="team-real-section"><h3>邀请记录</h3><p class="muted">邀请仅定位团队申请，不授予权限。云身份与设备双钥确认后仍需管理员批准。</p>${invites.map(i=>`<div class="team-publish-row"><div><strong>${esc(i.roleId==='manager'?'团队管理者邀请':'团队成员邀请')}</strong><small>邀请码：${esc(i.invitationId)} · ${esc(i.status||'')}</small></div>${i.status==='active'||i.status==='pending'?`<button class="button small" data-team-action="invite-revoke" data-id="${esc(i.invitationId)}">撤销</button>`:''}</div>`).join('')||'<p class="muted">暂无邀请。</p>'}</section>`;
   }
   async function action(name,data){
-    if(name==='login'){login();return}if(name==='join'){login(true);return}
+    if(name==='login'){await login();return}if(name==='join'){await login();return}
     if(name==='manage'){management='team';await refresh();return 'manage'}
     if(name==='publishing'){management='publishing';await refresh();if(data?.projectId){pubSelected=data.projectId;const row=publicationItems().find(r=>r.id===pubSelected);pubFilter=row?.publication?.enabled?'published':row?.publication?'unpublished':'available';pubDetail=true}changed();return}
     if(name==='publication-filter'){if(['available','published','unpublished'].includes(data.filter))pubFilter=data.filter;pubDetail=false;changed();return}
@@ -78,12 +75,12 @@ window.createTeamView=({request,changed})=>{
     if(name==='publication-list'){pubDetail=false;changed();return}
     if(name==='publication-audience'){const row=publicationItems().find(r=>r.publication?.appId===data.app);if(row?.project)await publicationForm(row,{audienceOnly:true});return}
     if(name==='refresh'){await refresh();return}
-    if(name==='invite'){const result=await call('invite.create',{note:'团队成员邀请'});modal('邀请已创建',`<p>把服务器地址和以下邀请码交给成员。成员在客户端选择“接受邀请”。</p><label>邀请码<input readonly value="${esc(result.code)}"></label>`,async()=>{});await refresh();return}
+    if(name==='invite'){await call('security');return}
     if(name==='publish'){const row=publicationItems().find(r=>r.id===data.project);if(!row?.project||row.project.versioning.adoptedHash!==data.hash)throw Error('USER_ADOPTION_REQUIRED');await publicationForm(row);return}
-    if(name==='member'){const member=members.find(m=>m.id===Number(data.id));modal(data.disabled==='true'?'停用成员':'恢复成员',`<p>${esc(member?.display_name||member?.username)}，个人数据将保留。</p>`,async()=>call('member.update',{id:Number(data.id),disabled:data.disabled==='true'}));return}
+    if(name==='member'){await call('security');return}
     if(name==='unpublish'){modal('下架公司应用','<p>成员将无法继续打开或使用此应用，已有业务数据会保留。</p>',async()=>{await call('unpublish',{applicationId:data.app});pubFilter='unpublished';pubDetail=true});return}
-    if(name==='invite-revoke'){await call('invite.revoke',{id:Number(data.id)});await refresh();return}
-    if(name==='open'){await call('open',{projectId:data.project,artifactHash:data.hash});return}
+    if(name==='invite-revoke'){await call('security');await refresh();return}
+    if(name==='open'){await call('open',{applicationId:data.app,artifactHash:data.hash});return}
   }
   return {sync,refresh,snapshot:()=>({identity,error,loading,catalog}),publishing,searchPublication:value=>{pubQuery=value;pubDetail=false;changed()},page,catalog:appCards,action,login,message};
 };

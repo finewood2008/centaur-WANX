@@ -390,6 +390,9 @@ def build_app(server: OctopServer) -> FastAPI:
     from octop.api.routers.local_applications import router as local_applications_router
 
     app.include_router(local_applications_router)
+    from octop.api.routers.team_resources import router as team_resources_router
+
+    app.include_router(team_resources_router)
     from octop.api.common.local_data import install as install_local_data_gate
 
     install_local_data_gate(app, server)

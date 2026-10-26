@@ -148,3 +148,40 @@ async def test_published_app_uses_creator_setting_but_member_identity(fixture):
     value = await svc.invoke("member", "published-token", "model.generate", {"prompt": "test"})
     assert value["text"] == "two"
     assert models.calls == [("member", "two")]
+
+
+async def test_runtime_model_selection_does_not_start_model_after_local_revoke(fixture, monkeypatch):
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+    from wanx_studio import delivery
+    from wanx_studio.local_authority import Actor, _actor
+
+    svc, models, project = fixture
+    token = svc.open_runtime("admin", project["id"], project["artifacts"][-1]["hash"], "preview")["session"]
+    started, release = threading.Event(), threading.Event()
+    revoked = False
+
+    def check():
+        if revoked:
+            raise RuntimeError("revoked")
+
+    def selection(*_args):
+        started.set()
+        release.wait(3)
+        return "one"
+
+    monkeypatch.setattr(delivery, "selection", selection)
+    actor_token = _actor.set(Actor(None, None, SimpleNamespace(require_live=check)))
+    try:
+        pending = asyncio.create_task(svc.invoke("admin", token, "model.generate", {"prompt": "test"}))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            revoked = True
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError, match="revoked"):
+            await pending
+        assert models.calls == []
+    finally:
+        _actor.reset(actor_token)

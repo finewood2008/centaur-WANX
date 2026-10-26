@@ -31,6 +31,10 @@ export function createClient({
   let healthTimer, healthController, activeEndpoint, activeSessionFactory;
   let recovery = null;
   let boxSession = null;
+  let unsubscribeSession, unsubscribeRenewal, renewalController;
+  let renewalDone = null;
+  let activeLocalTrust;
+  const localConnections = new Set();
   const businessGateways = new Map();
   const listeners = new Set();
   const closing = new Set();
@@ -38,10 +42,14 @@ export function createClient({
   const healthChecks = new Set();
 
   function snapshot() {
+    let selected = connection;
+    if (boxSession?.kind === 'local-trust-v1' && connection) {
+      try { selected = { ...connection, dataContext: boxSession.context() }; } catch { selected = null; }
+    }
     return structuredClone({
       network: network.snapshot(),
       phase,
-      connection,
+      connection: selected,
       reason,
       recovery,
     });
@@ -81,6 +89,7 @@ export function createClient({
     return promise;
   }
   async function disconnect(nextReason = null) {
+    const previousTrust = activeLocalTrust; activeLocalTrust = null;
     epoch += 1;
     clearTimeout(healthTimer);
     healthController?.abort();
@@ -93,6 +102,10 @@ export function createClient({
     const previous = gateway;
     const businesses = [...businessGateways.values()];
     businessGateways.clear();
+    unsubscribeSession?.(); unsubscribeSession = null;
+    unsubscribeRenewal?.(); unsubscribeRenewal = null;
+    renewalController?.abort(); renewalController = null;
+    for (const entry of [...localConnections]) entry.end(nextReason || 'LOCAL_DATA_SESSION_CLOSED');
     boxSession = null;
     gateway = null;
     connection = null;
@@ -101,10 +114,74 @@ export function createClient({
     reason = nextReason;
     emit();
     await Promise.all([dispose(previous), ...businesses.map(p => p.then(dispose, () => {}))]);
+    if (previousTrust) network.releaseLocalDataEndpoints?.(previousTrust.scope);
     return snapshot();
   }
 
+  function watchDataSession(session, generation) {
+    unsubscribeSession?.(); unsubscribeRenewal?.();
+    unsubscribeSession = session.onInvalidated((code) => { if (boxSession === session) void disconnect(code || 'LOCAL_DATA_SESSION_CLOSED'); });
+    unsubscribeRenewal = session.onRenewalNeeded?.(() => { void renewDataSession(session, generation); });
+  }
+
+  async function renewDataSession(previousSession, generation) {
+    if (closed || generation !== epoch || boxSession !== previousSession || renewalController) return;
+    const controller = new AbortController(); renewalController = controller;
+    let finishRenewal;
+    const settled = new Promise(resolve => { finishRenewal = resolve; }); renewalDone = settled;
+    // New launches wait for this rotation before acquiring a session. Existing
+    // pending launches are included, and closed launches are dropped below.
+    const entries = [...localConnections];
+    const candidates = new Map();
+    let next, replacement, installed = false;
+    const current = () => !closed && generation === epoch && boxSession === previousSession && !controller.signal.aborted;
+    try {
+      next = await previousSession.renew({ signal: controller.signal });
+      if (!current()) return;
+      for (const entry of entries) {
+        if (entry.ended) continue;
+        try { await entry.ready; } catch (error) { if (entry.ended) continue; throw error; }
+        if (!current()) return;
+        if (entry.ended) continue;
+        const candidate = entry.applicationId ? await entry.current.renew({ parentSession: next }) : next;
+        if (entry.ended) { if (candidate !== next) candidate.close(); continue; }
+        candidates.set(entry, candidate);
+      }
+      replacement = await createGateway({ deviceId: connection.deviceId, targetURL: activeEndpoint.url, agent: activeEndpoint.agent, session: next });
+      if (!current()) return;
+      for (const [entry, candidate] of candidates) {
+        if (entry.ended) { if (candidate !== next) candidate.close(); candidates.delete(entry); }
+        else if (!entry.current.isLive() || !candidate.isLive()) throw Object.assign(new Error('LOCAL_DATA_CONTEXT_CHANGED'), { code: 'LOCAL_DATA_CONTEXT_CHANGED' });
+      }
+      const previous = gateway, businesses = [...businessGateways.values()]; businessGateways.clear();
+      unsubscribeSession?.(); unsubscribeRenewal?.();
+      gateway = replacement; boxSession = next; installed = true;
+      connection = { ...connection, gatewayURL: replacement.url, dataContext: next.context() };
+      // This synchronous publication changes every retained launch only after
+      // every fresh child independently passed its exact authority ceiling.
+      for (const [entry, candidate] of candidates) entry.attach(candidate);
+      watchDataSession(next, generation); reason = null; emit();
+      // Closing the old channel aborts old streams. Stable Host wrappers remain
+      // live, so SDKs reconnect with fresh proofs and never inherit old keys.
+      await Promise.all([dispose(previous), ...businesses.map(p => p.then(dispose, () => {}))]);
+    } catch (error) {
+      if (current() && ['LOCAL_DATA_CONTEXT_CHANGED', 'LOCAL_DATA_FORBIDDEN', 'LOCAL_DATA_REQUIRED',
+        'LOCAL_DATA_AUTHORITY_UNAVAILABLE', 'LOCAL_DATA_CLOCK_ROLLBACK', 'LOCAL_DATA_SCOPE_DENIED',
+        'LOCAL_DATA_CAPABILITY_REQUIRED'].includes(error.code)) await disconnect(error.code);
+      // Other creation failures never extend or resurrect the old lease. Its
+      // existing watchdog still closes it at the original hard deadline.
+    } finally {
+      if (!installed) { if (replacement) await dispose(replacement); else next?.close(); }
+      if (renewalController === controller) renewalController = null;
+      if (renewalDone === settled) renewalDone = null;
+      finishRenewal();
+    }
+  }
+
   function scheduleHealthCheck(generation, delayMs = recovery ? RECOVERY_DELAYS_MS[Math.min(Math.max(0, recovery.attempt - 1), RECOVERY_DELAYS_MS.length - 1)] : HEALTH_INTERVAL_MS) {
+    // Local sessions have signed one-second heartbeats and an active watchdog.
+    // The legacy unauthenticated/CA health probe is not a second trust path.
+    if (boxSession?.kind === "local-trust-v1") return;
     if (closed || generation !== epoch || !connection) return;
     clearTimeout(healthTimer);
     healthTimer = setTimeout(() => {
@@ -116,6 +193,7 @@ export function createClient({
   }
 
   async function checkHealth(generation) {
+    if (boxSession?.kind === "local-trust-v1") return;
     const live = () => !closed && generation === epoch && Boolean(connection);
     if (!live() || healthController) return;
     const controller = new AbortController();
@@ -254,7 +332,7 @@ export function createClient({
     emit();
   });
 
-  async function connect(input, { createSession } = {}) {
+  async function connect(input, { createSession, localTrust } = {}) {
     if (closed) throw new Error("client_closed");
     if (
       !input ||
@@ -272,17 +350,19 @@ export function createClient({
     await stopping;
     if (closed || requestEpoch !== epoch) return snapshot();
     const attempt = ++epoch;
+    const connectionTrust = localTrust ? { ...localTrust, scope: `${localTrust.scope}:${attempt}` } : undefined;
     phase = "connecting";
     pendingMode = input.mode;
     emit();
     let created;
     let platformSession;
     try {
-      const endpoint = await measure("box.endpoint", () => network.resolveEndpoint(input));
-      if (attempt !== epoch || closed) return snapshot();
+      const endpoint = await measure("box.endpoint", () => connectionTrust
+        ? network.resolveLocalDataEndpoint(input, connectionTrust) : network.resolveEndpoint(input));
+      if (attempt !== epoch || closed) { if (connectionTrust) network.releaseLocalDataEndpoints?.(connectionTrust.scope); return snapshot(); }
       const controller = new AbortController();
       pendingProbe = controller;
-      await measure("box.health", () => probe(endpoint.url, {
+      if (!localTrust) await measure("box.health", () => probe(endpoint.url, {
         signal: controller.signal,
         agent: endpoint.agent,
       }));
@@ -311,6 +391,7 @@ export function createClient({
       }
       gateway = created;
       activeEndpoint = endpoint;
+      activeLocalTrust = connectionTrust;
       activeSessionFactory = createSession;
       boxSession = platformSession;
       connection = {
@@ -319,14 +400,20 @@ export function createClient({
         url: endpoint.url,
         mode: input.mode,
         gatewayURL: created.url,
+        ...(platformSession?.kind === "local-trust-v1" ? {
+          authorization: "local-trust-v1", route: input.mode === "netbird" ? "p2p" : "lan",
+          dataContext: platformSession.context(),
+        } : {}),
       };
       pendingMode = null;
       phase = "ready";
       reason = null;
+      if (platformSession?.kind === 'local-trust-v1') watchDataSession(platformSession, attempt);
       scheduleHealthCheck(attempt);
       emit();
       return snapshot();
     } catch (error) {
+      if (connectionTrust && activeLocalTrust !== connectionTrust) network.releaseLocalDataEndpoints?.(connectionTrust.scope);
       if (platformSession && !created) await platformSession.close();
       if (attempt !== epoch || closed) return snapshot();
       pendingProbe = null;
@@ -350,6 +437,66 @@ export function createClient({
       return recoverOnFailure(() => gateway.openWebSocket(input));
     },
     applicationConnection(applicationId, options) {
+      if (boxSession?.kind === "local-trust-v1") {
+        if (closed || !gateway) throw new Error("SESSION_CLOSED");
+        // Server caps each binding at 32 channels. Reserve room for a complete
+        // independently authorized replacement batch and concurrent control.
+        if (applicationId && [...localConnections].filter(entry => entry.applicationId && !entry.ended).length >= 14)
+          throw Object.assign(new Error('LOCAL_DATA_CAPACITY'), { code: 'LOCAL_DATA_CAPACITY' });
+        const generation = epoch, pendingRotation = renewalDone;
+        const unavailable = () => Object.assign(new Error('LOCAL_DATA_SESSION_CLOSED'), { code: 'LOCAL_DATA_SESSION_CLOSED' });
+        const entry = { applicationId, current: null, ended: false, listeners: new Set(), unwatch: null,
+          end(code = 'LOCAL_DATA_SESSION_CLOSED') {
+            if (entry.ended) return;
+            entry.ended = true; entry.unwatch?.(); entry.unwatch = null; localConnections.delete(entry);
+            if (applicationId) entry.current?.close();
+            for (const listener of entry.listeners) { try { listener(code); } catch {} }
+            entry.listeners.clear();
+          },
+          attach(session) {
+            entry.unwatch?.(); entry.current = session;
+            entry.unwatch = session.onInvalidated(code => { if (entry.current === session) entry.end(code); });
+          },
+        };
+        localConnections.add(entry);
+        const assertLive = () => {
+          if (entry.ended || closed || epoch !== generation || !gateway || !boxSession?.isLive()) throw unavailable();
+        };
+        entry.ready = (async () => {
+          if (pendingRotation) await pendingRotation;
+          assertLive();
+          const parent = boxSession;
+          const selected = applicationId ? await parent.deriveApplication({ applicationId, launchId: options?.launchId, capabilities: options?.capabilities }) : parent;
+          try { assertLive(); entry.attach(selected); return selected; }
+          catch (error) { if (applicationId) selected.close(); throw error; }
+        })();
+        // Avoid an unhandled rejection if an app closes before asking context.
+        entry.ready.catch(error => entry.end(error.code));
+        const use = async operation => {
+          assertLive(); await entry.ready; assertLive(); const selected = entry.current;
+          const result = await operation(selected);
+          try { assertLive(); if (entry.current !== selected) throw unavailable(); }
+          catch (error) { result?.body?.destroy?.(); result?.terminate?.(); throw error; }
+          return result;
+        };
+        return {
+          kind: 'local-trust-v1',
+          localContext: () => use(child => child.context()),
+          currentLocalContext() { assertLive(); if (!entry.current) throw unavailable(); return entry.current.context(); },
+          request: input => use(child => child.request(input)),
+          openStream: input => use(child => child.openWebSocket(input)),
+          businessRequest: (service, input) => {
+            if (applicationId || service !== "clipboard" || !/^\/api\/clipboard\/v1(?:\/|\?|$)/.test(input?.path || ""))
+              throw Object.assign(new Error("BUSINESS_SERVICE_SCOPE"), { code: "BUSINESS_SERVICE_SCOPE" });
+            return use(child => child.request(input));
+          },
+          close: () => entry.end(),
+          onInvalidated(listener) {
+            if (entry.ended) { listener('LOCAL_DATA_SESSION_CLOSED'); return () => {}; }
+            entry.listeners.add(listener); return () => entry.listeners.delete(listener);
+          },
+        };
+      }
       const selectedProduct = validateApplicationConnectionOptions(options)?.backendProductId;
       if (closed || !gateway) throw new Error("SESSION_CLOSED");
       const lease = gateway;

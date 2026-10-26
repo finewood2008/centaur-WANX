@@ -60,6 +60,7 @@
       "client.mjs",
       "platform.mjs",
       "account/**",
+      "device-trust/**",
       "shell/**",
       "local-ui/**",
       "network/**",
@@ -84,6 +85,10 @@
           "go-modules.txt",
           "licenses/**"
         ]
+      },
+      {
+        "from": "shell/windows-private-acl.ps1",
+        "to": "security/windows-private-acl.ps1"
       }
     ],
     "mac": {

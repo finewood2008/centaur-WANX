@@ -407,6 +407,26 @@ test("required client update blocks business navigation while retaining settings
   assert.equal(h.calls.some(call => call.action === "desktop.quit"), true);
 });
 
+test("required update retains cloud login and device security for an unlocked team identity", async () => {
+  const initial = requiredClientState();
+  initial.account = { phase: "signed_out" };
+  initial.dataIdentity = { profileId: "team-profile", phase: "unlocked" };
+  const h = await harness(initial);
+  assert.match(h.app.innerHTML, /需要更新万象至 v2\.0\.0/);
+  assert.match(h.app.innerHTML, /云身份与团队批准/);
+  assert.match(h.app.innerHTML, /data-action="device-trust-open"/);
+  await h.click("device-trust-open");
+  assert.equal(h.calls.filter(call => call.action === "device-trust.open").length, 1);
+  await h.click("cloud-login");
+  assert.match(h.app.innerHTML, /data-form="auth"/);
+  assert.match(h.app.innerHTML, /data-action="local-return"/);
+  await h.click("local-return");
+  assert.match(h.app.innerHTML, /<h2>设置<\/h2>/);
+  await h.click("show-applications");
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  assert.equal(h.calls.some(call => call.action === "applications.request-open"), false);
+});
+
 test("cancelling required installation never dismisses the requirement or installs automatically", async () => {
   const h = await harness(requiredClientState("downloaded"));
   await h.click("show-applications");

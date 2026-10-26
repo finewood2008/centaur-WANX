@@ -28,6 +28,7 @@ export function createPlatformClient({
   createTransport,
   createSession = createPlatformSession,
   localBoxes,
+  localDataAccess,
   creditsServiceURL = "",
   managementURL = "https://p2p.qeeshu.com",
   readPreference = async () => true,
@@ -118,6 +119,9 @@ export function createPlatformClient({
   });
   const snapshot = () => {
     const connection = activeLink?.client.snapshot() || empty();
+    const dataIdentity = localDataAccess?.snapshot();
+    const localMode = Boolean(dataIdentity?.profileId);
+    const trustedBoxes = localDataAccess?.listBoxes() || [];
     if (activeLink === directTransport && activeLocalDeviceId && connection.connection?.deviceId === activeLocalDeviceId)
       connection.connection = { ...connection.connection, mode: "local" };
     const signedIn = account.snapshot().phase === "authenticated";
@@ -134,7 +138,11 @@ export function createPlatformClient({
     return structuredClone({
       ...connection,
       account: account.snapshot(),
-      devices: [...(signedIn ? localDevices : []), ...boxes.filter(box => !localDevices.some(local => local.deviceId === box.deviceId)).map((box) => {
+      ...(dataIdentity ? { dataIdentity: { ...dataIdentity, selected: dataIdentity.phase === 'unlocked'
+        && connection.connection?.authorization === 'local-trust-v1' ? connection.connection.dataContext : null } } : {}),
+      devices: [...trustedBoxes.map(box => ({ deviceId: box.boxId, displayName: box.boxId, local: true,
+        authorization: 'local-trust-v1', accessState: box.locked ? 'locked' : 'ready', canOpen: !box.locked,
+        networkReady: !box.locked })), ...(localMode ? [] : [...(signedIn ? localDevices : []), ...boxes.filter(box => !localDevices.some(local => local.deviceId === box.deviceId)).map((box) => {
         const endpoint = devices.find((item) => item.deviceId === box.deviceId);
         const host =
           endpoint &&
@@ -159,7 +167,7 @@ export function createPlatformClient({
               endpoint,
           ),
         };
-      })],
+      })])],
       directory,
       platform,
       network: { ...network, enabled, peers: [] },
@@ -946,10 +954,52 @@ export function createPlatformClient({
     if (!current(generation)) throw fail("ACCOUNT_CANCELLED");
     return { ...transfer, refreshRequired };
   }
+  async function connectLocalBox(deviceId, { route } = {}) {
+    if (!localDataAccess) throw fail('LOCAL_DATA_REQUIRED');
+    const association = localDataAccess.getAssociation(deviceId);
+    const identity = localDataAccess.snapshot();
+    if (identity.phase !== 'unlocked') throw fail('LOCAL_IDENTITY_LOCKED');
+    const selectedRoute = route || { url: association.descriptor.baseUrl, mode: 'direct' };
+    if (!['direct', 'netbird'].includes(selectedRoute.mode) || typeof selectedRoute.url !== 'string') throw fail('LOCAL_DATA_INVALID');
+    const selection = ++connectionEpoch;
+    selectionController?.abort();
+    const controller = new AbortController(); selectionController = controller;
+    connectedBox = null; reconnectTarget = null; activeLocalDeviceId = null;
+    await activeLink?.client.disconnect();
+    if (closed || selection !== connectionEpoch || controller.signal.aborted) throw fail('LOCAL_DATA_SESSION_CLOSED');
+    let target;
+    if (selectedRoute.mode === 'netbird') {
+      if (!transport || !enabled) throw fail('NETWORK_NOT_READY');
+      target = transport;
+    } else {
+      if (!directTransport) { directTransport = createTransport(null); unsubscribeDirect = directTransport.client.subscribe(() => emit()); }
+      target = directTransport;
+    }
+    activeLink = target;
+    try {
+      await target.client.connect({ deviceId, name: deviceId, url: selectedRoute.url, mode: selectedRoute.mode }, {
+        localTrust: { tlsSpkiSha256: association.descriptor.tlsSpkiSha256, scope: `${identity.profileId}:${identity.generation}` },
+        createSession: ({ url, agent, signal }) => localDataAccess.connect({ boxId: deviceId,
+          route: { url, agent, mode: selectedRoute.mode }, signal: AbortSignal.any([signal, controller.signal]) }),
+      });
+      if (closed || selection !== connectionEpoch || controller.signal.aborted) throw fail('LOCAL_DATA_SESSION_CLOSED');
+      return emit();
+    } finally { if (selectionController === controller) selectionController = null; }
+  }
+  const unsubscribeLocalData = localDataAccess?.subscribe((event) => {
+    if (closed) return;
+    if (event.type === 'invalidated') {
+      connectionEpoch++; selectionController?.abort(); selectionController = null;
+      if (activeLink?.client.snapshot().connection?.authorization === 'local-trust-v1') void activeLink.client.disconnect(event.reason);
+    }
+    emit();
+  });
   const api = {
     snapshot,
+    connectLocalBox,
     async applicationContext() {
       const state = snapshot();
+      if (state.connection?.authorization === 'local-trust-v1') return (await api.applicationConnection()).context();
       if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
       const response = await activeLink.client.request({ path: "/api/auth/me" });
       if (response.status < 200 || response.status >= 300) throw fail("BOX_IDENTITY_UNAVAILABLE");
@@ -978,6 +1028,42 @@ export function createPlatformClient({
       const state = snapshot();
       if (state.phase !== "ready" || !state.connection?.deviceId) throw fail("NETWORK_NOT_READY");
       const connection = link.client.applicationConnection(applicationId, connectionOptions);
+      if (state.connection.authorization === 'local-trust-v1') {
+        let ended = false;
+        const local = await connection.localContext();
+        const unwatch = connection.onInvalidated(() => { ended = true; });
+        const assertLocal = () => {
+          const next = snapshot();
+          if (ended || closed || activeLink !== link || generation !== connectionEpoch || !['ready', 'recovering'].includes(next.phase)
+              || next.connection?.authorization !== 'local-trust-v1' || next.dataIdentity?.phase !== 'unlocked'
+              || next.dataIdentity.profileId !== local.profileId || next.dataIdentity.generation !== local.generation
+              || ['boxId', 'boxKeyThumbprint', 'principalId', 'bindingId', 'ownershipEpoch'].some(field =>
+                next.dataIdentity.selected?.[field] !== state.dataIdentity?.selected?.[field]))
+            throw fail('LOCAL_DATA_SESSION_CLOSED');
+          return next.phase;
+        };
+        const response = await connection.request({ path: '/api/auth/me' }); assertLocal();
+        if (response.status !== 200) { connection.close(); throw fail('BOX_IDENTITY_UNAVAILABLE'); }
+        let user; try { user = JSON.parse(response.body.toString('utf8')); } catch { connection.close(); throw fail('BOX_IDENTITY_INVALID'); }
+        const context = { protocolVersion: 2, authorization: 'local-trust-v1', dataIdentity: local,
+          principalId: local.principalId, clientId: local.clientId, boxId: local.boxId, user,
+          ...(state.account.phase === 'authenticated' ? { billingAccountId: state.account.accountId } : {}) };
+        return {
+          kind: 'local-trust-v1',
+          context: () => ({ ...structuredClone(context), dataIdentity: connection.currentLocalContext(), connection: assertLocal() }),
+          request: input => { assertLocal(); return connection.request(input); },
+          businessRequest: (service, input) => { assertLocal(); return connection.businessRequest(service, input); },
+          openStream: input => { assertLocal(); return connection.openStream(input); },
+          onInvalidated: listener => connection.onInvalidated(listener),
+          close() { ended = true; unwatch(); connection.close(); },
+          deriveApplication(input) {
+            assertLocal();
+            if (applicationId && input.applicationId !== applicationId) throw fail('LOCAL_DATA_FORBIDDEN');
+            return api.applicationConnection(input.applicationId, { launchId: input.launchId, capabilities: input.capabilities });
+          },
+          subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        };
+      }
       const assertLive = () => {
         const next = snapshot();
         if (closed || activeLink !== link || generation !== connectionEpoch ||
@@ -1113,6 +1199,7 @@ export function createPlatformClient({
       return emit();
     },
     async connect(input) {
+      if (localDataAccess) { if (!localDataAccess.isProtectedBox(input?.deviceId)) throw fail('TEAM_DEVICE_APPROVAL_REQUIRED'); return connectLocalBox(input?.deviceId); }
       reconnectTarget = null;
       if (input?.mode !== "direct") throw fail("NETWORK_USE_AUTHORIZED_DEVICE");
       connectedBox = null;
@@ -1132,7 +1219,8 @@ export function createPlatformClient({
       activeLink = target;
       return target.client.connect(input).then(() => snapshot());
     },
-    async connectBox(deviceId) {
+    async connectBox(deviceId, options) {
+      if (localDataAccess) { if (!localDataAccess.isProtectedBox(deviceId)) throw fail('TEAM_DEVICE_APPROVAL_REQUIRED'); return connectLocalBox(deviceId, options); }
       return measure("box.connect", async () => {
         reconnectTarget = null;
         const identity = authenticated();
@@ -1347,6 +1435,7 @@ export function createPlatformClient({
       closed = true;
       cancel();
       unsubscribeAccount();
+      unsubscribeLocalData?.();
       await retireTransport();
       await retireDirect();
       await switching.catch(() => {});

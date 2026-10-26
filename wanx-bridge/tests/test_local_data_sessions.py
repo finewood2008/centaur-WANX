@@ -28,6 +28,25 @@ class Clock:
         self.mono += ms / 1000
 
 
+@pytest.mark.asyncio
+async def test_realtime_harness_samples_each_proof_timestamp_once():
+    class TickingClock:
+        mono = 100.0
+        current = NOW
+
+        @property
+        def wall(self):
+            self.current += 1
+            return self.current
+
+    h = Harness()
+    h.clock = TickingClock()
+    await h.start()
+    for kind, duration in (("request", 10000), ("heartbeat", 3000), ("close", 3000)):
+        payload = h.payload(kind)
+        assert payload["expiresAtMs"] - payload["issuedAtMs"] == duration
+
+
 class Harness:
     def __init__(self, **options):
         self.clock = Clock()
@@ -135,6 +154,7 @@ class Harness:
         )["body"]
 
     def intent(self, *, key=None, **changes):
+        now = self.clock.wall
         payload = {
             "schemaVersion": 1,
             "purpose": "centuarai.local-data.session-intent",
@@ -146,8 +166,8 @@ class Harness:
             "requestId": nonce(3),
             "channelKey": wire.public_jwk(self.channel),
             "jti": secrets.token_urlsafe(32),
-            "issuedAtMs": self.clock.wall,
-            "expiresAtMs": self.clock.wall + 3000,
+            "issuedAtMs": now,
+            "expiresAtMs": now + 3000,
             **changes,
         }
         return {"proof": wire.sign_session_intent(payload, key or self.access)}
@@ -157,6 +177,7 @@ class Harness:
             await self.service.challenge(self.intent(applicationId=app)),
             "session-challenge",
         )
+        now = self.clock.wall
         payload = {
             "schemaVersion": 1,
             "purpose": "centuarai.local-data.session",
@@ -164,8 +185,8 @@ class Harness:
             "gatewayGeneration": challenge["gatewayGeneration"],
             "challenge": challenge["challenge"],
             "requestId": nonce(3),
-            "issuedAtMs": self.clock.wall,
-            "expiresAtMs": self.clock.wall + 30000,
+            "issuedAtMs": now,
+            "expiresAtMs": now + 30000,
             "applicationId": app,
             "launchId": nonce(2),
             "channelKey": wire.public_jwk(self.channel),
@@ -179,6 +200,7 @@ class Harness:
         return self.session
 
     def payload(self, kind="request", n=4, **changes):
+        now = self.clock.wall
         value = {
             "schemaVersion": 1,
             "purpose": "centuarai.local-data." + kind,
@@ -188,8 +210,8 @@ class Harness:
             "applicationId": "wanx-host",
             "launchId": nonce(2),
             "jti": nonce(n),
-            "issuedAtMs": self.clock.wall,
-            "expiresAtMs": self.clock.wall + (10000 if kind == "request" else 3000),
+            "issuedAtMs": now,
+            "expiresAtMs": now + (10000 if kind == "request" else 3000),
         }
         if kind == "request":
             value.update(
