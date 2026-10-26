@@ -33,6 +33,10 @@ def _user_json(user: Any, *, locale: str | None = None) -> dict[str, Any]:
 def me_payload(user: Any, server: Any) -> dict[str, Any]:
     """Profile JSON for ``/auth/me`` and OAuth bind/unbind responses."""
     payload = _user_json(user, locale=user.locale)
+    if getattr(user, "local_data", False):
+        from octop.infra.users.team_authority import team_profile
+
+        payload["team"] = team_profile(user)
     row = server.user_manager.get_row(user.id)
     if row is None:
         payload["sso_linked"] = False

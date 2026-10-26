@@ -286,7 +286,13 @@ class Edits:
             if edit['state'] != 'preparing':
                 return
             self.contexts[key] = (eid, edit['contextId'])
-            job = asyncio.create_task(self.run(owner, pid, eid))
+            from .local_authority import start_background
+            try:
+                job = await start_background(self.svc, owner, pid, eid, 'edit', lambda: self.run(owner, pid, eid))
+            except BaseException:
+                self.contexts.pop(key,None)
+                self.mutate(owner,pid,eid,lambda _p,e:e.update(state='failed',error='STUDIO_TASK_AUTHORIZATION_DENIED'))
+                raise
             self.jobs[key] = job; self.svc.background.add(job); job.add_done_callback(self.svc.background.discard)
 
     def live(self, owner, pid, eid):

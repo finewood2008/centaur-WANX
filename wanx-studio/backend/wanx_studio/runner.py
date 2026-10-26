@@ -39,21 +39,16 @@ class Runner:
             if not config:
                 return {'available':False,'executor':'Codex','code':'CODEX_NOT_CONFIGURED'}
             env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','TMPDIR'}}
-            proc=await asyncio.create_subprocess_exec('node',str(self.svc.project_root/'tools/probe-codex.mjs'),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,cwd=self.svc.project_root,env={**env,**config,'WANX_PYTHON_PATH':sys.executable})
+            proc=await asyncio.create_subprocess_exec('node',str(self.svc.project_root/'tools/probe-codex.mjs'),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,cwd=self.svc.project_root,env={**env,**config,'WANX_PYTHON_PATH':sys.executable},start_new_session=True)
             try:
                 out,_=await asyncio.wait_for(proc.communicate(),40)
                 self.cached=json.loads(out)
             except BaseException as error:
-                if proc.returncode is None:
-                    proc.terminate()
-                    try:
-                        await asyncio.wait_for(proc.wait(),5)
-                    except TimeoutError:
-                        proc.kill()
-                        await proc.wait()
                 if isinstance(error,asyncio.CancelledError):
                     raise
                 self.cached={'available':False,'executor':'Codex','code':'PREFLIGHT_FAILED','modelCalls':0}
+            finally:
+                await self.svc.native_codex.stop(proc)
             self.cached_at=time.monotonic()
             return self.cached
 
@@ -113,7 +108,16 @@ class Runner:
             p=self.svc.store.get(owner,project_id)
             if edit_id:p=self.svc.edits.execution_project(owner,p,p['tasks'][-1])
             self.touch(owner,project_id)
-            job=asyncio.create_task(self.run(owner,p,task_id,body['instruction']))
+            from .local_authority import start_background
+            try:
+                job=await start_background(self.svc,owner,project_id,task_id,'build',lambda:self.run(owner,p,task_id,body['instruction']))
+            except BaseException:
+                def denied(project):
+                    task=next(t for t in project['tasks'] if t['id']==task_id)
+                    task.update(state='failed',error='STUDIO_TASK_AUTHORIZATION_DENIED',finishedAt=time.time())
+                    project['stage']='failed'
+                self.svc.store.mutate(owner,project_id,'task-denied-'+task_id,{'task':task_id},denied)
+                raise
             self.jobs[task_id]=job
             self.svc.background.add(job)
             job.add_done_callback(self.svc.background.discard)

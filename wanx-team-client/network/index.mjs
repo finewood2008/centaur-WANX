@@ -313,7 +313,7 @@ export function createNetwork({
         if (!["ready", "recovering"].includes(next.phase)) clearAgents();
         else if (next.phase === "ready") {
           for (const [url, agent] of agents) {
-            const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+            const host = new URL(url.split('|', 1)[0]).hostname.replace(/^\[|\]$/g, "");
             if (!next.peers.some((peer) => peer.ip === host)) {
               // A removed peer loses access immediately. A connectivity hint
               // alone must not tear down an otherwise healthy application stream.
@@ -421,7 +421,7 @@ export function createNetwork({
       await start(sidecar, generation, { setupKey });
     });
   }
-  async function resolveEndpoint({ url: value, mode }) {
+  async function resolveEndpoint({ url: value, mode }, localTrust) {
     if (closed) throw failure("network_closed");
     const url = normalizeURL(value);
     const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -453,9 +453,27 @@ export function createNetwork({
     const peer = next.peers.find((candidate) => candidate.ip === host);
     if (!peer) throw failure("netbird_peer_unknown");
     if (!peer.connected) throw failure("netbird_peer_disconnected");
-    if (!agents.has(url.origin))
-      agents.set(url.origin, createTunnelAgent({ url: url.origin, proxy }));
-    return { url: url.origin, mode, peer, agent: agents.get(url.origin) };
+    const key = localTrust ? `${url.origin}|${localTrust.tlsSpkiSha256}|${localTrust.scope}` : url.origin;
+    if (!agents.has(key))
+      agents.set(key, createTunnelAgent({ url: url.origin, proxy, ...(localTrust ? { tlsSpkiSha256: localTrust.tlsSpkiSha256 } : {}) }));
+    return { url: url.origin, mode, peer, agent: agents.get(key) };
+  }
+  // Main-only descriptor route. This cannot be selected by the legacy resolver
+  // or become a CA fallback when a saved independent box pin does not match.
+  async function resolveLocalDataEndpoint(input, { tlsSpkiSha256, scope } = {}) {
+    let protocol;
+    try { protocol = new URL(input?.url).protocol; } catch { throw failure('LOCAL_DATA_INVALID'); }
+    if (typeof tlsSpkiSha256 !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(tlsSpkiSha256) ||
+        Buffer.from(tlsSpkiSha256, "base64url").toString("base64url") !== tlsSpkiSha256 ||
+        typeof scope !== "string" || !/^[A-Za-z0-9._:-]{1,256}$/.test(scope) ||
+        protocol !== "https:") throw failure("LOCAL_DATA_INVALID");
+    return resolveEndpoint(input, { tlsSpkiSha256, scope });
+  }
+  function releaseLocalDataEndpoints(scope) {
+    if (typeof scope !== 'string' || !/^[A-Za-z0-9._:-]{1,256}$/.test(scope)) return;
+    for (const [key, agent] of agents) if (key.includes('|') && key.endsWith(`|${scope}`)) {
+      agents.delete(key); agent.destroy();
+    }
   }
   function close() {
     if (closed) return closePromise;
@@ -471,6 +489,8 @@ export function createNetwork({
   }
   return {
     snapshot,
+    resolveLocalDataEndpoint,
+    releaseLocalDataEndpoints,
     subscribe(listener) {
       if (closed) throw failure("network_closed");
       listeners.add(listener);

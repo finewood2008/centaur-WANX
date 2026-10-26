@@ -3,7 +3,7 @@ import {knowledgeMcpAccess} from './wanx-mcp-knowledge.mjs';
 import {createHash,timingSafeEqual} from 'node:crypto';
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&timingSafeEqual(createHash('sha256').update(a).digest(),createHash('sha256').update(b).digest());
 const fail=(code,status=403)=>Object.assign(Error(code),{code,status});
-export function createWanxMcpBridge({client,state,scope,assertScope,access,remote}){
+export function createWanxMcpBridge({client,state,scope,assertScope,access,remote,knowledgeCapabilities}){
  async function resolveSpace(key){
   const bound=scope();assertScope(bound);
   const link=state.links.find(r=>same(r.key,key)&&r.scope===bound&&!r.revoked);
@@ -23,7 +23,7 @@ export function createWanxMcpBridge({client,state,scope,assertScope,access,remot
   if(!['space','starlink'].includes(kind))throw fail('MCP_SURFACE_INVALID',400);
   const bound=scope();assertScope(bound);
   const url=`http://127.0.0.1:${state.port}/mcp/${kind}`;
-  if(kind==='starlink')return {url,transport:'Streamable HTTP',authentication:'Authorization: Bearer <仓库 Key>',configuration:mcpConfiguration(url,'knowledge'),keys:[],capabilities:['星图知识读取'],localOnly:true};
+  if(kind==='starlink')return {url,transport:'Streamable HTTP',authentication:'Authorization: Bearer <本机会话 Key>',configuration:mcpConfiguration(url,'knowledge'),keys:[],capabilities:['星图知识读取'],localOnly:true};
   const links=await remote(bound,'/agent-links');assertScope(bound);
   const keys=state.links.filter(r=>r.scope===bound&&!r.revoked).flatMap(r=>{const live=links.value.find(v=>v.id===r.id&&!v.revoked&&(!v.expires||v.expires*1000>Date.now()));return live?[{id:r.id,name:live.name||'文件访问授权',prefix:r.key.slice(0,8),kind:'文件范围',status:'有效'}]:[]});
   return {url,transport:'Streamable HTTP',authentication:'Authorization: Bearer <空间 Key>',configuration:mcpConfiguration(url,'space'),keys,capabilities:['空间文件访问'],localOnly:true};
@@ -35,7 +35,7 @@ export function createWanxMcpBridge({client,state,scope,assertScope,access,remot
  }
  const handlers={
   '/mcp/space':createWanxMcp({kind:'space',resolve:resolveSpace}),
-  '/mcp/starlink':createWanxMcp({kind:'knowledge',resolve:key=>{if(!key.startsWith('xg_'))throw fail('MCP_KEY_INVALID',401);return knowledgeMcpAccess({client,key,scope,assertScope})}}),
+  '/mcp/starlink':createWanxMcp({kind:'knowledge',resolve:async key=>{if(!knowledgeCapabilities)throw fail('MCP_KEY_INVALID',401);return knowledgeMcpAccess({capability:await knowledgeCapabilities.resolve(key)})}}),
  };
  async function handle(req,res){
   const path=new URL(req.url,'http://127.0.0.1').pathname;

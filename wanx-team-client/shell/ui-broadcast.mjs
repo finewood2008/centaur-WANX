@@ -6,7 +6,7 @@ export function createUIBroadcast({ client, applications, uiState, startup, upda
   function snapshot() {
     const state = client.snapshot();
     const nextScope = JSON.stringify([state.account?.phase, state.account?.accountId, state.account?.clientId,
-      state.connection?.deviceId, state.connection?.mode]);
+      state.connection?.deviceId, state.connection?.mode, state.dataIdentity]);
     if (nextScope !== scope) {
       scope = nextScope;
       installed = [];

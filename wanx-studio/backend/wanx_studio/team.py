@@ -15,8 +15,9 @@ from .contracts import StudioError, digest
 
 
 class TeamPublications:
-    def __init__(self, studio, services):
+    def __init__(self, studio, services, *, local_authority=None):
         self.studio, self.services = studio, services
+        self.local_authority = local_authority
         with studio.store.lock:
             studio.store.db.execute('''CREATE TABLE IF NOT EXISTS team_publications(
                 app TEXT PRIMARY KEY, owner TEXT NOT NULL, project TEXT NOT NULL,
@@ -25,18 +26,25 @@ class TeamPublications:
     def user(self, owner):
         if not re.fullmatch(r'wanx:[1-9][0-9]*', owner):
             raise StudioError('STUDIO_IDENTITY_FORBIDDEN', 403)
+        if self.local_authority is not None:
+            self.local_authority.identity(owner)
         row = self.services.user_repo.get(int(owner.split(':')[1]))
         if row is None or row.disabled:
             raise StudioError('STUDIO_IDENTITY_FORBIDDEN', 403)
         return row
 
     def is_admin(self, owner):
-        return self.user(owner).role == 'admin'
+        user = self.user(owner)
+        if self.local_authority is not None and self.local_authority.required():
+            return self.local_authority.can_manage(owner)
+        return user.role == 'admin'
 
     def seal(self, owner, project_id, payload):
         """Only an authenticated administrator receipt can seal executable bytes."""
         if not self.is_admin(owner):
             raise StudioError('STUDIO_ADMIN_REQUIRED', 403)
+        if self.local_authority is not None:
+            self.local_authority.application(owner, payload['applicationId'])
         product = self.services.application_repo.get(payload['applicationId'])
         deployment = self.services.application_repo.deployment(payload['applicationId'])
         policy = (deployment or {}).get('configuration', {}).get('studio_team')
@@ -58,6 +66,11 @@ class TeamPublications:
             rows = self.studio.store.db.execute('SELECT * FROM team_publications WHERE app=?' if app_id else
                 'SELECT * FROM team_publications WHERE project=?', (app_id or project_id,)).fetchall()
         for row in rows:
+            if self.local_authority is not None:
+                try:
+                    self.local_authority.application(owner, row['app'])
+                except StudioError:
+                    continue
             if artifact_hash and row['artifact'] != artifact_hash:
                 continue
             deployment = self.services.application_repo.deployment(row['app'])
@@ -85,16 +98,20 @@ class TeamPublications:
                 p = self.resolve(owner, app_id=app_id)
             except StudioError:
                 continue
-            a = p['payload']
-            # Existing project-summary fields only. No PRD, chat, materials, source,
-            # private acceptance notes, creator identity or draft version is exposed.
-            projects.append({'id':p['project'], 'appId':app_id, 'name':a['name'], 'goal':'',
-                'stage':'installed', 'createdAt':p['published'], 'updatedAt':p['published'],
-                'installed':{'artifactHash':a['artifactHash'],'version':a['version'],'createdAt':p['published']},
-                'artifacts':[{'hash':a['artifactHash'],'version':a['version']}],
-                'versions':[{'hash':a['artifactHash'],'version':a['version'],'status':'current'}],
-                'versioning':{'adoptedHash':a['artifactHash']}, 'messages':[], 'events':[]})
+            projects.append(self.summary(p))
         return projects
+
+    @staticmethod
+    def summary(p):
+        a = p['payload']
+        # Published metadata only: never the author's private draft, chat,
+        # selected materials, acceptance notes or identity.
+        return {'id':p['project'], 'appId':p['app'], 'name':a['name'], 'goal':'',
+            'stage':'installed', 'createdAt':p['published'], 'updatedAt':p['published'],
+            'installed':{'artifactHash':a['artifactHash'],'version':a['version'],'createdAt':p['published']},
+            'artifacts':[{'hash':a['artifactHash'],'version':a['version']}],
+            'versions':[{'hash':a['artifactHash'],'version':a['version'],'status':'current'}],
+            'versioning':{'adoptedHash':a['artifactHash']}, 'messages':[], 'events':[]}
 
     def payload(self, owner, project_id, artifact_hash):
         return copy.deepcopy(self.resolve(owner, project_id=project_id, artifact_hash=artifact_hash)['payload'])

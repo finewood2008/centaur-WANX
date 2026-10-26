@@ -134,6 +134,21 @@ async def space(
     from centuarai_local_data_gate import get_context
 
     context = get_context(request.scope)
+    resource = getattr(user, "local_resource", None)
+    if resource is not None and resource["kind"] == "space":
+        from functools import partial
+
+        from octop.infra.personal_space.team_scope import TeamSpace
+
+        return await call(
+            partial(
+                TeamSpace,
+                server.paths.root / ".wanx-personal-space",
+                resource["owner_user_id"],
+                space_id=resource["object_id"],
+                live=context.require_live,
+            )
+        )
     scope = context.claims["serviceContext"].get("clipboardScope") if context else None
     if scope is not None:
         from functools import partial

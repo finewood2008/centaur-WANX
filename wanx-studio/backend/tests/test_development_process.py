@@ -188,23 +188,22 @@ async def test_expired_workbench_during_preflight_never_starts_codex(tmp_path,mo
 
 
 async def test_cancelled_preflight_reaps_probe_process(tmp_path,monkeypatch):
-    svc=StudioService(tmp_path,ROOT);svc.runner=Runner(svc)
-    entered=asyncio.Event()
-    class Probe:
-        returncode=None
-        terminated=False
-        async def communicate(self):entered.set();await asyncio.Event().wait()
-        def terminate(self):self.terminated=True
-        async def wait(self):self.returncode=-15;return self.returncode
-    proc=Probe()
-    async def spawn(*args,**kwargs):return proc
+    root=tmp_path/'source';(root/'tools').mkdir(parents=True)
+    (root/'tools/probe-codex.mjs').write_text('setInterval(()=>{},10000)')
+    svc=StudioService(tmp_path/'data',root);svc.runner=Runner(svc)
+    entered=asyncio.Event();processes=[]
+    original=asyncio.create_subprocess_exec
+    async def spawn(*args,**kwargs):
+        proc=await original(*args,**kwargs)
+        processes.append(proc);entered.set();return proc
     monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda:{'WANX_CODEX_PATH':'synthetic'})
     monkeypatch.setattr('asyncio.create_subprocess_exec',spawn)
     try:
         task=asyncio.create_task(svc.runner.preflight());await entered.wait();task.cancel()
         with pytest.raises(asyncio.CancelledError):await task
-        assert proc.terminated and proc.returncode==-15
+        assert processes and all(p.returncode is not None for p in processes)
     finally:await svc.close()
+
 
 async def test_modification_keeps_successful_sources_instead_of_older_failed_draft(tmp_path,monkeypatch):
     svc=StudioService(tmp_path,ROOT);svc.runner=Runner(svc)

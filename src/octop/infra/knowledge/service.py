@@ -104,9 +104,19 @@ def _resolve_content_type(filename: str, content_type: str) -> str:
 class KnowledgeService:
     """Apply ownership while keeping control-plane rows and files synchronized."""
 
-    def __init__(self, services: Any, application_id: str = "wanx") -> None:
+    def __init__(
+        self, services: Any, application_id: str = "wanx", *, local_user: Any = None
+    ) -> None:
         self._services = services
         self.application_id = application_id
+        self._local_user = local_user
+
+    def _local_access(self, kb_id: str, *, write: bool = False) -> bool:
+        from octop.infra.users.team_resources import may_access
+
+        return self._local_user is not None and may_access(
+            self._local_user, "knowledge", kb_id, write=write
+        )
 
     def _require_usable(self) -> None:
         if self.application_id == "zhijun":
@@ -185,6 +195,9 @@ class KnowledgeService:
     def list_visible_bases(
         self, *, actor_user_id: int, is_admin: bool = False
     ) -> list[KnowledgeBaseRow]:
+        resource = getattr(self._local_user, "local_resource", None)
+        if resource is not None and resource["kind"] == "knowledge":
+            return [self.get_readable_base(resource["object_id"], actor_user_id=actor_user_id)]
         if is_admin and self.application_id == "wanx":
             return cast(
                 list[KnowledgeBaseRow], self._repo.list_all(application_id=self.application_id)
@@ -534,7 +547,8 @@ class KnowledgeService:
         if (
             (is_admin and self.application_id == "wanx")
             or base.owner_user_id == actor_user_id
-            or (base.shared and self.application_id == "wanx")
+            or self._local_access(kb_id)
+            or (self._local_user is None and base.shared and self.application_id == "wanx")
         ):
             return base
         raise PermissionError("knowledge base read access is required")
@@ -543,7 +557,11 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        if (is_admin and self.application_id == "wanx") or base.owner_user_id == actor_user_id:
+        if (
+            (is_admin and self.application_id == "wanx")
+            or base.owner_user_id == actor_user_id
+            or self._local_access(kb_id, write=True)
+        ):
             return base
         raise PermissionError("knowledge base write access is required")
 
@@ -551,7 +569,11 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        if (is_admin and self.application_id == "wanx") or base.owner_user_id == actor_user_id:
+        if (
+            (is_admin and self.application_id == "wanx")
+            or base.owner_user_id == actor_user_id
+            or self._local_access(kb_id, write=True)
+        ):
             return base
         raise PermissionError("knowledge base owner access is required")
 

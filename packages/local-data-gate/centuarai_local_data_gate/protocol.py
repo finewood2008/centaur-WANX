@@ -116,6 +116,9 @@ TYPES = {
         "gateway-request",
         "gateway-lease",
         "gateway-resources",
+        "gateway-members",
+        "gateway-task",
+        "gateway-grants",
         "gateway-observation",
         "response",
     )
@@ -273,10 +276,10 @@ def fresh(value, now_ms):
     need(value["issuedAtMs"] <= now_ms < value["expiresAtMs"], "LOCAL_DATA_SESSION_EXPIRED")
 
 
-def _base(value, purpose):
+def _base(value, purpose, *, versions=(1,)):
     need(
         type(value["schemaVersion"]) is int
-        and value["schemaVersion"] == 1
+        and value["schemaVersion"] in versions
         and value["purpose"] == "centuarai.local-data." + purpose
     )
 
@@ -511,8 +514,13 @@ def validate_clipboard_scope(value):
 
 
 def validate_gateway_request(value):
-    fields(value, GATEWAY)
-    _base(value, "gateway-request")
+    version = value.get("schemaVersion") if type(value) is dict else None
+    fields(value, GATEWAY | ({"team"} if version == 2 else set()))
+    _base(value, "gateway-request", versions=(1, 2))
+    if version == 2:
+        from .team import validate_team
+
+        validate_team(value["team"], value)
     _identity(value)
     _window(value, 2000)
     _request(value)
@@ -529,8 +537,11 @@ def validate_gateway_request(value):
 
 
 def validate_gateway_lease(value):
-    fields(value, LEASE)
-    _base(value, "gateway-lease")
+    version = value.get("schemaVersion") if type(value) is dict else None
+    fields(value, LEASE | ({"teamDigest"} if version == 2 else set()))
+    _base(value, "gateway-lease", versions=(1, 2))
+    if version == 2:
+        digest32(value["teamDigest"])
     _window(value, 1000)
     need(
         value["audience"] in ("octop", "semantica", "semantica-mcp", "clipboard")
@@ -578,9 +589,10 @@ def validate_authorization(value):
 
 
 def validate_gateway_resources(value):
-    fields(value, LEASE | {"grants", "requestDigest"})
-    _base(value, "gateway-resources")
-    base = {key: value[key] for key in LEASE}
+    extra = {"teamDigest"} if type(value) is dict and value.get("schemaVersion") == 2 else set()
+    fields(value, LEASE | extra | {"grants", "requestDigest"})
+    _base(value, "gateway-resources", versions=(1, 2))
+    base = {key: value[key] for key in LEASE | extra}
     base["purpose"] = "centuarai.local-data.gateway-lease"
     validate_gateway_lease(base)
     grants(value["grants"])
@@ -588,9 +600,74 @@ def validate_gateway_resources(value):
     need(
         value["state"] == "active"
         and value["audience"] == "octop"
-        and value["applicationId"] == "wanx-host"
+        and (
+            value["applicationId"] == "wanx-host"
+            or value["schemaVersion"] == 2
+            and (
+                value["applicationId"] == "ai.wanx.studio"
+                and value["resourceId"] == "team:management"
+                or re.fullmatch(r"ai\.wanx\.selfmade\.[a-f0-9]{32}", value["applicationId"])
+                is not None
+                and value["resourceId"] == "team:application:" + value["applicationId"]
+            )
+        )
         and value["parentOperationId"] is None
     )
+
+
+def validate_gateway_members(value):
+    from .team import validate_members
+
+    fields(value, LEASE | {"teamDigest", "members", "requestDigest"})
+    _base(value, "gateway-members", versions=(2,))
+    base = {key: value[key] for key in LEASE | {"teamDigest"}}
+    base["purpose"] = "centuarai.local-data.gateway-lease"
+    validate_gateway_lease(base)
+    need(value["audience"] == "octop" and value["state"] == "active")
+    need(value["resourceId"] == "team:management")
+    digest32(value["requestDigest"])
+    validate_members(value["members"])
+
+
+def validate_gateway_task(value):
+    from .team import resource_needs
+
+    fields(
+        value,
+        LEASE | {"teamDigest", "parentRequestId", "taskId", "projectId", "taskPurpose", "grants"},
+    )
+    _base(value, "gateway-task", versions=(2,))
+    base = {key: value[key] for key in LEASE | {"teamDigest"}}
+    base["purpose"] = "centuarai.local-data.gateway-lease"
+    validate_gateway_lease(base)
+    need(
+        value["audience"] == "octop"
+        and value["resourceId"] == "team:management"
+        and value["applicationId"] == "ai.wanx.studio"
+        and value["action"] == "execute"
+        and value["parentOperationId"] is None
+    )
+    digest32(value["parentRequestId"])
+    for name in ("taskId", "projectId"):
+        need(type(value[name]) is str and re.fullmatch(r"[a-f0-9]{32}", value[name]) is not None)
+    need(value["taskPurpose"] in {"build", "interview", "edit"})
+    grants(value["grants"], empty=True)
+    need(resource_needs(value["grants"]))
+
+
+def validate_gateway_grants(value):
+    fields(value, LEASE | {"teamDigest", "grants", "requestDigest"})
+    _base(value, "gateway-grants", versions=(2,))
+    base = {key: value[key] for key in LEASE | {"teamDigest"}}
+    base["purpose"] = "centuarai.local-data.gateway-lease"
+    validate_gateway_lease(base)
+    need(
+        value["audience"] == "octop"
+        and value["state"] == "active"
+        and value["resourceId"] == "team:management"
+    )
+    grants(value["grants"])
+    digest32(value["requestDigest"])
 
 
 def validate_gateway_observation(value):
@@ -798,6 +875,9 @@ VALIDATORS = {
     "gateway-request": validate_gateway_request,
     "gateway-lease": validate_gateway_lease,
     "gateway-resources": validate_gateway_resources,
+    "gateway-members": validate_gateway_members,
+    "gateway-task": validate_gateway_task,
+    "gateway-grants": validate_gateway_grants,
     "gateway-observation": validate_gateway_observation,
     "response": validate_response,
 }
@@ -994,6 +1074,30 @@ def sign_gateway_resources(payload, key):
 
 def verify_gateway_resources(jws, key, now_ms):
     return _verify(jws, key, "gateway-resources", now_ms)
+
+
+def sign_gateway_members(payload, key):
+    return _sign(payload, key, "gateway-members")
+
+
+def verify_gateway_members(jws, key, now_ms):
+    return _verify(jws, key, "gateway-members", now_ms)
+
+
+def sign_gateway_task(payload, key):
+    return _sign(payload, key, "gateway-task")
+
+
+def verify_gateway_task(jws, key, now_ms):
+    return _verify(jws, key, "gateway-task", now_ms)
+
+
+def sign_gateway_grants(payload, key):
+    return _sign(payload, key, "gateway-grants")
+
+
+def verify_gateway_grants(jws, key, now_ms):
+    return _verify(jws, key, "gateway-grants", now_ms)
 
 
 def sign_gateway_observation(payload, key):

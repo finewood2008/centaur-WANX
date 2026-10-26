@@ -2723,14 +2723,14 @@ test("catalog product pages have bundled icons, product posters and a safe back 
 });
 
 test("administrator opens the bundled Builder from applications and sees 开物 in navigation; members cannot see it",async()=>{
-  const identity={role:"admin",displayName:"测试管理员"};
+  const identity={roleId:"owner",permissions:["applications.manage"],displayName:"测试管理员"};
   const h=await harness(state("ready","ready","box-102"),[],{teamIdentity:identity});
   assert.match(h.app.innerHTML,/data-action="show-construction"[^>]*>开物/);
   assert.match(h.app.innerHTML,/万象·开物/);assert.match(h.app.innerHTML,/打开开物/);
   assert.doesNotMatch(h.app.innerHTML,/builder-v1.png/);
   await h.click("applications-launch",{applicationId:"ai.wanx.studio"});
   assert.deepEqual(h.launches,[["ai.wanx.studio",undefined]]);
-  identity.role="user";
+  identity.permissions=[];
   h.update({...state("ready","ready","box-102"),account:{phase:"authenticated",accountId:"member"}});
   await new Promise(resolve=>setImmediate(resolve));
   assert.doesNotMatch(h.app.innerHTML,/data-action="show-construction"|data-application="ai.wanx.studio"/);

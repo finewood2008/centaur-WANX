@@ -108,6 +108,9 @@ def transition(snapshot, event_type, body, sequence, bundle):
             provisioningId=new["provisioningId"],
             pendingTransferId=None,
         )
+        # The old membership/ACL graph remains in the signed event history but
+        # cannot survive the independently verified full-erase into a new epoch.
+        snapshot.pop("team", None)
     snapshot["authorizationVersion"] += 1
     return snapshot, record_delta(before, snapshot, ())
 
@@ -307,6 +310,10 @@ class LedgerTransfer:
             eventDigest=digest,
             authorizationVersion=after["authorizationVersion"],
         )
+        if "team" in after:
+            meta["team"] = after["team"]
+        else:
+            meta.pop("team", None)
         if verifier is not None:
             meta.update(
                 claimSecretSha256=verifier,

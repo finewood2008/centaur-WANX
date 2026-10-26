@@ -10,13 +10,14 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid5
 
 from centuarai_local_data_gate.native_policy import (
-    APPLICATION_FAMILIES,
     FILE,
     ID,
     MIB,
+    application_families,
     classify_octop,
     query_values,
 )
+from centuarai_local_data_gate.team import resource_binding_route, team_resource
 
 from .local_data_protocol import DataProtocolError, grants, need
 
@@ -120,7 +121,12 @@ def _resource(context, resource, action):
             (
                 item["resourceId"]
                 for item in context["grants"]
-                if item["resourceId"] in RESOURCES and action in item["actions"]
+                if (
+                    item["resourceId"] in RESOURCES
+                    or context.get("team")
+                    and team_resource(item["resourceId"])
+                )
+                and action in item["actions"]
             ),
             None,
         )
@@ -132,7 +138,7 @@ def _resource(context, resource, action):
 
 
 def application_policy(application_id, launch_id, view):
-    families = APPLICATION_FAMILIES.get(application_id)
+    families = application_families(application_id)
     need(families is not None, "LOCAL_DATA_ROUTE_DENIED")
     allowed = (
         RESOURCES
@@ -141,21 +147,64 @@ def application_policy(application_id, launch_id, view):
         if "semantica" in families
         else {"wanx"}
     )
-    result = [copy.deepcopy(value) for value in view["grants"] if value["resourceId"] in allowed]
+    if re.fullmatch(r"ai\.wanx\.selfmade\.[a-f0-9]{32}", application_id):
+        need(
+            view.get("team") is not None
+            and any(
+                value["resourceId"] == "team:application:" + application_id
+                for value in view["grants"]
+            ),
+            "LOCAL_DATA_FORBIDDEN",
+        )
+        result = []
+        for value in view["grants"]:
+            if not view.get("team"):
+                continue
+            if value["resourceId"] == "team:application:" + application_id:
+                result.append(copy.deepcopy(value))
+            elif "read" in value["actions"] and (
+                value["resourceId"] in {"semantica", "wanx"}
+                or (team_resource(value["resourceId"]) or (None,))[0] == "knowledge"
+            ):
+                # No direct data route exists for this application family.
+                # Native published-manifest resolution must further freeze the
+                # exact sources before the broker permits any read child hop.
+                result.append({"resourceId": value["resourceId"], "actions": ["read"]})
+        grants(result)
+        return result
+    result = [
+        copy.deepcopy(value)
+        for value in view["grants"]
+        if value["resourceId"] in allowed
+        or view.get("team")
+        and team_resource(value["resourceId"])
+        and (
+            application_id in {"wanx-host", "ai.wanx.studio"}
+            or "semantica" in families
+            and value["resourceId"].startswith("team:knowledge:")
+        )
+    ]
     grants(result)
     return result
 
 
-def _warehouse(context, operation):
+def _warehouse(context, operation, resource=None):
+    selected = team_resource(resource)
     name = json.dumps(
-        [context["boxId"], "semantica", "local:" + context["principalNamespace"]],
+        [
+            context["boxId"],
+            "semantica",
+            "team:" + str(context["ownershipEpoch"]) + ":knowledge:" + selected[1]
+            if selected
+            else "local:" + context["principalNamespace"],
+        ],
         separators=(",", ":"),
     )
     return {
         "kind": "warehouse",
         "principalNamespace": context["principalNamespace"],
         "workspaceId": str(uuid5(UUID("8ae54f40-4054-4bba-a2e2-06e1c43d7514"), name)),
-        "warehouseId": None,
+        "warehouseId": selected[1] if selected else None,
         "operation": operation,
     }
 
@@ -176,6 +225,19 @@ def _semantica(context, observation, *, native=False):
     path = urlsplit(target).path
     prefix = "/api/integration" if native else "/api/semantica"
     suffix = path[len(prefix) :]
+    resource = observation["headers"]["dataContext"]
+    selected = team_resource(resource)
+    if selected:
+        need(
+            selected[0] == "knowledge" and context.get("team") is not None,
+            "LOCAL_DATA_SCOPE_DENIED",
+        )
+        need(
+            re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", selected[1]) is not None,
+            "LOCAL_DATA_SCOPE_DENIED",
+        )
+    else:
+        resource = "semantica"
     query = query_values(target)
     need(
         set(query)
@@ -193,20 +255,77 @@ def _semantica(context, observation, *, native=False):
             "expected_sha256",
             "expected_origin_revision",
             "expected_version_id",
+            "warehouse_id",
         },
         "LOCAL_DATA_ROUTE_DENIED",
     )
-    for method, pattern, operation, action in SEMANTICA_RULES:
+    if "warehouse_id" in query:
+        need(
+            selected is not None and query["warehouse_id"] == selected[1], "LOCAL_DATA_SCOPE_DENIED"
+        )
+    alias = False
+    if selected and suffix.startswith("/warehouses/"):
+        match = re.fullmatch(r"/warehouses/([^/]+)(/.*)?", suffix)
+        need(match is not None and match[1] == selected[1], "LOCAL_DATA_SCOPE_DENIED")
+        remainder = match[2] or ""
+        if remainder and remainder not in {
+            "/clear",
+            "/clear/prepare",
+            "/delete",
+            "/delete/prepare",
+        }:
+            # Existing warehouse UI aliases map only onto the same finite
+            # integration operations. No alias introduces a key/settings API.
+            suffix = remainder
+            alias = True
+    warehouse_rules = (
+        (
+            ("GET", "/warehouses", "list_warehouses", "read"),
+            ("POST", "/warehouses", "create_warehouse", "execute"),
+            ("GET", rf"/warehouses/{re.escape(selected[1])}", "get_warehouse", "read"),
+            (
+                "POST",
+                rf"/warehouses/{re.escape(selected[1])}/clear/prepare",
+                "prepare_clear_warehouse",
+                "execute",
+            ),
+            ("POST", rf"/warehouses/{re.escape(selected[1])}/clear", "clear_warehouse", "execute"),
+            (
+                "POST",
+                rf"/warehouses/{re.escape(selected[1])}/delete/prepare",
+                "prepare_delete_warehouse",
+                "execute",
+            ),
+            (
+                "POST",
+                rf"/warehouses/{re.escape(selected[1])}/delete",
+                "delete_warehouse",
+                "execute",
+            ),
+        )
+        if selected
+        else ()
+    )
+    for method, pattern, operation, action in SEMANTICA_RULES + (() if alias else warehouse_rules):
         if method == observation["method"] and re.fullmatch(pattern, suffix):
+            if selected:
+                need(operation != "owner_graph", "LOCAL_DATA_SCOPE_DENIED")
+                if operation in {"build_index", "create_ontology", "publish_ontology"}:
+                    action = "execute"
             upstream = target if native else "/api/integration" + target[len(prefix) :]
+            if alias:
+                upstream = "/api/integration" + suffix
+                raw_query = urlsplit(target).query
+                if raw_query:
+                    upstream += "?" + raw_query
             return _result(
                 context,
                 "semantica",
-                "semantica",
+                resource,
                 action,
                 0 if method == "GET" else 2 * MIB,
                 upstream,
-                _warehouse(context, operation),
+                _warehouse(context, operation, resource),
             )
     raise DataProtocolError("LOCAL_DATA_ROUTE_DENIED")
 
@@ -215,8 +334,14 @@ def route_policy(context, observation):
     target, method = observation["rawTarget"], observation["method"]
     path = urlsplit(target).path
     query = query_values(target)
-    families = APPLICATION_FAMILIES.get(context["applicationId"], frozenset())
-    need(observation["headers"]["dataContext"] in (None, "personal"), "LOCAL_DATA_SCOPE_DENIED")
+    families = application_families(context["applicationId"]) or frozenset()
+    selector = observation["headers"]["dataContext"]
+    need(
+        selector in (None, "personal")
+        or team_resource(selector) is not None
+        and context.get("team") is not None,
+        "LOCAL_DATA_SCOPE_DENIED",
+    )
     principal = {
         "kind": "principal",
         "principalNamespace": context["principalNamespace"],
@@ -264,14 +389,23 @@ def route_policy(context, observation):
             and not query,
             "LOCAL_DATA_ROUTE_DENIED",
         )
+        resource = selector if team_resource(selector) else "semantica"
+        if resource != "semantica":
+            selected = team_resource(resource)
+            need(
+                selected[0] == "knowledge"
+                and re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", selected[1])
+                is not None,
+                "LOCAL_DATA_SCOPE_DENIED",
+            )
         return _result(
             context,
             "semantica-mcp",
-            "semantica",
+            resource,
             "read",
             2 * MIB,
             "/mcp",
-            _warehouse(context, "mcp_pending"),
+            _warehouse(context, "mcp_pending", resource),
         )
     if path.startswith("/api/semantica/"):
         need(
@@ -285,7 +419,22 @@ def route_policy(context, observation):
         path not in {"/api/personal-space/agent-access", "/api/personal-space/connection-access"},
         "LOCAL_DATA_ROUTE_DENIED",
     )
-    rule = classify_octop(method, target, observation["transport"], context["applicationId"])
+    rule = classify_octop(
+        method, target, observation["transport"], context["applicationId"], selector
+    )
+    permission = (
+        "resources.manage"
+        if rule["family"] == "team-resources"
+        else "applications.manage"
+        if rule["family"] in {"team-management", "studio"}
+        or rule["family"] == "company-runtime"
+        and rule["resourceId"] == "team:management"
+        else None
+    )
+    if permission:
+        need(
+            permission in context.get("team", {}).get("permissions", []), "LOCAL_DATA_SCOPE_DENIED"
+        )
     return _result(
         context, "octop", rule["resourceId"], rule["action"], rule["bodyLimit"], target, principal
     )
@@ -337,10 +486,51 @@ def child_policy(parent, body):
     target = body["rawTarget"]
     path = urlsplit(target).path
     need(body["transport"] == "http", "LOCAL_DATA_ROUTE_DENIED")
+    if route["audience"] == "octop" and body["audience"] == "semantica":
+        need(
+            (
+                context["applicationId"] in {"wanx-host", "ai.wanx.studio"}
+                and route["resourceId"] == "team:management"
+                and "applications.manage" in context.get("team", {}).get("permissions", [])
+                and resource_binding_route(parent["observation"]["method"], route["upstreamPath"])
+            )
+            or (
+                re.fullmatch(r"ai\.wanx\.selfmade\.[a-f0-9]{32}", context["applicationId"])
+                is not None
+                and route["resourceId"] == "team:application:" + context["applicationId"]
+                and parent["observation"]["method"] == "POST"
+                and re.fullmatch(
+                    r"/api/app-studio/runtime/[A-Za-z0-9_-]{1,128}/invoke", route["upstreamPath"]
+                )
+                is not None
+            ),
+            "LOCAL_DATA_ROUTE_DENIED",
+        )
+        resolved = _semantica(context, body, native=True)
+        need(
+            resolved["action"] == "read"
+            and resolved["serviceContext"]["operation"]
+            in {
+                "list_warehouses",
+                "get_warehouse",
+                "list_documents",
+                "get_document",
+                "get_document_text",
+                "search_knowledge",
+                "search_workspaces",
+                "get_evidence",
+                "get_graph",
+            }
+            and _allows(parent.get("requiredGrants") or [], resolved["resourceId"], "read"),
+            "LOCAL_DATA_SCOPE_DENIED",
+        )
+        return resolved
     if route["audience"] == "semantica-mcp" and body["audience"] == "semantica":
         resolved = _semantica(context, body, native=True)
         need(
             resolved["serviceContext"]["operation"] == route["serviceContext"]["operation"]
+            and resolved["resourceId"] == route["resourceId"]
+            and resolved["serviceContext"]["workspaceId"] == route["serviceContext"]["workspaceId"]
             and resolved["action"] == "read"
             and route["serviceContext"]["operation"] in MCP_TOOLS,
             "LOCAL_DATA_ROUTE_DENIED",

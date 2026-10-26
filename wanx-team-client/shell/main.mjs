@@ -73,6 +73,14 @@ import { createUpdateStore } from "../updates/store.mjs";
 import { createClientUpdates } from "../updates/client-service.mjs";
 import { createBoxUpdates } from "../updates/box-service.mjs";
 import { createElectronUpdateAdapter } from "../updates/electron.mjs";
+import { createKnowledgeCapabilities } from '../device-trust/knowledge-capabilities.mjs';
+import { createDeviceTrustCoordinator } from "../device-trust/coordinator.mjs";
+import { createIdentityVault } from "../device-trust/identity-vault.mjs";
+import { createLocalDataAccess } from "../device-trust/data-session.mjs";
+import { createRecoveryFiles } from "./recovery-files.mjs";
+import { createBackupFiles } from "./backup-files.mjs";
+import { createDeviceTrustWindow } from "./device-trust-window.mjs";
+import { registerDeviceTrustLifecycle } from "./device-trust-lifecycle.mjs";
 
 import { testPackageIdentity, TEST_APP_ID, TEST_PRODUCT_NAME } from "../updates/test-build.mjs";
 import { createTestUpdateRuntime } from "../updates/test-runtime.mjs";
@@ -224,9 +232,24 @@ if (process.argv.includes("--wanx-managed-app")) {
           ? timed(step, () => requestAccount(input))
           : requestAccount(input);
       };
-      // Desktop networking follows login; ignore the retired manual-off preference.
+      const localVault = createIdentityVault({
+        directory: path.join(userData, "local-device-identity"),
+        protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
+      });
+      const recoveryFiles = createRecoveryFiles({ dialog, parentWindow: () => control, packaged: app.isPackaged });
+      const backupFiles = createBackupFiles({ dialog, parentWindow: () => control, packaged: app.isPackaged });
+      const localDataAccess = createLocalDataAccess({
+        vault: localVault,
+        stagingDirectory: path.join(userData, "local-data-staging"),
+        protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
+      });
+      const deviceTrust = await createDeviceTrustCoordinator({ account,
+        vault: localVault, files: recoveryFiles, backupFiles,
+        ensureBackupNamespace: input => localDataAccess.ensureBackupNamespace(input),
+      });
       client = createPlatformClient({
         account,
+        localDataAccess,
         localBoxes: createLocalBoxes(),
         creditsServiceURL,
         measure: timed,
@@ -275,7 +298,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           };
         },
       });
-      client=createTeamConnection({base:client,createTransport:()=>createClient(),store:createSecureAccountStore({filePath:path.join(userData,"team-server.enc"),safeStorage})});
+      client=createTeamConnection({base:client,localDataAccess,deviceTrust,store:createSecureAccountStore({filePath:path.join(userData,"team-server.enc"),safeStorage})});
       const trustedKeys = await marketTrustedKeys();
       const releaseAccess = createApplicationReleaseAccess({ account });
       const authorizeRelease = (descriptor, options) => releaseAccess.authorize(descriptor, options);
@@ -287,7 +310,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         context: () => client.applicationContext(),
         request: (input) => client.applicationRequest(input),
         stream: (input) => client.applicationStream(input),
-        createConnection: (applicationId, options) => applicationId === "centaurai.wanx.semantica" && options?.launchContext?.kind === "team-data" ? teamDataService.connection(options.launchContext) : client.applicationConnection(applicationId),
+        createConnection: (applicationId, options) => applicationId === "centaurai.wanx.semantica" && options?.launchContext?.kind === "team-data" ? teamDataService.connection(options.launchContext) : client.applicationConnection(applicationId, options),
+        getDataIdentity: () => client.snapshot().dataIdentity,
         trustedKeys,
         getCompatibilityContext,
         prepareApplication,
@@ -434,10 +458,11 @@ if (process.argv.includes("--wanx-managed-app")) {
         window.webContents.on("will-navigate", event => event.preventDefault());
         window.webContents.on("will-attach-webview", event => event.preventDefault());
       }
-      const teamService=createTeamService({client,applications,assets:path.join(app.getAppPath(),"applications/studio-runtime")});
+      const knowledgeCapabilities = createKnowledgeCapabilities({ client });
+      const teamService=createTeamService({client,applications,deviceTrust,openDeviceTrust: input => deviceTrustWindow.open(input),assets:path.join(app.getAppPath(),"applications/studio-runtime")});
       const teamTrusted=event=>isControlSender(event,control,controlURL);
       registerTeamIPC({ipcMain,isTrusted:teamTrusted,team:teamService});
-      teamDataService=createTeamDataService({client,applications,getMcpDetails:()=>spaceLinks.mcpDetails("starlink"),writeClipboard:text=>clipboard.writeText(text),starlinkPackageDir:path.join(app.getAppPath(),"applications/starlink"),selectFiles:async()=>{const r=await dialog.showOpenDialog(control,{title:"导入团队知识材料",properties:["openFile","multiSelections"],filters:[{name:"知识材料",extensions:["txt","md","markdown","pdf","docx","pptx","xlsx","xls","xlsm","png","jpg","jpeg","webp","wav","mp3","m4a","flac"]}]});return r.canceled?[]:r.filePaths}});
+      teamDataService=createTeamDataService({client,applications,knowledgeCapabilities,getMcpDetails:()=>spaceLinks.mcpDetails("starlink"),writeClipboard:text=>clipboard.writeText(text),starlinkPackageDir:path.join(app.getAppPath(),"applications/starlink"),selectFiles:async()=>{const r=await dialog.showOpenDialog(control,{title:"导入团队知识材料",properties:["openFile","multiSelections"],filters:[{name:"知识材料",extensions:["txt","md","markdown","pdf","docx","pptx","xlsx","xls","xlsm","png","jpg","jpeg","webp","wav","mp3","m4a","flac"]}]});return r.canceled?[]:r.filePaths}});
       ipcMain.handle("wanx-client:mcp",async(event,{action,input={}}={})=>{
         if(!teamTrusted(event))return {ok:false,code:"TEAM_ORIGIN_DENIED"};
         try{
@@ -450,6 +475,13 @@ if (process.argv.includes("--wanx-managed-app")) {
         }catch(error){return {ok:false,code:error.code||"MCP_UNAVAILABLE"}}
       });
       ipcMain.handle("wanx-client:data",async(event,{action,input}={})=>{if(!teamTrusted(event))return {ok:false,code:"TEAM_ORIGIN_DENIED"};try{return {ok:true,value:await teamDataService.action(action,input)}}catch(error){return {ok:false,code:error.code||"TEAM_DATA_REQUEST_FAILED"}}});
+      const deviceTrustWindow = createDeviceTrustWindow({
+        BrowserWindow, ipcMain, service: deviceTrust, parentWindow: control,
+        onError: () => reportError(new Error("LOCAL_TRUST_WINDOW_UNAVAILABLE")),
+      });
+      const stopDeviceTrustLifecycle = registerDeviceTrustLifecycle({ app, powerMonitor, service: {
+        lock: reason => { void deviceTrustWindow.invalidate(reason).catch(() => reportError(new Error("LOCAL_TRUST_LOCK_FAILED"))); },
+      } });
       broadcast = createUIBroadcast({
         client, applications, uiState, startup, updates, defaultApplications, notifications, studioRevision:()=>studioChanged, windows: () => [control, panel], onError: reportError,
       });
@@ -524,7 +556,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       }
       try {
         spaceLinks = await createSpaceLinkBridge({
-          client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+          client, knowledgeCapabilities, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
           profileDirectory: path.join(userData, "space-agent-profiles"),
           chooseStorageDirectory: async () => {
@@ -588,6 +620,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         getDesktopStartup: startup.get,
         setDesktopStartup: startup.set,
         showAbout: () => { desktop.hidePanel({ preserveIntent: true }); app.showAboutPanel(); },
+        openDeviceTrust: () => deviceTrustWindow.open({ view: "overview" }),
         quit: requestQuit,
         client,
         applications,
@@ -619,6 +652,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       shutdown = registerShutdown({
         app,
         async closeApplications() {
+          deviceTrust.lock("shutdown");
           uiState.invalidateOpen();
           aiDialogue?.close();
           await deliveryScheduler.close();
@@ -629,6 +663,13 @@ if (process.argv.includes("--wanx-managed-app")) {
           await Promise.all([market.close(), personalSpace?.close(), spaceLinks?.close(), applications?.close()]);
         },
         async closeHost() {
+          stopDeviceTrustLifecycle();
+          knowledgeCapabilities.close();
+          await deviceTrustWindow.dispose();
+          deviceTrust.close();
+          recoveryFiles.close();
+          await backupFiles.close();
+          localDataAccess.close();
           await notifications?.close();
           support.close();
           unsubscribeUpdateAccount();

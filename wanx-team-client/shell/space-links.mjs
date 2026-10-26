@@ -1,4 +1,5 @@
 import {createWanxMcpBridge} from "./wanx-mcp-bridge.mjs";
+import { dataOwnerKey, dataInteractionKey } from "../device-trust/data-context.mjs";
 import { createAgentSpaces } from "./agent-spaces.mjs";
 import http from "node:http";
 import path from "node:path";
@@ -14,7 +15,7 @@ const uuid = value => { if (!/^[a-f0-9]{32}$/.test(value || "")) throw fail("SPA
 
 // This loopback service never accepts a backend URL/account/box from a caller.
 // Credentials and scope are retrieved exclusively from the encrypted store.
-export async function createSpaceLinkBridge({ client, store, serviceURL, onChanged = () => {}, mcpConfig = {}, profileDirectory, chooseStorageDirectory }) {
+export async function createSpaceLinkBridge({ client, store, serviceURL, onChanged = () => {}, mcpConfig = {}, profileDirectory, chooseStorageDirectory, knowledgeCapabilities }) {
   const saved = await store.load();
   if (saved && (saved.version !== 1 || !Array.isArray(saved.links) || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535))
     throw fail("SPACE_LINK_STORE_INVALID");
@@ -23,12 +24,18 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
   const controllers = new Set();
   const scope = () => {
     const s = client.snapshot();
+    if (s.dataIdentity?.profileId || s.connection?.authorization === 'local-trust-v1') {
+      return dataInteractionKey(s, serviceURL) ? JSON.stringify([dataOwnerKey(s, serviceURL), s.connection.deviceId]) : null;
+    }
     return s.account?.phase === "authenticated" && s.phase === "ready" && s.connection?.deviceId
       ? JSON.stringify([serviceURL, s.account.accountId, s.connection.deviceId]) : null;
   };
   let previousScope = scope();
+  let previousInteraction = dataInteractionKey(client.snapshot(), serviceURL);
   const unsubscribe = client.subscribe(() => {
-    if (scope() === previousScope) return;
+    const nextInteraction = dataInteractionKey(client.snapshot(), serviceURL);
+    if (scope() === previousScope && nextInteraction === previousInteraction) return;
+    previousInteraction = nextInteraction;
     previousScope = scope(); generation++;
     for (const controller of controllers) controller.abort();
   });
@@ -68,7 +75,7 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
     return response;
   }
   const agents = createAgentSpaces({state,scope,assertScope,remote,persist,onChanged,mcpConfig,profileDirectory});
-  const mcp=createWanxMcpBridge({client,state,scope,assertScope,access,remote});
+  const mcp=createWanxMcpBridge({client,state,scope,assertScope,access,remote,knowledgeCapabilities});
   async function handle(req, res) {
     try {
       if (req.headers.host !== `127.0.0.1:${state.port}` || (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${state.port}`))

@@ -23,6 +23,14 @@ def user_owns_agent(row: Any, user: Any) -> bool:
 def assert_agent_owner(row: Any, user: Any) -> None:
     """Raise if the user may not mutate this agent row (admin bypasses)."""
     assert_same_application(row, user)
+    from octop.infra.users.team_resources import may_access
+
+    if (
+        getattr(user, "local_data", False) is True
+        and getattr(user, "local_resource", None) is not None
+        and may_access(user, "agent", getattr(row, "id", getattr(row, "agent_id", "")), write=True)
+    ):
+        return
     if user.is_admin and application_id(user) == "wanx":
         return
     if row.user_id is None or row.user_id != user.id:
@@ -30,6 +38,14 @@ def assert_agent_owner(row: Any, user: Any) -> None:
 
 
 def _user_may_access(row: Any, user: Any) -> bool:
+    from octop.infra.users.team_resources import may_access
+
+    if (
+        getattr(user, "local_data", False) is True
+        and getattr(user, "local_resource", None) is not None
+        and may_access(user, "agent", getattr(row, "id", getattr(row, "agent_id", "")))
+    ):
+        return True
     if user.is_admin and application_id(user) == "wanx":
         return True
     if row.user_id is not None and row.user_id == user.id:

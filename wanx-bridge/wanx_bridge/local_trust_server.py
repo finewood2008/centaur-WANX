@@ -46,7 +46,7 @@ async def _body(request: Request, operation: str) -> dict:
         131072
         if operation == "v2/mutations/commit"
         else 65536
-        if operation == "first-root/commit"
+        if operation in {"first-root/commit", "v2/team/requests", "v2/team/requests/consent"}
         else 18432
     )
     if operation.startswith("v2/backup-io/"):
@@ -130,6 +130,7 @@ def create_app(service: LocalTrustService, *, authority: str) -> FastAPI:
             PREFIX + "/state",
             PREFIX + "/requests/read",
             "/local-trust/v2/read",
+            "/local-trust/v2/team/requests/read",
         }:
             # Unknown IDs, bad keys and inaccessible principals are externally
             # indistinguishable; never disclose record existence before proof.

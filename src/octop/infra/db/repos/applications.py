@@ -60,7 +60,13 @@ class ApplicationRepo:
             ).fetchone()
         return row is not None
 
-    def create(self, data: dict[str, Any], *, created_by: int) -> ApplicationRow | None:
+    def create(
+        self,
+        data: dict[str, Any],
+        *,
+        created_by: int,
+        team_scope: tuple[str, int] | None = None,
+    ) -> ApplicationRow | None:
         ts = now_ts()
         with self._db.transaction() as conn:
             inserted = conn.execute(
@@ -86,6 +92,12 @@ class ApplicationRepo:
                 "VALUES (?, 0, ?)",
                 (data["application_id"], ts),
             )
+            if team_scope is not None:
+                conn.execute(
+                    "INSERT INTO team_applications(application_id,box_id,ownership_epoch,"
+                    "created_by,created_at) VALUES(?,?,?,?,?)",
+                    (data["application_id"], *team_scope, created_by, ts),
+                )
         row = self.get(str(data["application_id"]))
         assert row is not None
         return row

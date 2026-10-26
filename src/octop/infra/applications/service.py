@@ -58,6 +58,13 @@ class ApplicationService:
     def _manage(self, user: User, application_id: str | None = None) -> None:
         if user.application_id != "wanx":
             raise OctopError.localized(ErrorCode.FORBIDDEN)
+        if user.local_data:
+            from octop.infra.applications.team import management_scope, require_application
+
+            management_scope(user)
+            if application_id is not None:
+                require_application(self.services, user, application_id)
+            return
         if user_has_permission(user, "applications_manage"):
             return
         if not user_has_permission(user, "applications_develop"):
@@ -81,7 +88,17 @@ class ApplicationService:
     def list_products(self, user: User) -> list[ProductResponse]:
         self._manage(user)
         rows = self.repo.list_all()
-        if not user_has_permission(user, "applications_manage"):
+        if user.local_data:
+            from octop.infra.applications.team import management_scope
+
+            allowed = {
+                row["application_id"]
+                for row in self.services.team_application_repo.list_for_scope(
+                    *management_scope(user)
+                )
+            }
+            rows = [row for row in rows if row.application_id in allowed]
+        elif not user_has_permission(user, "applications_manage"):
             rows = [row for row in rows if row.created_by == user.id]
         return [self._response(row.application_id) for row in rows]
 
@@ -91,7 +108,12 @@ class ApplicationService:
             raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
         if self.repo.get(body.application_id) is not None:
             raise OctopError.localized(ErrorCode.APPLICATION_CONFLICT)
-        if self.repo.create(body.model_dump(), created_by=user.id) is None:
+        team_scope = None
+        if user.local_data:
+            from octop.infra.applications.team import management_scope
+
+            team_scope = management_scope(user)
+        if self.repo.create(body.model_dump(), created_by=user.id, team_scope=team_scope) is None:
             raise OctopError.localized(ErrorCode.APPLICATION_CONFLICT)
         self._audit(user, "application.create", body.application_id)
         return self._response(body.application_id)
@@ -241,18 +263,38 @@ class ApplicationService:
 
     def access(self, user: User, application_id: str) -> list[AccessResponse]:
         self.get(user, application_id)
-        return [AccessResponse.model_validate(row) for row in self.repo.access(application_id)]
+        rows = self.repo.access(application_id)
+        if user.local_data:
+            from octop.infra.applications.team import current_member_ids
+
+            members = current_member_ids(self.services, user)
+            rows = [
+                {**row, "membership_id": members[row["user_id"]]}
+                for row in rows
+                if row["user_id"] in members
+            ]
+        return [AccessResponse.model_validate(row) for row in rows]
 
     def put_access(
         self,
         user: User,
         application_id: str,
-        user_id: int,
+        user_id: int | None,
         enabled: bool,
         *,
         only_if_missing: bool = False,
+        membership_id: str | None = None,
     ) -> AccessResponse:
         self.get(user, application_id)
+        if user.local_data:
+            from octop.infra.users.team_authority import resolve_team_member, team_context
+
+            if user_id is not None or not membership_id:
+                raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
+            user_id = resolve_team_member(self.services, user, membership_id)
+            team_context(user).require_live()
+        elif membership_id is not None or user_id is None:
+            raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
         if only_if_missing and not enabled:
             raise OctopError.localized(ErrorCode.APPLICATION_INVALID)
         if self.services.user_repo.get(user_id) is None:

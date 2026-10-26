@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$Path,
-  [ValidateSet('Protect', 'Verify')][string]$Mode = 'Protect'
+  [ValidateSet('Protect', 'Verify')][string]$Mode = 'Protect',
+  [ValidateSet('Directory', 'File')][string]$TargetKind = 'Directory'
 )
 $ErrorActionPreference = 'Stop'
 $target = [IO.Path]::GetFullPath($Path)
@@ -9,7 +10,8 @@ $root = [IO.Path]::GetPathRoot($target)
 $drive = [IO.DriveInfo]::new($root)
 if (-not $drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.DriveFormat -ne 'NTFS') { throw 'NTFS_REQUIRED' }
 $cursor = $target
-while (-not [IO.Directory]::Exists($cursor)) { throw 'DIRECTORY_REQUIRED' }
+if ($TargetKind -eq 'Directory' -and -not [IO.Directory]::Exists($cursor)) { throw 'DIRECTORY_REQUIRED' }
+if ($TargetKind -eq 'File' -and -not [IO.File]::Exists($cursor)) { throw 'FILE_REQUIRED' }
 while ($cursor) {
   if (([IO.File]::GetAttributes($cursor) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'REPARSE_POINT_REJECTED' }
   $parent = [IO.Path]::GetDirectoryName($cursor)
@@ -33,7 +35,8 @@ function New-Acl([bool]$IsDirectory) {
   return $acl
 }
 $queue = [Collections.Generic.Queue[IO.FileSystemInfo]]::new()
-$queue.Enqueue([IO.DirectoryInfo]::new($target))
+if ($TargetKind -eq 'Directory') { $queue.Enqueue([IO.DirectoryInfo]::new($target)) }
+else { $queue.Enqueue([IO.FileInfo]::new($target)) }
 while ($queue.Count -gt 0) {
   $item = $queue.Dequeue()
   $item.Refresh()
