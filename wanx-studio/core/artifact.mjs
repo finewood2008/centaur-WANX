@@ -1,5 +1,5 @@
 import path from 'node:path';
-import foundation from './wanx-foundation.json' with {type:'json'};
+import foundation from '../backend/wanx_studio/wanx-foundation.json' with {type:'json'};
 import {build,transform} from 'esbuild';
 
 export const LIMITS = Object.freeze({files:64,fileBytes:512*1024,totalBytes:2*1024*1024});

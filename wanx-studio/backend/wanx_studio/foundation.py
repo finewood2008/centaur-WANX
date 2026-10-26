@@ -1,9 +1,9 @@
 """Read-only Builder policy; generated projects cannot alter WANX authority."""
 from copy import deepcopy
+from importlib.resources import files
 import json
-from pathlib import Path
 
-_POLICY = json.loads((Path(__file__).resolve().parents[2] / 'core' / 'wanx-foundation.json').read_text(encoding='utf-8'))
+_POLICY = json.loads(files(__package__).joinpath('wanx-foundation.json').read_text(encoding='utf-8'))
 FOUNDATION_PROMPT = _POLICY['instruction']
 
 
