@@ -9,6 +9,9 @@ description = "Independent clipboard business service using public WANX APIs"
 requires-python = ">=3.12"
 dependencies = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
 
+[project.optional-dependencies]
+local-trust = ["centuarai-local-data-gate==0.1.0"]
+
 [project.scripts]
 wanx-clipboard = "wanx_clipboard.__main__:main"
 

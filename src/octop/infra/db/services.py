@@ -18,6 +18,7 @@ from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.dialogue import DialogueRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.local_data_principals import LocalDataPrincipalRepo
 from octop.infra.db.repos.loops import LoopRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
@@ -71,12 +72,14 @@ class RepoBundle:
     sso_repo: SsoRepo
     self_model_repo: SelfModelRepo
     dialogue_repo: DialogueRepo
+    local_data_principal_repo: LocalDataPrincipalRepo | None = None
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
         return cls(
             db=db,
             user_repo=UserRepo(db),
+            local_data_principal_repo=LocalDataPrincipalRepo(db),
             user_policy_repo=UserPolicyRepo(db),
             invite_repo=InviteRepo(db),
             agent_repo=AgentRepo(db),
@@ -125,6 +128,11 @@ class SharedServices:
     @property
     def user_repo(self) -> UserRepo:
         return self.repos.user_repo
+
+    @property
+    def local_data_principal_repo(self) -> LocalDataPrincipalRepo:
+        assert self.repos.local_data_principal_repo is not None
+        return self.repos.local_data_principal_repo
 
     @property
     def user_policy_repo(self) -> UserPolicyRepo:

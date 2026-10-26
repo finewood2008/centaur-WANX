@@ -73,8 +73,21 @@
     return Object.entries(errors).find(([key]) => code.includes(key))?.[1] || "操作未完成，请重试或在管理窗口查看";
   };
   const phaseText = { opening: "正在打开…", installing: "正在安装…", uninstalling: "正在卸载…", "rolling-back": "正在回退…", selecting: "正在切换版本…" };
-  const signedIn = () => state.account?.phase === "authenticated";
-  const ready = () => signedIn() && state.phase === "ready" && state.connection?.deviceId && (state.connection.mode === "local" || (state.network?.enabled !== false && ["ready", "recovering"].includes(state.network?.phase) && state.platform?.phase === "ready"));
+  const cloudSignedIn = () => state.account?.phase === "authenticated";
+  const signedIn = () => state.dataIdentity?.profileId ? state.dataIdentity.phase === "unlocked" : cloudSignedIn();
+  function localKeys(value) {
+    const identity = value.dataIdentity, selected = identity?.selected;
+    if (identity?.phase !== "unlocked" || !identity.profileId || !identity.clientId || !selected?.boxId
+        || !selected.boxKeyThumbprint || !selected.principalId || !selected.bindingId || !selected.sessionId) return {};
+    const dataOwnerId = JSON.stringify(["local-trust-v1", identity.profileId, selected.boxId,
+      selected.boxKeyThumbprint, selected.ownershipEpoch, selected.principalId]);
+    const connected = value.phase === "ready" && value.connection?.authorization === "local-trust-v1"
+      && value.connection.deviceId === selected.boxId;
+    const dataContextId = connected ? JSON.stringify([dataOwnerId, identity.clientId, identity.generation,
+      selected.bindingId, selected.authorizationVersion, selected.sessionId]) : null;
+    return { dataOwnerId, dataContextId };
+  }
+  const ready = () => state.dataIdentity?.profileId ? Boolean(localKeys(state).dataContextId) : signedIn() && state.phase === "ready" && state.connection?.deviceId && (state.connection.mode === "local" || (state.network?.enabled !== false && ["ready", "recovering"].includes(state.network?.phase) && state.platform?.phase === "ready"));
   const devices = () => state.devices || [];
   const available = () => devices().filter(device => device.canOpen);
   function boxStatus() {
@@ -91,7 +104,7 @@
     return typeof name === "string" && name.trim() ? { ...app, name } : app;
   }
   function refreshApplicationNames() {
-    if (!signedIn() || namesRequest) return;
+    if (!cloudSignedIn() || namesRequest) return;
     const generation = sessionGeneration;
     const request = Promise.resolve().then(() => api.getApplicationNames()).then(items => {
       if (generation !== sessionGeneration) return;
@@ -116,10 +129,13 @@
   }
   function renderBalance() {
     const points = balance == null ? "—" : escape(balance.toLocaleString("zh-CN"));
-    const label = !signedIn() ? "登录后查看" : balancePhase === "loading" ? "正在读取…" : balancePhase === "error" ? "暂不可用" : balancePhase === "stale" ? "上次同步余额" : balancePhase === "pending" ? "余额同步中" : "查看消耗明细";
-    return `<button class="balance-card" data-page="${signedIn() ? "credits" : "applications"}" aria-label="${signedIn() ? "积分，" + (balance == null ? label : points + "点，查看消耗明细") : "登录查看积分"}" ${balancePhase === "loading" ? 'aria-busy="true"' : ""}><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">${points}${typeof balance === 'string' && balance.includes('积分') ? '' : '<small>点</small>'}</span><span class="card-caption">${label}<span aria-hidden="true">↗</span></span></button>`;
+    const label = !cloudSignedIn() ? "登录后查看" : balancePhase === "loading" ? "正在读取…" : balancePhase === "error" ? "暂不可用" : balancePhase === "stale" ? "上次同步余额" : balancePhase === "pending" ? "余额同步中" : "查看消耗明细";
+    return `<button class="balance-card" data-page="${cloudSignedIn() ? "credits" : "applications"}" aria-label="${cloudSignedIn() ? "积分，" + (balance == null ? label : points + "点，查看消耗明细") : "登录查看积分"}" ${balancePhase === "loading" ? 'aria-busy="true"' : ""}><span class="card-label">可用积分<span class="points-mark" aria-hidden="true">积</span></span><span class="points-value">${points}${typeof balance === 'string' && balance.includes('积分') ? '' : '<small>点</small>'}</span><span class="card-caption">${label}<span aria-hidden="true">↗</span></span></button>`;
   }
-  const sameSpace = () => space.scope && space.accountId === state.account?.accountId && space.boxId === state.connection?.deviceId;
+  const sameSpace = () => space.scope && (state.dataIdentity?.profileId
+    ? Boolean(localKeys(state).dataContextId) && space.dataContextId === localKeys(state).dataContextId
+      && space.dataOwnerId === localKeys(state).dataOwnerId
+    : space.accountId === state.account?.accountId && space.boxId === state.connection?.deviceId);
   function dropProblem() {
     if (dragInvalid) return "盒子或账号已变化，请重新拖入";
     if (!signedIn()) return "请先登录万象";
@@ -141,7 +157,7 @@
   function setNotice(text, attempt = null) { notice = text; noticeAttempt = attempt; reconcileNotice(); }
   const percent = task => task.phase === "complete" ? 100 : task.size ? Math.min(100, Math.floor(task.offset / task.size * 100)) : 0;
   function renderTransfers() {
-    if (!space.scope || !signedIn() || space.accountId !== state.account?.accountId || (state.connection?.deviceId && space.boxId !== state.connection.deviceId)) return "";
+    if (!space.scope || !signedIn() || (state.dataIdentity?.profileId ? !sameSpace() : space.accountId !== state.account?.accountId || (state.connection?.deviceId && space.boxId !== state.connection.deviceId))) return "";
     const tasks = (space.tasks || []).filter(task => task.phase !== "canceled");
     const active = tasks.filter(task => task.phase !== "complete");
     const visible = [...active].sort((a,b) => Number(b.phase === "running" || b.phase === "retrying") - Number(a.phase === "running" || a.phase === "retrying")).slice(0, 3);
@@ -200,7 +216,7 @@
     resize();
   }
   function refreshBalance() {
-    if (!signedIn() || balanceRequest) return;
+    if (!cloudSignedIn() || balanceRequest) return;
     const generation = sessionGeneration;
     balancePhase = "loading";
     render();
@@ -309,7 +325,8 @@
   }
   function acceptState(value) {
     const account = value.account || {};
-    const identity = JSON.stringify([account.phase || "signed_out", account.accountId || null, account.clientId || null, value.connection?.deviceId || null, value.connection?.gatewayURL || null]);
+    const local = localKeys(value);
+    const identity = JSON.stringify([account.phase || "signed_out", account.accountId || null, account.clientId || null, value.connection?.deviceId || null, value.connection?.gatewayURL || null, value.dataIdentity?.phase || null, value.dataIdentity?.generation || 0, local.dataOwnerId || null, local.dataContextId || null]);
     const changed = identity !== accountIdentity;
     if (changed) {
       accountIdentity = identity;
@@ -322,11 +339,11 @@
       balance = null; balancePhase = "idle"; balanceRequest = null;
     }
     state = value;
-    window.wanxClipboard?.hostState({...value,route:account.phase==='authenticated'?'space':'auth'});
+    window.wanxClipboard?.hostState({...value,...local,route:signedIn()?'space':'auth'});
     window.wanxClipboard?.setActive(true);
     paintOverlay(); render();
     if (changed) void refreshSpace();
-    if (changed && signedIn()) { void refreshBalance(); void refreshApplicationNames(); }
+    if (changed && cloudSignedIn()) { void refreshBalance(); void refreshApplicationNames(); }
   }
   window.addEventListener?.("focus", () => { void refreshSpace(); void refreshBalance(); void refreshApplicationNames(); });
   window.addEventListener?.("blur", () => { interacting = false; if (pendingRender && !dragDepth) render(); });

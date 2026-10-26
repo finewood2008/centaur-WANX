@@ -3,6 +3,7 @@
 export function panelSpaceState(state) {
   return {
     phase: state.phase, scope: state.scope, accountId: state.accountId, boxId: state.boxId, error: state.error,
+    dataOwnerId: state.dataOwnerId, dataContextId: state.dataContextId,
     storageError: state.storageError,
     imports: (state.imports || []).map(({ id, name, phase, files, folders, completed, pending, failed, size, offset, scanComplete }) => ({ id, name, phase, files, folders, completed, pending, failed, size, offset, scanComplete })),
     tasks: (state.tasks || []).filter(task => task.direction === "upload").map(task => ({

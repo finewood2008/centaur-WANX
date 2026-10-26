@@ -206,6 +206,10 @@ def maybe_sliding_renew_token(server: OctopServer, token: str, user: User) -> st
 
 
 def authenticate_request(request: Request, server: OctopServer) -> User:
+    from octop.api.common.local_data import local_user
+
+    if (user := local_user(request)) is not None:
+        return user
     raw = extract_raw_token(
         authorization=request.headers.get("authorization"),
         access_token=request.query_params.get("access_token"),
@@ -221,6 +225,10 @@ async def current_user(
     authorization: str | None = Header(None),
     access_token: str | None = Query(None),
 ) -> User:
+    from octop.api.common.local_data import local_user
+
+    if (user := local_user(request)) is not None:
+        return user
     cached = getattr(request.state, "octop_user", None)
     if cached is not None:
         return cast("User", cached)

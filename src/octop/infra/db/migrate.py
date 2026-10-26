@@ -2008,11 +2008,30 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         conn.executescript(sql)
 
 
+def _ensure_local_data_principals_schema(db: DatabasePool) -> None:
+    _ensure_column(db, "users", "local_data_marker", "TEXT")
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_local_data_marker ON users(local_data_marker)"
+        )
+        conn.execute("""CREATE TABLE IF NOT EXISTS local_data_principals (
+            namespace TEXT PRIMARY KEY, box_key_thumbprint TEXT NOT NULL,
+            ownership_epoch INTEGER NOT NULL, principal_id TEXT NOT NULL,
+            native_user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+            identity_marker TEXT NOT NULL UNIQUE, created_at BIGINT NOT NULL,
+            UNIQUE(box_key_thumbprint, ownership_epoch, principal_id))""")
+
+
 def run_migrations(db: DatabasePool) -> None:
     if db.dialect == "sqlite":
         _repair_legacy_schema(db)
     for version, path in _discover(db.dialect):
         if version <= _current_version(db):
+            continue
+        if version == 31 and db.dialect == "sqlite":
+            _ensure_local_data_principals_schema(db)
+            with db.connect() as conn:
+                conn.execute("UPDATE _schema_version SET version = ?", (version,))
             continue
         # v18 touches optional ``user_invites``; use the idempotent helper for both
         # dialects so restores from pre-invite physical schemas do not fail.
@@ -2053,6 +2072,8 @@ def run_migrations(db: DatabasePool) -> None:
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
+    if _max_discovered_version(db.dialect) >= 31:
+        _ensure_local_data_principals_schema(db)
     _ensure_knowledge_bases_schema(db)
     _ensure_skill_packages_schema(db)
     _ensure_published_experts_schema(db)

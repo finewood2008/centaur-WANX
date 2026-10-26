@@ -240,7 +240,7 @@
     }
     return {
       hostState(state) {
-        const next = state.account?.phase === 'authenticated' && state.activeDeviceId ? JSON.stringify([state.account.accountId, state.account.clientId, state.activeDeviceId, state.connection?.gatewayURL]) : null;
+        const next = state.dataIdentity?.profileId ? state.dataContextId || null : state.account?.phase === 'authenticated' && state.activeDeviceId ? JSON.stringify([state.account.accountId, state.account.clientId, state.activeDeviceId, state.connection?.gatewayURL]) : null;
         const nextName = state.account?.profile?.displayName || '';
         const nameChanged = displayName !== nextName;
         connected = Boolean(next); boxName = state.connection?.name || state.devices?.find(d => d.deviceId === state.activeDeviceId)?.displayName || '当前盒子';
@@ -308,7 +308,7 @@
     }
     return {
       hostState(state) {
-        const next = state.account?.phase === 'authenticated' && state.activeDeviceId ? JSON.stringify([state.account.accountId, state.account.clientId, state.activeDeviceId, state.connection?.gatewayURL]) : null;
+        const next = state.dataIdentity?.profileId ? state.dataContextId || null : state.account?.phase === 'authenticated' && state.activeDeviceId ? JSON.stringify([state.account.accountId, state.account.clientId, state.activeDeviceId, state.connection?.gatewayURL]) : null;
         connected = Boolean(next); boxName = state.connection?.name || '当前盒子';
         if (next === context) return;
         context = next; generation++; scope = null; catalog = []; choice = null; checked = new Set();

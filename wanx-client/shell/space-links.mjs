@@ -2,6 +2,7 @@ import { createAgentSpaces } from "./agent-spaces.mjs";
 import http from "node:http";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { dataOwnerKey, dataInteractionKey } from "../device-trust/data-context.mjs";
 
 const PREFIX = "/api/personal-space";
 const MAX_BODY = 6 * 1024 * 1024;
@@ -22,12 +23,18 @@ export async function createSpaceLinkBridge({ client, store, serviceURL, onChang
   const controllers = new Set();
   const scope = () => {
     const s = client.snapshot();
+    if (s.dataIdentity?.profileId || s.connection?.authorization === 'local-trust-v1') {
+      return dataInteractionKey(s, serviceURL) ? JSON.stringify([dataOwnerKey(s, serviceURL), s.connection.deviceId]) : null;
+    }
     return s.account?.phase === "authenticated" && s.phase === "ready" && s.connection?.deviceId
       ? JSON.stringify([serviceURL, s.account.accountId, s.connection.deviceId]) : null;
   };
   let previousScope = scope();
+  let previousInteraction = dataInteractionKey(client.snapshot(), serviceURL);
   const unsubscribe = client.subscribe(() => {
-    if (scope() === previousScope) return;
+    const nextInteraction = dataInteractionKey(client.snapshot(), serviceURL);
+    if (scope() === previousScope && nextInteraction === previousInteraction) return;
+    previousInteraction = nextInteraction;
     previousScope = scope(); generation++;
     for (const controller of controllers) controller.abort();
   });

@@ -4,6 +4,7 @@ import {PANEL_NOTE_METHODS,panelNoteState} from './panel-note.mjs';
 import { panelSpaceState } from "./panel-space.mjs";
 import { isControlSender } from "./security.mjs";
 import { DIALOGUE_APPLICATION_ID } from "./ai-dialogue.mjs";
+import { dataInteractionKey, dataOwnerKey } from "../device-trust/data-context.mjs";
 
 // Electron IPC errors omit custom fields. Return only this locally generated
 // validation notice; all other errors retain their existing sanitization.
@@ -27,6 +28,10 @@ function phone(input) {
 }
 
 function requireConnectedBox(state) {
+  if (state.dataIdentity?.profileId || state.connection?.authorization === "local-trust-v1") {
+    if (!dataInteractionKey(state)) throw new Error("BOX_CONNECTION_REQUIRED");
+    return;
+  }
   if (state.account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
   if (state.phase === "ready" && state.connection?.mode === "local" && state.connection.deviceId) return;
   if (state.network?.enabled === false || state.platform?.phase !== "ready" || !["ready", "recovering"].includes(state.network?.phase))
@@ -38,6 +43,8 @@ function requireConnectedBox(state) {
 export function openConnectedDashboard(client, dashboards, destination, deviceId) {
   const state = client.snapshot();
   requireConnectedBox(state);
+  if (state.dataIdentity?.profileId || state.connection?.authorization === "local-trust-v1")
+    throw new Error("LOCAL_DATA_HOST_CONTROL_DENIED");
   if (!state.connection.gatewayURL) throw new Error("BOX_CONNECTION_REQUIRED");
   if (destination && state.connection.deviceId !== deviceId) throw new Error("BOX_CONNECTION_CHANGED");
   return dashboards.open(state, destination);
@@ -74,6 +81,7 @@ export function registerControlActions({
   getDesktopStartup,
   setDesktopStartup,
   showAbout,
+  openDeviceTrust,
   quit,
   allowDevelopmentInstall = false,
   timings = null,
@@ -104,6 +112,12 @@ export function registerControlActions({
       throw error;
     }
   };
+  register("device-trust-open", (input) => {
+    if (input != null && (typeof input !== "object" || Array.isArray(input) || Object.keys(input).length))
+      throw new Error("LOCAL_TRUST_INVALID_INPUT");
+    if (!openDeviceTrust) throw new Error("LOCAL_TRUST_UNAVAILABLE");
+    return openDeviceTrust();
+  });
   for (const method of ["load", "open", "send", "stop", "retry", "watch", "unwatch", "preferences"]) register(`ai-dialogue-${method}`, input => {
     if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
     return aiDialogue.action(method, input);
@@ -116,7 +130,7 @@ export function registerControlActions({
   }
   const requirePanelSpace = (scope, offline = false) => {
     if (!personalSpace) throw new Error("SPACE_UNAVAILABLE");
-    if (offline && client.snapshot().account?.phase !== "authenticated") throw new Error("ACCOUNT_LOGIN_REQUIRED");
+    if (offline && !dataOwnerKey(client.snapshot())) throw new Error("ACCOUNT_LOGIN_REQUIRED");
     if (!offline) requireConnectedBox(client.snapshot());
     if (!scope || scope !== personalSpace.snapshot().scope) throw new Error("SPACE_CONTEXT_CHANGED");
   };

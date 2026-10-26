@@ -348,3 +348,31 @@ test("existing healthy box opens apps during management recovery without startin
     assert.deepEqual(blocked.calls, []);
   }
 });
+
+const localIdentity = generation => ({ phase: 'unlocked', profileId: 'profile-a', clientId: 'local-client', generation,
+  selected: { boxId: 'box-a', boxKeyThumbprint: 'box-pin-a', principalId: 'principal-a', bindingId: 'binding-a', ownershipEpoch: 1,
+    authorizationVersion: 1, sessionId: `session-${generation}` } });
+
+test('local data identity opens applications without cloud login and is not persisted in legacy preferences', async t => {
+  const h = await harness(t, { state: { phase: 'ready', dataIdentity: localIdentity(1),
+    connection: { mode: 'lan', deviceId: 'box-a', authorization: 'local-trust-v1' }, network: { enabled: false } } });
+  h.publishAccount({ phase: 'signed_out' });
+  assert.equal((await h.ui.requestOpen('example.app')).state, 'running');
+  await h.ui.rememberConnection();
+  await assert.rejects(readFile(h.preferenceFile), { code: 'ENOENT' });
+});
+
+test('local lock and immediate unlock invalidate an in-flight application launch', async t => {
+  const h = await harness(t, { state: { phase: 'ready', dataIdentity: localIdentity(1),
+    connection: { mode: 'lan', deviceId: 'box-a', authorization: 'local-trust-v1' } } });
+  const ready = deferred(); h.setLaunch(() => ready.promise);
+  const pending = h.ui.requestOpen('example.app');
+  const rejected = assert.rejects(pending, { code: 'ACCOUNT_SESSION_CHANGED' });
+  h.publishClient({ dataIdentity: { ...localIdentity(2), phase: 'locked', selected: null } });
+  assert.equal(h.ui.snapshot().pendingOpen, null);
+  assert.equal(h.ui.snapshot().lastDeviceId, null);
+  await assert.rejects(h.ui.requestOpen('example.app'), { code: 'LOCAL_TRUST_LOCKED' });
+  h.publishClient({ dataIdentity: localIdentity(3) });
+  ready.resolve({ state: 'running' }); await rejected;
+  assert.deepEqual(h.opened, []);
+});

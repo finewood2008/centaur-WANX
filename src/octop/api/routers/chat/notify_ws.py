@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.local_data import required as local_data_required
+from octop.api.common.local_data import resolve_connection_user
 from octop.api.deps import resolve_user_from_token
 from octop.api.routers.chat.sse import json_chunk_default
 from octop.infra.agents.application import assert_same_application
@@ -28,12 +30,16 @@ async def dashboard_notifications_ws(
 ) -> None:
     """Push ``dashboard_push`` frames to the signed-in user's dashboard clients."""
     server = websocket.app.state.octop_server
-    if not token:
+    if not token and not local_data_required(websocket):
         await websocket.close(code=4001, reason="missing token")
         return
 
     try:
-        user = resolve_user_from_token(server, token)
+        user = (
+            resolve_connection_user(websocket, server, token)
+            if local_data_required(websocket)
+            else resolve_user_from_token(server, token or "")
+        )
     except OctopError as exc:
         await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
         return

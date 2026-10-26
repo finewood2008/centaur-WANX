@@ -170,7 +170,7 @@ async function main() {
       nodeGypRebuild: false,
       directories: { output },
       files: [
-        "client.mjs", "platform.mjs", "account/**", "shell/**",
+        "client.mjs", "platform.mjs", "account/**", "device-trust/**", "shell/**",
         "local-ui/**", "network/**", "octop/**", "app-host/**",
         "applications/**", "updates/**", "resources/**", "package.json", "README.md",
         "node_modules/ws/**", "node_modules/semver/**", "node_modules/yauzl/**",
@@ -226,6 +226,11 @@ async function main() {
         for (const relative of [
           "shell/entry.mjs", "shell/main.mjs", "applications/runtime.mjs",
           "shell/desktop.mjs", "shell/ui-state.mjs", "shell/ui-broadcast.mjs",
+          "shell/device-trust-window.mjs", "shell/device-trust-lifecycle.mjs",
+          "device-trust/coordinator.mjs", "device-trust/identity-vault.mjs",
+          "device-trust/management-contract.mjs", "device-trust/pinned-transport.mjs", "device-trust/binding-contract.mjs",
+          "local-ui/device-trust-preload.cjs", "local-ui/device-trust/index.html",
+          "local-ui/device-trust/view.mjs", "local-ui/device-trust/styles.css",
           "local-ui/panel/index.html", "local-ui/panel/panel.js", "local-ui/panel/panel.css",
           "local-ui/panel-preload.cjs",
           "shell/provisioning-trust.json", "local-ui/renderer/index.html",

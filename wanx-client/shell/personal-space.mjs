@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { open, stat, lstat, rename, unlink, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { dataOwnerKey, dataInteractionKey } from "../device-trust/data-context.mjs";
 import { walkUploads, importSummaries, validUploadName, sourceError, IMPORT_PAGE, IMPORT_WINDOW, MAX_UPLOAD_BYTES } from "./space-upload-imports.mjs";
 
 const PREFIX = "/api/personal-space";
@@ -34,9 +35,9 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
   let dispatchCursor = 0;
   let lastCheckpoint = 0, checkpointTimer = null, lastNotify = 0, notifyTimer = null;
   let writes = Promise.resolve(), wakeTimer = null, retryUntil = 0, degraded = false;
-  let boundAccount = null, boundBox = null, wasReady = false;
+  let boundAccount = null, boundBox = null, wasReady = false, interaction = null;
   const event = (task, action, details = {}) => { taskIndex.set(task.id, task); try { onEvent({ taskId: task.id, batchId: task.batchId, action, phase: task.phase, offset: task.offset, size: task.size, attempt: task.attempt || 0, ...details }); } catch {} };
-  const accountKey = () => { const s = client.snapshot(); return s.account?.phase === "authenticated" ? JSON.stringify([serviceURL, s.account.accountId]) : null; };
+  const accountKey = () => dataOwnerKey(client.snapshot(), serviceURL);
   // A route going offline is not an account/box change. Retain its identity,
   // but never dispatch while the live connection is not ready for that box.
   const scopeKey = () => {
@@ -45,7 +46,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     const box = state.connection?.deviceId || (account === boundAccount ? boundBox : null);
     return box ? JSON.stringify([account, box]) : null;
   };
-  const ready = () => client.snapshot().phase === "ready" && !!client.snapshot().connection?.deviceId;
+  const ready = () => !!dataInteractionKey(client.snapshot(), serviceURL);
   const notify = () => {
     if (Date.now() - lastNotify < 100) { if (!notifyTimer && !closed) { notifyTimer = setTimeout(() => { notifyTimer = null; notify(); }, 100 - (Date.now() - lastNotify)); notifyTimer.unref?.(); } return; }
     lastNotify = Date.now(); onChanged(snapshot());
@@ -60,7 +61,7 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
   };
   function snapshot() {
     const scope = scopeKey();
-    return { phase, error, storageError, overview, scope, accountId: client.snapshot().account?.accountId, boxId: client.snapshot().connection?.deviceId || boundBox, imports: importSummaries(tasks, scope), tasks: tasks.filter(t => t.scope === scope && t.direction !== "import").map(({ localPath, partialPath, localStamp, destinationStamp, digest, ...publicTask }) => publicTask) };
+    return { phase, error, storageError, overview, scope, dataOwnerId: accountKey(), dataContextId: dataInteractionKey(client.snapshot(), serviceURL), accountId: client.snapshot().account?.accountId, boxId: client.snapshot().connection?.deviceId || boundBox, imports: importSummaries(tasks, scope), tasks: tasks.filter(t => t.scope === scope && t.direction !== "import").map(({ localPath, partialPath, localStamp, destinationStamp, digest, ...publicTask }) => publicTask) };
   }
   function schedulePump(ms = 0) {
     clearTimeout(wakeTimer);
@@ -68,12 +69,12 @@ export async function createPersonalSpace({ client, store, serviceURL, chooseUpl
     wakeTimer = setTimeout(pump, Math.max(0, ms)); wakeTimer.unref?.();
   }
   function sync() {
-    const next = scopeKey(), online = ready();
-    if (next === leaseKey && online === wasReady) return;
+    const next = scopeKey(), online = ready(), nextInteraction = dataInteractionKey(client.snapshot(), serviceURL);
+    if (next === leaseKey && online === wasReady && interaction === nextInteraction) return;
     const changed = next !== leaseKey, initial = leaseKey === null && !wasReady;
-    generation++; leaseKey = next; lease = null; connectionPromise = null; wasReady = online;
+    generation++; leaseKey = next; lease = null; connectionPromise = null; wasReady = online; interaction = nextInteraction;
     boundAccount = accountKey(); boundBox = next ? JSON.parse(next)[1] : null;
-    if (changed) { overview = null; retryUntil = 0; degraded = false; }
+    if (changed || client.snapshot().dataIdentity?.profileId) { overview = null; retryUntil = 0; degraded = false; }
     phase = online ? "idle" : "disconnected"; error = null;
     for (const task of tasks) {
       if (terminal(task) || task.phase === "paused") continue;

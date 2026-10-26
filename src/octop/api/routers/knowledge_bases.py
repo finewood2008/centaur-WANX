@@ -723,6 +723,7 @@ async def list_bases(
         for base in _knowledge_service(server, user).list_visible_bases(
             actor_user_id=user.id, is_admin=_is_admin(user)
         )
+        if not getattr(user, "local_data", False) or base.owner_user_id == user.id
     ]
 
 

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -565,6 +565,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/78/e0/df5e171f685f82f37b12e1f208064e24244911079d7b767447d1af7e0d70/build-1.5.0.tar.gz", hash = "sha256:302c22c3ba2a0fd5f3911918651341ebb3896176cbdec15bd421f80b1afc7647", size = 89796, upload-time = "2026-04-30T03:18:25.17Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0d/fe/6bea5c9162869c5beba5d9c8abbed835ec85bf1ec1fba05a3822325c45f3/build-1.5.0-py3-none-any.whl", hash = "sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f", size = 26018, upload-time = "2026-04-30T03:18:23.644Z" },
+]
+
+[[package]]
+name = "centuarai-local-data-gate"
+version = "0.1.0"
+source = { editable = "packages/local-data-gate" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptography", specifier = ">=41" },
+    { name = "httpx", specifier = ">=0.27,<1" },
 ]
 
 [[package]]
@@ -2493,6 +2508,7 @@ dependencies = [
     { name = "apscheduler" },
     { name = "argon2-cffi" },
     { name = "boto3" },
+    { name = "centuarai-local-data-gate" },
     { name = "click" },
     { name = "cryptography" },
     { name = "deepagents", extra = ["video"] },
@@ -2577,6 +2593,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1" },
     { name = "boto3", specifier = ">=1.40.61" },
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "centuarai-local-data-gate", editable = "packages/local-data-gate" },
     { name = "click", specifier = ">=8.1" },
     { name = "cryptography", specifier = ">=41" },
     { name = "deepagents", extras = ["video"], specifier = "==0.7.9" },

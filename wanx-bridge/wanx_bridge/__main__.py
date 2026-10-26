@@ -261,6 +261,9 @@ async def _wait_upstream(url: str, *, transport: httpx.AsyncBaseTransport | None
 
 
 async def run(stop: asyncio.Event | None = None) -> None:
+    from centuarai_local_data_gate import load_required_policy
+    if await asyncio.to_thread(load_required_policy) is not None:
+        raise RuntimeFailure("LOCAL_DATA_REQUIRED")
     runtime = RuntimeConfig.from_env()
     config = PlatformConfig.from_env()
     provider = await asyncio.to_thread(load_provider, config, runtime)

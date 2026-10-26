@@ -12,12 +12,13 @@ import asyncio
 import contextlib
 import inspect
 import json
+import posixpath
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit
 
 import anyio
 import httpx
@@ -98,6 +99,18 @@ def _credentials(headers: Headers, query: QueryParams, *, required: bool) -> str
 
 
 def _allowed(path: str, method: str) -> bool:
+    # Local management belongs exclusively to its pinned HTTPS listener.
+    # Reserve the whole namespace for every verb/WS, including aliases that an
+    # intermediate URL parser could otherwise normalize after this boundary.
+    decoded = path
+    while True:
+        normalized = unquote(decoded)
+        if normalized == decoded:
+            break
+        decoded = normalized
+    management_path = "/" + posixpath.normpath(decoded.replace("\\", "/")).lstrip("/")
+    if management_path.casefold().startswith("/local-trust"):
+        return False
     # Match decoded ASGI paths, reject traversal and slash aliases before httpx
     # normalizes them. Never forward public /docs or /.well-known provider routes.
     if "\\" in path or "//" in path or any(p in {".", ".."} for p in path.split("/")):
@@ -212,6 +225,9 @@ def create_app(
     build_metadata: dict[str, Any] | None = None,
     resources: Any = None,
 ) -> FastAPI:
+    from centuarai_local_data_gate import load_required_policy
+    if load_required_policy() is not None:
+        raise _error("LOCAL_DATA_REQUIRED", 503)
     parsed = urlsplit(upstream_url)
     if (
         parsed.scheme not in {"http", "https"}

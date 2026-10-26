@@ -15,6 +15,7 @@ function syncWalletCountdown() {
 }
 let currentState;
 let page = "applications";
+let cloudAuthOpen = false;
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
@@ -329,10 +330,13 @@ function deviceCard(device) {
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
     <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}${connectionFailure?.deviceId === device.deviceId ? `<p class="inline-error" role="alert">${escapeHTML(connectionFailure.message)}</p>` : ""}</div>
-    <div class="device-action">${action}${device.deviceRole === "owner" || device.role === "owner" ? `${!device.local ? `<button class="text-button" data-action="configure-network" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>配置网络</button>` : ""}<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
+    <div class="device-action">${action}${!currentState.dataIdentity?.profileId && (device.deviceRole === "owner" || device.role === "owner") ? `${!device.local ? `<button class="text-button" data-action="configure-network" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>配置网络</button>` : ""}<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
+  if (currentState.dataIdentity?.profileId) return currentState.canLaunchApplications
+    ? { label: "本地身份已连接", detail: "已验证这台设备的访问授权。" }
+    : { label: "本地身份", detail: "请在本地设备安全中解锁身份并选择已授权盒子。" };
   if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
   if (currentState.network?.enabled === false) return { label: "网络尚未就绪", detail: "请检查本机网络后点击“刷新设备”重试。" };
   if (currentState.networkReady) return { label: "网络已连接", detail: "可以连接盒子并使用应用。" };
@@ -362,7 +366,7 @@ function shellHeader(title) {
     <h1 class="sr-only">${title}</h1>
     <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["space", "空间"], ["boxes", "盒子"]].map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}</button>`).join("")}</nav>
     <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div><button data-action="show-profile">个人资料<span>›</span></button><button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>`;
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.phase === "authenticated" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : `<button data-action="cloud-login">登录云账号<span>›</span></button>`}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : currentState.account?.phase === "authenticated" ? "退出云账号" : "未登录云账号"}</button></div>` : ""}</div></div></header>`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -460,7 +464,7 @@ function authView() {
   const newPassword = register || reset;
   return `<div class="auth-layout"><section class="auth-card">
     <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">个人版</span></strong><small>CentaurAI-WanX Mini</small></span></button>
-    <h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
+    <h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">${currentState.dataIdentity?.profileId ? "云账号用于应用市场与计费；盒子数据访问使用独立本地身份。" : "连接你的盒子，发现和使用 AI 应用。"}</p>
         ${reset ? `<p class="muted">通过账号绑定的手机号验证身份，重置后请用新密码登录。</p>` : `<div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>`}
         <form id="auth-form" data-form="auth" data-mode="${authMode}" novalidate>
           <label for="account-name">手机号</label>
@@ -473,6 +477,8 @@ function authView() {
           <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? authBusyLabel() : authSubmitLabel()}</button>
         </form>
         <button class="text-button auth-help" data-action="${reset ? "auth-login" : "auth-reset"}" ${busy ? "disabled" : ""}>${reset ? "返回登录" : "忘记密码？"}</button>
+        <button class="text-button auth-help" data-action="device-trust-open">本地设备安全</button>
+        ${currentState.dataIdentity?.phase === "unlocked" ? `<button class="text-button auth-help" data-action="local-return">返回本地应用</button>` : ""}
     </section></div>`;
 }
 
@@ -719,7 +725,8 @@ function settingsView() {
     <div class="page-heading"><h2>设置</h2><p class="muted">让万象在需要时，安静地为你准备好。</p></div>
     ${notice && !passwordEditing ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
     ${versionUpdatesView()}
-    <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small ${busyFor("auth.logout") ? "activity-button" : ""}" data-action="logout" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出当前账号"}</button></div></section>
+    <section class="settings-panel"><div><h3>云账号</h3><p class="muted">${currentState.dataIdentity?.profileId ? "云账号用于市场与计费。本地数据访问由可信设备授权管理。" : "已登录万象平台。退出账号会断开盒子，万象仍在后台运行。"}</p></div><div class="settings-actions">${currentState.account?.phase === "authenticated" ? `<button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small" data-action="logout" ${busy ? "disabled" : ""}>${currentState.dataIdentity?.profileId ? "退出云账号" : "退出当前账号"}</button>` : `<button class="button small" data-action="cloud-login">登录云账号</button>`}</div></section>
+    ${currentState.dataIdentity?.profileId ? `<section class="settings-panel"><div><h3>本地设备安全</h3><p class="muted">管理设备授权、成员与恢复材料。</p></div><button class="button small" data-action="device-trust-open">打开安全管理</button></section>` : ""}
     ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
     <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted ${busyFor("desktop.startup.set") ? "activity-status" : ""}" role="status">${busyFor("desktop.startup.set") ? activityLabel("正在保存设置…") : escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" aria-busy="${busyFor("desktop.startup.set")}" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
     <section class="settings-panel"><div><h3>AI 对话模型</h3><p class="muted">选择在 AI 对话中显示的模型，按盒子分别记忆。</p></div><button class="button small" data-action="show-dialogue-models">配置模型</button></section>
@@ -749,13 +756,15 @@ function boxesView() {
     ${boxVersionSummaryView()}
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
+    <section class="content-section" aria-label="本地设备安全"><div class="section-heading"><h3>本地设备安全</h3><button class="button small" data-action="device-trust-open">管理可信设备</button></div><p class="muted">使用独立本地身份建立盒子信任，并逐台确认新设备。此绑定状态与当前云账号及数据连接状态分别管理。</p></section>
     <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
     ${ownershipView()}
-    ${supportView.render()}
+    ${currentState.dataIdentity?.profileId ? "" : supportView.render()}
   </div></div>${confirmationView()}`;
 }
 
 function ownershipView() {
+  if (currentState.dataIdentity?.profileId) return "";
   const device = currentState.devices?.find(item => item.deviceId === transferDeviceId && (item.deviceRole === "owner" || item.role === "owner"));
   const pending = ownershipTransfers.filter(item => item.state === "pending_target" && Date.parse(item.expiresAt) > Date.now());
   return `<section class="content-section ownership-section" aria-label="所有权转移"><div class="section-heading"><h3>所有权转移</h3><button class="text-button" data-action="transfer-refresh" aria-busy="${Boolean(transferRequest)}" ${busy || transferRequest ? "disabled" : ""}>${transferRequest ? "正在刷新…" : "刷新转移记录"}</button></div>
@@ -797,6 +806,7 @@ async function refreshTransfers({ force = false } = {}) {
 }
 
 function maintenanceToolsView() {
+  if (currentState.dataIdentity?.profileId) return "";
   const ready = currentState.canOpenDashboard;
   const tools = [
     ["terminal", "终端", "执行命令、查看日志与检查服务。", '<span aria-hidden="true">&gt;_</span>'],
@@ -1403,7 +1413,8 @@ function updateCreditsDOM(current, incoming) {
 }
 
 function render(state) {
-  const auth = state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
+  if (state.account?.phase === "authenticated") cloudAuthOpen = false;
+  const auth = cloudAuthOpen || state.route === "auth" || state.phase === "signed_out" || state.phase === "authenticating";
   const previousAuth = app.querySelector?.('[data-form="auth"]');
   if (auth && previousAuth?.elements) authUsername = previousAuth.elements.username.value.trim();
   currentState = state;
@@ -1952,6 +1963,8 @@ app.addEventListener("click", async (event) => {
     await creditsView.action(action, target.dataset);
     return;
   }
+  if (action === "cloud-login") { cloudAuthOpen = true; profileMenuOpen = false; render(currentState); return; }
+  if (action === "local-return") { cloudAuthOpen = false; render(currentState); return; }
   if (action === "logout") { await run("auth.logout"); return; }
   if (["show-applications", "show-ai-dialogue", "show-space", "show-boxes", "show-maintenance", "show-settings", "show-credits", "show-profile", "show-notifications", "show-dialogue-models"].includes(action)) {
     if (page === "provisioning") return;
@@ -1966,6 +1979,7 @@ app.addEventListener("click", async (event) => {
   if (action === "pending-cancel") { const pending = currentState.ui?.pendingOpen; if (pending) await run("applications.cancel-open", { intentId: pending.id }); return; }
   if (action === "pending-confirm") { const pending = currentState.ui?.pendingOpen; if (pending && pendingSelection?.deviceId && (currentState.networkReady || currentState.devices?.some(device => device.local && device.deviceId === pendingSelection.deviceId)) && !["connecting", "opening"].includes(pending.phase)) { const opened = await run("applications.confirm-open", { intentId: pending.id, deviceId: pendingSelection.deviceId }); if (opened) { showOpenedStatus(pending.applicationId); render(currentState); } } return; }
   if (action === "desktop-about") { await run("desktop.about"); return; }
+  if (action === "device-trust-open") { await run("device-trust.open"); return; }
   if (busy && action !== "cancel-provisioning") return;
   if (action === "updates-client-check") { await run("updates.client.check"); return; }
   if (action === "updates-client-download") { if (currentState.upgrades?.client?.phase === "available") await run("updates.client.download"); return; }
@@ -2319,9 +2333,10 @@ app.addEventListener("submit", async (event) => {
 
 function acceptRemoteState(state) {
   window.wanxSpace?.hostState(state);
-  const creditsIdentity = state.route === "auth" ? null : JSON.stringify([state.account?.accountId, state.account?.clientId]);
+  const cloudAuthenticated = state.dataIdentity?.profileId ? state.account?.phase === "authenticated" : state.route !== "auth";
+  const creditsIdentity = cloudAuthenticated ? JSON.stringify([state.account.accountId, state.account.clientId]) : null;
   const creditsChanged = creditsView.reset(creditsIdentity);
-  const account = state.route === "auth" ? null : state.account?.accountId || "authenticated";
+  const account = cloudAuthenticated ? state.account.accountId || "authenticated" : null;
   const accountChanged = account !== marketAccount || state.account?.clientId !== currentState?.account?.clientId;
   if (accountChanged || state.activeDeviceId === connectionFailure?.deviceId) connectionFailure = null;
   if (marketConfirmation?.updateReleaseId && (state.upgrades?.client?.phase !== "downloaded" || state.upgrades?.client?.candidate?.releaseId !== marketConfirmation.updateReleaseId)) marketConfirmation = null;
@@ -2381,7 +2396,7 @@ function acceptRemoteState(state) {
   }
   render(state);
   if (creditsChanged && creditsIdentity) void creditsView.refresh();
-  if (state.route !== "auth" && accountChanged) {
+  if (cloudAuthenticated && accountChanged) {
     void refreshMarket();
   }
 }

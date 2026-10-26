@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { dataInteractionKey, localDataSelection } from "../device-trust/data-context.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 const applicationID = (value) => typeof value === "string" && /^[a-z][a-z0-9._-]{1,63}$/.test(value);
@@ -28,6 +29,9 @@ export async function createUIState({
   const operations = new Map();
   let intent = null, generation = 0, closed = false, writes = Promise.resolve();
   const identityKey = () => {
+    const local = client.snapshot().dataIdentity;
+    if (local?.profileId) return local.phase === "unlocked"
+      ? JSON.stringify(["local-trust-v1", local.profileId, local.clientId, local.generation]) : null;
     const state = account.snapshot();
     if (state.phase !== "authenticated") return null;
     const identity = account.getIdentity?.() || state;
@@ -35,6 +39,8 @@ export async function createUIState({
   };
   let identity = identityKey();
   const preferenceKey = () => {
+    // Local associations belong to the encrypted vault, never this legacy file.
+    if (client.snapshot().dataIdentity?.profileId) return null;
     const state = account.snapshot();
     return state.phase === "authenticated" && state.accountId
       ? JSON.stringify([environment, state.accountId]) : null;
@@ -42,7 +48,9 @@ export async function createUIState({
   const snapshot = () => {
     const key = preferenceKey();
     return {
-      lastDeviceId: key ? preferences.lastDevices[key] || null : null,
+      lastDeviceId: client.snapshot().dataIdentity?.profileId
+        ? localDataSelection(client.snapshot())?.boxId || null
+        : key ? preferences.lastDevices[key] || null : null,
       pendingOpen: intent ? {
         id: intent.id, applicationId: intent.applicationId, deviceId: intent.deviceId,
         phase: intent.phase, ...(intent.error ? { error: intent.error } : {}),
@@ -56,9 +64,11 @@ export async function createUIState({
   const assertOpen = () => { if (closed) throw fail("UI_STATE_CLOSED"); };
   const assertAccount = () => {
     assertOpen();
+    if (client.snapshot().dataIdentity?.profileId && !identityKey()) throw fail("LOCAL_TRUST_LOCKED");
     if (!identityKey()) throw fail("ACCOUNT_LOGIN_REQUIRED");
   };
-  const connected = (state) => state.account?.phase === "authenticated" &&
+  const connected = (state) => state.dataIdentity?.profileId || state.connection?.authorization === "local-trust-v1"
+    ? !!dataInteractionKey(state) : state.account?.phase === "authenticated" &&
     state.phase === "ready" && deviceID(state.connection?.deviceId) &&
     (state.connection.mode === "local" || (state.network?.enabled !== false &&
       ["ready", "recovering"].includes(state.network?.phase) && state.platform?.phase === "ready" && state.connection.mode === "netbird"));
@@ -168,8 +178,11 @@ export async function createUIState({
     const current = intent;
     if (!current || current.id !== intentId) throw fail("APPLICATION_OPEN_NOT_PENDING");
     if (!["confirm", "failed"].includes(current.phase)) throw fail("APPLICATION_OPEN_BUSY");
-    if (!deviceID(deviceId)) throw fail("INVALID_DEVICE_ID");
     const state = client.snapshot();
+    const validDevice = state.dataIdentity?.profileId
+      ? typeof deviceId === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(deviceId)
+      : deviceID(deviceId);
+    if (!validDevice) throw fail("INVALID_DEVICE_ID");
     if (!(state.devices || []).some(device => device.deviceId === deviceId)) throw fail("NETWORK_DEVICE_ACCESS_DENIED");
     current.deviceId = deviceId;
     return openIntent(current, !(connected(state) && state.connection.deviceId === deviceId));
@@ -186,7 +199,7 @@ export async function createUIState({
     }
     return snapshot();
   }
-  const unsubscribeAccount = account.subscribe(() => {
+  const syncIdentity = () => {
     const next = identityKey();
     if (!next || next !== identity) {
       generation++;
@@ -195,8 +208,12 @@ export async function createUIState({
     }
     identity = next;
     emit();
+  };
+  const unsubscribeAccount = account.subscribe(syncIdentity);
+  const unsubscribeClient = client.subscribe(() => {
+    if (identityKey() !== identity) syncIdentity();
+    void rememberConnection();
   });
-  const unsubscribeClient = client.subscribe(() => { void rememberConnection(); });
   void rememberConnection();
   return Object.freeze({
     snapshot, requestOpen, confirmOpen, cancelOpen, invalidateOpen,

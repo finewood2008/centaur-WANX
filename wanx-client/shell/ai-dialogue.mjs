@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { dataOwnerKey, dataInteractionKey } from '../device-trust/data-context.mjs';
 
 export const DIALOGUE_APPLICATION_ID = 'centaurai.wanx.dialogue';
 const fail = code => Object.assign(new Error(code), { code });
@@ -20,6 +21,11 @@ export function createAIDialogue({ client, preferenceStore, onEvent = () => {} }
   let preferenceData = null, preferenceLoad = null, preferenceWrites = Promise.resolve();
   function ownerKey() {
     const state = client.snapshot();
+    if (state.dataIdentity?.profileId) {
+      const owner = dataOwnerKey(state);
+      if (!owner) throw fail('DIALOGUE_CONTEXT_CHANGED');
+      return createHash('sha256').update(owner).digest('hex');
+    }
     return createHash('sha256').update(JSON.stringify([state.account.accountId, state.account.clientId, state.connection.deviceId])).digest('hex');
   }
   async function loadPreferences() {
@@ -51,7 +57,12 @@ export function createAIDialogue({ client, preferenceStore, onEvent = () => {} }
   }
   function scope() {
     const s = client.snapshot();
-    if (closed || s.account?.phase !== 'authenticated' || s.phase !== 'ready' || !s.connection?.deviceId) return null;
+    if (closed) return null;
+    if (s.dataIdentity?.profileId || s.connection?.authorization === 'local-trust-v1') {
+      const interaction = dataInteractionKey(s);
+      return interaction ? createHash('sha256').update(interaction).digest('hex') : null;
+    }
+    if (s.account?.phase !== 'authenticated' || s.phase !== 'ready' || !s.connection?.deviceId) return null;
     return createHash('sha256').update(JSON.stringify([s.account.accountId, s.account.clientId, s.connection.deviceId, s.connection.gatewayURL])).digest('hex');
   }
   let currentScope = scope();

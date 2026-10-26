@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "centuarai-local-data-gate"
+version = "0.1.0"
+description = "Pinned gateway proof verification and bounded native ASGI admission"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=41", "httpx>=0.27,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["centuarai_local_data_gate"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+

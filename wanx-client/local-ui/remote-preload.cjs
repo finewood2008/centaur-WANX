@@ -24,13 +24,22 @@ function projectState(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const account = source.account || { phase: "signed_out" };
   const authenticated = account.phase === "authenticated";
+  const localMode = Boolean(source.dataIdentity?.profileId);
+  const localUnlocked = localMode && source.dataIdentity.phase === "unlocked";
+  const availableIdentity = localMode ? localUnlocked : authenticated;
   const connection = source.connection || null;
   const networkAvailable = source.network?.enabled !== false &&
     source.platform?.phase === "ready" && ["ready", "recovering"].includes(source.network?.phase);
   const networkReady = networkAvailable && source.network?.phase === "ready";
   // Existing connections follow confirmed data-path health, not management churn.
-  const connected = authenticated && source.phase === "ready" && Boolean(connection?.deviceId) &&
-    (connection.mode === "local" || (networkAvailable && connection.mode === "netbird"));
+  const selected = source.dataIdentity?.selected;
+  const connected = source.phase === "ready" && Boolean(connection?.deviceId) && (localMode
+    ? localUnlocked && connection.authorization === "local-trust-v1" && selected?.boxId === connection.deviceId && Boolean(selected?.sessionId)
+    : authenticated && (connection.mode === "local" || (networkAvailable && connection.mode === "netbird")));
+  const dataOwnerId = localUnlocked && selected ? JSON.stringify(["local-trust-v1", source.dataIdentity.profileId,
+    selected.boxId, selected.boxKeyThumbprint, selected.ownershipEpoch, selected.principalId]) : null;
+  const dataContextId = connected && localMode ? JSON.stringify([dataOwnerId, source.dataIdentity.clientId,
+    source.dataIdentity.generation, selected.bindingId, selected.authorizationVersion, selected.sessionId]) : null;
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,
@@ -43,8 +52,9 @@ function projectState(raw) {
   return {
     ...source,
     connectionPhase: source.phase || "disconnected",
-    route: authenticated ? "applications" : "auth",
-    phase: !authenticated
+    dataOwnerId, dataContextId,
+    route: availableIdentity ? "applications" : "auth",
+    phase: !availableIdentity
       ? account.phase === "authenticating"
         ? "authenticating"
         : "signed_out"
@@ -56,7 +66,7 @@ function projectState(raw) {
       displayName: account.profile?.displayName || "万象用户",
     },
     devices,
-    networkReady,
+    networkReady: localMode ? localUnlocked : networkReady,
     canLaunchApplications: connected,
     canOpenDashboard: connected && Boolean(connection.gatewayURL),
     availableDevices: devices.filter((device) => device.accessState === "ready"),
@@ -119,6 +129,7 @@ const actions = {
   "auth.logout": () => ipcRenderer.invoke("wanx-client:logout"),
   "auth.forget-login": () => ipcRenderer.invoke("wanx-client:remembered-login-forget"),
   "devices.refresh": () => ipcRenderer.invoke("wanx-client:refresh-devices"),
+  "device-trust.open": () => ipcRenderer.invoke("wanx-client:device-trust-open"),
   "devices.discovery": (input) => ipcRenderer.invoke("wanx-client:discovery-devices", { deviceIds: input?.deviceIds }),
   "devices.claim": (input) => ipcRenderer.invoke("wanx-client:console-claim", { claimCode: input?.claimCode, clientAttemptId: input?.clientAttemptId,
     ...(input?.expectedDeviceId === undefined ? {} : { expectedDeviceId: input.expectedDeviceId }) }),

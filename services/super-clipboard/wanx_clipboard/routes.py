@@ -22,7 +22,18 @@ async def call(operation, *args):
 
 
 async def service(request: Request):
-    api = WanxAPI(request.app.state.wanx, request.headers.get("authorization", ""))
+    context = None
+    if request.app.state.local_data_required:
+        from centuarai_local_data_gate import get_context
+
+        context = get_context(request.scope)
+        if context is None:
+            raise SpaceError("LOCAL_DATA_AUTH_REQUIRED", 401)
+    api = WanxAPI(
+        request.app.state.wanx,
+        "" if context else request.headers.get("authorization", ""),
+        context=context,
+    )
     request.state.wanx_api = api
     owner = await call(api.owner)
     return await call(ClipboardService, request.app.state.home, owner, api, request.app.state.locks)
@@ -257,7 +268,7 @@ class AgentInput(Input):
 
 @router.post("/agent-access", summary="Read shared clipboard after live WANX Agent and task checks")
 async def agent_access(body: AgentInput, request: Request, store: Store = None):
-    token = request.headers.get("x-space-link", "")
+    token = store.api.agent_token(request.headers.get("x-space-link", ""))
     args = body.model_dump()
     outcome = "ok"
     try:

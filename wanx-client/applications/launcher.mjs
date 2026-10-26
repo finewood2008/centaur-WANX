@@ -2,6 +2,7 @@ import { spawn as defaultSpawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { assertApplicationPlatform, resolveApplicationEntry } from "./manifest.mjs";
+import { prepareApplicationProfile } from "./data-profile.mjs";
 
 const fail = (code) => Object.assign(new Error(code), { code });
 
@@ -27,6 +28,7 @@ export function createApplicationLauncher({
   }
   function release(entry) {
     if (!entry.released) {
+      entry.unsubscribeInvalidated?.(); entry.unsubscribeInvalidated = undefined;
       try { entry.released = Promise.resolve(entry.session.close()); }
       catch (error) { entry.released = Promise.reject(error); }
     }
@@ -48,8 +50,9 @@ export function createApplicationLauncher({
       const released = release(entry);
       released.catch(() => {});
       if (!entry.exited) {
+        if (entry.session.dataProfile) entry.child.send?.({ type: "wanx:application-invalidate", launchId: entry.session.launchId }, () => {});
         entry.child.kill();
-        if (!await waitForExit(entry, 5000)) {
+        if (!await waitForExit(entry, entry.session.dataProfile ? 500 : 5000)) {
           entry.child.kill("SIGKILL");
           if (!await waitForExit(entry, 2000)) throw fail("APPLICATION_STOP_FAILED");
         }
@@ -80,16 +83,21 @@ export function createApplicationLauncher({
     }
     const bundled = record.launchMode === "bundled";
     const executable = bundled ? await resolveApplicationEntry(record.installPath, record) : electronPath;
-    const userData = bundled ? path.resolve(record.installPath, "..", "..", ".runtime", record.applicationId) : null;
-    if (userData) await mkdir(userData, { recursive: true, mode: 0o700 });
     assertActive(signal);
     const session = await host.createSession(record, { signal });
     let entry;
     try {
+      const userData = session.dataProfile
+        ? await prepareApplicationProfile(path.resolve(record.installPath, "..", ".."), record.applicationId, session.dataProfile)
+        : bundled ? path.resolve(record.installPath, "..", "..", ".runtime", record.applicationId) : null;
+      if (userData && !session.dataProfile) await mkdir(userData, { recursive: true, mode: 0o700 });
       assertActive(signal);
+      session.assertLive?.();
       const child = spawn(executable, bundled ? [] : record.envelope ? launcherArgs : [...runtimeArgs, `--wanx-application=${record.installPath}`], {
         cwd: record.installPath,
-        env: { ...process.env, ...session.environment, ...(userData ? { WANX_HOST_USER_DATA_DIR: userData } : {}) },
+        env: { ...process.env, ...session.environment,
+          WANX_HOST_DATA_PROFILE: session.dataProfile || "",
+          WANX_HOST_USER_DATA_DIR: userData || "" },
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         windowsHide: true,
         detached: false,
@@ -105,6 +113,11 @@ export function createApplicationLauncher({
       };
       child.once("exit", onExit);
       child.on("error", () => { if (!child.pid) onExit(); });
+      entry.unsubscribeInvalidated = session.onInvalidated?.(() => {
+        void terminate(state, entry).catch(() => {});
+      });
+      if (entry.exited) throw fail("APPLICATION_START_CANCELED");
+      session.assertLive?.();
       await new Promise((resolve, reject) => {
         let timer;
         const finish = error => {

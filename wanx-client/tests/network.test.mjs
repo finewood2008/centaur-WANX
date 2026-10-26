@@ -118,6 +118,22 @@ test("connected peer resolution supplies private agent and refreshes allowlist",
   );
 });
 
+test('independent data tunnels partition pins and profile generations from legacy CA pools and can release their own scope', async t => {
+  const { network } = harness(t); await network.setEnabled(true);
+  const input = { url: 'https://100.80.1.2:9443', mode: 'netbird' };
+  const pin = Buffer.alloc(32, 4).toString('base64url');
+  const legacy = await network.resolveEndpoint(input);
+  const first = await network.resolveLocalDataEndpoint(input, { tlsSpkiSha256: pin, scope: 'profile:1:one' });
+  const reused = await network.resolveLocalDataEndpoint(input, { tlsSpkiSha256: pin, scope: 'profile:1:one' });
+  const next = await network.resolveLocalDataEndpoint(input, { tlsSpkiSha256: pin, scope: 'profile:2:two' });
+  assert.equal(first.agent, reused.agent); assert.notEqual(first.agent, legacy.agent); assert.notEqual(first.agent, next.agent);
+  network.releaseLocalDataEndpoints('profile:1:one');
+  const fresh = await network.resolveLocalDataEndpoint(input, { tlsSpkiSha256: pin, scope: 'profile:1:one' });
+  assert.notEqual(fresh.agent, first.agent);
+  assert.equal((await network.resolveEndpoint(input)).agent, legacy.agent);
+  await rejectsCode(network.resolveLocalDataEndpoint({ ...input, url: 'http://100.80.1.2:9443' }, { tlsSpkiSha256: pin, scope: 'profile:1' }), 'LOCAL_DATA_INVALID');
+});
+
 test("disconnected and unknown peers cannot resolve", async (t) => {
   const { network } = harness(t, (method) => {
     const status = connected([{ ip: "100.80.1.2", connected: false }]);

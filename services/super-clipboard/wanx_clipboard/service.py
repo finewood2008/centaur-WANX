@@ -92,6 +92,7 @@ class ClipboardService:
 
     def __init__(self, home: Path, owner: str, api: WanxAPI, locks: dict):
         self.api = api
+        self.api.require_live()
         key = hashlib.sha256(owner.encode()).hexdigest()
         self.directory = home / key
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -104,6 +105,7 @@ class ClipboardService:
     @contextmanager
     def _db(self):
         with self.lock:
+            self.api.require_live()
             if self.connection is not None:
                 yield self.connection
                 return
@@ -113,6 +115,9 @@ class ClipboardService:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 yield db
+                # Blocking upstream calls may outlive a revocation. Do not publish
+                # their result into the local manifest after authority is lost.
+                self.api.require_live()
                 db.commit()
             except BaseException:
                 db.rollback()
@@ -503,6 +508,8 @@ class ClipboardService:
     def clipboard_export(
         self, item_id: str, expected: int, export_id: str, parent: str, space_id: str
     ) -> dict:
+        if self.api.local_data and space_id != "personal":
+            raise SpaceError("LOCAL_DATA_SCOPE_DENIED", 403)
         valid_id(export_id)
         with self._db() as db:
             row = self._clip_item(db, item_id)

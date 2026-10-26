@@ -129,8 +129,26 @@ class Overview(BaseModel):
 
 
 async def space(
-    user: Any = Depends(current_user), server: Any = Depends(get_server)
+    request: Request, user: Any = Depends(current_user), server: Any = Depends(get_server)
 ) -> PersonalSpace:
+    from centuarai_local_data_gate import get_context
+
+    context = get_context(request.scope)
+    scope = context.claims["serviceContext"].get("clipboardScope") if context else None
+    if scope is not None:
+        from functools import partial
+
+        from octop.infra.personal_space.local_scope import ClipboardSpace
+
+        return await call(
+            partial(
+                ClipboardSpace,
+                server.paths.root / ".wanx-personal-space",
+                user.id,
+                clipboard_scope=scope,
+                live=context.require_live,
+            )
+        )
     return await call(PersonalSpace, server.paths.root / ".wanx-personal-space", user.id)
 
 

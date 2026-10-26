@@ -5,6 +5,7 @@ import https from "node:https";
 import net from "node:net";
 import { readFile } from "node:fs/promises";
 import { once } from "node:events";
+import { createHash, X509Certificate } from "node:crypto";
 import { createTunnelAgent } from "../network/tunnel.mjs";
 
 const token = "test-proxy-token-with-no-production-value";
@@ -85,6 +86,18 @@ test("HTTPS tunnel validates certificates even if a caller tries to disable veri
     request(url, { agent, rejectUnauthorized: false }),
     (error) => error.code === "DEPTH_ZERO_SELF_SIGNED_CERT",
   );
+});
+
+test('independent pin tunnel accepts exactly its saved private TLS key and rejects a different pin before HTTP', async t => {
+  const { proxy, cert, seen } = await fixture(t);
+  const url = 'https://private-box.wanx.test:8088';
+  const tlsSpkiSha256 = createHash('sha256').update(new X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64url');
+  const agent = createTunnelAgent({ url, proxy, tlsSpkiSha256 }); t.after(() => agent.destroy());
+  assert.equal((await request(url, { agent })).body, 'secure response');
+  assert.equal(seen.length, 1);
+  const wrong = createTunnelAgent({ url, proxy, tlsSpkiSha256: Buffer.alloc(32, 1).toString('base64url') }); t.after(() => wrong.destroy());
+  await assert.rejects(request(url, { agent: wrong }), error => error.code === 'LOCAL_DATA_TLS_PIN_MISMATCH');
+  assert.equal(seen.length, 1);
 });
 
 test("HTTPS tunnel preserves target Host and SNI and rejects a trusted wrong-host certificate", async (t) => {

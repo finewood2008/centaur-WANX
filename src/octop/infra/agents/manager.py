@@ -582,9 +582,12 @@ class AgentManager:
         *,
         defer_bootstrap: bool = False,
         workspace_initializer: Callable[[AgentRow, Any], Awaitable[None]] | None = None,
+        before_side_effect: Callable[[], None] | None = None,
     ) -> AgentRow:
         """Create a new agent, persist to DB, and register with harness."""
         async with self._lock:
+            if before_side_effect is not None:
+                await asyncio.to_thread(before_side_effect)
             if spec.application_id not in {"wanx", "zhijun"}:
                 loop = asyncio.get_running_loop()
                 product = await loop.run_in_executor(
@@ -717,6 +720,8 @@ class AgentManager:
             else:
                 raw_mcp = profile.get("mcp_servers")
                 mcp_servers_json = raw_mcp if isinstance(raw_mcp, str) else None
+            if before_side_effect is not None:
+                await asyncio.to_thread(before_side_effect)
             self._repos.agent_repo.create(
                 agent_id=agent_id,
                 user_id=spec.user_id,
@@ -772,6 +777,8 @@ class AgentManager:
                 await self._seed_expert_template(row, spec.template_name)
             if workspace_initializer is not None:
                 try:
+                    if before_side_effect is not None:
+                        await asyncio.to_thread(before_side_effect)
                     workspace = self._backend_workspace_for_row(row)
                     await workspace_initializer(row, workspace)
                     row = self._repos.agent_repo.get(agent_id)
@@ -784,6 +791,8 @@ class AgentManager:
                     else:
                         await self._abort_incomplete_create(agent_id)
                     raise
+            if before_side_effect is not None:
+                await asyncio.to_thread(before_side_effect)
             if defer_bootstrap:
                 self._repos.agent_repo.set_state(agent_id, "starting")
                 row = self._repos.agent_repo.get(agent_id)
@@ -3676,6 +3685,19 @@ class AgentManager:
         from octop.infra.loops.boundary import LoopBoundary
 
         agent_middleware.append(LoopBoundary())
+        local_principals = getattr(self._repos, "local_data_principal_repo", None)
+        if local_principals is not None and local_principals.contains_user(row.user_id):
+            from octop.infra.agents.middleware.local_data import LocalDataToolBoundary
+
+            # Local data mode has a deliberately small reviewed model surface.
+            # Do not run plugin/image/path middleware before the tool boundary.
+            agent_middleware = [
+                LocalDataToolBoundary(),
+                TokenQuotaMiddleware(
+                    policy_repo=self._repos.user_policy_repo, usage_repo=self._repos.usage_repo
+                ),
+                ReasoningRequestMiddleware(),
+            ]
 
         # agent_list / ask_agent: PeerAgentMiddleware (team_enabled=True), not config.tools.
 

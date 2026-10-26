@@ -146,13 +146,14 @@
   }
   function hostState(state) {
     window.wanxClipboard?.hostState(state);
-    if (state.route === "auth" || (host && state.account?.accountId !== host.account?.accountId)) lastSeen = null;
+    const owner = value => value?.dataIdentity?.profileId ? value.dataOwnerId : value?.account?.accountId;
+    if (state.route === "auth" || (host && owner(state) !== owner(host))) lastSeen = null;
     if (state.activeDeviceId && lastSeen && state.activeDeviceId !== lastSeen.boxId) lastSeen = null;
-    const priorBox = state.account?.accountId === host?.account?.accountId ? host?.activeDeviceId || status.boxId : null;
+    const priorBox = owner(state) && owner(state) === owner(host) ? host?.activeDeviceId || status.boxId : null;
     const reconnected = host && !host.canLaunchApplications && state.canLaunchApplications;
     host = { ...state, activeDeviceId: state.activeDeviceId || priorBox };
     if (!state.canLaunchApplications) clearDrag();
-    const next = state.route !== "auth" ? `${state.account?.accountId}:${host.activeDeviceId || ""}` : null;
+    const next = state.dataIdentity?.profileId ? state.dataContextId || null : state.route !== "auth" ? `${state.account?.accountId}:${host.activeDeviceId || ""}` : null;
     if (scope !== next) {
       previews?.reset();
       stopMarquee(); clearSelection(); batchBusy = false; contextMenu = null; query = "";
@@ -750,7 +751,8 @@
   window.wanxClient.onSpaceContentChanged?.(() => { void workspaces?.updateSync?.(); if (dialog || workspaces?.blocked()) { pendingRefresh = true; return; } if (active && !loading && !dialog && !moving && !marquee) void load(); });
   window.wanxClient.onSpaceState?.(next => {
     if (!host || host.route === "auth") return;
-    if (next.accountId !== host.account?.accountId || next.boxId !== host.activeDeviceId) {
+    if ((host.dataIdentity?.profileId ? !host.dataContextId || next.dataContextId !== host.dataContextId
+      : next.accountId !== host.account?.accountId) || next.boxId !== host.activeDeviceId) {
       revision++; workspaces?.reset(null); workspace="personal"; stopMarquee(); clearDrag(); clearSelection(); batchBusy = false; contextMenu = null; query = ""; listing = { items: [], breadcrumbs: [] }; status = { phase: "idle", tasks: [] }; closeDialog(); transferIssue = null; loading = false; render(); return;
     }
     const previous = status.tasks || [];

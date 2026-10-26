@@ -60,6 +60,7 @@
       "client.mjs",
       "platform.mjs",
       "account/**",
+      "device-trust/**",
       "shell/**",
       "local-ui/**",
       "network/**",

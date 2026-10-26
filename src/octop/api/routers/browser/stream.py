@@ -39,6 +39,8 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.local_data import required as local_data_required
+from octop.api.common.local_data import resolve_connection_user
 from octop.api.deps import resolve_user_from_token
 from octop.api.routers.browser.harness import (
     control_owner_for,
@@ -377,11 +379,15 @@ async def browser_stream_ws(
     authorization = websocket.headers.get("authorization", "")
     if authorization:
         token = authorization[7:] if authorization.startswith("Bearer ") else None
-    if not token:
+    if not token and not local_data_required(websocket):
         await websocket.close(code=4001, reason="missing token")
         return
     try:
-        user = resolve_user_from_token(server, token)
+        user = (
+            resolve_connection_user(websocket, server, token)
+            if local_data_required(websocket)
+            else resolve_user_from_token(server, token or "")
+        )
     except Exception as exc:
         await websocket.close(code=4001, reason=f"auth failed: {exc}")
         return

@@ -1,4 +1,5 @@
 import { evaluateApplicationCompatibility, validateCompatibility } from "./compatibility.mjs";
+import { localBindingScope } from './local-binding-scope.mjs';
 
 const fail = code => Object.assign(new Error(code), { code });
 const safeCode = value => typeof value === "string" && /^[A-Z][A-Z0-9_]{1,80}$/.test(value);
@@ -19,17 +20,32 @@ function preparationResponse(response) {
 
 /** No credentials or readiness evidence survive the authenticated box connection. */
 export function createApplicationBackend({ client, account, clientVersion }) {
+  function identityKey(current) {
+    if (current.protocolVersion === 2 && current.authorization === 'local-trust-v1') {
+      const identity = current.dataIdentity, selected = identity?.selected || identity;
+      if (!identity || ['profileId', 'clientId'].some(key => typeof identity[key] !== 'string') ||
+          ['boxId', 'boxKeyThumbprint', 'principalId', 'bindingId', 'sessionId'].some(key => typeof selected?.[key] !== 'string') ||
+          !Number.isSafeInteger(selected.ownershipEpoch) || !Number.isSafeInteger(identity.generation)) throw fail('UPDATE_SESSION_CHANGED');
+      return JSON.stringify(['local-trust-v1', identity.profileId, identity.clientId, identity.generation,
+        selected.boxId, selected.boxKeyThumbprint, selected.ownershipEpoch, selected.principalId, selected.bindingId, selected.sessionId]);
+    }
+    return JSON.stringify([current.accountId, current.clientId, current.boxId]);
+  }
   function assertIdentity(captured, connection) {
     const current = connection.context();
-    if (JSON.stringify([current.accountId, current.clientId, current.boxId]) !== captured ||
-        account.getIdentity()?.accountId !== current.accountId || current.connection !== "ready") throw fail("UPDATE_SESSION_CHANGED");
+    if (identityKey(current) !== captured ||
+        (current.authorization !== 'local-trust-v1' && account.getIdentity()?.accountId !== current.accountId) || current.connection !== "ready") throw fail("UPDATE_SESSION_CHANGED");
     return current;
   }
   async function fixedConnection(applicationId, compatibility) {
     if (client.snapshot().phase !== "ready") throw fail("NETWORK_NOT_READY");
-    const connection = await client.applicationConnection(applicationId, { backendProductId: compatibility.backendProductId });
+    const local = client.snapshot().connection?.authorization === 'local-trust-v1';
+    // Resource preparation is a fixed main-owned host operation. Launch derives
+    // an independent app session only after real native readiness succeeds.
+    const connection = await client.applicationConnection(local ? undefined : applicationId,
+      local ? undefined : { backendProductId: compatibility.backendProductId });
     const current = connection.context();
-    const captured = JSON.stringify([current.accountId, current.clientId, current.boxId]);
+    const captured = identityKey(current);
     const check = () => assertIdentity(captured, connection);
     check();
     async function post(path, body) {
@@ -42,13 +58,20 @@ export function createApplicationBackend({ client, account, clientVersion }) {
   }
   function validateBinding(result, input, fixed) {
     const scope = result?.bindingScope, expected = input.manifest.bindingScope || input.bindingScope;
+    const local = fixed.current.authorization === 'local-trust-v1';
+    if (local) {
+      const identity = fixed.current.dataIdentity, selected = identity.selected || identity;
+      localBindingScope(scope, { deviceId: selected.boxId, boxKeyThumbprint: selected.boxKeyThumbprint,
+        principalId: selected.principalId, ownershipEpoch: selected.ownershipEpoch, artifactId: input.descriptor.artifactId });
+      if (expected && JSON.stringify(localBindingScope(expected)) !== JSON.stringify(localBindingScope(scope))) throw fail('APPLICATION_PREPARATION_INVALID');
+    }
     if (!/^[a-f0-9]{64}$/.test(result?.bindingSetId || "") ||
         typeof result.operationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(result.operationId) ||
         input.operationId && input.operationId !== result.operationId ||
         (input.bindingSetId || input.manifest.bindingSetId) && (input.bindingSetId || input.manifest.bindingSetId) !== result.bindingSetId ||
-        !scope || scope.accountId !== fixed.current.accountId || scope.deviceId !== fixed.current.boxId ||
+        !scope || (!local && scope.accountId !== fixed.current.accountId) || scope.deviceId !== fixed.current.boxId ||
         scope.artifactId !== input.descriptor.artifactId || !Number.isSafeInteger(scope.ownershipEpoch) || scope.ownershipEpoch < 1 ||
-        expected && ["accountId", "deviceId", "ownershipEpoch", "artifactId"].some(key => expected[key] !== scope[key]))
+        !local && expected && ["accountId", "deviceId", "ownershipEpoch", "artifactId"].some(key => expected[key] !== scope[key]))
       throw fail("APPLICATION_PREPARATION_INVALID");
     return { bindingSetId: result.bindingSetId, operationId: result.operationId, bindingScope: structuredClone(scope) };
   }
@@ -121,6 +144,11 @@ export function createApplicationBackend({ client, account, clientVersion }) {
     const result = { clientVersion, hostProtocol: 1, backendRequired, expectedDeviceId: state.connection?.deviceId || null };
     if (!backendRequired || !compatibility) return result;
     if (manifest.protocolVersion !== 3) {
+      if (state.connection?.authorization === 'local-trust-v1') {
+        const fixed = await fixedConnection(manifest.applicationId, compatibility);
+        result.backend = await fixed.post('/api/platform/applications/readiness', { schemaVersion: 1, applicationId: manifest.applicationId, compatibility });
+        fixed.check(); return result;
+      }
       const captured = JSON.stringify({ account: account.getIdentity(), deviceId: state.connection?.deviceId });
       const response = await client.applicationRequest({ path: "/api/platform/applications/readiness", method: "POST",
         headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ schemaVersion: 1, applicationId: manifest.applicationId, compatibility })) });
@@ -148,6 +176,17 @@ export function createApplicationBackend({ client, account, clientVersion }) {
         context: () => ({ ...fixed.check(), resourceBindings: structuredClone(bindings), applicationId: manifest.applicationId, artifactId: descriptor.artifactId,
           ...(candidate ? { bindingSetId, bindingScope: structuredClone(result.backend.bindingScope) } : {}) }),
       };
+      if (fixed.connection.kind === 'local-trust-v1') {
+        result.applicationConnection.deriveApplication = async input => {
+          fixed.check();
+          if (input.applicationId !== manifest.applicationId) throw fail('APPLICATION_PREPARATION_INVALID');
+          const derived = await fixed.connection.deriveApplication(input);
+          try { fixed.check(); } catch (error) { derived.close(); throw error; }
+          return { ...derived, context: () => ({ ...derived.context(), resourceBindings: structuredClone(bindings),
+            applicationId: manifest.applicationId, artifactId: descriptor.artifactId,
+            ...(candidate ? { bindingSetId, bindingScope: structuredClone(result.backend.bindingScope) } : {}) }) };
+        };
+      }
     }
     return result;
   }

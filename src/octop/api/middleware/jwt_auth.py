@@ -43,6 +43,11 @@ def install(app: Any, server: Any) -> None:
         call_next: Callable[[Request], Awaitable[Any]],
     ) -> Any:
         path = request.url.path
+        from octop.api.common.local_data import local_user, required
+
+        if required(request):
+            request.state.octop_user = local_user(request)
+            return await call_next(request)
         if not path.startswith("/api/") or is_jwt_exempt_request(request):
             return await call_next(request)
 
