@@ -6,7 +6,8 @@ import { createInterface } from 'node:readline';
 // environment configuration, user account or existing profile is loaded.
 export async function startLedgerRuntime(t, { backup = false, transfer = false } = {}) {
   const cwd = fileURLToPath(new URL('../../', import.meta.url));
-  const child = spawn('rtk', ['proxy', `${cwd}${backup || transfer ? '.venv' : 'wanx-bridge/.venv'}/bin/python`,
+  const python = process.env.WANX_LEDGER_TEST_PYTHON || `${cwd}${backup || transfer ? '.venv' : 'wanx-bridge/.venv'}/bin/python`;
+  const child = spawn(python, [
     fileURLToPath(new URL('./device-trust-ledger-runtime.fixture.py', import.meta.url)), ...(transfer ? ['--transfer'] : backup ? ['--backup'] : [])], {
     cwd, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PYTHONUNBUFFERED: '1' },
   });

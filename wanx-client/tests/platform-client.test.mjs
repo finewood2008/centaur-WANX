@@ -42,7 +42,7 @@ function harness(t, options = {}) {
     enrollmentId: serverSession,
     networkSessionId: serverSession,
     phase,
-    managementUrl: "https://p2p.qeeshu.com",
+    managementUrl: options.serverManagementURL || "https://p2p.qeeshu.com",
     leaseExpiresAt: Date.now() / 1000 + 300,
   });
   const account = {
@@ -120,6 +120,8 @@ function harness(t, options = {}) {
   };
   const client = createPlatformClient({
     account,
+    consumerURL: options.consumerURL,
+    ...(options.managementURL === undefined ? {} : { managementURL: options.managementURL }),
     localBoxes: options.localBoxes,
     readPreference: options.readPreference || (options.enabled === undefined ? undefined : async () => options.enabled),
     pollIntervalMs: 1,
@@ -127,12 +129,13 @@ function harness(t, options = {}) {
     writePreference: options.writePreference,
     resumeStore: options.resumeStore,
     measure: options.measure,
-    createTransport(identity) {
+    createTransport(identity, { managementURL } = {}) {
       const key = JSON.stringify(identity);
       if (options.savedKeys?.has(key)) keys.add(key);
       const item = { identity, starts: 0, closed: false, gatewayClosed: false };
       transports.push(item);
       const network = createNetwork({
+        managementURL,
         configDir: key,
         createSidecar() {
           item.starts++;
@@ -840,6 +843,74 @@ test("authorization removal closes a selected box and refresh refuses stale dire
   assert.equal(h.client.snapshot().phase, "disconnected");
   assert.equal(h.sessions[0].closed, true);
   assert.deepEqual(h.client.snapshot().devices, []);
+});
+
+test("changing only the Consumer URL follows its authenticated same-host network endpoint", async (t) => {
+  const starts = [];
+  const h = harness(t, {
+    consumerURL: "https://192.168.0.97/consumer-api",
+    serverManagementURL: "https://192.168.0.97:19445",
+    onStart: params => starts.push(params.managementURL),
+  });
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+  assert.ok(starts.length > 0);
+  assert.ok(starts.every(url => url === "https://192.168.0.97:19445"));
+});
+
+test("the migrated production Consumer prefix retains the production network pin", async t => {
+  const h = harness(t, { consumerURL: "https://boss.nexusaos.qitus.cn/consumer-api" });
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().platform.phase, "ready");
+});
+
+test("automatic discovery does not start an engine from a cached endpoint before server confirmation", async t => {
+  const store = memoryResume();
+  await store.save({ version: 1, accountId: "account-1", clientId: "client-1",
+    networkSessionId: "old-session", managementURL: "https://192.168.0.97:19445" });
+  const h = harness(t, { consumerURL: "https://192.168.0.97/consumer-api", resumeStore: store,
+    restoreIdentity: { accountId: "account-1", clientId: "client-1" },
+    serverManagementURL: "https://192.168.0.97:19445" });
+  const prepared = deferred();
+  h.override(async input => { if (input.path.endsWith('/prepare')) await prepared.promise; });
+  const opening = h.client.initialize();
+  await tick(); await tick();
+  assert.equal(h.transports.length, 0);
+  prepared.resolve();
+  await opening;
+  assert.equal(h.client.snapshot().platform.phase, 'ready');
+});
+
+for (const endpoint of ["http://192.168.0.97:19445", "https://other.invalid",
+  "https://user:secret@192.168.0.97:19445", "https://192.168.0.97:19445/path",
+  "https://192.168.0.97:19445?redirect=other", "https://192.168.0.97:19445#fragment",
+  "https://192.168.0.97:0"]) {
+  test(`Consumer endpoint discovery rejects unsafe network URL ${new URL(endpoint).origin}`, async t => {
+    const h = harness(t, { consumerURL: "https://192.168.0.97/consumer-api", serverManagementURL: endpoint });
+    await h.client.loginPassword({ phone: "13800000001", password: "test" });
+    assert.equal(h.client.snapshot().platform.reason, "NETWORK_INVALID_RESPONSE");
+    assert.equal(h.transports.length, 0);
+  });
+}
+
+test("explicit network pin still rejects another same-host endpoint", async t => {
+  const h = harness(t, { consumerURL: "https://192.168.0.97/consumer-api",
+    managementURL: "https://192.168.0.97:19445", serverManagementURL: "https://192.168.0.97:19446" });
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().platform.reason, "NETWORK_INVALID_RESPONSE");
+  assert.equal(h.transports.length, 0);
+});
+
+test("network confirmation cannot silently change the enrolled endpoint", async t => {
+  const h = harness(t, { consumerURL: "https://192.168.0.97/consumer-api",
+    serverManagementURL: "https://192.168.0.97:19445" });
+  h.override(input => input.path.startsWith('/app-api/network/enrollments/') ? {
+    enrollmentId: 'enrollment-1', networkSessionId: 'enrollment-1', phase: 'ready',
+    managementUrl: 'https://192.168.0.97:19446', leaseExpiresAt: Date.now()/1000+300,
+  } : undefined);
+  await h.client.loginPassword({ phone: "13800000001", password: "test" });
+  assert.equal(h.client.snapshot().platform.reason, "NETWORK_INVALID_RESPONSE");
+  assert.equal(h.client.snapshot().devices[0].canOpen, false);
 });
 
 test("deployment or untrusted management responses cannot fall back to manual network authorization", async (t) => {
