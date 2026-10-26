@@ -9,6 +9,7 @@ const fail = (code) => Object.assign(new Error(code), { code });
 export function createApplicationLauncher({
   host,
   resolveRecord = async record => record,
+  assertClientUsable = () => {},
   onStarted = async () => {},
   spawn = defaultSpawn,
   electronPath = process.execPath,
@@ -64,8 +65,10 @@ export function createApplicationLauncher({
   }
 
   async function start(state, input, signal) {
+    assertClientUsable();
     const record = await resolveRecord(input);
     assertActive(signal);
+    assertClientUsable();
     if (!record?.applicationId || !record.installPath || !record.entrypoint)
       throw fail("APPLICATION_RECORD_INVALID");
     assertApplicationPlatform(record);
@@ -93,6 +96,7 @@ export function createApplicationLauncher({
       if (userData && !session.dataProfile) await mkdir(userData, { recursive: true, mode: 0o700 });
       assertActive(signal);
       session.assertLive?.();
+      assertClientUsable();
       const child = spawn(executable, bundled ? [] : record.envelope ? launcherArgs : [...runtimeArgs, `--wanx-application=${record.installPath}`], {
         cwd: record.installPath,
         env: { ...process.env, ...session.environment,

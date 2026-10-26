@@ -26,6 +26,7 @@ export async function createApplicationManager({
   getCompatibilityContext,
   prepareApplication,
   authorizeRelease,
+  assertClientUsable = () => {},
   getDataIdentity,
 } = {}) {
   applicationRoot = path.resolve(applicationRoot);
@@ -172,6 +173,7 @@ export async function createApplicationManager({
   const installing = new Set(), controller = new AbortController();
   let closed = false, closing, maintenance = false;
   const launcher = createApplicationLauncher({
+    assertClientUsable,
     resolveRecord: async id => {
       const launchScope = storageContext();
       let record = await installer.resolveCurrent(id);
@@ -322,6 +324,7 @@ export async function createApplicationManager({
     },
     async launch(id) {
       assertOpen();
+      assertClientUsable();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
       return track(launcher.launch(id));
     },

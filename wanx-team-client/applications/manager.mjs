@@ -27,6 +27,7 @@ export async function createApplicationManager({
   getCompatibilityContext,
   prepareApplication,
   authorizeRelease,
+  assertClientUsable = () => {},
   onStudioInstalled,
   chooseStudioExport,
   returnToStudioClient,
@@ -162,6 +163,7 @@ export async function createApplicationManager({
   let closed = false, closing, maintenance = false;
   let studioControl, studioBootstrap, studioEntry;
   const launcher = createApplicationLauncher({
+    assertClientUsable,
     resolveRecord: async input => {
       const id=typeof input === "string" ? input : input.applicationId;
       let record = await installer.resolveCurrent(id);
@@ -264,8 +266,8 @@ export async function createApplicationManager({
       return track(installer.selectCurrent(id, version, { signal: controller.signal }));
     },
     studio: Object.freeze({
-      launchSuggest:input=>studioEntry.launchSuggest(input), launchSources:input=>studioEntry.launchSources(input), launchConfigure:input=>studioEntry.launchConfigure(input), launchStart:input=>studioEntry.launchStart(input), placement: input=>studioEntry.placement(input), enginesList:()=>studioEntry.enginesList(), enginesCheck:input=>studioEntry.enginesCheck(input), enginesDefault:input=>studioEntry.enginesDefault(input), intakeOpen:input=>studioEntry.intakeOpen(input), intakeSend:input=>studioEntry.intakeSend(input), intakeState:input=>studioEntry.intakeState(input), intakeEvents:input=>studioEntry.intakeEvents(input), contextSources:input=>studioEntry.contextSources(input), contextSelect:input=>studioEntry.contextSelect(input), capabilitiesList:()=>studioEntry.capabilitiesList(), capabilitiesState:input=>studioEntry.capabilitiesState(input), capabilitiesCheck:input=>studioEntry.capabilitiesCheck(input), capabilitiesDecide:input=>studioEntry.capabilitiesDecide(input), intakeHandoff:input=>studioEntry.intakeHandoff(input), workspace:input=>studioEntry.workspace(input), metadata:input=>studioEntry.metadata(input), export:input=>studioEntry.export(input),
-      overview: () => studioEntry.overview(), create: input => studioEntry.create(input), open: input => studioEntry.open(input),
+      launchSuggest:input=>studioEntry.launchSuggest(input), launchSources:input=>studioEntry.launchSources(input), launchConfigure:input=>studioEntry.launchConfigure(input), launchStart:input=>{assertClientUsable();return studioEntry.launchStart(input)}, placement: input=>studioEntry.placement(input), enginesList:()=>studioEntry.enginesList(), enginesCheck:input=>studioEntry.enginesCheck(input), enginesDefault:input=>studioEntry.enginesDefault(input), intakeOpen:input=>{assertClientUsable();return studioEntry.intakeOpen(input)}, intakeSend:input=>{assertClientUsable();return studioEntry.intakeSend(input)}, intakeState:input=>studioEntry.intakeState(input), intakeEvents:input=>studioEntry.intakeEvents(input), contextSources:input=>studioEntry.contextSources(input), contextSelect:input=>studioEntry.contextSelect(input), capabilitiesList:()=>studioEntry.capabilitiesList(), capabilitiesState:input=>studioEntry.capabilitiesState(input), capabilitiesCheck:input=>studioEntry.capabilitiesCheck(input), capabilitiesDecide:input=>studioEntry.capabilitiesDecide(input), intakeHandoff:input=>{assertClientUsable();return studioEntry.intakeHandoff(input)}, workspace:input=>studioEntry.workspace(input), metadata:input=>studioEntry.metadata(input), export:input=>studioEntry.export(input),
+      overview: () => studioEntry.overview(), create: input => { assertClientUsable(); return studioEntry.create(input); }, open: input => { assertClientUsable(); return studioEntry.open(input); },
     }),
     listInstalled: installer.list,
     defaultApplicationDeliveryStore,
@@ -306,6 +308,7 @@ export async function createApplicationManager({
     async launch(input) {
       const id=typeof input === "string" ? input : input.applicationId;
       assertOpen();
+      assertClientUsable();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
       if (id === STUDIO_ID) {
         // Opening the independent app from the launcher must enforce the same

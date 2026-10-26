@@ -48,3 +48,31 @@ test("account exposes only allowlisted upgrade codes and keeps arbitrary server 
   response = new Response("<html>404</html>", { status: 404 });
   await assert.rejects(account.request({ path: "/app-api/v1/upgrades/devices/box" }), { code: "UPDATE_SERVICE_NOT_DEPLOYED" });
 });
+
+
+test("required updates block new application and AI work while update, stop, and quit remain available", async () => {
+  const handlers = new Map(), calls = [];
+  const frame = { url: "file:///trusted/index.html" }, webContents = { mainFrame: frame };
+  const event = { sender: webContents, senderFrame: frame };
+  registerControlActions({
+    ipcMain: { handle: (name, action) => handlers.set(name, action) },
+    control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
+    client: { snapshot: () => ({ account: { phase: "authenticated" } }) },
+    updates: { client: {
+      assertUsable() { throw Object.assign(new Error("CLIENT_UPDATE_REQUIRED"), { code: "CLIENT_UPDATE_REQUIRED" }); },
+      check: () => calls.push("check"), download: () => calls.push("download"), install: () => calls.push("install"),
+    } },
+    applications: { stop: () => calls.push("stop") },
+    aiDialogue: { action: method => calls.push(method) }, quit: () => calls.push("quit"),
+  });
+  for (const name of ["applications-launch", "applications-request-open", "applications-confirm-open", "ai-dialogue-send", "ai-dialogue-retry"])
+    assert.throws(() => handlers.get(`wanx-client:${name}`)(event, {}), { code: "CLIENT_UPDATE_REQUIRED" });
+  assert.deepEqual(calls, []);
+  for (const name of ["check", "download", "install"])
+    await handlers.get(`wanx-client:updates-client-${name}`)(event, { confirmed: true });
+  await handlers.get("wanx-client:applications-stop")(event, { applicationId: "example.app" });
+  await handlers.get("wanx-client:ai-dialogue-stop")(event, {});
+  await handlers.get("wanx-client:ai-dialogue-unwatch")(event, {});
+  await handlers.get("wanx-client:desktop-quit")(event);
+  assert.deepEqual(calls, ["check", "download", "install", "stop", "stop", "unwatch", "quit"]);
+});

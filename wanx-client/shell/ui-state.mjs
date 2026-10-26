@@ -14,6 +14,7 @@ const errorCode = (error) => {
 // Main-process UI coordination only. Preferences are hints, never authorization.
 export async function createUIState({
   client, account, applications, preferenceFile, serviceURL,
+  assertClientUsable = () => {},
   onChanged = () => {}, onOpened = () => {}, onOperation = () => {},
 }) {
   let preferences = { version: 1, lastDevices: {} };
@@ -140,6 +141,7 @@ export async function createUIState({
       emit();
       const value = await runApplicationOperation(current.applicationId, "opening", () => {
         assertTarget(current);
+        assertClientUsable();
         return applications.launch(current.applicationId);
       });
       assertTarget(current);
@@ -159,6 +161,7 @@ export async function createUIState({
   }
   async function requestOpen(id) {
     assertAccount();
+    assertClientUsable();
     if (!applicationID(id)) throw fail("INVALID_APPLICATION_ID");
     if (intent && ["connecting", "opening"].includes(intent.phase)) throw fail("APPLICATION_OPEN_BUSY");
     if (operations.has(id) && operations.get(id).phase !== "failed") throw fail("MARKET_OPERATION_BUSY");
@@ -175,6 +178,7 @@ export async function createUIState({
   }
   async function confirmOpen({ intentId, deviceId } = {}) {
     assertAccount();
+    assertClientUsable();
     const current = intent;
     if (!current || current.id !== intentId) throw fail("APPLICATION_OPEN_NOT_PENDING");
     if (!["confirm", "failed"].includes(current.phase)) throw fail("APPLICATION_OPEN_BUSY");

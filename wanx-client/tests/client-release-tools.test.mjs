@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, truncate } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
@@ -9,6 +9,7 @@ import childProcess from "node:child_process";
 import fs from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { fileURLToPath } from "node:url";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { validateConfiguration } from "app-builder-lib/out/util/config/config.js";
 import { signClientRelease } from "../tools/sign-client-release.mjs";
 import { verifyRelease } from "../updates/contracts.mjs";
@@ -16,6 +17,7 @@ import { readClientIdentity } from "../updates/identity.mjs";
 import { windowsReleaseConfiguration, validateWindowsTrust } from "../tools/package-client-windows.mjs";
 import { packageClient } from "../tools/package-client.mjs";
 import { clientTrustFingerprints, validateClientTrust } from "../tools/package-client-trust.mjs";
+import { createClientBlockMap, MAX_CLIENT_BLOCKMAP_SIZE_BYTES } from "../tools/client-blockmap.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -38,15 +40,19 @@ test("release tool signs exact verified bytes, refuses internal reports, tamperi
   await signClientRelease(input);
   const envelope = JSON.parse(await readFile(outputPath));
   assert.equal(envelope.payload.channel, "stable");
+  assert.equal(envelope.payload.forceUpdate, undefined, "existing signing defaults must remain optional");
+  assert.equal(envelope.payload.artifacts[0].blockMap, undefined, "older full-download reports remain supported");
+  await assert.rejects(signClientRelease({ ...input, forceUpdate: "true" }), /布尔值/);
   const testOutput = path.join(root, "test-channel-release.json"), supportPath = path.join(root, "support.json");
   await writeFile(supportPath, JSON.stringify({ supportedOsVersions: input.supportedOsVersions, compatibleApplications: [] }));
   execFileSync(process.execPath, [fileURLToPath(new URL("../tools/sign-client-release.mjs", import.meta.url)),
     "--report", reportPath, "--url", input.artifactURL, "--key-id", input.keyId, "--private-key", privateKeyPath,
     "--release-id", "client-2.0.0-test", "--sequence", "1", "--support", supportPath,
-    "--expires-at", "2099-01-01T00:00:00Z", "--out", testOutput, "--channel", "test-client-acceptance"]);
+    "--expires-at", "2099-01-01T00:00:00Z", "--out", testOutput, "--channel", "test-client-acceptance", "--force-update"]);
   const testEnvelope = JSON.parse(await readFile(testOutput));
   assert.equal(verifyRelease(testEnvelope, { keys: { "test-only": publicKey.export({ type: "spki", format: "pem" }) },
     product: "wanx-client" }).release.channel, "test-client-acceptance");
+  assert.equal(testEnvelope.payload.forceUpdate, true);
   assert.deepEqual(testEnvelope.payload.artifacts, envelope.payload.artifacts);
   assert.equal(testEnvelope.payload.buildId, envelope.payload.buildId);
   assert.deepEqual(JSON.parse(await readFile(reportPath)), report, "signing for another channel must not edit the build report");
@@ -85,6 +91,64 @@ test("release tool signs exact verified bytes, refuses internal reports, tamperi
   await assert.rejects(signClientRelease({ ...input, outputPath: path.join(root, "modified.json") }), /不一致/);
 });
 
+test("release signing binds the exact final blockmap bytes and refuses missing, changed or invalid maps", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "wanx-blockmap-release-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const bytes = Buffer.from("final signed archive"), file = path.join(root, "app.zip");
+  const reportPath = path.join(root, "report.json"), outputPath = path.join(root, "release.json");
+  await writeFile(file, bytes);
+  const blockMap = await createClientBlockMap(file), mapBytes = await readFile(blockMap.path);
+  assert.deepEqual(await readFile(file), bytes, "creating a sidecar must not change signed artifact bytes");
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519"), privateKeyPath = path.join(root, "test-only.pem");
+  const publicPem = publicKey.export({ type: "spki", format: "pem" });
+  await writeFile(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  const report = { version: "2.0.0", platform: "macos", signed: true, notarized: true, distributionClass: "formal", arch: "arm64",
+    updateTrust: clientTrustFingerprints({ schemaVersion: 1, keys: { fixture: publicPem } }),
+    build: { distributionClass: "formal", buildId: "build-2", channel: "stable", securityEpoch: 0,
+      sourceCommit: "a".repeat(40), sourceDirty: false },
+    updateArtifact: { path: file, kind: "mac-zip", notarized: true, sizeBytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), sha512: createHash("sha512").update(bytes).digest("base64"), blockMap } };
+  await writeFile(reportPath, JSON.stringify(report));
+  const input = { reportPath, outputPath, privateKeyPath, artifactURL: "https://release.example.test/app.zip",
+    blockMapURL: "https://release.example.test/app.zip.blockmap", keyId: "fixture", releaseId: "client-2.0.0",
+    metadataSequence: 2, supportedOsVersions: ["25.0.0"], compatibleApplications: [],
+    now: Date.parse("2026-10-14T00:00:00Z"), expiresAt: "2099-01-01T00:00:00Z" };
+  await assert.rejects(signClientRelease({ ...input, blockMapURL: undefined }), /--blockmap-url/);
+  for (const blockMapURL of ["http://release.example.test/app.zip.blockmap", "https://release.example.test/app.zip",
+    "https://user:password@release.example.test/app.zip.blockmap", "https://release.example.test/app.zip.blockmap#fragment"])
+    await assert.rejects(signClientRelease({ ...input, blockMapURL }), /blockmap|UPDATE_INVALID_ARTIFACT/);
+  const supportPath = path.join(root, "support.json");
+  await writeFile(supportPath, JSON.stringify({ supportedOsVersions: input.supportedOsVersions, compatibleApplications: [] }));
+  execFileSync(process.execPath, [fileURLToPath(new URL("../tools/sign-client-release.mjs", import.meta.url)),
+    "--report", reportPath, "--url", input.artifactURL, "--blockmap-url", input.blockMapURL,
+    "--key-id", input.keyId, "--private-key", privateKeyPath, "--release-id", input.releaseId,
+    "--sequence", "2", "--support", supportPath, "--expires-at", input.expiresAt, "--out", outputPath, "--force-update"]);
+  const envelope = JSON.parse(await readFile(outputPath));
+  const release = verifyRelease(envelope, { keys: { fixture: publicPem }, product: "wanx-client" }).release;
+  assert.equal(release.forceUpdate, true);
+  assert.deepEqual(release.artifacts[0].blockMap, { url: input.blockMapURL, sizeBytes: mapBytes.length,
+    sha256: createHash("sha256").update(mapBytes).digest("hex") });
+  assert.equal(release.artifacts[0].blockMap.path, undefined, "local paths are not published");
+  const invalidInput = { ...input, outputPath: path.join(root, "invalid.json") };
+  await writeFile(blockMap.path, Buffer.from(mapBytes).reverse());
+  await assert.rejects(signClientRelease(invalidInput), /blockmap.*不一致/);
+  await rm(blockMap.path);
+  await assert.rejects(signClientRelease(invalidInput), { code: "ENOENT" });
+  await writeFile(blockMap.path, mapBytes);
+  await truncate(blockMap.path, MAX_CLIENT_BLOCKMAP_SIZE_BYTES + 1);
+  await assert.rejects(signClientRelease(invalidInput), /16 MiB/);
+  for (const invalid of [null, { ...JSON.parse(gunzipSync(mapBytes)), version: "1" },
+    { version: "2", files: [{ name: "file", offset: 0, checksums: ["A".repeat(24)], sizes: [bytes.length + 1] }] }]) {
+    const invalidBytes = gzipSync(JSON.stringify(invalid));
+    await writeFile(blockMap.path, invalidBytes);
+    await writeFile(reportPath, JSON.stringify({ ...report, updateArtifact: { ...report.updateArtifact,
+      blockMap: { ...blockMap, sizeBytes: invalidBytes.length, sha256: createHash("sha256").update(invalidBytes).digest("hex") } } }));
+    await assert.rejects(signClientRelease(invalidInput), /blockmap.*v2/);
+  }
+  const legacyArtifact = { ...report.updateArtifact }; delete legacyArtifact.blockMap;
+  await writeFile(reportPath, JSON.stringify({ ...report, updateArtifact: legacyArtifact }));
+  await assert.rejects(signClientRelease(invalidInput), /报告不包含/);
+});
+
 test("formal Windows build pins certificate, publisher, current-user NSIS scope and forbids unsigned fallback", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const input = { pkg, version: "2.0.0", arch: "x64", out: "output", trustFile: "production-trust.json",
@@ -96,6 +160,7 @@ test("formal Windows build pins certificate, publisher, current-user NSIS scope 
   assert.equal(config.win.verifyUpdateCodeSignature, true);
   assert.deepEqual(config.win.signtoolOptions.publisherName, ["Example Publisher"]);
   assert.equal(config.nsis.perMachine, false); assert.equal(config.nsis.allowElevation, false);
+  assert.equal(config.nsis.differentialPackage, true);
   for (const field of ["include", "installerHeader", "installerSidebar", "uninstallerSidebar"])
     assert.ok(config.nsis[field], `formal builds must retain the branded installer ${field}`);
   assert.equal(config.extraMetadata.wanxBuild.distributionClass, "formal");
@@ -170,6 +235,7 @@ for (const arch of ["arm64", "x64"]) test(`formal macOS ${arch} verifies the act
       fs.copyFileSync(resource.from, path.join(app, "Contents/Resources/wanx-update-trust.json"));
       fs.writeFileSync(path.join(out, "fixture.dmg"), "fixture DMG");
       fs.writeFileSync(path.join(out, "fixture.zip"), "before stapling");
+      fs.writeFileSync(path.join(out, "fixture.zip.blockmap"), "stale builder blockmap");
     }
     if (command === "ditto") {
       assert.equal(args.at(-2), app);
@@ -185,6 +251,14 @@ for (const arch of ["arm64", "x64"]) test(`formal macOS ${arch} verifies the act
   assert.equal(report.nativeBinaries.engine.sha256, createHash("sha256").update("fixture").digest("hex"));
   assert.equal(report.updateArtifact.notarized, true);
   assert.equal(report.updateArtifact.sha256, createHash("sha256").update("ZIP containing stapled application").digest("hex"));
+  const blockMap = report.updateArtifact.blockMap, mapBytes = await readFile(blockMap.path);
+  assert.equal(blockMap.path, `${report.updateArtifact.path}.blockmap`);
+  assert.equal(blockMap.sizeBytes, mapBytes.length);
+  assert.equal(blockMap.sha256, createHash("sha256").update(mapBytes).digest("hex"));
+  const map = JSON.parse(gunzipSync(mapBytes));
+  assert.equal(map.version, "2");
+  assert.deepEqual(map.files[0].sizes, [Buffer.byteLength("ZIP containing stapled application")], "map must be rebuilt after stapling");
+  assert.ok((await readFile(path.join(out, "SHA256SUMS.txt"), "utf8")).includes(`${blockMap.sha256}  fixture.zip.blockmap\n`));
   const submitted = calls.filter(call => call[0] === "xcrun" && call[1] === "notarytool" && call[2] === "submit").map(call => path.extname(call[3]));
   assert.deepEqual(submitted, [".zip", ".dmg"]);
 });

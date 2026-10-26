@@ -380,7 +380,7 @@ function shellHeader(title) {
     <h1 class="sr-only">${title}</h1>
     <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["construction", "开物"], ["data", "星图"], ["space", "空间"], ["boxes", "盒子"]].filter(([destination]) => teamUIRole === "admin" || !["construction","data"].includes(destination)).map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${currentState.account?.provider==="team-server"?"团队":creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
     <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><div class="team-role-badge"><span>${escapeHTML(teamView.snapshot().identity?.displayName || "核验盒子身份…")}</span><small>${teamView.snapshot().identity ? teamUIRole === "admin" ? "管理员" : "普通用户" : "权限由服务器核验"}</small></div><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}<button data-team-action="login">登录其他团队账号<span>›</span></button>${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>`;
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}<button data-team-action="login">登录其他团队账号<span>›</span></button>${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>${clientUpdateRequired() && page !== "client-update" ? clientUpdateRequirementNotice() : ""}`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -521,6 +521,7 @@ function updateGuidance(code) {
     ALREADY_CURRENT: "盒子已运行目标版本，无需再次更新。",
     UPDATE_UNAVAILABLE: "暂时无法检查更新，请稍后重试。",
     UPDATE_REQUEST_FAILED: "暂时无法连接更新服务，请检查网络后重试。",
+    CLIENT_UPDATE_REQUIRED: "请先更新万象，再启动新的业务。已打开的应用可继续保存工作。",
     UPDATE_DEVELOPMENT_BUILD: "这是开发构建，请使用正式发行包接收客户端更新。",
     UPDATE_NOT_CONFIGURED: "当前未配置正式更新，请联系发行维护人员获取受支持的安装包。",
     UPDATE_SIGNER_NOT_CONFIGURED: "当前未配置安装包签名校验，请联系发行维护人员。",
@@ -543,6 +544,26 @@ function updateIssueView(update) {
     const code = typeof issue === "string" ? issue : issue.code || issue.reason;
     return `<p>${escapeHTML(typeof issue === "object" && issue.message ? issue.message : updateGuidance(code))}${code ? ` <span class="muted">（${escapeHTML(code)}）</span>` : ""}</p>`;
   }).join("")}</div>` : "";
+}
+
+function clientUpdateRequired(state = currentState) {
+  return state?.upgrades?.client?.requirement?.required === true;
+}
+function clientUpdateRequirementNotice() {
+  const version = currentState.upgrades.client.requirement.minimumVersion;
+  return `<div class="notice" role="status">需要更新万象至 v${escapeHTML(version)} 或更高版本，才能启动新的业务。<button class="text-button" data-action="show-client-update">查看客户端更新</button></div>`;
+}
+function requiredClientUpdateView() {
+  const version = currentState.upgrades.client.requirement.minimumVersion;
+  const authenticated = currentState.account?.phase === "authenticated";
+  return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("需要更新万象")}<div class="page-content">
+    <div class="page-heading"><div><h2>需要更新万象</h2><p class="muted">请更新至 v${escapeHTML(version)} 或更高版本，再启动新的业务。</p></div></div>
+    <p>已打开的应用不会被强制关闭，请先保存正在进行的工作。下载完成后，由你确认重启安装。</p>
+    ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    ${clientUpdateView()}
+    <p class="muted">${authenticated ? "若更新失败，可重新检查更新或查看诊断；也可联系管理员获取正式安装包。" : "请先登录万象平台账号，再检查和下载更新。"}</p>
+    <div class="settings-actions"><button class="button" data-action="show-settings">设置</button><button class="button" data-action="show-boxes">查看诊断</button><button class="button" data-action="${authenticated ? "logout" : "logout"}" ${busy ? "disabled" : ""}>${authenticated ? "切换登录账号" : "登录账号"}</button><button class="button" data-action="desktop-quit" ${busy ? "disabled" : ""}>退出万象</button></div>
+  </div></div>${confirmationView()}`;
 }
 
 function clientUpdateView() {
@@ -918,6 +939,7 @@ function marketErrorMessage(error) {
     MARKET_DOWNGRADE: "本机版本较新，不会自动降级。",
     MARKET_BUSY: "此应用正在处理中，请稍后再试。",
     MARKET_NOT_CONFIGURED: "应用市场尚未配置完成，请联系管理员。",
+    CLIENT_UPDATE_REQUIRED: "请先更新万象，再启动新的业务。已打开的应用可继续保存工作。",
     CLIENT_VERSION_INCOMPATIBLE: "请先在设置中更新万象，再安装或打开此应用。",
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
     APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会检查盒端准备状态。",
@@ -1439,6 +1461,12 @@ function updateCreditsDOM(current, incoming) {
 }
 
 function render(state) {
+  const updateRequired = clientUpdateRequired(state);
+  // Let an existing file editor finish saving before replacing its DOM.
+  const retainingEditor = updateRequired && page === "space" && window.wanxSpace?.retainEditor?.();
+  if (updateRequired && !["client-update", "settings", "boxes", "profile"].includes(page) && !retainingEditor) page = "client-update";
+  else if (!updateRequired && page === "client-update") page = "applications";
+  if (updateRequired && marketConfirmation && !marketConfirmation.updateReleaseId) marketConfirmation = null;
   teamView.sync(state);teamUIRole=teamView.snapshot().identity?.role==="admin"?"admin":"user";
   if(state.account?.provider==="team-server" && page==="profile")page="applications";
   dataView.sync(state,teamUIRole === "admin");
@@ -1461,7 +1489,7 @@ function render(state) {
   scheduleBoxVersionRead();
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
-  const markup = auth ? authView() : page === "provisioning" ? provisioningView()
+  const markup = auth ? authView() : page === "client-update" ? requiredClientUpdateView() : page === "provisioning" ? provisioningView()
     : page === "ai-dialogue" ? `<div class="app-layout ai-dialogue-layout">${shellHeader("AI对话")}<div id="ai-dialogue-host"></div></div>`
     : page === "dialogue-models" ? `<div class="app-layout">${shellHeader("AI 对话模型")}<div class="page-content dialogue-model-settings-page"><div id="dialogue-model-settings-host"></div></div></div>`
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
@@ -1858,6 +1886,11 @@ app.addEventListener("click", async (event) => {
   if (!target) { if (profileMenuOpen) { profileMenuOpen = false; render(currentState); } return; }
   if (target.disabled) return;
   const action = target.dataset.action;
+  if (action === "show-client-update") { page = "client-update"; render(currentState); return; }
+  if (clientUpdateRequired() && ((action.startsWith("show-") && !["show-settings", "show-boxes", "show-maintenance", "show-box-version", "show-profile"].includes(action)) ||
+      ["applications-launch", "pending-confirm", "notifications-open", "market-install", "market-rollback", "store-details"].includes(action))) {
+    page = "client-update"; marketConfirmation = null; render(currentState); return;
+  }
   if (action === "notifications-filter") { notificationFilter = target.dataset.filter === "unread" ? "unread" : "all"; expandedNotificationId = null; render(currentState); return; }
   if (action === "notifications-select") { expandedNotificationId = expandedNotificationId === target.dataset.id ? null : target.dataset.id; await run("notifications.read", { id: target.dataset.id }); return; }
   if (action === "notifications-read-all") { expandedNotificationId = null; await run("notifications.read", { all: true }); return; }

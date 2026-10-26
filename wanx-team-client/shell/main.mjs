@@ -71,6 +71,7 @@ import { protectPrivateDirectory } from "./private-storage.mjs";
 import { readClientIdentity, installationIdentity } from "../updates/identity.mjs";
 import { createUpdateStore } from "../updates/store.mjs";
 import { createClientUpdates } from "../updates/client-service.mjs";
+import { createUpdateChecks } from "./update-checks.mjs";
 import { createBoxUpdates } from "../updates/box-service.mjs";
 import { createElectronUpdateAdapter } from "../updates/electron.mjs";
 
@@ -181,7 +182,10 @@ if (process.argv.includes("--wanx-managed-app")) {
         directory: path.join(userData, "static-assets"),
       });
       const binaryPath = nativePaths.engine;
+      let updateIdentity = null, updateChecks = null;
       const account = createAccount({
+        getClientUpdateContext: () => updateIdentity,
+        onClientUpdateRequired: () => { void updateChecks?.checkNow(); },
         measure: timed,
         onGrantTiming: details => timings.grantResponse(details),
         ...(process.env.WANX_CONSUMER_URL
@@ -289,6 +293,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         stream: (input) => client.applicationStream(input),
         createConnection: (applicationId, options) => applicationId === "centaurai.wanx.semantica" && options?.launchContext?.kind === "team-data" ? teamDataService.connection(options.launchContext) : client.applicationConnection(applicationId),
         trustedKeys,
+        assertClientUsable: () => updates?.client.assertUsable(),
         getCompatibilityContext,
         prepareApplication,
         authorizeRelease,
@@ -316,6 +321,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         authorizeRelease,
       });
       const deliveryScope = () => {
+        if (updates?.client.snapshot().requirement?.required) return null;
         const state = client.snapshot();
         const accountId = account.snapshot().phase === "authenticated" ? account.getIdentity()?.accountId : null;
         return accountId && state.phase === "ready" && state.connection?.deviceId
@@ -328,6 +334,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       const deliveryScheduler = createDefaultApplicationScheduler({ delivery: defaultApplications, getScope: deliveryScope });
       const identity = await readClientIdentity({ app });
+      updateIdentity = identity;
       const testRuntime = await createTestUpdateRuntime({ identity, app, session });
       let updateTrust = JSON.parse(await readFile(new URL("../updates/trust.json", import.meta.url), "utf8"));
       if (app.isPackaged) {
@@ -360,7 +367,8 @@ if (process.argv.includes("--wanx-managed-app")) {
           deviceId: client.snapshot().connection?.deviceId || null }),
       });
       updates = { client: clientUpdates, box: boxUpdates };
-      const updateListeners = [clientUpdates.subscribe(() => { notifications?.update(clientUpdates.snapshot()); void broadcast?.publish(); }),
+      updateChecks = createUpdateChecks({ updates: clientUpdates, getAccount: () => account.snapshot(), enabled: !testRuntime });
+      const updateListeners = [clientUpdates.subscribe(() => { notifications?.update(clientUpdates.snapshot()); deliveryScheduler.sync(); void broadcast?.publish(); }),
         boxUpdates.subscribe(() => { desktop?.sync(client.snapshot()); void broadcast?.publish(); })];
       let updateAccount = JSON.stringify(account.getIdentity());
       const unsubscribeUpdateAccount = account.subscribe(state => {
@@ -369,6 +377,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           clientUpdates.invalidate(); boxUpdates.invalidate();
         }
         updateAccount = next;
+        updateChecks.sync();
         deliveryScheduler.sync();
       });
       const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
@@ -380,6 +389,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       uiState = await createUIState({
         client, account, applications,
+        assertClientUsable: () => clientUpdates.assertUsable(),
         preferenceFile: path.join(userData, "ui-preferences.json"),
         serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onChanged: () => { void broadcast?.publish(); },
@@ -619,6 +629,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       shutdown = registerShutdown({
         app,
         async closeApplications() {
+          updateChecks.close();
           uiState.invalidateOpen();
           aiDialogue?.close();
           await deliveryScheduler.close();
@@ -670,6 +681,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         state: "terminalError", errorCode: "SETUP_START_FAILED",
       });
       await clientUpdates.ready();
+      updateChecks.sync();
       if (process.env.WANX_SMOKE_USER_DATA)
         await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
       stopNetworkMonitor = monitorNetworkChanges({

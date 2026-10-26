@@ -5,6 +5,7 @@ import path from "node:path";
 import childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { secureURL, updateError } from "./contracts.mjs";
+import { createDifferentialDownload } from "./differential.mjs";
 
 // electron-updater's custom-provider API consumes only this already verified
 // release. It never fetches a mutable latest.yml or accepts a renderer feed URL.
@@ -14,6 +15,9 @@ export class SignedReleaseProvider {
     this.artifact = release.artifacts[0];
     this.url = secureURL(downloadUrls[this.artifact.component] || this.artifact.url);
     if (!this.url.pathname.endsWith(release.platform.os === "darwin" ? ".zip" : ".exe")) throw updateError("UPDATE_INVALID_ARTIFACT");
+    this.blockMapURL = this.artifact.blockMap
+      ? secureURL(downloadUrls[`${this.artifact.component}.blockmap`] || this.artifact.blockMap.url) : null;
+    if (this.blockMapURL && !this.blockMapURL.pathname.endsWith(".blockmap")) throw updateError("UPDATE_INVALID_ARTIFACT");
     this.isUseMultipleRangeRequest = false;
     this.fileExtraDownloadHeaders = null;
   }
@@ -76,8 +80,15 @@ export async function createElectronUpdateAdapter({ platform, configurationPath,
   updater.autoInstallOnAppQuit = false;
   updater.autoRunAppAfterInstall = true;
   updater.allowDowngrade = false;
-  updater.disableDifferentialDownload = true;
+  updater.disableDifferentialDownload = false;
   updater.logger = null;
+  const differential = createDifferentialDownload({ configurationPath });
+  // The pinned updater's Mac and NSIS downloaders share this hook. Returning
+  // true requests its normal full download; cancellation must propagate.
+  updater.differentialDownloadInstaller = (fileInfo, downloadUpdateOptions, installerPath) => differential.download({
+    fileInfo, downloadUpdateOptions, installerPath, httpExecutor: updater.httpExecutor, logger: updater._logger,
+    onProgress: progress => updater.emit("download-progress", progress),
+  });
   let cancellation, downloadedFile, pendingError;
   updater.on("error", error => { pendingError = error; });
   updater.on("update-downloaded", event => { downloadedFile = event.downloadedFile; });
@@ -101,6 +112,10 @@ export async function createElectronUpdateAdapter({ platform, configurationPath,
       updater.on("download-progress", onProgress);
       try {
         signal?.throwIfAborted();
+        const provider = updater.updateInfoAndProvider.provider;
+        await differential.prepare({ artifact: release.artifacts[0], blockMapURL: provider.blockMapURL,
+          httpExecutor: updater.httpExecutor, cancellationToken: cancellation,
+          requestHeaders: updater.computeRequestHeaders(provider), logger: updater._logger });
         let files;
         try { files = await updater.downloadUpdate(cancellation); }
         catch (error) { if (error.code === "ENOSPC") throw updateError("INSUFFICIENT_SPACE"); throw error; }
@@ -108,6 +123,8 @@ export async function createElectronUpdateAdapter({ platform, configurationPath,
         if (pendingError) throw pendingError;
         const file = downloadedFile || files[0];
         await verifyArtifact(file, release);
+        await differential.promote(file);
+        signal?.throwIfAborted();
         return { file };
       } finally {
         signal?.removeEventListener("abort", cancel);
