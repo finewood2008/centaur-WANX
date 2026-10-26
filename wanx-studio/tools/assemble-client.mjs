@@ -10,8 +10,8 @@ const edition = process.argv[2];
 if (!['personal', 'team'].includes(edition)) throw Error('EDITION_REQUIRED');
 const client = path.resolve(root, edition==='personal'?'../wanx-client':'../wanx-team-client');
 for (const [folder, names] of [
-  ['local-ui/renderer', ['ai-dialogue.js','ai-dialogue.css']],
-  ['shell', ['ai-dialogue.mjs','assistant-service.mjs','assistant-channels.mjs','channel-qr.mjs','channel-qr.LICENSE']],
+  ['local-ui/renderer', ['ai-dialogue.js','ai-dialogue.css','space-shares.js','space-shares.css']],
+  ['shell', ['space-shares.mjs','ai-dialogue.mjs','assistant-service.mjs','assistant-channels.mjs','channel-qr.mjs','channel-qr.LICENSE']],
   ['local-ui/panel', ['panel-assistant.js','panel-assistant.css']],
 ]) for (const name of names) {
   // Mini's wrapper binds the shared assistant to its local device identity.

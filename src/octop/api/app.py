@@ -228,6 +228,7 @@ def build_app(server: OctopServer) -> FastAPI:
         space_agents,
         space_links,
         space_mcp,
+        space_shares,
         subagents,
         teams,
         terminal,
@@ -249,6 +250,7 @@ def build_app(server: OctopServer) -> FastAPI:
     from octop.api.routers.tls import router as tls_router
     from octop.api.routers.voice import admin_router as admin_voice_router
 
+    space_shares.install_log_filter()
     _mount_routers(
         app,
         [
@@ -263,6 +265,8 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(space_links.router, "/api/personal-space", ["personal-space"]),
             _RouterMount(space_agents.router, "/api/_client/space-agents", ["personal-space"]),
             _RouterMount(space_mcp.router, "/api/_client/space-mcp", ["personal-space"]),
+            _RouterMount(space_shares.router, "/api/_client/space-shares", ["personal-space"]),
+            _RouterMount(space_shares.public_router, "/space-links", ["personal-space"]),
             _RouterMount(i18n.router, "/api", ["i18n"]),
             _RouterMount(health.router, "/api/health", ["health"]),
             _RouterMount(invites.admin_router, "/api/users/invites", ["users"]),

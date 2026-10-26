@@ -135,7 +135,7 @@ export function registerControlActions({
     if (!aiDialogue) throw new Error("DIALOGUE_UNAVAILABLE");
     return aiDialogue.action(method, input);
   });
-  for (const action of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"]) {
+  for (const action of ["share-create", "share-list", "share-detail", "share-copy", "share-revoke", "share-dismiss", "spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"]) {
     register(`space-links-${action}`, input => {
       if (!spaceLinks) throw new Error("SPACE_LINK_UNAVAILABLE");
       return spaceLinks.manage(action, input);
