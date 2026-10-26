@@ -456,7 +456,7 @@ export function createAccount({
       return Object.hasOwn(payload, "data") ? payload.data : payload;
     } catch (error) {
       checkGeneration();
-      if (error.status || error.code?.startsWith("ACCOUNT_")) throw error;
+      if (error.status || (typeof error.code === "string" && error.code.startsWith("ACCOUNT_"))) throw error;
       throw failure(
         signal?.aborted ? "ACCOUNT_CANCELLED" : "ACCOUNT_NETWORK_ERROR",
       );
