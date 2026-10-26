@@ -455,3 +455,30 @@ test("required update preserves account login and reappears after signing in", a
   h.update(initial);
   assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
 });
+
+for (const [code, guidance] of [
+  ["UPDATE_PERMISSION_REQUIRED", /你没有此盒子的更新权限/],
+  ["UPDATE_NOT_CONFIGURED", /当前未配置正式更新/],
+  ["Error invoking remote method 'wanx-client:updates-box-check': Error: UPDATE_PERMISSION_REQUIRED", /你没有此盒子的更新权限/],
+  ["Error invoking remote method 'wanx-client:updates-box-check': Error: UPDATE_NOT_CONFIGURED", /当前未配置正式更新/],
+]) {
+  test(`automatic version read explains ${code} without reporting a disconnected box`, async () => {
+    const h = await harness(state(), async action => {
+      if (action === "updates.box.check") return { ok: false, code };
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    await h.click("show-boxes");
+    assert.match(h.app.innerHTML, guidance);
+    assert.doesNotMatch(h.app.innerHTML, /版本读取失败，请检查连接/);
+    assert.equal(h.calls.some(call => /^updates\.box\.(execute|plan|resume|cancel)$/.test(call.action)), false);
+  });
+}
+test("unknown version-read errors do not expose remote text or make permission claims", async () => {
+  const h = await harness(state(), async action => {
+    if (action === "updates.box.check") throw new Error("synthetic-secret-remote-text");
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /版本读取失败/);
+  assert.doesNotMatch(h.app.innerHTML, /synthetic-secret-remote-text|你没有此盒子的更新权限/);
+});

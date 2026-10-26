@@ -20,7 +20,7 @@ const resources=path.join(bundle,'Contents/Resources');
 await rm(path.join(resources,'default_app.asar'),{force:true});
 await cp(source,path.join(resources,'app'),{recursive:true});
 await writeFile(path.join(resources,'app/package.json'),JSON.stringify({name:'wanx-builder',productName:appName,version,private:true,main:'shell/main.cjs'},null,2));
-await cp(path.resolve(root,'../wanx-team-client/resources/icon.icns'),path.join(resources,'icon.icns'));
+await cp(path.join(source,'assets/wanx-builder.icns'),path.join(resources,'icon.icns'));
 const plist=path.join(bundle,'Contents/Info.plist');
 const info=JSON.parse(execFileSync('plutil',['-convert','json','-o','-',plist],{encoding:'utf8'}));
 Object.assign(info,{CFBundleIdentifier:manifest.applicationId,CFBundleName:appName,CFBundleDisplayName:appName,CFBundleShortVersionString:version,CFBundleVersion:version,CFBundleIconFile:'icon.icns'});

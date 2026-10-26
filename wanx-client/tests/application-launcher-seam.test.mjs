@@ -81,3 +81,44 @@ test("bundled launch uses the installed executable, isolates its data, and still
   await h.launcher.stop(record.applicationId);
   await assert.rejects(h.launcher.launch({ ...bundled, platform: process.platform === "win32" ? "darwin" : "win32" }), { code: "APPLICATION_PLATFORM_UNSUPPORTED" });
 });
+
+test("dedicated desktop executable retains private profile identity and session revocation", async t => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "wanx-private-desktop-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const applicationRoot = path.join(root, "applications");
+  const installPath = path.join(applicationRoot, record.applicationId, record.version);
+  await mkdir(installPath, { recursive: true });
+  const profile = "a".repeat(64), messages = [];
+  const child = new EventEmitter();
+  child.send = message => messages.push(message);
+  child.kill = () => child.emit("exit", 0);
+  let invocation, resolved, invalidate, closed = 0;
+  const launcher = createApplicationLauncher({
+    electronPath: "host-runtime",
+    resolveExecutable: async value => { resolved = value; return "dedicated-runtime"; },
+    host: { createSession: async () => ({
+      launchId: "private-launch", dataProfile: profile,
+      environment: { WANX_HOST_APPLICATION_ROOT: "wrong-root", WANX_HOST_DATA_PROFILE: "wrong-profile" },
+      onInvalidated(callback) { invalidate = callback; return () => {}; },
+      close() { closed++; },
+    }) },
+    spawn(file, args, options) { invocation = { file, args, options }; return child; },
+  });
+  t.after(() => launcher.close());
+  const installed = { ...record, installPath, envelope: {} };
+  const launched = launcher.launch(installed);
+  while (!invocation) await setImmediate();
+  assert.equal(resolved, installed);
+  assert.equal(invocation.file, "dedicated-runtime");
+  assert.deepEqual(invocation.args, ["--wanx-managed-app"]);
+  assert.equal(invocation.options.env.WANX_HOST_APPLICATION_ROOT, applicationRoot);
+  assert.equal(invocation.options.env.WANX_HOST_DATA_PROFILE, profile);
+  assert.equal(invocation.options.env.WANX_HOST_USER_DATA_DIR,
+    path.join(applicationRoot, ".runtime", "local", profile, record.applicationId));
+  child.emit("message", { type: "wanx:application-ready", launchId: "private-launch" });
+  assert.equal((await launched).state, "running");
+  invalidate();
+  await launcher.stop(record.applicationId);
+  assert.equal(closed, 1);
+  assert.ok(messages.some(message => message.type === "wanx:application-invalidate" && message.launchId === "private-launch"));
+});

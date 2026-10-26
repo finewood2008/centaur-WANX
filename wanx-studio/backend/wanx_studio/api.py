@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import Field
 
@@ -66,6 +66,7 @@ class Adopt(VersionOperation):
 
 class RestoreVersion(Adopt):
     checkHash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    comparisonHash: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
 
 class Installed(Operation):
     artifactHash: str
@@ -122,6 +123,8 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
     router=APIRouter(prefix='/api/app-studio',tags=['Application studio'])
     from .iterative import mount
     mount(router,svc,identity)
+    from .delivery import mount as mount_delivery
+    mount_delivery(router, svc, identity)
 
     @router.get('/context',summary='Read authenticated studio context and capabilities')
     async def context(owner=Depends(identity)):
@@ -297,9 +300,9 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
         return await asyncio.to_thread(svc.versions.adopt,owner,project_id,body.model_dump())
 
     @router.get('/projects/{project_id}/versions/{artifact_hash}/restore-check')
-    async def restore_check(project_id:str,artifact_hash:str,owner=Depends(identity)):
+    async def restore_check(project_id:str,artifact_hash:str,comparisonHash:str | None=Query(default=None,pattern=r'^[a-f0-9]{64}$'),owner=Depends(identity)):
         await svc.versions.authorize(owner,project_id,artifact_hash)
-        return await asyncio.to_thread(svc.versions.restore_check,owner,project_id,artifact_hash)
+        return await asyncio.to_thread(svc.versions.restore_check,owner,project_id,artifact_hash,comparisonHash)
 
     @router.post('/projects/{project_id}/restore-version')
     async def restore_version(project_id:str,body:RestoreVersion,owner=Depends(identity)):

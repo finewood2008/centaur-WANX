@@ -1,0 +1,6 @@
+const reads=['data.list','data.get','knowledge.search','knowledge.documents','knowledge.graph','knowledge.evidence','reports.context','reports.list','reports.get'];
+export function previewMethodAllowed(method,readOnly,marking){return!(readOnly||marking)||reads.includes(method)}
+export function createAnnotationChannel(port,onEvent){
+ let serial=0,disposed=false;const pending=new Map();
+ return{command(action,body={}){if(disposed)return;port.postMessage({type:'wanx:annotation-command',action,...body})},request(action,body={}){if(disposed)return Promise.reject(Error('PREVIEW_NOT_READY'));const requestId='annotation_'+(++serial);return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pending.delete(requestId);reject(Error('PREVIEW_CAPTURE_FAILED'))},6500);pending.set(requestId,{resolve,reject,timer});port.postMessage({type:'wanx:annotation-command',action,requestId,...body})})},receive(m){if(m?.type==='wanx:annotation-event'){if(!disposed)onEvent(m);return true}if(m?.type!=='wanx:annotation-response')return false;const value=pending.get(m.requestId);if(value){pending.delete(m.requestId);clearTimeout(value.timer);m.error?value.reject(Error(m.error)):value.resolve(m.result)}return true},dispose(){disposed=true;for(const p of pending.values()){clearTimeout(p.timer);p.reject(Error('PREVIEW_NOT_READY'))}pending.clear()}};
+}

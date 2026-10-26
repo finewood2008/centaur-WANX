@@ -50,3 +50,25 @@ async def test_build_readiness_never_spawns_a_throwaway_probe(monkeypatch):
     monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda:{'WANX_CODEX_PATH':'synthetic'})
     runner=Runner(SimpleNamespace())
     assert (await runner.preflight(for_turn=True))['available']
+
+def test_terminal_and_diagnostics_preserve_transcript_without_resaving_project(tmp_path,monkeypatch):
+    from wanx_studio.store import Store
+    store=Store(tmp_path)
+    try:
+        created=store.create('alice','synthetic','goal','create');p=store.get('alice',created['id'])
+        p['tasks'].append({'id':'t1','state':'running','events':[]});store.save(p)
+        before=store.db.execute('SELECT body FROM projects WHERE id=?',(p['id'],)).fetchone()[0]
+        runner=Runner(SimpleNamespace(store=store))
+        original=store.save
+        def forbidden(*_):raise AssertionError('PTY output must not rewrite source/version history')
+        monkeypatch.setattr(store,'save',forbidden)
+        for event in [{'type':'terminal','data':'Ynl0ZXM=','encoding':'base64'}, {'type':'terminal_attached','text':'attached'}, {'type':'diagnostic','method':'thread/read','milliseconds':2}]:
+            runner.event('alice',p['id'],'t1',event)
+        assert store.db.execute('SELECT body FROM projects WHERE id=?',(p['id'],)).fetchone()[0]==before
+        events=store.task_events('alice',p['id'],'t1')['items']
+        assert [e['type'] for e in events]==['terminal','terminal_attached','diagnostic']
+        assert events[0]['data']=='Ynl0ZXM='
+        monkeypatch.setattr(store,'save',original)
+        runner.event('alice',p['id'],'t1',{'type':'status','text':'build continues'})
+        assert store.get('alice',p['id'])['tasks'][0]['events'][0]['text']=='build continues'
+    finally:store.close()

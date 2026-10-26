@@ -39,9 +39,9 @@ def public(row: Any, root: str = "") -> dict[str, Any]:
 class SpaceLinks(PersonalSpace):
     # Instances are request-local. Nested calls use one BEGIN IMMEDIATE so a
     # concurrent move/revocation cannot race the ancestry check and the mutation.
-    def __init__(self, root: Path, user_id: int) -> None:
+    def __init__(self, root: Path, user_id: int, *, namespace: str | None = None) -> None:
         self.transaction: sqlite3.Connection | None = None
-        super().__init__(root, user_id)
+        super().__init__(root, user_id, namespace=namespace)
         with self._db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_links (

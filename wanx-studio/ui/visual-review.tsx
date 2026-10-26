@@ -1,34 +1,66 @@
-import{useEffect,useRef,useState,type ReactNode}from'react';
+import{forwardRef,useEffect,useImperativeHandle,useMemo,useRef,useState,type ReactNode}from'react';
 import{errorText,operationId}from'./api';
-import{useDialogFocus}from'./dialog-focus';
-import{selectionBox}from'./visual-review-state.mjs';
+import type{AnnotationController,AnnotationMode,AnnotationSurface}from'./runtime';
+import{paintReview}from'./visual-review-image';
+import{visualReviewReady,invalidateVisualTargets}from'./visual-review-state.mjs';
 import'./visual-review.css';
 
 export type Region={x:number;y:number;width:number;height:number};
-export type VisualFeedback={operationId:string;image:string;viewport:{width:number;height:number};regions:Region[];instruction:string};
-type Capture={image:string;width:number;height:number;viewport:{width:number;height:number}};
-export function VisualReview({children,version,disabled,onSubmit,onOpenChange,recapture}:{children:ReactNode;version:string;disabled:boolean;onSubmit:(feedback:VisualFeedback)=>Promise<void>;onOpenChange?:(open:boolean)=>void;recapture?:{id:string;text:string}}){
- const root=useRef<HTMLDivElement>(null),picture=useRef<HTMLImageElement>(null),drag=useRef<{x:number;y:number}|null>(null),request=useRef('');
- const[capture,setCapture]=useState<Capture|null>(null),[regions,setRegions]=useState<Region[]>([]),[drawing,setDrawing]=useState<Region|null>(null),[text,setText]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
- useDialogFocus(capture?'visual-review':'');
- function close(){if(!busy){setCapture(null);onOpenChange?.(false);setError('');drag.current=null;setDrawing(null)}}
- async function begin(){setError('');setBusy(true);try{
-  const frame=root.current?.querySelector('iframe');if(!frame||frame.dataset.ready!=='true')throw Error('PREVIEW_NOT_READY');
-  if(!window.wanxStudio?.capturePreview)throw Error('HOST_BRIDGE_UPDATE_REQUIRED');
-  const b=frame.getBoundingClientRect(),x=Math.max(0,Math.ceil(b.left)),y=Math.max(0,Math.ceil(b.top));
-  const next=await window.wanxStudio.capturePreview({x,y,width:Math.floor(Math.min(b.right,innerWidth))-x,height:Math.floor(Math.min(b.bottom,innerHeight))-y});
-  setCapture(next);onOpenChange?.(true);setRegions([]);setDrawing(null);setText(recapture?.text||'');request.current=operationId();
- }catch(e){setError(errorText(e))}finally{setBusy(false)}}
- useEffect(()=>{if(recapture&&!disabled)void begin()},[recapture?.id]);
- async function submit(){if(!capture||!regions.length||!text.trim()||busy||disabled)return;setBusy(true);setError('');try{
-  const canvas=document.createElement('canvas');canvas.width=capture.width;canvas.height=capture.height;const ctx=canvas.getContext('2d');if(!ctx||!picture.current)throw Error('PREVIEW_CAPTURE_FAILED');
-  ctx.drawImage(picture.current,0,0,canvas.width,canvas.height);ctx.lineWidth=3;ctx.strokeStyle='#b94d2b';ctx.font='bold 18px sans-serif';
-  regions.forEach((r,i)=>{const x=r.x*canvas.width,y=r.y*canvas.height;ctx.strokeRect(x,y,r.width*canvas.width,r.height*canvas.height);ctx.fillStyle='#b94d2b';ctx.fillRect(x,y,26,26);ctx.fillStyle='#fff';ctx.fillText(String(i+1),x+7,y+20)});
-  await onSubmit({operationId:request.current,image:canvas.toDataURL('image/png'),viewport:capture.viewport,regions,instruction:text.trim()});setCapture(null);onOpenChange?.(false);setText('');
- }catch(e){setError(errorText(e))}finally{setBusy(false)}}
- return <div className="visual-preview" ref={root}><div className="visual-preview-tools"><span>拖框圈出位置，写一句要求即可修改</span><button disabled={disabled||busy} onClick={()=>void begin()}>{busy&&!capture?'正在截取…':'圈选修改'}</button></div>{error&&!capture&&<p role="alert" className="inline-error">{error}</p>}{children}
- {capture&&<div className="visual-review-shade" onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();close()}}}><section role="dialog" aria-modal="true" aria-label="圈选修改" className="visual-review-dialog"><header><div><strong>圈选修改 <small>v{version}</small></strong><p>在截图上拖出方框，可圈选多个位置。</p></div><button disabled={busy} onClick={close}>取消</button></header>
- <div className="visual-review-scroll"><div className="visual-review-image" onPointerDown={e=>{if(busy||regions.length>=6||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);drag.current={x:e.clientX,y:e.clientY};setDrawing(null)}} onPointerMove={e=>{if(!drag.current)return;setDrawing(selectionBox(drag.current,{x:e.clientX,y:e.clientY},e.currentTarget.getBoundingClientRect()))}} onPointerUp={e=>{if(!drag.current)return;const box=selectionBox(drag.current,{x:e.clientX,y:e.clientY},e.currentTarget.getBoundingClientRect());drag.current=null;setDrawing(null);if(box.width>=.01&&box.height>=.01){setRegions(v=>[...v,box]);request.current=operationId()}e.currentTarget.releasePointerCapture(e.pointerId)}} onPointerCancel={()=>{drag.current=null;setDrawing(null)}}>
- <img ref={picture} src={capture.image} alt="当前产品预览截图" draggable={false}/>{[...regions,...(drawing?[drawing]:[])].map((r,i)=><div key={i} className="visual-region" style={{left:r.x*100+'%',top:r.y*100+'%',width:r.width*100+'%',height:r.height*100+'%'}}><b>{i+1}</b></div>)}</div></div>
- <footer><div className="visual-review-count"><span>已圈选 {regions.length} 处 · 最多 6 处</span><button disabled={busy||!regions.length} onClick={()=>{setRegions(v=>v.slice(0,-1));request.current=operationId()}}>撤销上一处</button><button disabled={busy||!regions.length} onClick={()=>{setRegions([]);request.current=operationId()}}>重新圈选</button></div><label>修改要求<textarea autoFocus maxLength={2000} rows={2} readOnly={Boolean(recapture)} value={text} disabled={busy} onChange={e=>{setText(e.target.value);request.current=operationId()}} placeholder="例如：①标题缩小一点，②按钮放到右上角"/></label>{error&&<p className="inline-error" role="alert">{error}</p>}<div className="visual-review-actions"><small>将生成新版本，上一版和业务数据继续保留。</small><button className="primary" disabled={busy||disabled||!regions.length||!text.trim()} onClick={()=>void submit()}>{busy?'正在发送…':'发送并修改'}</button></div></footer></section></div>}</div>
-}
+export type AnnotatedRegion=Region&{instruction:string;pageId?:string;label?:string};
+export type Capture={image:string;width:number;height:number;viewport:{width:number;height:number}};
+export type CapturePage=Capture&{id:string};
+export type LiveMark=AnnotatedRegion&{id:string;targetId:string;kind:'element'|'box';state:'capturing'|'ready'|'error';stale?:boolean;otherPage?:boolean};
+export type VisualDraft={id:string;baseHash:string;version:string;expectedRevision:number;capture?:Capture;image?:string;regions:LiveMark[];pages:CapturePage[];retry?:{id:string;text:string}};
+export type VisualReviewHandle={prepare:()=>Promise<VisualDraft>;text:(id:string,text:string)=>void;remove:(id:string)=>void;locate:(id:string)=>void;relocate:(id:string)=>void;clear:()=>void};
+type Props={children:(annotation:AnnotationSurface)=>ReactNode;version:string;baseHash:string;revision:number;openRequest:string;draft:VisualDraft|null;disabled:boolean;onSave:(draft:VisualDraft|null)=>void;onOpenChange?:(open:boolean)=>void;recapture?:{id:string;text:string}};
+const emptyRect={x:0,y:0,width:.01,height:.01};
+export const VisualReview=forwardRef<VisualReviewHandle,Props>(function VisualReview({children,version,baseHash,revision,openRequest,draft,disabled,onSave,onOpenChange,recapture},ref){
+ const root=useRef<HTMLDivElement>(null),controller=useRef<AnnotationController|null>(null),value=useRef(draft),latest=useRef({revision,disabled,onSave,onOpenChange}),generation=useRef(0),captures=useRef(new Set<Promise<void>>()),retry=useRef<VisualDraft['retry']>(undefined),replacing=useRef(''),modeRef=useRef<AnnotationMode>('off'),input=useRef<HTMLTextAreaElement>(null),actions=useRef<any>(null);
+ value.current=draft;latest.current={revision,disabled,onSave,onOpenChange};
+ const[mode,setModeValue]=useState<AnnotationMode>('off'),[selected,setSelected]=useState(''),[positions,setPositions]=useState<Record<string,Region|null>>({}),[error,setError]=useState('');
+ function setMode(next:AnnotationMode){modeRef.current=next;setModeValue(next);controller.current?.mode(next);latest.current.onOpenChange?.(next!=='off');if(next==='off')setSelected('')}
+ function commit(regions:LiveMark[],pages=value.current?.pages||[]){const used=pages.filter(p=>regions.some(r=>r.pageId===p.id));const next=regions.length?{id:operationId(),baseHash,version,expectedRevision:latest.current.revision,regions,pages:used,...((value.current?.retry||retry.current)?{retry:value.current?.retry||retry.current}:{})}:null;value.current=next;latest.current.onSave(next);controller.current?.sync(regions.map((r,i)=>({id:r.targetId,number:i+1})));return next}
+ function clear(){generation.current++;replacing.current='';retry.current=undefined;for(const r of value.current?.regions||[])controller.current?.remove(r.targetId);commit([]);setMode('off');setError('')}
+ async function locate(id:string){const r=value.current?.regions.find(r=>r.id===id);if(!r||!controller.current)return;try{const p=await controller.current.locate(r.targetId);setMode('point');setSelected(id);setPositions(v=>({...v,[r.targetId]:p.rect}));setError('')}catch{setError('请先回到对应页面，或点击该条目的“重新定位”。修改要求已保留。')}}
+ function relocate(id:string){if(latest.current.disabled)return;const mark=value.current?.regions.find(r=>r.id===id);if(!mark)return;controller.current?.remove(mark.targetId);replacing.current=id;setSelected(id);setMode('point');setError('请在预览中重新点选这条要求对应的位置。')}
+ function editText(id:string,text:string){if(latest.current.disabled||value.current?.retry)return;commit((value.current?.regions||[]).map(r=>r.id===id?{...r,instruction:text.slice(0,800)}:r))}
+ function remove(id:string){if(latest.current.disabled)return;const r=value.current?.regions.find(r=>r.id===id);if(r)controller.current?.remove(r.targetId);commit((value.current?.regions||[]).filter(r=>r.id!==id));if(selected===id)setSelected('')}
+ function receive(event:any){
+  if(event.event==='mode'&&event.mode==='off'){setMode('off');return}
+  if(event.event==='notice'){setError(String(event.message||'').slice(0,160));return}
+  if(event.event==='positions'&&Array.isArray(event.positions)){
+   const list=event.positions.filter((p:any)=>typeof p.id==='string'&&(!p.rect||['x','y','width','height'].every(k=>Number.isFinite(p.rect[k]))));setPositions(Object.fromEntries(list.map((p:any)=>[p.id,p.rect])));
+   const before=value.current;if(before){let changed=false;const marks=before.regions.map(r=>{const p=list.find((p:any)=>p.id===r.targetId);if(!p)return r;const stale=p.state==='stale',otherPage=p.state==='other-page';if(Boolean(r.stale)!==stale||Boolean(r.otherPage)!==otherPage){changed=true;return{...r,stale,otherPage}}return r});if(changed)commit(marks)}return;
+  }
+  if(event.event!=='selected'||modeRef.current==='off'||latest.current.disabled||!controller.current)return;
+  if(typeof event.id!=='string'||event.id.length>80||!event.rect||!['x','y','width','height'].every(k=>Number.isFinite(event.rect[k]))||event.rect.width<=0||event.rect.height<=0)return;
+  const previous=value.current?.regions||[],old=previous.find(r=>r.targetId===event.id);
+  if(old&&!replacing.current){setSelected(old.id);return}
+  if(old&&replacing.current&&old.id!==replacing.current){setError('该位置已有标记，请选择另一位置。');return}
+  if(previous.length>=6&&!replacing.current){setError('本轮最多标记 6 处，可先编辑或发送。');return}
+  const replacingMark=previous.find(r=>r.id===replacing.current),id=replacingMark?.id||operationId(),label=String(event.label||'选中区域').slice(0,100);
+  const mark:LiveMark={...emptyRect,id,targetId:event.id,kind:event.kind==='box'?'box':'element',label,instruction:replacingMark?.instruction||retry.current?.text||'',state:'capturing'};
+  if(replacingMark&&replacingMark.targetId!==event.id)controller.current.remove(replacingMark.targetId);
+  replacing.current='';commit(replacingMark?previous.map(r=>r.id===id?mark:r):[...previous,mark]);setSelected(id);setError('');setPositions(v=>({...v,[event.id]:event.rect}));
+  const turn=generation.current,bridge=controller.current;
+  const work=(async()=>{try{const captured=await bridge.capture(event.id);if(turn!==generation.current||controller.current!==bridge)return;const current=value.current;if(!current?.regions.some(r=>r.id===id&&r.targetId===event.id))return;const page:CapturePage={...captured,id:operationId()};commit(current.regions.map(r=>r.id===id?{...r,...captured.region,pageId:page.id,state:'ready',stale:false}:r),[...current.pages,page])}catch(e){if(turn!==generation.current)return;commit((value.current?.regions||[]).map(r=>r.id===id?{...r,state:'error',stale:true}:r));setError(errorText(e))}})();captures.current.add(work);void work.finally(()=>captures.current.delete(work));
+ }
+ const receiver=useRef(receive);receiver.current=receive;
+ const annotation=useMemo<AnnotationSurface>(()=>({onConnect:bridge=>{generation.current++;controller.current=bridge;if(bridge){if(value.current){const retained=invalidateVisualTargets(value.current);commit(retained.regions,[])}bridge.sync((value.current?.regions||[]).map((r,i)=>({id:r.targetId,number:i+1})));bridge.mode(modeRef.current)}},onEvent:event=>receiver.current(event)}),[]);
+ async function prepare(){await Promise.all([...captures.current]);const d=value.current;if(!d||d.baseHash!==baseHash)throw Error('VISUAL_REVIEW_STALE');if(!visualReviewReady(d.regions,Boolean(d.retry))){setSelected(d.regions.find(r=>!r.instruction.trim())?.id||'');throw Error('VISUAL_NOTE_REQUIRED')}if(d.regions.some(r=>r.state!=='ready'||r.stale||!r.pageId)){setError('有标记需要重新定位，修改要求已保留。');throw Error('VISUAL_REVIEW_STALE')}setMode('off');const turn=generation.current,rendered=await paintReview(d.pages,d.regions);if(turn!==generation.current||value.current?.id!==d.id)throw Error('VISUAL_REVIEW_STALE');return{...d,...rendered,image:rendered.capture.image,regions:rendered.regions as LiveMark[]}}
+ actions.current={prepare,text:editText,remove,locate,relocate,clear};
+ useImperativeHandle(ref,()=>({prepare:()=>actions.current.prepare(),text:(id,text)=>actions.current.text(id,text),remove:id=>actions.current.remove(id),locate:id=>void actions.current.locate(id),relocate:id=>actions.current.relocate(id),clear:()=>actions.current.clear()}),[]);
+ useEffect(()=>()=>{generation.current++},[]);
+ useEffect(()=>{if(!openRequest||disabled)return;if(recapture)retry.current=recapture;setMode('point');setError('')},[openRequest]);
+ useEffect(()=>{if(disabled)setMode('off')},[disabled]);
+ useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&modeRef.current!=='off'){e.preventDefault();e.stopPropagation();setMode('off')}};window.addEventListener('keydown',escape,true);return()=>window.removeEventListener('keydown',escape,true)},[]);
+ useEffect(()=>{input.current?.focus({preventScroll:true})},[selected,draft?.regions.find(r=>r.id===selected)?.state]);
+ const mark=draft?.regions.find(r=>r.id===selected),position=mark?positions[mark.targetId]:null,frame=root.current?.querySelector('iframe')?.getBoundingClientRect();
+ const left=frame&&position?Math.max(frame.left+8,Math.min(innerWidth-286,frame.left+position.x+Math.min(position.width,160))):0,top=frame&&position?Math.max(frame.top+8,Math.min(innerHeight-170,frame.top+position.y+position.height+8)):0;
+ return <div className="visual-preview live-annotation-preview" ref={root}>
+ {mode!=='off'&&<div className="annotation-toolbar"><span>标记中 · 滚轮照常滚动</span><div><button aria-pressed={mode==='point'} onClick={()=>setMode('point')}>点选</button><button aria-pressed={mode==='box'} onClick={()=>setMode('box')}>拖框</button><button onClick={()=>setMode('off')}>完成</button></div><small>Esc 恢复操作 · 已标记 {draft?.regions.length||0} / 6</small></div>}
+ {error&&<div className="annotation-notice" role="status">{error}<button onClick={()=>setError('')}>关闭</button></div>}
+ {children(annotation)}
+ {mode!=='off'&&mark&&position&&mark.state!=='capturing'&&position.y+position.height>0&&position.y<(frame?.height||0)&&<div className="annotation-popover" style={{left,top}} aria-label={'标记 '+((draft?.regions.indexOf(mark)||0)+1)+' 的要求'}><header><strong>{(draft?.regions.indexOf(mark)||0)+1} · {mark.label||'选中区域'}</strong><button aria-label="收起标记输入" onClick={()=>setSelected('')}>×</button></header><textarea ref={input} rows={2} maxLength={800} aria-label="修改要求" placeholder="写一句修改要求，自动保留在左侧…" readOnly={Boolean(draft?.retry)} value={mark.instruction} onChange={e=>editText(mark.id,e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();setSelected('')}}}/><small>自动汇总到左侧 · 可继续点选其他位置</small></div>}
+ </div>;
+});

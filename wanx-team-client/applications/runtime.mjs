@@ -1,5 +1,6 @@
 import { access, mkdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { applicationIcon } from "./desktop-runtime.mjs";
 import { pathToFileURL } from "node:url";
 import { verifyEnvelope, marketFailure, validApplicationId, matchesApplicationTarget } from "./descriptor.mjs";
 import { validateApplicationManifest } from "./manifest.mjs";
@@ -68,6 +69,8 @@ async function bootstrapInstalledApplication({
   process.env.WANX_HOST_APPLICATION_DATA = userData;
   await mkdir(userData, { recursive: true, mode: 0o700 });
   app.setName(manifest.name);
+  if(process.platform==='win32')app.setAppUserModelId?.(manifest.applicationId);
+  const icon=await applicationIcon(directory,manifest.applicationId);
   app.setPath("userData", userData);
   app.setPath("sessionData", userData);
   const windows = new Set();
@@ -89,6 +92,7 @@ async function bootstrapInstalledApplication({
     send({ type, launchId: environment.WANX_HOST_LAUNCH_ID });
   };
   app.on("browser-window-created", (_event, window) => {
+    if(icon&&process.platform!=='darwin')window.setIcon?.(icon);
     if (process.platform === "win32") {
       window.setMenu(null);
       window.setMenuBarVisibility(false);

@@ -85,11 +85,11 @@ async def test_question_update_retains_id_and_rejects_invalid_batch_atomically(e
     assert p==before
 
 
-async def test_legacy_single_question_and_post_first_version_are_unchanged(env):
+async def test_legacy_single_question_blocks_initial_review_but_preserves_direct_edits(env):
     svc,pid,_=env;p=svc.store.get('alice',pid)
     p['solution']=solution()
     p['messages'].append({'role':'assistant','question':question(1),'options':question(1)['options']})
-    assert not pending_choices(p)  # Old clients' saved single questions still work.
+    assert pending_choices(p)  # A saved single question also needs an answer before review.
     p['artifacts']=[{'hash':'existing-version'}]
     add_question(p,question(1));add_question(p,question(2))
     assert p['preparation']['interview']['question']['text']==question(2)['text']
@@ -109,8 +109,9 @@ async def test_first_build_requires_full_prd_before_confirmation(env):
 
 async def test_public_readiness_does_not_claim_pending_choices_are_complete(env):
     svc,pid,_=env;p=svc.store.get('alice',pid)
-    p['solution']=solution();p['preparation']['phase']='acp'
+    p['solution']=solution();p['solution']['capabilities']=[];p['preparation']['phase']='acp'
     p['preparation']['interview'].update(state='completed',sync='saved')
+    p['confirmation']={'hash':digest(p['solution'])}
     p['messages'].append({'id':'pending','role':'assistant','text':'请共同核对','questions':[question(1),question(2)]})
     svc.store.save(p);svc.preparation.valid_report=lambda *a,**kw:True
     pending=svc.snapshot('alice',pid)

@@ -54,27 +54,39 @@ test('personal-space response from before lock cannot populate a fresh same-prin
   assert.equal(service.snapshot().overview, null);
 });
 
-test('dialogue preferences follow the local principal and lock aborts late responses', async t => {
+test('native assistant model preferences follow the local principal and lock aborts late responses', async t => {
   let held, entered;
   const client = clientFixture(input => {
     if (held) { entered.resolve(input.signal); return held.promise; }
-    return reply(input.path.endsWith('/models') ? { models: [{ id: 'model-a', name: 'A' }] } : { sessions: [] });
+    if (input.path === '/api/assistant/profile') return reply({ agent_id: 'private-agent', default_model: 'fixture/model-a' });
+    if (input.path === '/api/providers/resolved') return reply([
+      { provider_name: 'fixture', model: 'model-a' }, { provider_name: 'fixture', model: 'model-b' },
+    ]);
+    if (input.path === '/api/providers/active-model') return reply({ provider_name: 'fixture', model: 'model-a' });
+    if (input.path === '/api/preferences') return reply({});
+    if (input.path === '/api/assistant/conversations') return reply({ items: [] });
+    if (input.path === '/api/assistant/history') return reply({ entries: {} });
+    if (input.path === '/api/dialogue/sessions?limit=10000') return reply({ sessions: [] });
+    if (input.path === '/api/settings/timezone') return reply({ timezone: 'Asia/Shanghai' });
+    throw new Error('Unexpected native assistant route: ' + input.path);
   });
   const service = createAIDialogue({ client, preferenceStore: memoryStore() });
   t.after(() => service.close());
   let value = await service.action('load');
-  await service.action('preferences', { scope: value.scope, modelIds: ['model-a'] });
+  await service.action('model', { scope: value.scope, model: 'fixture/model-b' });
   client.update({ account: { phase: 'authenticated', accountId: 'cloud-b' } });
-  assert.deepEqual((await service.action('load')).visibleModelIds, ['model-a']);
+  assert.equal((await service.action('load')).defaultModel, 'fixture/model-b');
   client.update(localState('principal-b'));
-  assert.equal((await service.action('load')).visibleModelIds, null);
+  assert.equal((await service.action('load')).defaultModel, 'fixture/model-a');
   client.update(localState('principal-a'));
-  value = await service.action('load'); held = deferred(); entered = deferred();
-  const pending = service.action('open', { scope: value.scope, sessionId: 'session1' });
+  value = await service.action('load');
+  assert.equal(value.defaultModel, 'fixture/model-b');
+  held = deferred(); entered = deferred();
+  const pending = service.action('open', { scope: value.scope, threadId: 'thread-1' });
   const rejected = assert.rejects(pending, { code: 'DIALOGUE_CONTEXT_CHANGED' });
   const signal = await entered.promise; client.lock();
   assert.equal(signal.aborted, true);
-  client.update(localState('principal-a', 3)); held.resolve(reply({ id: 'session1', groups: [] }));
+  client.update(localState('principal-a', 3)); held.resolve(reply({ id: 'thread-1', active_thread_id: 'thread-1', versions: [] }));
   await rejected;
 });
 

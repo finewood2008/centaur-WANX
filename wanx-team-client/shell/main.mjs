@@ -92,7 +92,7 @@ let panel;
 let uiState;
 let notifications;
 let broadcast;let studioChanged=0;
-let aiDialogue;
+let aiDialogue, panelDialogue;
 let client;
 let unsubscribe;
 let setupRuntime;
@@ -141,7 +141,7 @@ async function marketTrustedKeys() {
 if (process.platform === "win32") app.setAppUserModelId(testBuild ? TEST_APP_ID : "ai.centuarai.wanx.studio.team.local");
 if (process.argv.includes("--wanx-managed-app")) {
   marketTrustedKeys().then(trustedKeys => runManagedApplication({
-    applicationRoot: path.join(app.getPath("userData"), "applications"), trustedKeys, app,
+    applicationRoot: process.env.WANX_HOST_APPLICATION_ROOT || path.join(app.getPath("userData"), "applications"), trustedKeys, app,
   })).catch(error => {
     reportError(error);
     process.send?.({ type: "wanx:application-failed", launchId: process.env.WANX_HOST_LAUNCH_ID }, () => {});
@@ -455,7 +455,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           if(action==="details")return {ok:true,value:details};
           if(action!=="copy")throw Error("MCP_ACTION_DENIED");
           let text=input.kind==="url"?details.url:input.kind==="config"?JSON.stringify(details.configuration,null,2):null;
-          if(input.kind==="space-key")text=await spaceLinks.mcpSpaceKey(input.id);
+
           if(!text)throw Error("MCP_ACTION_DENIED");clipboard.writeText(text);return {ok:true,value:{copied:true}};
         }catch(error){return {ok:false,code:error.code||"MCP_UNAVAILABLE"}}
       });
@@ -497,6 +497,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       personalSpace = await createPersonalSpace({
+        driveCatalog: () => { if(!spaceLinks)throw Object.assign(new Error("BOX_CONNECTION_REQUIRED"),{code:"BOX_CONNECTION_REQUIRED"});return spaceLinks.manage("mcp-drives"); },
         onEvent: event => timings.transfer(event),
         client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         store: createSecureAccountStore({ filePath: path.join(userData, "space-transfers.enc"), safeStorage }),
@@ -536,7 +537,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         spaceLinks = await createSpaceLinkBridge({
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
-          profileDirectory: path.join(userData, "space-agent-profiles"),
+          agentHubOptions: {team: true},
+          copyText: text => clipboard.writeText(text),
           chooseStorageDirectory: async () => {
             const result = await dialog.showOpenDialog(control, {
               title: "选择空间存储文件夹", buttonLabel: "选择此文件夹",
@@ -544,11 +546,6 @@ if (process.argv.includes("--wanx-managed-app")) {
             });
             return result.canceled ? null : result.filePaths[0];
           },
-          mcpConfig: { mcpServers: { "wanx-space": {
-            command: process.execPath,
-            args: [fileURLToPath(new URL("./space-links-mcp.mjs", import.meta.url))],
-            env: { ELECTRON_RUN_AS_NODE: "1" },
-          } } },
           onChanged: () => {
             if (control && !control.isDestroyed()) control.webContents.send("wanx-client:space-content-changed");
           },
@@ -557,11 +554,33 @@ if (process.argv.includes("--wanx-managed-app")) {
         const code = error.code || "SPACE_LINK_START_FAILED";
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
-      aiDialogue = createAIDialogue({ client, preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+      const assistantUploads = new Map();
+      aiDialogue = createAIDialogue({ client, sharedUploads: assistantUploads,
+        selectFiles: async () => {
+          const result = await dialog.showOpenDialog(control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        saveFile: async name => {
+          const result = await dialog.showSaveDialog(control, { title: "保存助理产物", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
         if (!control.isDestroyed()) control.webContents.send("wanx-client:ai-dialogue", event);
       } });
+      panelDialogue = createAIDialogue({ client, sharedUploads: assistantUploads,
+        selectFiles: async () => {
+          const result = await dialog.showOpenDialog(panel || control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        saveFile: async name => {
+          const result = await dialog.showSaveDialog(panel || control, { title: "保存助理产物", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+        if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-ai-dialogue", event);
+      } });
       registerControlActions({
-        aiDialogue,
+        aiDialogue, panelDialogue,
         timings,
         spaceLinks,
         personalSpace,
@@ -632,6 +651,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           updateChecks.close();
           uiState.invalidateOpen();
           aiDialogue?.close();
+          panelDialogue?.close();
           await deliveryScheduler.close();
           await defaultApplications.close();
           marketSession?.close();

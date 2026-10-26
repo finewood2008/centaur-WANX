@@ -377,6 +377,7 @@ async def get_thread_history(
     workspace_dir = _agent_facing_workspace_dir(server, agent_id)
     return {
         "thread_id": thread_id,
+        "model_ref": row.model_ref,
         "messages": messages,
         "has_more": has_more,
         "limit": page_limit,

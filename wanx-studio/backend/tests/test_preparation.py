@@ -76,6 +76,11 @@ async def test_rechecking_unchanged_inputs_preserves_synced_plan_and_confirmatio
  await prep.handoff('alice',pid,{'expectedRevision':p['preparation']['revision']})
  p=svc.store.get('alice',pid);p['solution']=solution();p['solution']['capabilities']=['data','model']
  p['preparation']['interview'].update({'state':'completed','sync':'saved','turns':[{'id':'completed-software-test-turn'}]});rows(p);svc.store.save(p)
+ from wanx_studio.iterative import propose_contract
+ propose_contract(svc,'alice',pid,{'expectedHash':digest(p['solution']),'collections':{'meetings':{'title':'string','notes':'string'}}})
+ q=svc.store.get('alice',pid);q['preparation']['interview'].update(state='running',turnId='completed-software-test-turn');svc.store.save(q)
+ await prep.pm.tool('alice',pid,'completed-software-test-turn','complete_prd',{'expectedHash':digest(q['solution']),'summary':'已共同核对流程、保存方式和异常验收。'})
+ q=svc.store.get('alice',pid);q['preparation']['interview']['state']='completed';svc.store.save(q)
  p=svc.confirm('alice',pid,{'operationId':op(),'solutionHash':digest(p['solution']),'reviewedSections':['goal','flow','scope','pages','data','rules','acceptance']})
  frozen=deepcopy(p['confirmation']);old_handoff=p['preparation']['handoff']['id'];old_plan=deepcopy(p['solution'])
  p=await prep.check('alice',pid,{'operationId':op()})

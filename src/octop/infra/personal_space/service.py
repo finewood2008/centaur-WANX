@@ -65,11 +65,15 @@ def _safe_file(path: Path, *, missing: bool = False) -> None:
 
 
 class PersonalSpace:
-    def __init__(self, root: Path, user_id: int) -> None:
+    def __init__(self, root: Path, user_id: int, *, namespace: str | None = None) -> None:
         self._active_db: ContextVar[sqlite3.Connection | None] = ContextVar(
             "space_db", default=None
         )
         if not isinstance(user_id, int) or user_id <= 0:
+            raise SpaceError("SPACE_FORBIDDEN", 403)
+        # Only the private company-space composition root supplies this value.
+        # It is a storage domain, never a synthetic user or a request path.
+        if namespace not in (None, "company"):
             raise SpaceError("SPACE_FORBIDDEN", 403)
         # All descendants are service-owned, not selected by a request.
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -77,7 +81,7 @@ class PersonalSpace:
             raise SpaceError("SPACE_UNSAFE_STORAGE", 409)
         # The configured deployment root is trusted; macOS /var and /tmp are
         # system symlinks. User-controlled descendants still reject links.
-        self.root = root.resolve() / str(user_id)
+        self.root = root.resolve() / (namespace or str(user_id))
         self.objects = self.root / "objects"
         for directory in (self.root, self.objects):
             directory.mkdir(exist_ok=True, mode=0o700)

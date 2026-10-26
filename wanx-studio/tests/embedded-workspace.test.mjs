@@ -14,7 +14,7 @@ function harness(){
 
 test('Builder opens independently with brand and keeps one mounted view through close and reopen',async()=>{
  const h=harness();await h.workspace.open({protocolVersion:2,projectId:id});const view=h.views[0],win=h.windows[0];assert.equal(h.loads,1);
- assert.equal(h.host.child,undefined);assert.equal(win.child,view);assert.equal(win.options.title,'万象·开物');assert.match(win.options.icon,/centaurai-mark.png$/);
+ assert.equal(h.host.child,undefined);assert.equal(win.child,view);assert.equal(win.options.title,'万象·开物');assert.match(win.options.icon,/wanx-builder.png$/);
  assert.equal((await h.call('navigation')).projectId,id);
  let prevented=false;win.emit('close',{preventDefault(){prevented=true}});assert.ok(prevented);assert.equal(win.visible,false);assert.equal(view.webContents.closed,undefined);
  h.workspace.placement({protocolVersion:1,action:'show'});assert.equal(win.visible,false,'client refresh must not reopen hidden Builder');

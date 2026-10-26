@@ -162,3 +162,59 @@ def test_staged_json_accepts_actual_unicode_but_rejects_ambiguity():
     for raw in (b'{"id":1,"id":2}', b'{"x":NaN}', b'{"x":1e999}'):
         with pytest.raises(wire.DataProtocolError):
             business_object(raw)
+
+
+@pytest.mark.parametrize(
+    "path,method,action",
+    [
+        ("/api/assistant/profile", "POST", "execute"),
+        ("/api/assistant/conversations", "GET", "read"),
+        ("/api/assistant/conversations/owned", "PATCH", "write"),
+        ("/api/assistant/conversations/owned/versions", "POST", "write"),
+        ("/api/assistant/history", "POST", "write"),
+        ("/api/assistant/context/validate", "POST", "write"),
+        ("/api/providers/resolved", "GET", "read"),
+        ("/api/providers/active-model", "GET", "read"),
+        ("/api/preferences", "GET", "read"),
+        ("/api/settings/timezone", "GET", "read"),
+        ("/api/agents/owned/threads", "POST", "write"),
+        ("/api/agents/owned/threads/thread/history?limit=25&offset=0", "GET", "read"),
+    ],
+)
+def test_native_assistant_uses_current_grants_and_exact_routes(path, method, action):
+    allowed = route_policy(context(app="centaurai.wanx.dialogue"), observed(path, method))
+    assert allowed["action"] == action
+    if path != "/api/preferences":
+        with pytest.raises(wire.DataProtocolError):
+            route_policy(
+                context("semantica", app="centaurai.wanx.dialogue"), observed(path, method)
+            )
+    if action != "read":
+        with pytest.raises(wire.DataProtocolError):
+            route_policy(
+                context(actions=["read"], app="centaurai.wanx.dialogue"), observed(path, method)
+            )
+
+
+@pytest.mark.parametrize(
+    "path,method",
+    [
+        ("/api/providers", "GET"),
+        ("/api/providers/active-model", "PUT"),
+        ("/api/providers/resolved?user_id=1", "GET"),
+        ("/api/settings/captcha", "GET"),
+        ("/api/admin/providers", "GET"),
+        ("/api/assistant/knowledge/access/team", "GET"),
+        ("/api/assistant/knowledge/warehouses", "GET"),
+        ("/api/assistant/knowledge/sources/owned-thread", "GET"),
+        ("/api/assistant/knowledge-grant", "POST"),
+        ("/api/assistant/space-grant", "POST"),
+        ("/api/_client/space-mcp", "GET"),
+        ("/api/_client/space-mcp/connections", "POST"),
+        ("/api/agents/owned/channels", "POST"),
+    ],
+)
+def test_native_assistant_never_implies_configuration_or_delegated_authority(path, method):
+    for app in ("wanx-host", "centaurai.wanx.dialogue"):
+        with pytest.raises(wire.DataProtocolError):
+            route_policy(context(app=app), observed(path, method))

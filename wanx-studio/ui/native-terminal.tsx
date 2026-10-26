@@ -9,7 +9,7 @@ type View='startup'|'latest'|'replay';
 export function NativeTerminal({chunks,columns=96,rows=32,active,startupEndSeq}:{chunks:TerminalChunk[];columns?:number;rows?:number;active:boolean;startupEndSeq?:number}){
   const terminal=useRef<TerminalViewHandle|null>(null),viewport=useRef<HTMLDivElement|null>(null),written=useRef(0),chunksRef=useRef(chunks),manual=useRef(false);
   chunksRef.current=chunks;
-  const[ready,setReady]=useState(false),[expanded,setExpanded]=useState(false),[view,setView]=useState<View>('startup'),[fontSize,setFontSize]=useState(()=>{try{return terminalFont(localStorage.getItem('wanx-terminal-font'))}catch{return DEFAULT_TERMINAL_FONT}});
+  const[ready,setReady]=useState(false),[expanded,setExpanded]=useState(false),[view,setView]=useState<View>(active?'latest':'startup'),[fontSize,setFontSize]=useState(()=>{try{return terminalFont(localStorage.getItem('wanx-terminal-font'))}catch{return DEFAULT_TERMINAL_FONT}});
   const {width,height}=terminalDimensions(columns,rows,fontSize);
   const follow=useRef(true);
   const bytes=(data:string)=>Uint8Array.from(atob(data),character=>character.charCodeAt(0));

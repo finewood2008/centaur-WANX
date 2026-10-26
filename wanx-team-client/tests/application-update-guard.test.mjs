@@ -19,6 +19,8 @@ test("manager rejects direct launches before looking up or preparing an applicat
   if (manager.studio) {
     assert.throws(() => manager.studio.open({}), { code: "CLIENT_UPDATE_REQUIRED" });
     assert.throws(() => manager.studio.launchStart({}), { code: "CLIENT_UPDATE_REQUIRED" });
+    assert.throws(() => manager.studio.previewOpen({}), { code: "CLIENT_UPDATE_REQUIRED" });
+    assert.deepEqual(await manager.studio.previewClose({ handle: "expired" }), { closed: true });
   }
   assert.equal(manager.activate("test.app"), false);
   assert.equal((await manager.stop("test.app")).state, "stopped");
@@ -50,6 +52,20 @@ test("a requirement discovered during session preparation closes that session wi
   resolveSession({ launchId: "one", environment: {}, close() { closed++; } });
   await rejected;
   assert.equal(spawned, 0); assert.equal(closed, 1); await launcher.close();
+});
+
+test("a requirement discovered while preparing desktop identity blocks session creation", async () => {
+  let force = false, resolveExecutable, sessions = 0, spawned = 0;
+  const launcher = createApplicationLauncher({
+    assertClientUsable() { if (force) required(); },
+    resolveExecutable: () => new Promise(resolve => { resolveExecutable = resolve; }),
+    host: { createSession() { sessions++; throw new Error("must not create session"); } },
+    spawn() { spawned++; throw new Error("must not spawn"); },
+  });
+  const rejected = assert.rejects(launcher.launch(record), { code: "CLIENT_UPDATE_REQUIRED" });
+  await setImmediate(); force = true; resolveExecutable("application-runtime");
+  await rejected;
+  assert.equal(sessions, 0); assert.equal(spawned, 0); await launcher.close();
 });
 
 test("running applications can still be activated and closed after an update becomes required", async () => {

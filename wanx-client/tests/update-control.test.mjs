@@ -54,25 +54,37 @@ test("required updates block new application and AI work while update, stop, and
   const handlers = new Map(), calls = [];
   const frame = { url: "file:///trusted/index.html" }, webContents = { mainFrame: frame };
   const event = { sender: webContents, senderFrame: frame };
+  const panelFrame = { url: "file:///trusted/panel.html" }, panelContents = { mainFrame: panelFrame };
+  const panelEvent = { sender: panelContents, senderFrame: panelFrame };
   registerControlActions({
     ipcMain: { handle: (name, action) => handlers.set(name, action) },
     control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
+    panel: { webContents: panelContents, isDestroyed: () => false }, panelURL: panelFrame.url,
     client: { snapshot: () => ({ account: { phase: "authenticated" } }) },
     updates: { client: {
       assertUsable() { throw Object.assign(new Error("CLIENT_UPDATE_REQUIRED"), { code: "CLIENT_UPDATE_REQUIRED" }); },
       check: () => calls.push("check"), download: () => calls.push("download"), install: () => calls.push("install"),
     } },
     applications: { stop: () => calls.push("stop") },
-    aiDialogue: { action: method => calls.push(method) }, quit: () => calls.push("quit"),
+    aiDialogue: { action: method => calls.push(method) },
+    panelDialogue: { action: method => calls.push("panel-" + method) }, quit: () => calls.push("quit"),
   });
-  for (const name of ["applications-launch", "applications-request-open", "applications-confirm-open", "ai-dialogue-send", "ai-dialogue-retry"])
+  for (const name of ["applications-launch", "applications-request-open", "applications-confirm-open"])
     assert.throws(() => handlers.get(`wanx-client:${name}`)(event, {}), { code: "CLIENT_UPDATE_REQUIRED" });
+  if (handlers.has("wanx-client:studio-preview-open"))
+    assert.throws(() => handlers.get("wanx-client:studio-preview-open")(event, {}), { code: "CLIENT_UPDATE_REQUIRED" });
+  for (const method of ["send", "resume", "polish", "version"]) {
+    assert.throws(() => handlers.get(`wanx-client:ai-dialogue-${method}`)(event, {}), { code: "CLIENT_UPDATE_REQUIRED" });
+    assert.throws(() => handlers.get(`wanx-client:panel-ai-dialogue-${method}`)(panelEvent, {}), { code: "CLIENT_UPDATE_REQUIRED" });
+  }
   assert.deepEqual(calls, []);
   for (const name of ["check", "download", "install"])
     await handlers.get(`wanx-client:updates-client-${name}`)(event, { confirmed: true });
   await handlers.get("wanx-client:applications-stop")(event, { applicationId: "example.app" });
   await handlers.get("wanx-client:ai-dialogue-stop")(event, {});
   await handlers.get("wanx-client:ai-dialogue-unwatch")(event, {});
+  await handlers.get("wanx-client:panel-ai-dialogue-stop")(panelEvent, {});
+  await handlers.get("wanx-client:panel-ai-dialogue-unwatch")(panelEvent, {});
   await handlers.get("wanx-client:desktop-quit")(event);
-  assert.deepEqual(calls, ["check", "download", "install", "stop", "stop", "unwatch", "quit"]);
+  assert.deepEqual(calls, ["check", "download", "install", "stop", "stop", "unwatch", "panel-stop", "panel-unwatch", "quit"]);
 });

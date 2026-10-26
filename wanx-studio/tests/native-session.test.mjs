@@ -61,3 +61,58 @@ test('server approvals are denied without user or terminal interaction',async t=
  await new Promise(resolve=>setTimeout(resolve,20));
  assert.deepEqual(f.calls.find(m=>m.id===991).result,{decision:'decline'});
 });
+
+test('resumed stored threads preserve identity and retry unsupported pagination without a new thread',async t=>{
+ const f=await fixture(t,(m,ws)=>{
+  if(m.method!=='thread/resume'||!m.params.excludeTurns)return false;
+  ws.send(JSON.stringify({id:m.id,error:{code:-32601,message:'list_turns is not supported yet'}}));return true;
+ });
+ const session=await f.native.open({cwd:'/synthetic/task',scope:'p',sessionId:'stored-thread',mcpServers:{}});
+ assert.equal(session.sessionId,'stored-thread');assert.equal(session.reused,true);
+ assert.deepEqual(f.calls.filter(m=>m.method==='thread/resume').map(m=>m.params.excludeTurns),[true,false]);
+ assert.equal(f.calls.filter(m=>m.method==='thread/start').length,0);
+});
+
+test('cold recovery keeps the stored workspace and selects legacy history before resuming',async t=>{
+ const f=await fixture(t,(m,ws)=>{
+  if(m.method!=='thread/read')return false;
+  ws.send(JSON.stringify({id:m.id,result:{thread:{id:'stored',cwd:'/original/workspace',historyMode:'legacy',reasoningEffort:'medium',turns:[{id:'past',items:[],status:'completed'}]}}}));return true;
+ });
+ await f.native.open({cwd:'/new/task',scope:'p',sessionId:'stored',mcpServers:{}});
+ const resume=f.calls.find(m=>m.method==='thread/resume');
+ assert.equal(resume.params.cwd,'/original/workspace');assert.equal(resume.params.excludeTurns,false);
+ assert.equal(f.native.cwd,'/original/workspace');
+ const view=f.native.viewer('stored');const snapshot=await view.request('thread/resume',{threadId:'stored'});
+ assert.equal(snapshot.thread.turns[0].id,'past');
+ assert.equal(f.calls.filter(m=>m.method==='thread/resume').length,1,'viewer must not resume a second time');
+ assert.equal(f.calls.filter(m=>m.method==='initialize').length,1);
+ assert.deepEqual(await view.request('initialize',{}),{});
+ assert.equal(f.calls.filter(m=>m.method==='initialize').length,1);
+});
+
+test('owner observation is thread-bound and a failed viewer cannot fail inference',async t=>{
+ const f=await fixture(t);await f.native.open({cwd:'/synthetic/task',scope:'p',mcpServers:{}});
+ const messages=[],view=f.native.viewer('thread-one'),off=view.subscribe(m=>messages.push(m));
+ view.subscribe(()=>{throw new Error('viewer closed')});
+ f.peer.send(JSON.stringify({method:'item/agentMessage/delta',params:{threadId:'other',delta:'wrong project'}}));
+ f.peer.send(JSON.stringify({method:'item/agentMessage/delta',params:{threadId:'thread-one',delta:'live progress'}}));
+ await new Promise(resolve=>setTimeout(resolve,20));
+ assert.equal(messages.length,1);assert.equal(messages[0].params.delta,'live progress');off();
+ await f.native.open({cwd:'/other/task',scope:'another',mcpServers:{}});
+ // The fixture uses the same ID for every newly created thread, so explicitly
+ // invalidate the binding to represent a different real thread.
+ f.native.threadId='new-thread';
+ await assert.rejects(view.request('thread/read',{threadId:'thread-one'}),/TASK_CHANNEL_DENIED/);
+});
+
+test('readonly remote config trusts only the already controlled restored workspace',async t=>{
+ const f=await fixture(t,(m,ws)=>{
+  if(m.method!=='config/read')return false;
+  ws.send(JSON.stringify({id:m.id,result:{config:{projects:{'/unrelated':{trust_level:'untrusted'}}},origins:{},layers:[]}}));return true;
+ });
+ await f.native.open({cwd:'/controlled/original',scope:'p',mcpServers:{}});
+ const result=await f.native.viewer('thread-one').request('config/read',{cwd:'/controlled/original'});
+ assert.equal(result.config.projects['/controlled/original'].trust_level,'trusted');
+ assert.equal(result.config.projects['/unrelated'].trust_level,'untrusted');
+ assert.equal(f.calls.filter(m=>m.method==='config/value/write').length,0);
+});

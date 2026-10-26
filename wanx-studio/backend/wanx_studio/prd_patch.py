@@ -18,7 +18,7 @@ def rows(project):
     return result
 
 def apply_patch(project,args):
-    if set(args)-{'expectedHash','text','upsert','remove','summary','capabilities','provenance'}:raise StudioError('PRD_PATCH_INVALID')
+    if set(args)-{'expectedHash','text','upsert','remove','summary','capabilities','provenance','scopeDecisions'}:raise StudioError('PRD_PATCH_INVALID')
     if args.get('expectedHash')!=digest(project['solution']):raise StudioError('SOLUTION_CHANGED',409)
     candidate=deepcopy(project)
     indexed=rows(candidate)

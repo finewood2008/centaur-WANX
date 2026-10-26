@@ -59,7 +59,7 @@ def test_applied_v21_upgrade_preserves_private_profile_and_child_rows(
         )
         assert conn.execute("SELECT document_id FROM knowledge_documents").fetchone()[0] == "doc"
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 31
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 33
         conn.execute(
             "INSERT INTO agents(agent_id,user_id,name,application_id,is_application_profile,created_at,updated_at) VALUES ('future',?,'Future','future.product',1,1,1)",
             (user_id,),

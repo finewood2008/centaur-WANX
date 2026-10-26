@@ -197,6 +197,7 @@ export function createApplicationInstaller({ rootDir, now = () => Date.now(), co
       let committed = false;
       try {
         await copy(sourceDir, temporary, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+        await resolveApplicationEntry(temporary, manifest);
         await writeFile(path.join(temporary, ".wanx-install.json"), JSON.stringify(record), { mode: 0o600, flag: "wx" });
         signal?.throwIfAborted();
         await rename(temporary, target);

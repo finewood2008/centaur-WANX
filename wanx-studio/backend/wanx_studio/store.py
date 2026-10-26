@@ -165,4 +165,9 @@ def public(project: dict) -> dict:
     result["versioning"]["iterations"]=[{k:v for k,v in item.items() if k!="draft"} for item in result["versioning"]["iterations"]]
     result["solutionHash"] = digest(project["solution"])
     result['readiness'] = readiness(project['solution'],project['decisions'])
+    if 'preparation' in project and not project['artifacts']:
+        from .iterative import proposal
+        complete=proposal(project)
+        result['readiness']['ready']=result['readiness']['ready'] and complete['ready']
+        result['readiness']['needsReview']=complete['needsCompletenessReview']
     return result

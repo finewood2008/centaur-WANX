@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildSkillMarkdown,
   isValidSkillName,
@@ -67,3 +67,9 @@ describe("SkillDrawer emoji metadata", () => {
     expect(metadata).toEqual([{ key: "octop.requires.bins", value: "git" }]);
   });
 });
+
+// These pure-function tests do not render a PDF canvas.
+vi.mock("../../../../components/PdfDocumentPreview", () => ({
+  default: () => null,
+  PdfViewerSkeleton: () => null,
+}));

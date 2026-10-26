@@ -21,6 +21,7 @@ APPLICATION_FAMILIES = {
             "agents",
             "chat",
             "dialogue",
+            "assistant",
             "browser",
             "semantica",
             "platform",
@@ -29,7 +30,9 @@ APPLICATION_FAMILIES = {
     "centaurai.wanx.ai-browser": frozenset({"identity", "assets", "agents", "chat", "browser"}),
     "centaurai.wanx.centaurloop": frozenset({"identity", "assets", "agents", "chat"}),
     "centaurai.wanx.superadvisors": frozenset({"identity", "assets", "agents", "chat", "dialogue"}),
-    "centaurai.wanx.dialogue": frozenset({"identity", "assets", "dialogue"}),
+    "centaurai.wanx.dialogue": frozenset(
+        {"identity", "assets", "dialogue", "assistant", "agents", "chat"}
+    ),
     "centaurai.wanx.zhijun": frozenset({"identity", "assets", "agents", "chat"}),
     "centaurai.wanx.semantica": frozenset({"identity", "assets", "semantica"}),
     "centaurai.wanx.new-media-toolkit": frozenset({"identity", "assets", "agents", "chat"}),
@@ -38,7 +41,9 @@ APPLICATION_FAMILIES = {
 }
 
 # method, anchored path, family, action, body cap. Host terminal/desktop/mobile,
-# admin, provider/settings, login/OIDC/exchange and internal MCP are absent.
+# admin, provider configuration, login/OIDC/exchange and internal MCP are absent.
+# Assistant metadata exposes only model identifiers and timezone, never credentials.
+# Local chat cannot acquire MCP, external knowledge or channel authority.
 OCTOP_RULES = (
     ("GET", r"/api/auth/me", "identity", "read", 0),
     ("PATCH", r"/api/auth/me", "identity", "write", MIB),
@@ -147,6 +152,14 @@ OCTOP_RULES = (
         2 * MIB,
     ),
     ("GET", r"/api/browser/control-capabilities", "browser", "read", 0),
+    ("GET", r"/api/providers/(?:resolved|active-model)", "assistant", "read", 0),
+    ("GET", r"/api/settings/timezone", "assistant", "read", 0),
+    ("POST", r"/api/assistant/profile", "assistant", "execute", 0),
+    ("GET", r"/api/assistant/(?:conversations|history)", "assistant", "read", 0),
+    ("GET", rf"/api/assistant/conversations/{ID}", "assistant", "read", 0),
+    ("POST", r"/api/assistant/(?:context/validate|history)", "assistant", "write", MIB),
+    ("PATCH", rf"/api/assistant/conversations/{ID}", "assistant", "write", MIB),
+    ("POST", rf"/api/assistant/conversations/{ID}/(?:open|versions)", "assistant", "write", MIB),
 )
 
 QUERY_KEYS = {
@@ -189,6 +202,7 @@ QUERY_KEYS = {
         }
     ),
     "dialogue": frozenset({"limit", "offset", "cursor", "after", "after_sequence"}),
+    "assistant": frozenset(),
     "browser": frozenset({"agent_id", "session_id", "listen_only", "interactive"}),
 }
 
