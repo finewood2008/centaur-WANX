@@ -282,6 +282,9 @@ async def test_get_legacy_history_enqueues_without_reading_checkpoint(
 @pytest.mark.asyncio
 async def test_history_migration_status_is_scoped_to_effective_user() -> None:
     server = MagicMock()
+    server.app_runtime.agent_registry.get_row.return_value = SimpleNamespace(
+        user_id=7, application_id="wanx", is_shared=0
+    )
     server.services.thread_message_repo.migration_summary.return_value = ThreadProjectionSummary(
         pending=2, queued=1, running=1, failed=3
     )
@@ -316,6 +319,9 @@ async def test_history_migration_status_is_scoped_to_effective_user() -> None:
 @pytest.mark.asyncio
 async def test_start_history_migration_queues_bounded_candidates() -> None:
     server = MagicMock()
+    server.app_runtime.agent_registry.get_row.return_value = SimpleNamespace(
+        user_id=7, application_id="wanx", is_shared=0
+    )
     queue = server.app_runtime.gateway.history_backfill
     queue.available_slots = 2
     queue.active_jobs = 0
@@ -349,6 +355,9 @@ async def test_start_history_migration_queues_bounded_candidates() -> None:
 @pytest.mark.asyncio
 async def test_history_migration_waits_while_agent_is_active() -> None:
     server = MagicMock()
+    server.app_runtime.agent_registry.get_row.return_value = SimpleNamespace(
+        user_id=7, application_id="wanx", is_shared=0
+    )
     server.app_runtime.agent_registry.is_agent_active.return_value = True
     server.services.thread_message_repo.migration_summary.return_value = ThreadProjectionSummary(
         pending=1

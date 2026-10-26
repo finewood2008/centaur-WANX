@@ -27,6 +27,11 @@ class ApplicationSessionMiddleware:
         self.server = server
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("state", {}).get("local_data_required"):
+            # The outer native gate supplies the immutable identity and guards
+            # all frames/idle periods. Legacy JWT frames cannot replace it.
+            await self.app(scope, receive, send)
+            return
         if scope["type"] != "websocket" or not scope["path"].startswith("/api/"):
             await self.app(scope, receive, send)
             return

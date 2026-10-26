@@ -251,6 +251,17 @@ async def prepare_dashboard_turn(
     turn: ChatTurnBody,
 ) -> PreparedDashboardTurn:
     """Validate MCP/skills, resolve thread, return data for gateway enqueue."""
+    local_private = getattr(user, "local_data", False) is True
+    if local_private:
+        from octop.infra.gateway.ws.local_data import validate_local_turn
+
+        try:
+            validate_local_turn(turn.model_dump())
+        except PermissionError:
+            raise OctopError.localized(ErrorCode.FORBIDDEN) from None
+        # Do not attach agent/server default MCP, knowledge or skill context.
+        turn.knowledge_base_ids = []
+        turn.conversation_mode = "ask"
     row = require_agent_row(agent_id, user=user, as_user=None, server=server)
     default_model = (row.default_model or "").strip() or None
 
@@ -276,6 +287,9 @@ async def prepare_dashboard_turn(
             raise OctopError(ErrorCode.AGENT_NOT_FOUND, "session not found for agent")
         mcp_servers: list[str] | None = []
         skills: list[str] | None = []
+    elif local_private:
+        mcp_servers = []
+        skills = []
     else:
         mcp_servers = await validate_chat_mcp_servers(
             server, user_id=user.id, names=turn.mcp_servers

@@ -14,6 +14,8 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from octop.api.common.application_access import assert_application_request
+from octop.api.common.local_data import required as local_data_required
+from octop.api.common.local_data import resolve_connection_user
 from octop.api.deps import resolve_user_from_token
 from octop.infra.desktop.input import canvas_to_screen, run_desktop_action
 from octop.infra.desktop.session import (
@@ -287,14 +289,18 @@ async def desktop_stream_ws(
             return
 
         auth_token = _auth_token_from_start(start_msg, token)
-        if not auth_token:
+        if not auth_token and not local_data_required(websocket):
             await _send_json(
                 websocket, {"type": "error", "code": "AUTH_FAILED", "message": "missing token"}
             )
             await websocket.close(code=4001, reason="missing token")
             return
         try:
-            user = resolve_user_from_token(server, auth_token)
+            user = (
+                resolve_connection_user(websocket, server, auth_token)
+                if local_data_required(websocket)
+                else resolve_user_from_token(server, auth_token or "")
+            )
         except Exception as exc:
             await _send_json(
                 websocket, {"type": "error", "code": "AUTH_FAILED", "message": str(exc)}
@@ -378,7 +384,12 @@ async def desktop_stream_ws(
             if session is not None:
                 try:
                     current = await asyncio.get_running_loop().run_in_executor(
-                        None, partial(resolve_user_from_token, server, auth_token)
+                        None,
+                        (
+                            partial(resolve_connection_user, websocket, server, auth_token)
+                            if local_data_required(websocket)
+                            else partial(resolve_user_from_token, server, auth_token or "")
+                        ),
                     )
                     if mode != "control" or not user_has_permission(current, "desktop_control"):
                         err = OctopError.localized(ErrorCode.FORBIDDEN, locale)

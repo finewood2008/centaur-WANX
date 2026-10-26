@@ -14,6 +14,8 @@ for (const [folder, names] of [
   ['shell', ['ai-dialogue.mjs','assistant-service.mjs','assistant-channels.mjs','channel-qr.mjs','channel-qr.LICENSE']],
   ['local-ui/panel', ['panel-assistant.js','panel-assistant.css']],
 ]) for (const name of names) {
+  // Mini's wrapper binds the shared assistant to its local device identity.
+  if (edition === 'personal' && folder === 'shell' && name === 'ai-dialogue.mjs') continue;
   await mkdir(path.join(client,folder),{recursive:true});
   await cp(path.join(root,'integration/team-client',name),path.join(client,folder,name));
 }

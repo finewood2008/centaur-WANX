@@ -18,7 +18,7 @@ const publicUpload = (handle, data, size) => ({ handle, name: data.filename, med
 
 // This service owns the fixed native routes and scoped WebSocket. The renderer
 // never supplies an agent, local path, upstream URL, token, or arbitrary API route.
-export function createAIDialogue({ client, onEvent = () => {}, selectFiles, saveFile, edition = 'personal', preferenceStore, sharedUploads } = {}) {
+export function createAIDialogue({ client, onEvent = () => {}, selectFiles, saveFile, edition = 'personal', preferenceStore, sharedUploads, resolveDataContext } = {}) {
   let closed = false, channelCache = null, profile = null, watcher = null;
   let catalog = [], generation = 0, configuration = {};
   let preferenceWrites = Promise.resolve(), preferenceMemory = {};
@@ -56,9 +56,11 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
   async function saveConfiguration(key, delta) {
     const pending = preferenceWrites.catch(() => {}).then(async () => {
       assertScope(key);
+      const owner = configurationKey(key);
       const stored = preferenceStore ? await preferenceStore.load() || {} : preferenceMemory;
+      assertScope(key);
       const next = { model: delta.model || configuration.model };
-      const value = { ...stored, assistantConfigurations: { ...stored.assistantConfigurations, [key]: next } };
+      const value = { ...stored, assistantConfigurations: { ...stored.assistantConfigurations, [owner]: next } };
       if (preferenceStore) await preferenceStore.save(value); else preferenceMemory = value;
       assertScope(key); configuration = {...configuration,model:next.model};
     });
@@ -85,8 +87,15 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
   const emit = (key, event) => { if (scope() === key) onEvent({ ...event, scope: key }); };
   function scope() {
     const s = client.snapshot();
-    if (closed || s.account?.phase !== 'authenticated' || !['ready', 'recovering'].includes(s.phase) || !s.connection?.deviceId) return null;
+    if (closed) return null;
+    const context = resolveDataContext?.(s);
+    if (context) return context.interactionKey ? createHash('sha256').update(context.interactionKey).digest('hex') : null;
+    if (s.account?.phase !== 'authenticated' || !['ready', 'recovering'].includes(s.phase) || !s.connection?.deviceId) return null;
     return createHash('sha256').update(JSON.stringify([s.account.accountId, s.account.clientId, s.connection.deviceId, s.connection.gatewayURL])).digest('hex');
+  }
+  function configurationKey(key) {
+    const context = resolveDataContext?.(client.snapshot());
+    return context?.ownerKey ? createHash('sha256').update(context.ownerKey).digest('hex') : key;
   }
   let currentScope = scope();
   const assertScope = key => { if (!key || scope() !== key) throw fail('DIALOGUE_CONTEXT_CHANGED'); };
@@ -102,7 +111,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     assistantChannels.reset(); channelLinks.clear();
     generation++; unwatch();
     const oldChannel=channelCache, oldGrants=[...spaceGrants.values()].map(g=>['space',g]).concat([...knowledgeGrants.values()].map(g=>['knowledge',g]));
-    if(oldChannel) void oldChannel.then(async link=>{for(const [kind,g]of oldGrants) await link.request({path:'/api/assistant/'+kind+'-grant',method:'POST',headers:{'content-type':'application/json','x-wanx-data-context':edition},body:JSON.stringify({enabled:false,grant_id:g.grant_id})}).catch(()=>{});}).catch(()=>{});
+    if(oldChannel) void oldChannel.then(async link=>{try {for(const [kind,g]of oldGrants) await link.request({path:'/api/assistant/'+kind+'-grant',method:'POST',headers:{'content-type':'application/json','x-wanx-data-context':edition},body:JSON.stringify({enabled:false,grant_id:g.grant_id}),signal:AbortSignal.timeout(10000)}).catch(()=>{});} finally {link.close?.();}}).catch(()=>{});
     conversationCache.clear();threadRoots.clear();spaceGrants.clear();knowledgeGrants.clear();fences.clear();
     for (const controller of requests) controller.abort();
     requests.clear(); uploads.clear(); threads.clear(); profile = null; catalog = []; configuration = {}; channelCache = null;
@@ -115,7 +124,10 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
   async function channel(key) {
     assertScope(key);
     if (!channelCache) {
-      const pending = Promise.resolve(client.applicationConnection(DIALOGUE_APPLICATION_ID, { backendProductId: 'wanx' }));
+      const pending = Promise.resolve(client.applicationConnection(DIALOGUE_APPLICATION_ID, { backendProductId: 'wanx' })).then(link => {
+        if (channelCache !== pending || scope() !== key) { link.close?.(); throw fail('DIALOGUE_CONTEXT_CHANGED'); }
+        return link;
+      });
       channelCache = pending;
       void pending.catch(() => { if (channelCache === pending) channelCache = null; });
     }
@@ -157,10 +169,12 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
   async function history(key, tid, offset = 0) {
     identifier(tid);
     const value = await request(key, `${nativePath()}/threads/${tid}/history?limit=25&offset=${offset}`);
-    {
+    if (resolveDataContext?.(client.snapshot())) value.knowledge_sources = [];
+    else {
       const sources = await optional(key, `/api/assistant/knowledge/sources/${tid}`, { sources: [] }).catch(() => ({ sources: [] }));
-      assertScope(key); value.knowledge_sources = sources.sources;
+      value.knowledge_sources = sources.sources;
     }
+    assertScope(key);
     threads.add(tid); return value;
   }
   async function watch(key, tid) {
@@ -226,7 +240,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
       if (method === 'load') {
         const stored = preferenceStore ? await preferenceStore.load() || {} : preferenceMemory;
         assertScope(key);
-        configuration = {...(profile?configuration:emptyContext()), model:stored.assistantConfigurations?.[key]?.model};
+        configuration = {...(profile?configuration:emptyContext()), model:stored.assistantConfigurations?.[configurationKey(key)]?.model};
         try { profile = await request(key, '/api/assistant/profile', { method: 'POST' }); }
         catch (error) { if (error.status === 404) throw fail('ASSISTANT_API_NOT_INSTALLED'); throw error; }
         identifier(profile.agent_id);
@@ -246,7 +260,9 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
           defaultModel: configuration.model || candidates.find(ref => catalog.some(m => m.id === ref)) || catalog[0]?.id || null,
           sessions: recent.items, legacySessions: legacy.sessions || [], legacyUnavailable: legacy.unavailable === true,
           organization: organization.entries, historyManagementAvailable: !organization.unavailable, timezone: timezone.timezone || 'UTC',
-          capabilities: { knowledge: true }, settings: configuration };
+          capabilities: resolveDataContext?.(client.snapshot())
+            ? { knowledge: false, space: false, channels: false, attachments: false }
+            : { knowledge: true, space: true, channels: true, attachments: true }, settings: configuration };
       }
       if (method.startsWith('knowledge-')) {
         const base = '/api/assistant/knowledge';

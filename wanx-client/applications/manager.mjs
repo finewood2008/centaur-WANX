@@ -9,6 +9,7 @@ import { createApplicationLauncher } from "./launcher.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
 import { createDefaultApplicationStore } from "./delivery.mjs";
 import { inspectZhijunData } from "./zhijun-data.mjs";
+import { applicationProfilePath, localApplicationProfile } from "./data-profile.mjs";
 import { applicationExecutable } from "./desktop-runtime.mjs";
 
 export async function createApplicationManager({
@@ -26,25 +27,40 @@ export async function createApplicationManager({
   getCompatibilityContext,
   prepareApplication,
   authorizeRelease,
+  assertClientUsable = () => {},
+  getDataIdentity,
 } = {}) {
   applicationRoot = path.resolve(applicationRoot);
   const defaultApplicationDeliveryStore = createDefaultApplicationStore(path.join(applicationRoot, ".delivery"));
-  const dataAccessRoot = path.join(applicationRoot, ".data-access");
+  const profileKey = () => { const identity = getDataIdentity?.(); return identity?.profileId ? localApplicationProfile(identity) : null; };
+  const storageContext = () => {
+    const profile = profileKey();
+    return { profile, root: path.join(applicationRoot, ".data-access", ...(profile ? [profile] : [])),
+      assertLive() { if (profileKey() !== profile) throw dataUnknown(); } };
+  };
   const dataUnknown = () => Object.assign(new Error("APPLICATION_DATA_COMPATIBILITY_UNKNOWN"), { code: "APPLICATION_DATA_COMPATIBILITY_UNKNOWN" });
-  async function dataAccessDirectory(create = false) {
+  async function dataAccessDirectory(create = false, scope = storageContext()) {
+    scope.assertLive(); const dataAccessRoot = scope.root;
     try {
+      if (create && scope.profile) {
+        const parent = path.join(applicationRoot, ".data-access");
+        try { await mkdir(parent, { mode: 0o700 }); } catch (error) { if (error.code !== "EEXIST") throw error; }
+        const info = await lstat(parent);
+        if (!info.isDirectory() || info.isSymbolicLink() || await realpath(parent) !== path.join(await realpath(applicationRoot), ".data-access")) throw dataUnknown();
+      }
       if (create) await mkdir(dataAccessRoot, { mode: 0o700 });
     } catch (error) { if (error.code !== "EEXIST") throw dataUnknown(); }
     try {
       const info = await lstat(dataAccessRoot);
       if (!info.isDirectory() || info.isSymbolicLink() ||
-          await realpath(dataAccessRoot) !== path.join(await realpath(applicationRoot), ".data-access")) throw dataUnknown();
+          await realpath(dataAccessRoot) !== path.join(await realpath(applicationRoot), ".data-access", ...(scope.profile ? [scope.profile] : []))) throw dataUnknown();
+      scope.assertLive();
       return dataAccessRoot;
     } catch (error) { if (error.code === "ENOENT" && !create) return null; throw dataUnknown(); }
   }
-  async function readDataAccess(id) {
-    if (!await dataAccessDirectory()) return null;
-    const filename = path.join(dataAccessRoot, `${id}.json`);
+  async function readDataAccess(id, scope = storageContext()) {
+    if (!await dataAccessDirectory(false, scope)) return null;
+    const filename = path.join(scope.root, `${id}.json`);
     let info;
     try { info = await lstat(filename); }
     catch (error) { if (error.code === "ENOENT") return null; throw dataUnknown(); }
@@ -60,7 +76,7 @@ export async function createApplicationManager({
           !value.writer || Object.keys(value.writer).sort().join() !== "artifactId,descriptorDigest" ||
           typeof value.writer.artifactId !== "string" || !/^[a-f0-9-]{36}$/.test(value.writer.artifactId) ||
           typeof value.writer.descriptorDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.writer.descriptorDigest)) throw dataUnknown();
-      if (!await dataAccessDirectory()) throw dataUnknown();
+      if (!await dataAccessDirectory(false, scope)) throw dataUnknown();
       return value.writer;
     } catch { throw dataUnknown(); }
     finally { await handle?.close(); }
@@ -71,10 +87,11 @@ export async function createApplicationManager({
   } : null;
   const sameWriter = (left, right) => Boolean(left && right && left.artifactId === right.artifactId && left.descriptorDigest === right.descriptorDigest);
   async function writeDataAccess(id, writer) {
-    await dataAccessDirectory(true);
+    const scope = storageContext(), dataAccessRoot = scope.root;
+    await dataAccessDirectory(true, scope);
     // Reject corrupted or redirected state even if schema evidence would allow
     // a new writer. An invalid Host record is never treated as a fresh profile.
-    await readDataAccess(id);
+    await readDataAccess(id, scope);
     const temporary = path.join(dataAccessRoot, `.${id}-${randomUUID()}.tmp`);
     try {
       const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -82,7 +99,7 @@ export async function createApplicationManager({
         await handle.writeFile(JSON.stringify({ schemaVersion: 1, applicationId: id, writer }));
         await handle.sync();
       } finally { await handle.close(); }
-      await dataAccessDirectory();
+      await dataAccessDirectory(false, scope);
       await rename(temporary, path.join(dataAccessRoot, `${id}.json`));
       if (process.platform !== "win32") {
         const directory = await open(dataAccessRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
@@ -92,10 +109,11 @@ export async function createApplicationManager({
     finally { await rm(temporary, { force: true }); }
   }
   const compatibilityContext = async (input, access) => {
-    const id = input.manifest.applicationId;
-    const writer = access === undefined ? await readDataAccess(id) : access;
+    const id = input.manifest.applicationId, scope = storageContext();
+    const writer = access === undefined ? await readDataAccess(id, scope) : access;
     let localDataPresent = Boolean(writer);
-    const profileDirectories = [path.join(applicationRoot, ".runtime", id), path.join(applicationRoot, "..", "application-data", id)];
+    const profileDirectories = scope.profile ? [applicationProfilePath(applicationRoot, id, scope.profile)]
+      : [path.join(applicationRoot, ".runtime", id), path.join(applicationRoot, "..", "application-data", id)];
     for (const directory of profileDirectories) {
       try { localDataPresent ||= (await readdir(directory)).length > 0; }
       catch (error) {
@@ -111,6 +129,7 @@ export async function createApplicationManager({
     // Never infer the actual schema from writeVersion. Refresh authenticated
     // provider evidence after all disk reads and reject conflicting evidence.
     const supplied = await getCompatibilityContext?.(input) || {};
+    scope.assertLive();
     if (local?.localDataSchemaVersion && supplied.localDataSchemaVersion != null &&
         local.localDataSchemaVersion !== supplied.localDataSchemaVersion) throw dataUnknown();
     return { ...supplied,
@@ -155,8 +174,11 @@ export async function createApplicationManager({
   const installing = new Set(), controller = new AbortController();
   let closed = false, closing, maintenance = false;
   const launcher = createApplicationLauncher({
+    assertClientUsable,
     resolveRecord: async id => {
+      const launchScope = storageContext();
       let record = await installer.resolveCurrent(id);
+      launchScope.assertLive();
       if (record.protocolVersion < 2) return record;
       // Derive identity from the envelope again, not the mutable descriptor
       // copy in the local install record.
@@ -200,7 +222,9 @@ export async function createApplicationManager({
       });
       // Commit before any child can access the profile. If startup is canceled,
       // retain this possible-writer evidence rather than assuming nothing wrote.
+      launchScope.assertLive();
       if (writer && !sameWriter(previousWriter, writer)) await writeDataAccess(id, writer);
+      launchScope.assertLive();
       if (record.protocolVersion === 3 && !preparedConnection) throw Object.assign(new Error("APPLICATION_RESOURCES_NOT_READY"), { code: "APPLICATION_RESOURCES_NOT_READY" });
       return { ...record, ...(preparedConnection ? { preparedConnection } : {}),
         ...(controlled ? { authorizeRelease: options => authorizeRelease(descriptor, options) } : {}) };
@@ -212,7 +236,16 @@ export async function createApplicationManager({
           hostApplicationId: applicationId,
           applicationId: record.applicationId,
           installPath: record.installPath,
-          createConnection: async () => record.preparedConnection || await createConnection?.(record.applicationId) || { context, request, openStream: stream },
+          capabilities: record.capabilities,
+          createConnection: async options => {
+            if (record.preparedConnection?.kind === "local-trust-v1") {
+              if (!record.preparedConnection.deriveApplication) throw Object.assign(new Error("APPLICATION_DATA_CONTEXT_REQUIRED"), { code: "APPLICATION_DATA_CONTEXT_REQUIRED" });
+              return record.preparedConnection.deriveApplication(options);
+            }
+            return record.preparedConnection || await createConnection?.(record.applicationId, {
+              launchId: options.launchId, ...(options.capabilities ? { capabilities: options.capabilities } : {}),
+            }) || { context, request, openStream: stream };
+          },
           authorizeRelease: record.authorizeRelease,
           signal,
         });
@@ -293,6 +326,7 @@ export async function createApplicationManager({
     },
     async launch(id) {
       assertOpen();
+      assertClientUsable();
       if (mutations.has(id)) return Promise.reject(Object.assign(new Error("MARKET_OPERATION_BUSY"), { code: "MARKET_OPERATION_BUSY" }));
       return track(launcher.launch(id));
     },

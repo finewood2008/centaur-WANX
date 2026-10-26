@@ -24,6 +24,10 @@ const PROFILE_ROUTES = new Set([
   "POST /api/auth/me/avatar",
   "DELETE /api/auth/me/avatar",
 ]);
+const LOCAL_HEADERS = new Set(['accept', 'accept-language', 'accept-encoding', 'content-type', 'range', 'if-range',
+  'if-match', 'if-none-match', 'if-modified-since', 'last-event-id', 'x-octop-agent-id', 'x-wanx-data-context',
+  'idempotency-key', 'x-space-link', 'x-content-sha256']);
+const localHeaders = (headers) => Object.fromEntries(Object.entries(headers).filter(([key]) => LOCAL_HEADERS.has(key.toLowerCase())));
 
 function headersWithoutHop(headers) {
   const blocked = new Set(HOP_HEADERS);
@@ -75,7 +79,9 @@ export async function createDashboardGateway({
     ? `/__wanx_session/${randomBytes(32).toString("hex")}`
     : null;
   let bootstrapped = false;
-  if (session && !session.getToken())
+  const localSession = session?.kind === 'local-trust-v1';
+  const sessionLive = () => localSession ? session.isLive() : Boolean(session?.getToken());
+  if (session && !sessionLive())
     throw new Error("PLATFORM_SESSION_EXPIRED");
   const transport = target.protocol === "https:" ? https : http;
   const connections = new Set();
@@ -124,6 +130,16 @@ export async function createDashboardGateway({
   function authorize(request, websocket = false, applicationExchange = false) {
     if (!session)
       return { path: request.url, headers: upstreamHeaders(request) };
+    if (localSession) {
+      const rawPath = request.url.split('?')[0];
+      if (/(?:^|\/)\.{1,2}(?:\/|$)/.test(rawPath) || /%(?:2e|2f|5c|25)/i.test(rawPath)) return null;
+      const names = new Set();
+      for (let i = 0; i < (request.rawHeaders?.length || 0); i += 2) {
+        const name = request.rawHeaders[i].toLowerCase();
+        if (LOCAL_HEADERS.has(name) && names.has(name)) return null;
+        names.add(name);
+      }
+    }
     const endpoint = new URL(request.url, localURL);
     let pathname;
     try {
@@ -152,24 +168,27 @@ export async function createDashboardGateway({
       websocket || (pathname.startsWith("/api/") && pathname !== "/api/health");
     if (needsToken && (!bootstrapped || (!headerToken && !queryTokens.length)))
       return null;
-    const token = session.getToken();
-    if (!token) return null;
+    if (!sessionLive()) return null;
+    const token = localSession ? null : session.getToken();
     const headers = upstreamHeaders(request);
     // Cookie auth belongs to direct mode; platform mode uses only its current lease.
     delete headers.cookie;
-    if (headerToken || queryTokens.length)
+    if (localSession) delete headers.authorization;
+    else if (headerToken || queryTokens.length)
       headers.authorization = `Bearer ${token}`;
     for (const field of TOKEN_QUERY_FIELDS) {
-      if (endpoint.searchParams.has(field))
-        endpoint.searchParams.set(field, token);
+      if (endpoint.searchParams.has(field)) {
+        if (localSession) endpoint.searchParams.delete(field);
+        else endpoint.searchParams.set(field, token);
+      }
     }
-    return { path: endpoint.pathname + endpoint.search, headers, token };
+    return { path: endpoint.pathname + endpoint.search, headers: localSession ? localHeaders(headers) : headers, token };
   }
 
   let assetManifest = null;
   // Metadata travels through the same trusted box tunnel and requires a live
   // platform session. Old boxes simply continue through the streaming proxy.
-  if (staticCache && session && cacheScope?.accountId && cacheScope?.boxId) {
+  if (staticCache && session && !localSession && cacheScope?.accountId && cacheScope?.boxId) {
     const manifestRequest = transport.request(target, {
       method: "GET",
       path: "/api/platform/assets/manifest",
@@ -217,7 +236,7 @@ export async function createDashboardGateway({
       if (
         request.url !== bootstrapPath ||
         request.method !== "GET" ||
-        !session.getToken()
+        !sessionLive()
       )
         return reject(response, 404, "Not found");
       const nonce = randomBytes(24).toString("base64");
@@ -243,6 +262,21 @@ export async function createDashboardGateway({
     }
     const authorized = authorize(request);
     if (!authorized) return reject(response, 401, "Platform session required");
+    if (localSession) {
+      const controller = new AbortController();
+      const stop = () => controller.abort();
+      request.once('aborted', stop); request.once('error', stop); response.once('close', stop);
+      try {
+        const result = await session.request({ path: authorized.path, method: request.method,
+          headers: authorized.headers, body: ['GET', 'HEAD', 'OPTIONS'].includes(request.method) ? undefined : request,
+          signal: controller.signal, stream: true });
+        if (closed || controller.signal.aborted || !sessionLive()) { result.body.destroy(); return; }
+        if (request.headers['service-worker'] === 'script') { result.body.destroy(); return reject(response, 403, 'Service workers are disabled in the client'); }
+        response.writeHead(result.status, headersWithoutHop(result.headers)); response.flushHeaders();
+        result.body.on('error', () => response.destroy()); result.body.pipe(response);
+      } catch { reject(response, sessionLive() ? 502 : 401, 'Local data connection unavailable'); }
+      return;
+    }
     const cachePath = request.url;
     const cacheable =
       staticCache &&
@@ -404,15 +438,16 @@ export async function createDashboardGateway({
     socket.once("close", () => sockets.delete(socket));
   }
 
-  function bridge(source, destination, rewriteToken) {
+  function bridge(source, destination, rewriteToken, stripToken = false) {
     source.on("message", (data, binary) => {
-      if (rewriteToken && !binary) {
+      if ((rewriteToken || stripToken) && !binary) {
         try {
           const message = JSON.parse(data.toString());
           if (message?.type === "start" && Object.hasOwn(message, "token")) {
             if (message.token !== marker)
               throw new Error("INVALID_FRAME_TOKEN");
-            message.token = rewriteToken;
+            if (stripToken) delete message.token;
+            else message.token = rewriteToken;
             data = Buffer.from(JSON.stringify(message));
           }
         } catch (error) {
@@ -455,6 +490,50 @@ export async function createDashboardGateway({
       socket.end(
         "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
       );
+      return;
+    }
+    if (localSession) {
+      const protocols = String(request.headers['sec-websocket-protocol'] || '').split(',').map(value => value.trim()).filter(Boolean);
+      const open = async (client, startMessage) => {
+        const authorized = authorize(request, true);
+        if (!authorized) { if (client) client.close(1008, 'Session expired'); else socket.destroy(); return; }
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        (client || socket).once('close', abort);
+        let upstream;
+        try {
+          upstream = await session.openWebSocket({ path: authorized.path, headers: authorized.headers, protocols, signal: controller.signal });
+          track(upstream);
+          if (closed || !sessionLive() || controller.signal.aborted) { upstream.terminate(); return; }
+          const attach = (consumer) => {
+            track(consumer); bridge(consumer, upstream, null, true); bridge(upstream, consumer);
+            if (startMessage) {
+              const clean = { ...startMessage }; delete clean.token;
+              upstream.send(JSON.stringify(clean), (error) => { if (error) consumer.terminate(); else consumer.resume(); });
+            }
+          };
+          if (client) attach(client);
+          else { request.selectedProtocol = upstream.protocol; webSockets.handleUpgrade(request, socket, head, attach); }
+        } catch { upstream?.terminate(); if (client) client.terminate(); else socket.destroy(); }
+      };
+      // The marker authenticates the local renderer only. The remote upgrade
+      // always carries a channel proof, and its start frame contains no token.
+      if (['/api/desktop-stream/ws', '/api/mobile-stream/ws'].includes(request.url)
+          && !request.headers.authorization && bootstrapped) {
+        try {
+          webSockets.handleUpgrade(request, socket, head, (client) => {
+            track(client);
+            const timer = setTimeout(() => client.close(1008, 'Authentication required'), 5000); timer.unref?.();
+            client.once('close', () => clearTimeout(timer));
+            client.once('message', (data, binary) => {
+              clearTimeout(timer); let message;
+              try { message = !binary && JSON.parse(data.toString()); } catch {}
+              if (message?.type !== 'start' || message.token !== marker) { client.close(1008, 'Invalid credentials'); return; }
+              client.pause(); request.headers.authorization = `Bearer ${marker}`; void open(client, message);
+            });
+          });
+        } catch { socket.destroy(); }
+      } else void open();
       return;
     }
     // Desktop/mobile streaming authenticates in its first start frame, not its URL.
@@ -638,6 +717,10 @@ export async function createDashboardGateway({
     origin: localURL.origin,
     async request({ path, method = "GET", headers = {}, body, signal, stream = false, applicationScope, applicationExchange = false, idleTimeoutMs = 0, freshConnection = false } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
+      if (localSession) {
+        if (applicationScope || applicationExchange) throw new Error('LOCAL_DATA_FORBIDDEN');
+        return session.request({ path, method, headers, body, signal, stream, idleTimeoutMs, freshConnection });
+      }
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
       const request = {
         method,
@@ -732,8 +815,12 @@ export async function createDashboardGateway({
         upstream.end();
       });
     },
-    async openWebSocket({ path, headers = {}, protocols = [], applicationScope } = {}) {
+    async openWebSocket({ path, headers = {}, protocols = [], applicationScope, signal } = {}) {
       if (closed) throw new Error("GATEWAY_CLOSED");
+      if (localSession) {
+        if (applicationScope) throw new Error('LOCAL_DATA_FORBIDDEN');
+        return session.openWebSocket({ path, headers, protocols, signal });
+      }
       if (typeof path !== "string" || !path.startsWith("/")) throw new Error("INVALID_GATEWAY_PATH");
       const request = {
         method: "GET",
@@ -798,7 +885,7 @@ export async function createDashboardGateway({
       return closing;
     },
   };
-  const unsubscribeExpiry = session?.onExpired?.(() => {
+  const unsubscribeExpiry = (localSession ? session.onInvalidated : session?.onExpired)?.(() => {
     void gateway.close();
   });
   return gateway;

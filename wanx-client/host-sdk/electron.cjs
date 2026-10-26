@@ -8,13 +8,21 @@ function attachElectronHost() {
   app.setPath('userData', process.env.WANX_HOST_USER_DATA_DIR);
   app.setPath('sessionData', process.env.WANX_HOST_USER_DATA_DIR);
   const windows = new Set();
-  let reported = false;
+  let reported = false, revoked = false;
   const report = type => {
     if (reported) return;
     reported = true;
     process.send({type, launchId:process.env.WANX_HOST_LAUNCH_ID}, () => {});
   };
   process.on('message', message => {
+    if (message?.launchId !== process.env.WANX_HOST_LAUNCH_ID) return;
+    if (message.type === 'wanx:application-invalidate') {
+      revoked = true;
+      for (const window of windows) if (!window.isDestroyed()) { window.hide(); window.destroy(); }
+      app.exit(0);
+      return;
+    }
+    if (revoked) return;
     if (message?.type !== 'wanx:application-activate' || message.launchId !== process.env.WANX_HOST_LAUNCH_ID) return;
     const window = [...windows].find(item => !item.isDestroyed());
     if (!window) return;
@@ -22,6 +30,7 @@ function attachElectronHost() {
     window.show(); window.focus(); app.focus({steal:true});
   });
   app.on('browser-window-created', (_event, window) => {
+    if (revoked) { window.hide(); window.destroy(); return; }
     if (process.platform === 'win32') {
       window.setMenu(null);
       window.setMenuBarVisibility(false);

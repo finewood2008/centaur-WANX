@@ -2008,11 +2008,32 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         conn.executescript(sql)
 
 
+def _ensure_local_data_principals_schema(db: DatabasePool) -> None:
+    _ensure_column(db, "users", "local_data_marker", "TEXT")
+    suffix = ".pg.sql" if db.dialect == "postgresql" else ".sql"
+    sql = (_MIGRATIONS_DIR / f"033_local_data_principals{suffix}").read_text(encoding="utf-8")
+    column_guard = "IF NOT EXISTS " if db.dialect == "postgresql" else ""
+    sql = sql.replace(f"ALTER TABLE users ADD COLUMN {column_guard}local_data_marker TEXT;", "")
+    sql = sql.replace("UPDATE _schema_version SET version = 33;", "")
+    # The former device-branch v31 already has local identities, but skipped the
+    # assistant knowledge v31. Use the canonical v33 repair DDL for both cases.
+    with db.connect() as conn:
+        if db.dialect == "postgresql":
+            _apply_postgresql_migration(conn, sql)
+        else:
+            conn.executescript(sql)
+
+
 def run_migrations(db: DatabasePool) -> None:
     if db.dialect == "sqlite":
         _repair_legacy_schema(db)
     for version, path in _discover(db.dialect):
         if version <= _current_version(db):
+            continue
+        if version == 33 and db.dialect == "sqlite":
+            _ensure_local_data_principals_schema(db)
+            with db.connect() as conn:
+                conn.execute("UPDATE _schema_version SET version = ?", (version,))
             continue
         # v18 touches optional ``user_invites``; use the idempotent helper for both
         # dialects so restores from pre-invite physical schemas do not fail.
@@ -2053,6 +2074,8 @@ def run_migrations(db: DatabasePool) -> None:
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
+    if _max_discovered_version(db.dialect) >= 33:
+        _ensure_local_data_principals_schema(db)
     _ensure_knowledge_bases_schema(db)
     _ensure_skill_packages_schema(db)
     _ensure_published_experts_schema(db)

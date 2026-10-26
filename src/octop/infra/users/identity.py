@@ -22,6 +22,7 @@ class User:
     locale: str = "zh"
     permissions: list[str] = field(default_factory=list)
     application_id: str = "wanx"
+    local_data: bool = False
 
     @property
     def label(self) -> str:

@@ -16,6 +16,8 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.local_data import required as local_data_required
+from octop.api.common.local_data import resolve_connection_user
 from octop.api.deps import resolve_user_from_token
 from octop.infra.mobile.adb import find_adb, list_devices
 from octop.infra.users.identity import User
@@ -65,12 +67,16 @@ async def adb_shell_ws(
 
     await websocket.accept()
 
-    if not token or not token.strip():
+    if (not token or not token.strip()) and not local_data_required(websocket):
         await _send_json(websocket, {"type": "error", "message": "missing token"})
         await websocket.close(code=4001, reason="missing token")
         return
     try:
-        user: User = resolve_user_from_token(server, token.strip())
+        user: User = (
+            resolve_connection_user(websocket, server)
+            if local_data_required(websocket)
+            else resolve_user_from_token(server, (token or "").strip())
+        )
     except Exception as exc:
         await _send_json(websocket, {"type": "error", "message": f"auth failed: {exc}"})
         await websocket.close(code=4001, reason=f"auth failed: {exc}")

@@ -11,6 +11,7 @@ license = { text = "MIT" }
 requires-python = ">=3.12"
 authors = [{name = "octop contributors"}]
 dependencies = [
+    "centuarai-local-data-gate==0.1.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6,<2.14",
@@ -47,6 +48,9 @@ dependencies = [
     "xlrd>=2.0.1",
     "deepagents[video]==0.7.9",
 ]
+
+[tool.uv.sources]
+centuarai-local-data-gate = { path = "packages/local-data-gate", editable = true }
 
 [project.optional-dependencies]
 # PEP 621 extras — kept so `pip install -e ".[dev]"` keeps working for

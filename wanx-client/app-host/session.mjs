@@ -1,25 +1,31 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { WebSocket, WebSocketServer } from "ws";
+import { localApplicationProfile } from "../applications/data-profile.mjs";
 
 const fail = (code, status = 401) => Object.assign(new Error(code), { code, status });
 const MAX_WS_PAYLOAD = 32 * 1024 * 1024;
 const TERMINAL = new Set(["NETWORK_CHANGED", "SESSION_CLOSED", "GATEWAY_CLOSED", "PLATFORM_SESSION_EXPIRED", "HOST_SESSION_EXPIRED"]);
-const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "x-content-sha256", "range", "if-none-match", "if-modified-since"]);
+const REQUEST_HEADERS = new Set(["accept", "accept-language", "content-type", "x-octop-agent-id", "x-content-sha256", "range", "if-none-match", "if-modified-since", "if-range", "if-match", "last-event-id", "idempotency-key", "x-wanx-data-context", "x-space-link"]);
 
 // Own the launch's credentials and local resources, but borrow its fixed box connection.
 export async function createApplicationSession({
-  hostApplicationId, applicationId, installPath, createConnection, authorizeRelease, signal,
+  hostApplicationId, applicationId, installPath, createConnection, authorizeRelease, capabilities, signal,
 } = {}) {
   signal?.throwIfAborted();
-  const launchId = randomUUID(), token = randomUUID() + randomUUID();
-  const connection = await createConnection();
-  signal?.throwIfAborted();
+  const launchId = randomBytes(32).toString("base64url"), token = randomUUID() + randomUUID();
+  const connection = await createConnection({ applicationId, launchId, capabilities });
+  try { signal?.throwIfAborted(); } catch (error) { if (connection.kind === "local-trust-v1") connection.close?.(); throw error; }
+  const local = connection.kind === "local-trust-v1";
+  let dataProfile;
+  try { if (local) dataProfile = localApplicationProfile(connection.context().dataIdentity); }
+  catch (error) { connection.close?.(); throw error; }
   let url, invalid = false, closing, unsubscribe, heartbeat;
   let releasePermit, releaseExpiry, releaseRenewal, releaseAbort;
   const releaseController = new AbortController();
-  const operations = new Set(), events = new Set(), sockets = new Set();
+  const operations = new Set(), events = new Set(), sockets = new Set(), invalidationListeners = new Set();
+  let unsubscribeInvalidated;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false,
     handleProtocols: (_protocols, req) => req.selectedProtocol || false });
   function state() {
@@ -57,10 +63,14 @@ export async function createApplicationSession({
     invalid = true;
     clearRelease(); releaseController.abort();
     unsubscribeConnection();
+    unsubscribeInvalidated?.(); unsubscribeInvalidated = undefined;
+    if (local) connection.close?.();
     for (const res of events) res.end('data: {"type":"invalidated","code":"HOST_SESSION_EXPIRED"}\n\n');
     events.clear();
     for (const abort of operations) abort();
     for (const ws of sockets) ws.terminate();
+    for (const listener of invalidationListeners) { try { listener(); } catch {} }
+    invalidationListeners.clear();
   }
   function unsubscribeConnection() {
     const stop = unsubscribe;
@@ -219,6 +229,7 @@ export async function createApplicationSession({
     return closing;
   }
   try {
+    if (local) unsubscribeInvalidated = connection.onInvalidated?.(invalidate);
     if (authorizeRelease) watchRelease(await authorizeRelease({ signal: releaseController.signal }));
     signal?.throwIfAborted();
     await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -235,6 +246,7 @@ export async function createApplicationSession({
     heartbeat.unref();
     return Object.freeze({
       launchId,
+      ...(dataProfile ? { dataProfile } : {}),
       environment: Object.freeze({
         WANX_HOST_TOKEN: token,
         WANX_HOST_APPLICATION_ID: hostApplicationId,
@@ -246,6 +258,11 @@ export async function createApplicationSession({
         WANX_HOST_BASE_URL: url,
       }),
       assertLive: state,
+      onInvalidated(listener) {
+        if (typeof listener !== "function") throw new TypeError("listener is required");
+        if (invalid) listener(); else invalidationListeners.add(listener);
+        return () => invalidationListeners.delete(listener);
+      },
       close,
     });
   } catch (error) {

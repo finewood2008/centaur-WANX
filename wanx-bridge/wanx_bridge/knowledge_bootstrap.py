@@ -84,8 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--base-url", required=True)
+    parser.add_argument("--local-required", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.local_required:
+            raise BridgeUpstreamError("WANX_KNOWLEDGE_OFFLINE_REQUIRED")
         enabled = asyncio.run(bootstrap(args.root, args.base_url))
     except BridgeUpstreamError as exc:
         print(exc.code, file=sys.stderr)

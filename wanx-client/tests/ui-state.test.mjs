@@ -49,6 +49,7 @@ async function harness(t, options = {}) {
   };
   const ui = await createUIState({
     client, account, applications, preferenceFile,
+    assertClientUsable: options.assertClientUsable,
     serviceURL: options.serviceURL || "https://accounts.example/prod-api",
     onChanged: (state) => changes.push(state), onOpened: (value) => opened.push(value),
   });
@@ -347,4 +348,59 @@ test("existing healthy box opens apps during management recovery without startin
     assert.equal((await blocked.ui.requestOpen("example.app")).phase, "confirm");
     assert.deepEqual(blocked.calls, []);
   }
+});
+
+const localIdentity = generation => ({ phase: 'unlocked', profileId: 'profile-a', clientId: 'local-client', generation,
+  selected: { boxId: 'box-a', boxKeyThumbprint: 'box-pin-a', principalId: 'principal-a', bindingId: 'binding-a', ownershipEpoch: 1,
+    authorizationVersion: 1, sessionId: `session-${generation}` } });
+
+test('local data identity opens applications without cloud login and is not persisted in legacy preferences', async t => {
+  const h = await harness(t, { state: { phase: 'ready', dataIdentity: localIdentity(1),
+    connection: { mode: 'lan', deviceId: 'box-a', authorization: 'local-trust-v1' }, network: { enabled: false } } });
+  h.publishAccount({ phase: 'signed_out' });
+  assert.equal((await h.ui.requestOpen('example.app')).state, 'running');
+  await h.ui.rememberConnection();
+  await assert.rejects(readFile(h.preferenceFile), { code: 'ENOENT' });
+});
+
+test('local lock and immediate unlock invalidate an in-flight application launch', async t => {
+  const h = await harness(t, { state: { phase: 'ready', dataIdentity: localIdentity(1),
+    connection: { mode: 'lan', deviceId: 'box-a', authorization: 'local-trust-v1' } } });
+  const ready = deferred(); h.setLaunch(() => ready.promise);
+  const pending = h.ui.requestOpen('example.app');
+  const rejected = assert.rejects(pending, { code: 'ACCOUNT_SESSION_CHANGED' });
+  h.publishClient({ dataIdentity: { ...localIdentity(2), phase: 'locked', selected: null } });
+  assert.equal(h.ui.snapshot().pendingOpen, null);
+  assert.equal(h.ui.snapshot().lastDeviceId, null);
+  await assert.rejects(h.ui.requestOpen('example.app'), { code: 'LOCAL_TRUST_LOCKED' });
+  h.publishClient({ dataIdentity: localIdentity(3) });
+  ready.resolve({ state: 'running' }); await rejected;
+  assert.deepEqual(h.opened, []);
+});
+
+
+test("required client updates block new intents and pending confirmations without preventing cancellation", async t => {
+  let required = false;
+  const h = await harness(t, { assertClientUsable() { if (required) throw failure("CLIENT_UPDATE_REQUIRED"); } });
+  const intent = await h.ui.requestOpen("example.app");
+  required = true;
+  await assert.rejects(h.ui.confirmOpen({ intentId: intent.id, deviceId: "box-a" }), { code: "CLIENT_UPDATE_REQUIRED" });
+  assert.deepEqual(h.calls, []);
+  await h.ui.cancelOpen({ intentId: intent.id });
+  assert.equal(h.ui.snapshot().pendingOpen, null);
+  await assert.rejects(h.ui.requestOpen("example.app"), { code: "CLIENT_UPDATE_REQUIRED" });
+  required = false;
+  assert.equal((await h.ui.requestOpen("example.app")).phase, "confirm");
+});
+
+test("an update discovered while connecting prevents the deferred application launch", async t => {
+  let required = false;
+  const h = await harness(t, { assertClientUsable() { if (required) throw failure("CLIENT_UPDATE_REQUIRED"); } });
+  const connected = deferred();
+  h.setConnect(async () => { await connected.promise; h.publishClient({ phase: "ready", connection: { deviceId: "box-a", mode: "netbird" } }); });
+  const intent = await h.ui.requestOpen("example.app");
+  const rejected = assert.rejects(h.ui.confirmOpen({ intentId: intent.id, deviceId: "box-a" }), { code: "CLIENT_UPDATE_REQUIRED" });
+  required = true; connected.resolve(); await rejected;
+  assert.deepEqual(h.calls, [["connect", "box-a"]]);
+  assert.equal(h.ui.snapshot().pendingOpen.error, "CLIENT_UPDATE_REQUIRED");
 });

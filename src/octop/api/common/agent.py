@@ -34,7 +34,7 @@ def _user_may_access(row: Any, user: Any) -> bool:
         return True
     if row.user_id is not None and row.user_id == user.id:
         return True
-    return bool(agent_is_shared(row))
+    return not getattr(user, "local_data", False) and bool(agent_is_shared(row))
 
 
 def assert_agent_access_row(row: Any, user: Any) -> None:

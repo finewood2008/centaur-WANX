@@ -85,3 +85,21 @@ test("bundled Electron helper reports a failed main frame without exposing diagn
   webContents.emit("did-finish-load");
   assert.deepEqual(f.messages, [{ type: "wanx:application-failed", launchId: "launch" }]);
 });
+
+test("Host invalidation hides every existing and late window and cannot be undone by activation", () => {
+  const f = fixture(environment);
+  let exits = 0, hidden = 0, destroyed = 0, shown = 0;
+  f.app.exit = code => { assert.equal(code, 0); exits++; };
+  f.attach();
+  const window = () => Object.assign(new EventEmitter(), { webContents: new EventEmitter(),
+    isDestroyed: () => false, hide: () => hidden++, destroy: () => destroyed++,
+    isMinimized: () => false, show: () => shown++, focus() {} });
+  f.app.emit('browser-window-created', {}, window());
+  f.process.emit('message', { type: 'wanx:application-invalidate', launchId: 'wrong' });
+  assert.equal(exits, 0);
+  f.process.emit('message', { type: 'wanx:application-invalidate', launchId: 'launch' });
+  assert.equal(exits, 1); assert.equal(hidden, 1); assert.equal(destroyed, 1);
+  f.process.emit('message', { type: 'wanx:application-activate', launchId: 'launch' });
+  f.app.emit('browser-window-created', {}, window());
+  assert.equal(shown, 0); assert.equal(hidden, 2); assert.equal(destroyed, 2);
+});

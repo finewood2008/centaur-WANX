@@ -10,6 +10,32 @@ import httpx
 
 PREFIX = "/api/personal-space"
 CHUNK_SIZE = 1024 * 1024
+APPLICATION_ID = "wanx.clipboard"
+
+
+def _child_route_allowed(method: str, route: str, body: Any) -> bool:
+    """Small fixed adapter; the runtime additionally restricts object ownership.
+
+    This is deliberately not a general authenticated proxy. Export exceptions
+    are authorized by the runtime from the exact admitted parent export body.
+    """
+    if route == PREFIX + "/app-folders":
+        return method == "POST" and body == {
+            "application": APPLICATION_ID, "name": "超级剪贴板",
+        }
+    if route == PREFIX + "/uploads":
+        return method == "POST" and isinstance(body, dict) and body.get("space_id") == "personal"
+    if route == PREFIX + "/connection-access":
+        return method == "POST" and isinstance(body, dict) and body.get("action") in {"access", "stat"}
+    item = "[a-f0-9]{32}"
+    patterns = {
+        "GET": rf"(?:uploads/{item}|files/{item}(?:/content\?offset=[0-9]+&length=[0-9]+)?)",
+        "PUT": rf"uploads/{item}\?offset=[0-9]+",
+        "POST": rf"uploads/{item}/complete",
+        "DELETE": rf"(?:uploads|files|trash)/{item}",
+    }
+    pattern = patterns.get(method)
+    return bool(pattern and re.fullmatch(re.escape(PREFIX) + "/" + pattern, route))
 
 
 class BusinessError(Exception):
@@ -37,10 +63,27 @@ def validate_name(value: str) -> str:
 
 
 class WanxAPI:
-    def __init__(self, client: httpx.Client, authorization: str):
+    def __init__(self, client: httpx.Client, authorization: str, *, context=None):
         self.client = client
-        self.authorization = authorization
+        self.context = context
+        self.authorization = "" if context is not None else authorization
         self.renewed = None
+
+    @property
+    def local_data(self) -> bool:
+        return self.context is not None
+
+    def require_live(self) -> None:
+        if self.context is not None:
+            self.context.require_live()
+
+    def agent_token(self, presented: str) -> str:
+        if self.context is None:
+            return presented
+        token = self.context.claims["headers"]["spaceLink"]
+        if not isinstance(token, str) or not token or token != presented:
+            raise BusinessError("SPACE_APPROVAL_REQUIRED", 403)
+        return token
 
     def request(
         self,
@@ -52,7 +95,8 @@ class WanxAPI:
         token: str = "",
         raw: bool = False,
     ) -> Any:
-        headers = {"Authorization": self.authorization}
+        self.require_live()
+        headers = {} if self.local_data else {"Authorization": self.authorization}
         if token:
             headers["X-Space-Link"] = token
         if data is not None:
@@ -62,10 +106,27 @@ class WanxAPI:
                     "X-Content-SHA256": hashlib.sha256(data).hexdigest(),
                 }
             )
+        if self.local_data:
+            if not _child_route_allowed(method, route, body):
+                raise BusinessError("LOCAL_DATA_SCOPE_DENIED", 403)
+            # Build once, then bind the bytes actually transmitted. Do not inherit
+            # this shared HTTP client's cookies, auth or mutable default headers.
+            request = httpx.Request(
+                method, self.client.base_url.join(route), headers=headers, json=body, content=data,
+            )
+            child_headers = self.context.child_headers(
+                audience="octop", method=method, raw_target=request.url.raw_path.decode("ascii"),
+                headers=dict(request.headers), body=request.content,
+            )
+            request.headers = httpx.Headers(child_headers)
         try:
-            response = self.client.request(method, route, headers=headers, json=body, content=data)
+            if self.local_data:
+                response = self.client.send(request, auth=None, follow_redirects=False)
+            else:
+                response = self.client.request(method, route, headers=headers, json=body, content=data)
         except httpx.HTTPError as exc:
             raise BusinessError("CLIPBOARD_UPSTREAM_UNAVAILABLE", 503) from exc
+        self.require_live()
         if not 200 <= response.status_code < 300:
             try:
                 code = response.json().get("detail", {}).get("code")
@@ -73,12 +134,17 @@ class WanxAPI:
                 code = None
             raise BusinessError(code or "CLIPBOARD_UPSTREAM_FAILED", response.status_code)
         renewed = response.headers.get("x-octop-access-token")
-        if renewed:
+        if renewed and not self.local_data:
             self.renewed = renewed
             self.authorization = "Bearer " + renewed
         return response if raw else (response.json() if response.content else None)
 
     def owner(self) -> str:
+        if self.context is not None:
+            self.require_live()
+            # Separate domain from every legacy numeric UID, even if a future
+            # identity mapping happens to reuse a former account's native UID.
+            return "centuarai.local-data.clipboard.v1:" + self.context.principal_namespace
         if not self.authorization.startswith("Bearer "):
             raise BusinessError("ACCOUNT_LOGIN_REQUIRED", 401)
         result = self.request("/api/auth/me")
@@ -88,7 +154,7 @@ class WanxAPI:
         result = self.request(
             PREFIX + "/app-folders",
             "POST",
-            body={"application": "wanx.clipboard", "name": "超级剪贴板"},
+            body={"application": APPLICATION_ID, "name": "超级剪贴板"},
         )
         return result["id"]
 

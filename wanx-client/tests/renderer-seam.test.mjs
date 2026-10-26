@@ -2954,3 +2954,40 @@ test("preload and renderer preserve an existing healthy box through management r
     assert.equal((await h.window.wanxClient.getLocalState()).canLaunchApplications, false);
   }
 });
+
+function localProtectedState() {
+  return { ...state('unavailable', 'disabled', 'box-102'), account: { phase: 'signed_out' },
+    connection: { mode: 'local', deviceId: 'box-102', authorization: 'local-trust-v1', gatewayURL: 'http://127.0.0.1:41000/__wanx_session/local' },
+    devices: devices.map(item => ({ ...item, deviceRole: 'owner' })),
+    dataIdentity: { profileId: 'local-profile', clientId: 'local-client', generation: 1, phase: 'unlocked',
+      selected: { boxId: 'box-102', boxKeyThumbprint: 'pin-a', principalId: 'principal-a', bindingId: 'binding-a',
+        ownershipEpoch: 1, authorizationVersion: 1, sessionId: 'session-a' } } };
+}
+
+test('local identity opens the ordinary shell without cloud login and keeps host controls inaccessible', async () => {
+  const h = await harness(localProtectedState());
+  assert.doesNotMatch(h.app.innerHTML, /data-form="auth"/);
+  h.navigate('boxes');
+  assert.match(h.app.innerHTML, /本地设备安全/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="maintenance-open"|data-action="transfer-open"|data-action="support-open"/);
+  await h.click('maintenance-open', { tool: 'terminal' });
+  assert.equal(h.dashboards.length, 0);
+  await h.click('show-settings');
+  assert.match(h.app.innerHTML, /data-action="cloud-login"/);
+  assert.match(h.app.innerHTML, /aria-label="空间 MCP"/);
+  assert.match(h.app.innerHTML, /data-action="device-trust-open"/);
+  await h.click('cloud-login');
+  assert.match(h.app.innerHTML, /data-form="auth"/);
+  assert.match(h.app.innerHTML, /云账号用于应用市场与计费/);
+  await h.click('local-return');
+  assert.doesNotMatch(h.app.innerHTML, /data-form="auth"/);
+});
+
+test('local lock hides private shell despite an authenticated cloud account', async () => {
+  const initial = localProtectedState();
+  const h = await harness(initial);
+  h.update({ ...initial, account: { phase: 'authenticated', accountId: 'billing-a' },
+    dataIdentity: { ...initial.dataIdentity, phase: 'locked', generation: 2, selected: null } });
+  assert.match(h.app.innerHTML, /data-form="auth"/);
+  assert.doesNotMatch(h.app.innerHTML, /class="main-nav"/);
+});

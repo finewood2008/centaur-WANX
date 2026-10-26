@@ -49,6 +49,57 @@ async function artifact(root, packaged = manifest) {
 const resources = () => [{ kind: "expert", resourceId: "zhijun-personal-companion", version: "4.0.0", status: "ready" }, { kind: "skill-package", resourceId: "research", version: "2.0.0", status: "ready" }];
 const bindings = () => [{ kind: "expert", resourceId: "zhijun-personal-companion", version: "4.0.0", instanceId: "actual-expert-42" }, { kind: "skill-package", resourceId: "research", version: "2.0.0", packageId: "actual-skill-23" }];
 const backend = () => ({ schemaVersion: 1, productId: "wanx", deviceId: "box-a", observedAt: new Date().toISOString(), authorization: { status: "ready" }, contracts: [{ id: "wanx-bridge.readiness", version: "1.0.0", features: ["read-only"] }], resources: resources(), bindings: bindings() });
+function localHarness(value, edit = () => {}) {
+  const identity = { profileId: 'independent-profile', clientId: 'local-client', generation: 3, boxId: 'box-a',
+    boxKeyThumbprint: Buffer.alloc(32, 7).toString('base64url'), principalId: 'principal-a', bindingId: 'binding-a',
+    ownershipEpoch: 2, sessionId: 'parent-session' };
+  const calls = [], candidateSets = new Map();
+  const context = () => ({ protocolVersion: 2, authorization: 'local-trust-v1', connection: 'ready', boxId: 'box-a',
+    principalId: identity.principalId, clientId: identity.clientId, dataIdentity: { ...identity }, user: { id: 42 } });
+  const host = { kind: 'local-trust-v1', context, async request(input) {
+    const body = JSON.parse(input.body); calls.push({ path: input.path, body });
+    const scope = { schemaVersion: 2, authorization: 'local-trust-v1', boxKeyThumbprint: identity.boxKeyThumbprint,
+      principalId: identity.principalId, deviceId: 'box-a', ownershipEpoch: 2, artifactId: value.descriptor.artifactId };
+    const bindingSetId = body.bindingSetId || createHash('sha256').update(JSON.stringify([scope, body.operationId || 'default'])).digest('hex');
+    if (body.operationId) candidateSets.set(bindingSetId, body.operationId);
+    const result = { ...backend(), schemaVersion: body.schemaVersion, status: 'ready', checks: [], backendProductId: 'wanx',
+      applicationId: manifest.applicationId, artifactId: value.descriptor.artifactId, bindingScope: scope, bindingSetId,
+      operationId: candidateSets.get(bindingSetId) || 'default' };
+    edit(result, input); return { status: 200, body: Buffer.from(JSON.stringify(result)) };
+  }, async deriveApplication({ applicationId, launchId }) {
+    assert.equal(applicationId, manifest.applicationId);
+    return { kind: 'local-trust-v1', context: () => ({ ...context(), dataIdentity: { ...identity, sessionId: 'fresh-child', launchId } }), close() {} };
+  } };
+  const account = { getIdentity() { throw Error('cloud account must not authorize local preparation'); } };
+  const client = { snapshot: () => ({ phase: 'ready', connection: { deviceId: 'box-a', authorization: 'local-trust-v1' } }),
+    async applicationConnection(applicationId, options) { assert.equal(applicationId, undefined); assert.equal(options, undefined); return host; } };
+  return { identity, calls, provider: createApplicationBackend({ client, account, clientVersion: '0.2.0' }) };
+}
+
+test('independent local scope survives real artifact installation and derives a fresh app connection without a cloud account', async t => {
+  const root = await temporary(t), value = await artifact(root), h = localHarness(value);
+  const installer = createApplicationInstaller({ rootDir: path.join(root, 'installed'), trustedKeys,
+    getCompatibilityContext: h.provider.getCompatibilityContext, prepareApplication: h.provider.prepareApplication });
+  const selected = await installer.installVerifiedPackage(value);
+  const record = (await installer.list())[0];
+  assert.equal(record.bindingScope.schemaVersion, 2); assert.equal(record.bindingScope.principalId, h.identity.principalId);
+  assert.equal(record.bindingScope.accountId, undefined); assert.equal(record.bindingScope.boxKeyThumbprint, h.identity.boxKeyThumbprint);
+  const context = await h.provider.getCompatibilityContext({ manifest: record, descriptor: value.descriptor, phase: 'launch' });
+  const child = await context.applicationConnection.deriveApplication({ applicationId: manifest.applicationId, launchId: 'launch-child' });
+  assert.equal(child.context().dataIdentity.sessionId, 'fresh-child'); assert.equal(child.context().resourceBindings.length, 2);
+  assert.equal(child.context().accountId, undefined); assert.ok(selected);
+});
+
+test('local candidate rejects cloud scope, changed pin/principal/epoch and extra fields before activation', async t => {
+  const value = await artifact(await temporary(t));
+  for (const change of [scope => ({ ...scope, accountId: 'cloud-account' }), scope => ({ ...scope, principalId: 'other' }),
+    scope => ({ ...scope, boxKeyThumbprint: Buffer.alloc(32, 8).toString('base64url') }), scope => ({ ...scope, ownershipEpoch: 1 }),
+    scope => ({ accountId: 'cloud-account', deviceId: scope.deviceId, ownershipEpoch: scope.ownershipEpoch, artifactId: scope.artifactId })]) {
+    const h = localHarness(value, result => { result.bindingScope = change(result.bindingScope); });
+    await assert.rejects(h.provider.prepareApplication({ manifest, descriptor: value.descriptor, operationId: 'candidate' }), { code: 'APPLICATION_PREPARATION_INVALID' });
+  }
+});
+
 function harness(value, options = {}) {
   const state = { accountId: "user-a", clientId: "client-a", boxId: "box-a", connection: "ready", phase: "ready" }, seen = [], connections = [], candidateSets = new Map();
   const account = { getIdentity: () => ({ accountId: state.accountId, clientId: state.clientId }) };

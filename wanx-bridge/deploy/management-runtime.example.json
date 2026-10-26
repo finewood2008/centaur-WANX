@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "bindHost": "0.0.0.0",
+  "bindPort": 9443,
+  "stateDirectory": "/var/lib/centauros/local-trust"
+}

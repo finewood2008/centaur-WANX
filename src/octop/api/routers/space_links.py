@@ -20,6 +20,8 @@ router = APIRouter()
 
 
 async def links(service: PersonalSpace = Depends(space)) -> Workspaces:
+    if isinstance(service, Workspaces):
+        return service
     return await call(Workspaces, service.root.parent, int(service.root.name))
 
 

@@ -1,0 +1,32 @@
+[Unit]
+Description=CentuarAI independent local trust management
+After=network.target
+ConditionPathExists=/var/lib/centauros/local-trust/local-authority.sqlite3
+ConditionPathExists=/var/lib/centauros/local-trust/authority-initialized.json
+ConditionPathExists=/var/lib/centauros/local-trust/management-runtime.json
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/centuarai/wanx-bridge
+ExecStart=/opt/centuarai/wanx-bridge/.venv/bin/python -I -m wanx_bridge.local_trust_runtime --config /var/lib/centauros/local-trust/management-runtime.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/centauros/local-trust
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

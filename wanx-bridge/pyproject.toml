@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Independent platform authorization boundary for an unmodified Octop service"
 requires-python = ">=3.12"
 dependencies = [
+  "centuarai-local-data-gate==0.1.0",
   "fastapi>=0.110,<1",
   "uvicorn>=0.30,<1",
   "httpx>=0.27,<1",
@@ -17,6 +18,9 @@ dependencies = [
   "cryptography>=41",
   "jsonschema>=4.20,<5",
 ]
+
+[tool.uv.sources]
+centuarai-local-data-gate = { path = "../packages/local-data-gate", editable = true }
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]

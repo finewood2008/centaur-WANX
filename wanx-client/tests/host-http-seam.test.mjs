@@ -461,3 +461,21 @@ test('box rejection during an existing large Buffer upload preserves its 413 res
   assert.equal(response.status, 413);
   assert.deepEqual(await response.json(), {code:'BOX_UPLOAD_LIMIT'});
 });
+
+test('local Host forwards signed resource selectors without caller credentials', async t => {
+  let received;
+  const connection = { kind: 'local-trust-v1', close() {}, onInvalidated() { return () => {}; },
+    context: () => ({ protocolVersion: 2, connection: 'ready', dataIdentity: { profileId: 'profile-a', boxId: 'box-a',
+      boxKeyThumbprint: 'pin-a', ownershipEpoch: 1, principalId: 'principal-a' } }),
+    async request(input) { received = input; return { status: 200, headers: {}, body: Readable.from(['ok']) }; } };
+  const session = await openSession(connection);
+  t.after(() => session.close());
+  const selectors = { 'if-range': 'etag-1', 'if-match': 'etag-2', 'last-event-id': 'event-a',
+    'idempotency-key': 'operation-a', 'x-wanx-data-context': 'context-a', 'x-space-link': 'link-a',
+    'x-content-sha256': 'digest-a', 'range': 'bytes=0-9' };
+  const response = await fetch(session.environment.WANX_HOST_BASE_URL + '/api/private', {
+    headers: { ...selectors, authorization: 'Bearer ' + session.environment.WANX_HOST_TOKEN, cookie: 'stolen=1' } });
+  assert.equal(await response.text(), 'ok');
+  for (const [key, value] of Object.entries(selectors)) assert.equal(received.headers[key], value);
+  assert.equal(received.headers.authorization, undefined); assert.equal(received.headers.cookie, undefined);
+});

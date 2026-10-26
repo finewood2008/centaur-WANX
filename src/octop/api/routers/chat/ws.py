@@ -13,6 +13,8 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from octop.api.common.agent import assert_agent_access
+from octop.api.common.local_data import required as local_data_required
+from octop.api.common.local_data import resolve_connection_user
 from octop.api.deps import resolve_user_from_token
 from octop.api.routers.chat.models import UserTurnWsFrame
 from octop.api.routers.chat.sse import json_chunk_default
@@ -40,12 +42,16 @@ async def dashboard_chat_ws(
     authorization = websocket.headers.get("authorization", "")
     if authorization:
         token = authorization[7:] if authorization.startswith("Bearer ") else None
-    if not token:
+    if not token and not local_data_required(websocket):
         await websocket.close(code=4001, reason="missing token")
         return
 
     try:
-        user = resolve_user_from_token(server, token)
+        user = (
+            resolve_connection_user(websocket, server, token)
+            if local_data_required(websocket)
+            else resolve_user_from_token(server, token or "")
+        )
     except OctopError as exc:
         await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
         return
@@ -181,6 +187,14 @@ async def dashboard_chat_ws(
             if meter_account:
                 inbound.metadata["_meter_identity"] = meter_account
             hub.subscribe(prepared.thread_id, connection_id)
+            if local_data_required(websocket):
+                from centuarai_local_data_gate import get_context
+
+                from octop.infra.gateway.ws.local_data import LocalDataInbound
+
+                context = get_context(websocket.scope)
+                assert context is not None
+                inbound = LocalDataInbound.bind(inbound, context.require_live)
             channel_manager.enqueue(WS_CHANNEL_ID, inbound)
 
     except WebSocketDisconnect:

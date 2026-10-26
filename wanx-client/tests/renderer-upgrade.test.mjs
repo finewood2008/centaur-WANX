@@ -11,11 +11,11 @@ function state(box = {}) {
   return { route: "applications", phase: "ready", account: { accountId: "account-1" }, activeDeviceId: "box-1", devices: [{ deviceId: "box-1", displayName: "我的盒子" }, { deviceId: "box-2", displayName: "第二台盒子" }], network: { enabled: true, phase: "ready" }, applications: [], upgrades: { client, box: { deviceId: "box-1", canUpgrade: true, phase: "unknown", ...box } } };
 }
 async function harness(initial = state(), onAction = async () => {}, timers = null) {
-  let current = structuredClone(initial), listener;
+  let current = structuredClone(initial), listener, navigate;
   const events = new Map(), calls = [];
   const app = { innerHTML: "", querySelector: () => null, addEventListener: (name, fn) => events.set(name, fn) };
   const window = { wanxClient: {
-    getLocalState: async () => current, onLocalState: fn => { listener = fn; },
+    getLocalState: async () => current, onLocalState: fn => { listener = fn; }, onNavigate: fn => { navigate = fn; },
     action: async (action, input) => {
       calls.push({ action, input: structuredClone(input) });
       const override = await onAction(action, input, current);
@@ -31,7 +31,7 @@ async function harness(initial = state(), onAction = async () => {}, timers = nu
   await new Promise(resolve => setImmediate(resolve));
   const click = (action, data = {}) => events.get("click")({ target: { closest: () => ({ dataset: { action, ...data } }) } });
   await click("show-settings");
-  return { app, calls, click, update(next) { current = structuredClone(next); listener(current); } };
+  return { app, calls, click, navigate: value => navigate(value), key: value => events.get("keydown")({ key: value }), update(next) { current = structuredClone(next); listener(current); } };
 }
 
 test("settings show build identity and unknown box evidence without claiming current", async () => {
@@ -362,6 +362,93 @@ test("installation-only presentation never hides a reported base drift or invent
   assert.match(table, /运行异常/);
   assert.match(table, /缺少运行核验证据/);
   assert.doesNotMatch(table, /历史部署回执/);
+});
+
+
+function requiredClientState(phase = "available") {
+  const value = state();
+  value.account.phase = "authenticated";
+  value.upgrades.client = {
+    ...client, current: { ...client.current, distributionClass: "formal", productVersion: "1.0.0" }, phase,
+    requirement: { required: true, minimumVersion: "2.0.0", releaseId: "client-required-v2" },
+    candidate: { releaseId: "client-v2", productVersion: "2.0.0", requiresRestart: true },
+  };
+  return value;
+}
+
+test("required client update blocks business navigation while retaining settings and diagnostics", async () => {
+  const h = await harness(requiredClientState());
+  assert.match(h.app.innerHTML, /<h2>设置<\/h2>/);
+  assert.match(h.app.innerHTML, /需要更新万象至 v2\.0\.0/);
+  await h.click("show-applications");
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  assert.match(h.app.innerHTML, /data-action="updates-client-download"/);
+  assert.match(h.app.innerHTML, /已打开的应用不会被强制关闭/);
+  for (const action of ["show-ai-dialogue", "show-space", "applications-launch", "notifications-open", "pending-confirm"]) {
+    await h.click(action, { applicationId: "example.app", id: "message-1" });
+    assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  }
+  assert.equal(h.calls.some(call => ["applications.request-open", "applications.confirm-open", "notifications.open"].includes(call.action)), false);
+  h.navigate("ai-dialogue");
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  await h.click("show-settings");
+  assert.match(h.app.innerHTML, /<h2>设置<\/h2>/);
+  await h.click("show-boxes");
+  assert.match(h.app.innerHTML, /<h2>盒子<\/h2>/);
+  assert.match(h.app.innerHTML, /data-action="show-client-update"/);
+  await h.click("show-client-update");
+  assert.match(h.app.innerHTML, /data-action="desktop-quit"/);
+  await h.click("desktop-quit");
+  assert.equal(h.calls.some(call => call.action === "desktop.quit"), true);
+});
+
+test("cancelling required installation never dismisses the requirement or installs automatically", async () => {
+  const h = await harness(requiredClientState("downloaded"));
+  await h.click("show-applications");
+  assert.equal(h.calls.some(call => call.action === "updates.client.install"), false);
+  await h.click("updates-client-install");
+  assert.match(h.app.innerHTML, /role="alertdialog"/);
+  await h.click("market-cancel");
+  assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  await h.click("updates-client-install");
+  await h.key("Escape");
+  assert.doesNotMatch(h.app.innerHTML, /role="alertdialog"/);
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  assert.equal(h.calls.some(call => call.action === "updates.client.install"), false);
+  await h.click("updates-client-install");
+  await h.click("market-confirm");
+  assert.deepEqual(h.calls.find(call => call.action === "updates.client.install").input, { confirmed: true });
+});
+
+test("failed checks keep required update recovery actions and clearing the requirement restores navigation", async () => {
+  const initial = requiredClientState("failed");
+  initial.upgrades.client.candidate = null;
+  initial.upgrades.client.reason = "UPDATE_REQUEST_FAILED";
+  const h = await harness(initial);
+  await h.click("show-applications");
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  assert.match(h.app.innerHTML, /暂时无法连接更新服务/);
+  assert.match(h.app.innerHTML, /data-action="updates-client-check"/);
+  assert.match(h.app.innerHTML, /data-action="show-boxes"/);
+  await h.click("updates-client-check");
+  assert.equal(h.calls.filter(call => call.action === "updates.client.check").length, 1);
+  assert.equal(h.calls.some(call => call.action === "updates.client.download"), false);
+  h.update({ ...initial, upgrades: { ...initial.upgrades, client: { ...initial.upgrades.client, requirement: null, phase: "up_to_date", reason: null } } });
+  assert.doesNotMatch(h.app.innerHTML, /<h2>需要更新万象<\/h2>|data-action="show-client-update"/);
+  assert.match(h.app.innerHTML, /<h2>应用<\/h2>/);
+});
+
+test("required update preserves account login and reappears after signing in", async () => {
+  const initial = requiredClientState();
+  const signedOut = { ...initial, route: "auth", phase: "signed_out", account: { phase: "signed_out" } };
+  const h = await harness(initial, async action => action === "auth.logout" ? { ok: true, state: signedOut } : undefined);
+  await h.click("show-client-update");
+  await h.click("logout");
+  assert.match(h.app.innerHTML, /data-form="auth"/);
+  assert.doesNotMatch(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
+  h.update(initial);
+  assert.match(h.app.innerHTML, /<h2>需要更新万象<\/h2>/);
 });
 
 for (const [code, guidance] of [

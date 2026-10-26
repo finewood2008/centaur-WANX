@@ -176,7 +176,7 @@
   window.wanxDialogueState = { trail: legacyTrail, richText: markdown, isLocalModel: m => Boolean(m.is_local) };
 
   window.createAIDialogueView = ({ request, onBoxes, compact = false, onSummary }) => {
-    let channelsPanel;
+    let channelsPanel, spaceAvailable = false, channelsAvailable = false, attachmentsAvailable = false;
     let root, context = null, generation = 0, epoch = 0, visible = false, connected = false, loaded = false, loading = false;
     let scope = null, models = [], selected = null, sessions = [], legacySessions = [], legacy = null, legacyId = null, legacyAnswer = null;
     let pendingHandoff=null,handoffBusy=false;
@@ -195,6 +195,10 @@
     const modelFor = id => models.find(m => m.id === id) || { name: id?.split('/').at(-1) || '通用专家', id };
     const state = () => ({ messages, active, pending, runModel, sequence, error });
     async function call(method, input = {}) {
+      if ((!spaceAvailable && method.startsWith('space-')) || (!knowledgeAvailable && method.startsWith('knowledge-')) ||
+          (!channelsAvailable && method.startsWith('channels-') && method !== 'channels-cancel') || (!attachmentsAvailable && method === 'upload')) {
+        throw Object.assign(new Error('DIALOGUE_ACCESS_DENIED'), { code: 'DIALOGUE_ACCESS_DENIED' });
+      }
       const response = await request(`dialogue.${method}`, { ...(method !== 'load' ? { scope } : {}), ...input });
       if (!response?.ok) throw Object.assign(new Error(response?.code || 'ASSISTANT_REQUEST_FAILED'), { code: response?.code });
       return response.value;
@@ -210,6 +214,7 @@
       busy = false; active = false; uncertain = false; uploading = false; opening = false; pending = null; pendingPaint = ''; error = ''; notice = ''; pickerOpen = false;
       if ($('[data-chat-artifact-dialog]')?.open) $('[data-chat-artifact-dialog]').close();
       if ($('[data-chat-history-dialog]')?.open) $('[data-chat-history-dialog]').close();
+      spaceAvailable = false; channelsAvailable = false; attachmentsAvailable = false;
       knowledgeAvailable = false; knowledgeEnabled = false; knowledgeWarehouses = []; knowledgeCatalog = []; knowledgeBusy = false; savedModel = null; artifactPath = null; sourceLinks.clear();
       for (const d of root?.querySelectorAll('dialog[open]') || []) d.close();
       if ($('[data-chat-space-dialog]')?.open) $('[data-chat-space-dialog]').close();
@@ -227,7 +232,14 @@
         const result = await call('load');
         if (gen !== generation) return;
         scope = result.scope; models = result.models; sessions = result.sessions; legacySessions = result.legacySessions; loaded = true;
-        knowledgeAvailable = result.capabilities?.knowledge === true;
+        knowledgeAvailable = result.capabilities?.knowledge !== false;
+        spaceAvailable = result.capabilities?.space !== false;
+        channelsAvailable = result.capabilities?.channels !== false;
+        attachmentsAvailable = result.capabilities?.attachments !== false;
+        if (!spaceAvailable) { spaceEnabled = false; spaceSelection = null; spaceLabel = ''; if ($('[data-chat-space-dialog]')?.open) $('[data-chat-space-dialog]').close(); }
+        if (!knowledgeAvailable) { knowledgeEnabled = false; knowledgeWarehouses = []; knowledgeChoices.clear(); if ($('[data-chat-knowledge-dialog]')?.open) $('[data-chat-knowledge-dialog]').close(); }
+        if (!attachmentsAvailable) { attachments = []; for (const cached of drafts.values()) cached.attachments = []; if (submitted) submitted.attachments = []; }
+        if (!channelsAvailable) channelsPanel?.reset();
         const settings = result.settings || {}; savedModel = settings.model || null;
         if(!threadId){spaceEnabled=false;spaceSelection=null;spaceLabel='';knowledgeEnabled=false;knowledgeWarehouses=[];}
         organization = result.organization || {}; historyAvailable = result.historyManagementAvailable === true; timezone = result.timezone || 'UTC';
@@ -266,12 +278,12 @@
       try{
         if(value.scope!==scope)return;
         if(value.conversationId)await openThread(value.conversationId);else await newChat();
-        if(!draft.trim()&&!attachments.length){draft=value.draft||'';attachments=value.attachments||[];reference=value.reference||'';$('[data-chat-input]').value=draft;}
+        if(!draft.trim()&&!attachments.length){draft=value.draft||'';attachments=attachmentsAvailable ? value.attachments||[] : [];reference=value.reference||'';$('[data-chat-input]').value=draft;}
         else if(value.draft&&value.draft!==draft)notice='主窗口草稿已保留，迷你助理的草稿仍在托盘中。';
         if(models.some(m=>m.id===value.model))selected=value.model;
         if(!value.conversationId){
-          if(value.context?.space?.enabled){const result=await call('space-grant',{enabled:true,selection:value.context.space.selection});spaceEnabled=true;spaceSelection=result.selection;spaceLabel=result.label;}
-          if(value.context?.knowledge?.enabled){const result=await call('knowledge-grant',{enabled:true,warehouses:value.context.knowledge.warehouses.map(w=>w.id)});knowledgeEnabled=true;knowledgeWarehouses=result.warehouses;}
+          if(spaceAvailable&&value.context?.space?.enabled){const result=await call('space-grant',{enabled:true,selection:value.context.space.selection});spaceEnabled=true;spaceSelection=result.selection;spaceLabel=result.label;}
+          if(knowledgeAvailable&&value.context?.knowledge?.enabled){const result=await call('knowledge-grant',{enabled:true,warehouses:value.context.knowledge.warehouses.map(w=>w.id)});knowledgeEnabled=true;knowledgeWarehouses=result.warehouses;}
         }
         paint();
       }catch(e){error=errorText(e);paintStatus();}finally{handoffBusy=false;}
@@ -280,8 +292,8 @@
       if(!value)return;
       conversationId=value.id;conversationRevision=value.revision;versions=value.versions||[];
       const ctx=value.context||{};
-      spaceEnabled=ctx.space?.enabled===true;spaceSelection=ctx.space?.selection||null;spaceLabel=ctx.space?.label||'';
-      knowledgeEnabled=knowledgeAvailable&&ctx.knowledge?.enabled===true;knowledgeWarehouses=ctx.knowledge?.warehouses||[];
+      spaceEnabled=spaceAvailable&&ctx.space?.enabled===true;spaceSelection=spaceEnabled ? ctx.space?.selection||null : null;spaceLabel=spaceEnabled ? ctx.space?.label||'' : '';
+      knowledgeEnabled=knowledgeAvailable&&ctx.knowledge?.enabled===true;knowledgeWarehouses=knowledgeEnabled ? ctx.knowledge?.warehouses||[] : [];
       if(value.validation_errors?.length) error=value.validation_errors.map(v=>(v.name||'资料')+'：'+errorText({code:v.code})).join('；');
     }
     function stashDraft() {if(conversationId)drafts.set(conversationId,{draft,attachments:attachments.slice(),reference});}
@@ -334,7 +346,7 @@
         if (turn !== epoch || gen !== generation) return;
         const changedConversation=conversationId!==result.conversation.id;
         const changedThread = threadId !== result.history.thread_id; threadId = result.history.thread_id;acceptConversation(result.conversation);contextUsage=null;
-        if(changedConversation){const cached=drafts.get(conversationId);draft=cached?.draft||'';attachments=cached?.attachments||[];reference=cached?.reference||'';$('[data-chat-input]').value=draft;} legacy = null; legacyId = null; submitted = null;
+        if(changedConversation){const cached=drafts.get(conversationId);draft=cached?.draft||'';attachments=attachmentsAvailable ? cached?.attachments||[] : [];reference=cached?.reference||'';$('[data-chat-input]').value=draft;} legacy = null; legacyId = null; submitted = null;
         if (changedThread) { messages = []; sourceLinks.clear(); }
         acceptHistory(result.history);
         if (choose && result.history.model_ref) selected = result.history.model_ref;
@@ -371,7 +383,7 @@
       const prompt = reference.trim() ? `${reference.trim()}\n\n【现在的请求】\n${text}` : text;
       if (prompt.length > 32000) { error = '历史参考与消息合计最多 32000 字符，请删减参考内容后发送。'; paintStatus(); return; }
 
-      const gen = generation, turn = epoch, sentFiles = attachments.slice(), sentDraft = draft, sentReference = reference;
+      const gen = generation, turn = epoch, sentFiles = attachmentsAvailable ? attachments.slice() : [], sentDraft = draft, sentReference = reference;
       submitted = { draft: sentDraft, reference: sentReference, attachments: sentFiles, prompt, model: selected, ended: false, failed: false };
       busy = true; error = ''; notice = ''; active = true; runModel = selected;
       messages.push({ id: `optimistic-${++sequence}`, role: 'user', text, reference: sentReference, files: sentFiles }); paint();
@@ -513,6 +525,7 @@
       for (const b of $('[data-space-directory]').querySelectorAll('button')) b.disabled = spaceBusy;
     }
     async function browseSpace(parent = '') {
+      if (!spaceAvailable) return;
       const gen = generation, sid = scopeSpaceId; spaceBusy = true; paintSpaceDialog(); paintStatus();
       try {
         const result = await call('space-list', { spaceId: sid, parent });
@@ -523,7 +536,7 @@
       finally { if (gen === generation) { spaceBusy = false; paintSpaceDialog(); paintStatus(); } }
     }
     async function showSpaceSettings() {
-      if (spaceBusy || active || busy || pending || legacy || !scope) return;
+      if (!spaceAvailable || spaceBusy || active || busy || pending || legacy || !scope) return;
       const gen = generation; scopeMode = spaceSelection?.mode || 'space'; scopeSpaceId = spaceSelection?.space_id || 'personal';
       scopeFolderId = spaceSelection?.folder_id || ''; scopeFolders = []; scopeCrumbs = []; spaceBusy = true;
       $('[data-space-note]').textContent = '正在读取空间目录…'; paintSpaceDialog(); paintStatus(); $('[data-chat-space-dialog]').showModal();
@@ -539,13 +552,13 @@
       finally { if (gen === generation) { spaceBusy = false; paintSpaceDialog(); paintStatus(); } }
     }
     async function disableSpace() {
-      if (!spaceEnabled) return;
+      if (!spaceAvailable || !spaceEnabled) return;
       const gen = generation; spaceBusy = true; paintStatus();
       try { const changed=await call('space-grant', { enabled: false,threadId });acceptConversation(changed.conversation); if (gen === generation) { spaceEnabled = false; spaceSelection = null; spaceLabel = ''; } }
       finally { if (gen === generation) { spaceBusy = false; paintStatus(); } }
     }
     async function confirmSpace() {
-      if (spaceBusy) return;
+      if (!spaceAvailable || spaceBusy) return;
       const selection = { mode: scopeMode, ...(scopeMode !== 'all' ? { space_id: scopeSpaceId } : {}), ...(scopeMode === 'folder' ? { folder_id: scopeFolderId } : {}) };
       const gen = generation; spaceBusy = true; paintSpaceDialog(); paintStatus();
       try {
@@ -557,6 +570,7 @@
       finally { if (gen === generation) { spaceBusy = false; paintSpaceDialog(); paintStatus(); } }
     }
     function sourceButtons(text) {
+      if (!knowledgeAvailable) return '';
       let data; try { data = JSON.parse(text); } catch { return ''; }
       if (!Array.isArray(data?.assistant_knowledge_sources) || !data.assistant_knowledge_sources.length) return '';
       return '<div class="ai-knowledge-sources">' + data.assistant_knowledge_sources.filter(r => /^[A-Za-z0-9_-]{1,128}$/.test(r.evidence_id || '') && /^[a-f0-9-]{36}$/.test(r.warehouse_id || '')).map(r => {
@@ -583,7 +597,7 @@
       finally { if (gen === generation) { knowledgeBusy = false; paintKnowledgeDialog(); paintStatus(); } }
     }
     async function confirmKnowledge() {
-      if (knowledgeBusy || !knowledgeChoices.size) return;
+      if (!knowledgeAvailable || knowledgeBusy || !knowledgeChoices.size) return;
       const gen = generation; knowledgeBusy = true; paintKnowledgeDialog(); paintStatus();
       try {
         const value = await call('knowledge-grant', { enabled: true, warehouses: [...knowledgeChoices], threadId });
@@ -593,12 +607,13 @@
       finally { if (gen === generation) { knowledgeBusy = false; paintKnowledgeDialog(); paintStatus(); } }
     }
     async function disableKnowledge() {
+      if (!knowledgeAvailable) return;
       const gen = generation; knowledgeBusy = true; paintStatus();
       try { const changed=await call('knowledge-grant', { enabled: false,threadId });acceptConversation(changed.conversation); if (gen === generation) { knowledgeEnabled = false; knowledgeWarehouses = []; } }
       finally { if (gen === generation) { knowledgeBusy = false; paintStatus(); } }
     }
     async function previewKnowledge(key) {
-      const ref = sourceLinks.get(key); if (!ref || !threadId) return;
+      const ref = sourceLinks.get(key); if (!knowledgeAvailable || !ref || !threadId) return;
       const gen = generation, current = threadId;
       const value = await call('knowledge-evidence', { threadId, warehouseId: ref.warehouse_id, evidenceId: ref.evidence_id });
       if (gen !== generation || threadId !== current) return;
@@ -628,19 +643,22 @@
       const send = $('[data-chat-send]'); send.disabled = !scope || busy || uploading || opening || active || uncertain || spaceBusy || knowledgeBusy || draft.length > 32000 || Boolean(pending) || Boolean(legacy) || !models.some(m => m.id === selected) || !draft.trim() && !attachments.length && !reference.trim();
       send.textContent = busy ? '发送中' : '发送 ↑';
       $('[data-chat-stop]').hidden = !active || Boolean(legacy); $('[data-chat-stop]').disabled = busy;
-      $('[data-chat-attach]').disabled = !scope || busy || uploading || Boolean(legacy) || attachments.length >= 8;
+      if ($('[data-assistant-channels]')) { $('[data-assistant-channels]').hidden = !channelsAvailable; $('[data-assistant-channels]').disabled = !channelsAvailable; }
+      $('[data-chat-attach]').hidden = !attachmentsAvailable;
+      $('[data-chat-attach]').disabled = !attachmentsAvailable || !scope || busy || uploading || Boolean(legacy) || attachments.length >= 8;
       $('[data-chat-attach]').querySelector('span').textContent = uploading ? '正在添加…' : '添加附件';
+      $('[data-top-space]').hidden = !spaceAvailable;
       $('[data-chat-space-toggle]').checked = spaceEnabled;
-      $('[data-chat-space-toggle]').disabled = !scope || spaceBusy || Boolean(legacy) || (!spaceEnabled && (active || busy || Boolean(pending)));
+      $('[data-chat-space-toggle]').disabled = !spaceAvailable || !scope || spaceBusy || Boolean(legacy) || (!spaceEnabled && (active || busy || Boolean(pending)));
       $('[data-chat-space-settings]').hidden = !spaceEnabled;
-      $('[data-chat-space-settings]').disabled = spaceBusy || active || busy || Boolean(pending);
+      $('[data-chat-space-settings]').disabled = !spaceAvailable || spaceBusy || active || busy || Boolean(pending);
       $('[data-chat-space-settings]').textContent = spaceLabel ? `${spaceLabel} ⌄` : '选择访问范围';
       $('[data-chat-space-settings]').title = spaceLabel;
       $('[data-chat-knowledge-entry]').hidden = !knowledgeAvailable;
       $('[data-chat-knowledge-toggle]').checked = knowledgeEnabled;
-      $('[data-chat-knowledge-toggle]').disabled = !scope || knowledgeBusy || Boolean(legacy) || (!knowledgeEnabled && (active || busy || Boolean(pending)));
+      $('[data-chat-knowledge-toggle]').disabled = !knowledgeAvailable || !scope || knowledgeBusy || Boolean(legacy) || (!knowledgeEnabled && (active || busy || Boolean(pending)));
       $('[data-chat-knowledge-settings]').hidden = !knowledgeEnabled;
-      $('[data-chat-knowledge-settings]').disabled = knowledgeBusy || active || busy || Boolean(pending);
+      $('[data-chat-knowledge-settings]').disabled = !knowledgeAvailable || knowledgeBusy || active || busy || Boolean(pending);
       $('[data-chat-knowledge-settings]').textContent = knowledgeWarehouses.length ? (knowledgeWarehouses.length===1?knowledgeWarehouses[0].name:'已选 '+knowledgeWarehouses.length+' 项') + ' ⌄' : '选择数据仓';
       $('[data-chat-polish]').disabled=!scope||polishBusy||active||busy||pending||!draft.trim();$('[data-chat-polish]').textContent=polishBusy?'正在润色…':'润色草稿';$('[data-chat-polish-undo]').hidden=polishUndo===null;paintVersions();paintUsage();
       $('[data-chat-composer]').hidden = Boolean(legacy);
@@ -675,7 +693,7 @@
       $('[data-chat-input]').value = draft;
       mountConversationSettings();
       if(compact) $('[data-assistant-channels]').remove();
-      else channelsPanel = window.createAssistantChannelsPanel({root,call,getScope:()=>scope,getBoxName:()=>boxName,ready:()=>loaded&&connected});
+      else channelsPanel = window.createAssistantChannelsPanel({root,call,getScope:()=>scope,getBoxName:()=>boxName,ready:()=>loaded&&connected&&channelsAvailable});
       $('[data-chat-input]').addEventListener('input', event => { draft = event.target.value; event.target.style.height = 'auto'; event.target.style.height = `${Math.min(160, event.target.scrollHeight)}px`; paintStatus(); });
       $('[data-chat-input]').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); void send(); } });
       $('[data-chat-composer]').addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void send(); });
@@ -802,11 +820,11 @@
             if (gen !== generation || turn !== epoch) return;
             const area = $('[data-chat-messages]'), before = area.scrollHeight; acceptHistory(value.history, true); paintMessages(); area.scrollTop += area.scrollHeight - before;
           }
-          if (action === 'upload' && !uploading) {
+          if (action === 'upload' && attachmentsAvailable && !uploading) {
             uploading = true; error = ''; paintStatus();
             try {
               const value = await call('upload');
-              if (gen !== generation || turn !== epoch) return;
+              if (gen !== generation || turn !== epoch || !attachmentsAvailable) return;
               const extra = value.files.slice(Math.max(0, 8 - attachments.length)); release(extra); attachments.push(...value.files.slice(0, 8 - attachments.length));
               if (extra.length) error = '一条消息最多添加 8 个附件，多余的附件未加入消息。';
             } finally { if (gen === generation && turn === epoch) { uploading = false; paintStatus(); } }
@@ -829,7 +847,7 @@
         const boxId = value.activeDeviceId || value.selectedDeviceId || value.connection?.deviceId;
         const phase = value.connectionPhase || value.phase;
         const ready = (!phase || ['ready', 'recovering', 'connected'].includes(phase)) && (value.canLaunchApplications !== false || phase === 'recovering');
-        const next = ready && value.account?.phase === 'authenticated' && boxId ? JSON.stringify([value.account.accountId, value.account.clientId, boxId, value.connection?.gatewayURL]) : null;
+        const next = ready && boxId ? (value.dataIdentity?.profileId ? value.dataContextId || null : value.account?.phase === 'authenticated' ? JSON.stringify([value.account.accountId, value.account.clientId, boxId, value.connection?.gatewayURL]) : null) : null;
         connected = Boolean(next && boxId); boxName = value.connection?.name || '万象盒子';
         if (next !== context) { generation++; reset(); context = next; if (visible && connected) void load(); }
         else paintStatus();
@@ -859,7 +877,7 @@
           if (value.event.type === 'error' && submitted && !messages.some(m => m.role === 'assistant' && m.status === 'running')) {
             if (!draft) { draft = submitted.draft; $('[data-chat-input]').value = draft; }
             if (!reference) reference = submitted.reference;
-            if (!attachments.length) attachments = submitted.attachments;
+            if (attachmentsAvailable && !attachments.length) attachments = submitted.attachments;
           }
           if (value.event.type === 'done' || value.event.type === 'hitl_required') { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => void refreshCurrent(), 350); }
           paintMessages(); paintPending(); paintStatus();
@@ -922,7 +940,7 @@ window.createAssistantChannelsPanel = ({root,call,getScope,getBoxName=()=>'当�
     }catch(e){if(version===epoch){note.textContent=message(e);if(['ASSISTANT_CHANNEL_EXPIRED','DIALOGUE_CONTEXT_CHANGED'].includes(e.code)){ticket=null;return;}timer=setTimeout(()=>void check(version),Math.max(interval,5000));}}
   }
   function showQR(data){const region=body.querySelector('[data-channel-qr]');if(!region)return;region.replaceChildren();const image=document.createElement('img');image.src=data;image.alt='用'+labels[kind]+'扫描二维码';image.width=200;image.height=200;region.append(image);region.classList.add('is-ready');const refresh=body.querySelector('[data-channel-action="start"]');if(refresh)refresh.innerHTML='刷新二维码 '+arrow;}
-  button.addEventListener('click',()=>void open());
+  button.addEventListener('click',()=>{if(!button.disabled)void open();});
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
   dialog.addEventListener('click',async event=>{
     const target=event.target.closest('[data-channel-action]');if(!target)return;const action=target.dataset.channelAction;

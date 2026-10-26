@@ -615,3 +615,23 @@ test("panel retains a healthy existing connection during management recovery", a
   await h.update({ ...state, network: { enabled: true, phase: "unavailable" } });
   assert.doesNotMatch(h.html, /card-caption">已连接/);
 });
+
+test("local panel uses its own data identity without cloud and clears private uploads on lock", async () => {
+  const value = { ...connectedState(), account: { phase: 'signed_out' },
+    dataIdentity: { profileId: 'profile-a', clientId: 'client-a', generation: 1, phase: 'unlocked',
+      selected: { boxId: 'box-102', boxKeyThumbprint: 'pin-a', principalId: 'principal-a', bindingId: 'binding-a',
+        ownershipEpoch: 1, authorizationVersion: 1, sessionId: 'session-a' } } };
+  value.connection.authorization = 'local-trust-v1';
+  const dataOwnerId = JSON.stringify(['local-trust-v1', 'profile-a', 'box-102', 'pin-a', 1, 'principal-a']);
+  const dataContextId = JSON.stringify([dataOwnerId, 'client-a', 1, 'binding-a', 1, 'session-a']);
+  const privateSpace = { ...uploadState(), accountId: null, dataOwnerId, dataContextId,
+    tasks: [{ id: 'private-upload', name: 'private-note.txt', phase: 'running', offset: 1, size: 100 }] };
+  let balances = 0;
+  const h = await harness(value, async () => { balances++; return { available: 5 }; }, privateSpace);
+  assert.match(h.html, /data-app="centaurai.wanx.zhijun"/);
+  assert.match(h.html, /private-note.txt/);
+  assert.equal(balances, 0);
+  await h.update({ ...value, account: { phase: 'authenticated', accountId: 'cloud-a' },
+    dataIdentity: { ...value.dataIdentity, phase: 'locked', generation: 2, selected: null } });
+  assert.doesNotMatch(h.html, /private-note.txt|data-app="centaurai.wanx.zhijun"/);
+});

@@ -264,7 +264,11 @@ async def list_agents(
         return _attach_unread_counts(server, user.id, payloads)
 
     owned = registry.list_agents(user.id)
-    shared = server.services.agent_repo.list_shared(exclude_user_id=user.id)
+    shared = (
+        []
+        if getattr(user, "local_data", False)
+        else server.services.agent_repo.list_shared(exclude_user_id=user.id)
+    )
     rows = [
         row
         for row in {row.agent_id: row for row in [*shared, *owned]}.values()

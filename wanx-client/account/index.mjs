@@ -99,6 +99,8 @@ export function createAccount({
   now = Date.now,
   measure = (_step, operation) => operation(),
   onGrantTiming = () => {},
+  getClientUpdateContext = () => null,
+  onClientUpdateRequired = () => {},
 } = {}) {
   let base;
   try {
@@ -252,6 +254,13 @@ export function createAccount({
     }
     if (authenticated) {
       if (!auth?.session) throw failure("ACCOUNT_LOGIN_REQUIRED");
+      const client = getClientUpdateContext();
+      if (client?.packaged && client.distributionClass === "formal") {
+        headers["X-Wanx-Client"] = JSON.stringify({ product: "wanx-client", channel: client.channel,
+          platform: { os: client.platform, arch: client.arch, osVersion: client.osVersion },
+          currentVersion: client.productVersion, backendContract: 1, hostProtocol: client.hostProtocol,
+          securityEpoch: client.securityEpoch });
+      }
       Object.assign(
         headers,
         consumerSignature({
@@ -384,6 +393,10 @@ export function createAccount({
         // Never expose arbitrary server text, request bodies or token values.
         const remoteCode =
           payload.errorCode || payload.data?.errorCode || (supportRoute ? payload.detail?.errorCode || payload.msg?.errorCode : null) || payload.code;
+        if (status === 426 && remoteCode === "CLIENT_UPDATE_REQUIRED") {
+          void Promise.resolve().then(onClientUpdateRequired).catch(() => {});
+          throw failure("CLIENT_UPDATE_REQUIRED", 426);
+        }
         const explicitSupportCode = supportRoute && ["OWNER_REQUIRED", "OWNER_CHANGED", "DEVICE_NOT_FOUND", "DEVICE_DISABLED",
           "SUPPORT_REQUEST_NOT_FOUND", "REQUEST_DIGEST_MISMATCH", "REQUEST_EXPIRED", "DECISION_CONFLICT", "SUPPORT_NOT_ACTIVE",
           "SUPPORT_AUTHORIZATION_BUSY"].includes(remoteCode);
@@ -400,6 +413,7 @@ export function createAccount({
           "DEPENDENCY_CONFLICT", "UPDATE_PERMISSION_REQUIRED", "RELEASE_WITHDRAWN", "RECOVERY_REQUIRED",
           "INVENTORY_STALE", "INVENTORY_UNKNOWN", "SIGNATURE_INVALID", "IDEMPOTENCY_CONFLICT",
           "EVENT_SEQUENCE_INVALID", "RELEASE_UNAVAILABLE", "UPDATE_NOT_CONFIGURED",
+          "CLIENT_UPDATE_REQUIRED",
         ].includes(remoteCode);
         const code =
           explicitConsoleClaimCode ? remoteCode

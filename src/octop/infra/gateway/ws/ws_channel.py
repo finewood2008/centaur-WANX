@@ -88,6 +88,14 @@ class WebSocketChannel(BaseChannel):
         return False
 
     async def handle_inbound(self, raw_payload: Any) -> None:
+        from octop.infra.gateway.ws.local_data import LocalDataInbound, run_local_turn
+
+        if isinstance(raw_payload, LocalDataInbound):
+            await run_local_turn(raw_payload, self._handle_inbound)
+        else:
+            await self._handle_inbound(raw_payload)
+
+    async def _handle_inbound(self, raw_payload: Any) -> None:
         """Stream harness chunks to all thread subscribers (no delta batching)."""
         message = self.parse_inbound(raw_payload)
 
