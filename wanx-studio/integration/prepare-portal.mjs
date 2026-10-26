@@ -49,9 +49,8 @@ export async function patchStudioPortal({patch,addFile,root}) {
     replace('  app.innerHTML = markup;', '  const restoreStudioInput = studioInput.capture();\n  app.innerHTML = markup;\n  restoreStudioInput();');
     replace('let page = "applications";','let page = "applications";\nlet applicationsTab = "mine";\nconst studioHome = window.createStudioHome({\n  request: async (name, input) => {\n    const response = await window.wanxClient.action(name, input);\n    if (response.state) acceptRemoteState(response.state);\n    if (!response.ok) throw new Error(response.code);\n    return response.value;\n  }, changed: () => { if (currentState) render(currentState); },\n});');
     const nativeTabs=s.includes('applicationTab === \"projects\" ? builderProjectsView.render()');
-    const entry='<button class="button primary" data-action="studio-workspace">＋ 创建应用</button>';
-    if(s.includes('<button class="button primary" data-action="show-builder">＋ 创建应用</button>'))replace('<button class="button primary" data-action="show-builder">＋ 创建应用</button>',entry);
-    else replace('<div class="store-toolbar">','<div class="store-toolbar">'+entry);
+    // Product creation belongs in Kaiwu, not the application catalogue.
+    s=s.replace('<button class="button primary" data-action="show-builder">＋ 创建应用</button>','');
     replace('function applicationsView() {\n  const applications = currentState.applications || [];','function applicationsView() {\n  const applications = (currentState.applications || []).filter(item => item.applicationId !== "ai.wanx.studio");');
     if(nativeTabs){
       replace('${applicationTab === "projects" ? builderProjectsView.render() : ""}','${applicationTab === "projects" ? studioHome.render(currentState) : ""}');

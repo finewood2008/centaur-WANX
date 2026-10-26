@@ -49,6 +49,7 @@ async function harness(t, options = {}) {
   };
   const ui = await createUIState({
     client, account, applications, preferenceFile,
+    assertClientUsable: options.assertClientUsable,
     serviceURL: options.serviceURL || "https://accounts.example/prod-api",
     onChanged: (state) => changes.push(state), onOpened: (value) => opened.push(value),
   });
@@ -375,4 +376,31 @@ test('local lock and immediate unlock invalidate an in-flight application launch
   h.publishClient({ dataIdentity: localIdentity(3) });
   ready.resolve({ state: 'running' }); await rejected;
   assert.deepEqual(h.opened, []);
+});
+
+
+test("required client updates block new intents and pending confirmations without preventing cancellation", async t => {
+  let required = false;
+  const h = await harness(t, { assertClientUsable() { if (required) throw failure("CLIENT_UPDATE_REQUIRED"); } });
+  const intent = await h.ui.requestOpen("example.app");
+  required = true;
+  await assert.rejects(h.ui.confirmOpen({ intentId: intent.id, deviceId: "box-a" }), { code: "CLIENT_UPDATE_REQUIRED" });
+  assert.deepEqual(h.calls, []);
+  await h.ui.cancelOpen({ intentId: intent.id });
+  assert.equal(h.ui.snapshot().pendingOpen, null);
+  await assert.rejects(h.ui.requestOpen("example.app"), { code: "CLIENT_UPDATE_REQUIRED" });
+  required = false;
+  assert.equal((await h.ui.requestOpen("example.app")).phase, "confirm");
+});
+
+test("an update discovered while connecting prevents the deferred application launch", async t => {
+  let required = false;
+  const h = await harness(t, { assertClientUsable() { if (required) throw failure("CLIENT_UPDATE_REQUIRED"); } });
+  const connected = deferred();
+  h.setConnect(async () => { await connected.promise; h.publishClient({ phase: "ready", connection: { deviceId: "box-a", mode: "netbird" } }); });
+  const intent = await h.ui.requestOpen("example.app");
+  const rejected = assert.rejects(h.ui.confirmOpen({ intentId: intent.id, deviceId: "box-a" }), { code: "CLIENT_UPDATE_REQUIRED" });
+  required = true; connected.resolve(); await rejected;
+  assert.deepEqual(h.calls, [["connect", "box-a"]]);
+  assert.equal(h.ui.snapshot().pendingOpen.error, "CLIENT_UPDATE_REQUIRED");
 });

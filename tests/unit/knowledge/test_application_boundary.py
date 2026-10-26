@@ -328,5 +328,5 @@ def test_v20_upgrade_preserves_existing_documents_and_foreign_keys(tmp_path, mon
     with pool.connect() as conn:
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 32
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 34
     pool.close()

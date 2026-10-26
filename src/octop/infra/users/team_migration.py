@@ -419,10 +419,12 @@ def build_plan(paths: MigrationPaths, identity: MigrationIdentity) -> dict[str, 
     with _connect(paths.home / "octop.db") as db:
         schema = _tables(db)
         _need(
-            db.execute("SELECT version FROM _schema_version").fetchone()[0] in (31, 32),
+            db.execute("SELECT version FROM _schema_version").fetchone()[0] in (31, 32, 33, 34)
+            and "local_data_principals" in schema
+            and "local_data_marker" in schema.get("users", []),
             "MIGRATION_SCHEMA_UNSUPPORTED",
         )
-        source, _ = _identity_rows(db, identity)
+        source, target = _identity_rows(db, identity)
         for table, columns in schema.items():
             _need(re.fullmatch(r"[A-Za-z0-9_]+", table), "MIGRATION_SCHEMA_UNSUPPORTED")
             foreign_user_columns = {
@@ -481,7 +483,14 @@ def build_plan(paths: MigrationPaths, identity: MigrationIdentity) -> dict[str, 
                 elif count or _count(db, table, column, identity.target_user_id):
                     blockers.append(
                         (
-                            "reconnect-required:"
+                            "assistant-state-review:"
+                            if table
+                            in {
+                                "assistant_conversations",
+                                "assistant_knowledge_access",
+                                "assistant_knowledge_access_audit",
+                            }
+                            else "reconnect-required:"
                             if table in RECONNECT
                             else "unknown-identity-reference:"
                         )
@@ -489,6 +498,45 @@ def build_plan(paths: MigrationPaths, identity: MigrationIdentity) -> dict[str, 
                         + "."
                         + column
                     )
+        # Assistant history, source metadata and revocable grants form one owner
+        # context. Do not move its agent/threads while leaving that state behind,
+        # or reassign a cloud knowledge permission to the new local identity.
+        if "assistant_knowledge_access" in schema:
+            for row in db.execute("SELECT members_json FROM assistant_knowledge_access"):
+                try:
+                    members = json.loads(row[0])
+                    _need(isinstance(members, list), "MIGRATION_SCHEMA_UNSUPPORTED")
+                except (ValueError, TypeError):
+                    blockers.append(
+                        "assistant-state-review:assistant_knowledge_access.members_json"
+                    )
+                    continue
+                if identity.source_user_id in members or identity.target_user_id in members:
+                    blockers.append(
+                        "assistant-state-review:assistant_knowledge_access.members_json"
+                    )
+        for account in (source, target):
+            try:
+                preferences = json.loads(account["preferences_json"] or "{}")
+                _need(isinstance(preferences, dict), "MIGRATION_SCHEMA_UNSUPPORTED")
+            except (ValueError, TypeError):
+                blockers.append("assistant-state-review:users.preferences_json")
+                preferences = {}
+            if any(
+                preferences.get(key)
+                for key in (
+                    "wanx_assistant_agent_id",
+                    "wanx_assistant_history_v1",
+                    "wanx_assistant_recent_conversation",
+                )
+            ):
+                blockers.append("assistant-state-review:users.preferences_json")
+            for family in ("space-grants", "knowledge-grants", "knowledge-sources"):
+                relative = f".wanx-assistant/{family}/{account['id']}"
+                files = _tree(paths.home / relative)
+                if files:
+                    owned_trees.append({"path": relative, "files": files})
+                    blockers.append("assistant-state-review:" + family)
         agents = db.execute(
             "SELECT agent_id,config_json,mcp_servers FROM agents WHERE user_id=?",
             (identity.source_user_id,),

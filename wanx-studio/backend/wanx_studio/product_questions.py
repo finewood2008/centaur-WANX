@@ -40,4 +40,4 @@ def pending_choices(project):
     if project['artifacts']:
         return False
     last=project['messages'][-1] if project['messages'] else {}
-    return last.get('role')=='assistant' and bool(last.get('questions'))
+    return last.get('role')=='assistant' and bool(last.get('questions') or last.get('question'))

@@ -135,12 +135,15 @@ class Runner:
 
     def event(self, owner, project_id, task_id, event):
         with self.svc.store.transaction():
-            p=self.svc.store.get(owner,project_id)
-            task=next(t for t in p['tasks'] if t['id']==task_id)
             event={**event,'at':time.time()}
             self.svc.store.append_event(owner,project_id,task_id,event)
-            if not event['type'].startswith('terminal'):
-                task['events'].append({'type':event['type'],'text':str(event.get('text',''))[:8000],'at':event['at']})
+            # Terminal bytes and diagnostics are persisted in task_events only.
+            # Saving the entire source/version history for every PTY fragment
+            # can hold up tool authorization on the same worker stream.
+            if event['type'].startswith('terminal') or event['type']=='diagnostic':return
+            p=self.svc.store.get(owner,project_id)
+            task=next(t for t in p['tasks'] if t['id']==task_id)
+            task['events'].append({'type':event['type'],'text':str(event.get('text',''))[:8000],'at':event['at']})
             task['events']=task['events'][-300:]
             self.svc.store.save(p)
 
@@ -244,7 +247,7 @@ class Runner:
                         current=self.svc.store.get(owner,project_id)
                         next(t for t in current['tasks'] if t['id']==task_id)['sessionId']=event['sessionId']
                         self.svc.store.save(current)
-                    self.event(owner,project_id,task_id,{'type':'status','text':'Codex 原生会话已复用' if event.get('reused') else 'Codex 原生会话已连接','sessionId':event['sessionId'],'reused':event.get('reused',False)})
+                    self.event(owner,project_id,task_id,{'type':'status','text':'Codex 原生会话已复用' if event.get('reused') else 'Codex 原生会话已连接','sessionId':event['sessionId'],'reused':event.get('reused',False),'workerPid':event.get('workerPid'),'appServerPid':event.get('appServerPid')})
                     continue
                 if kind=='authorize':
                     self.svc.authorize_management(owner)
@@ -253,6 +256,9 @@ class Runner:
                     if executing.get('editId'):self.svc.edits.live(owner,project_id,executing['editId'])
                     proc.stdin.write((json.dumps({'id':event['id'],'result':True})+'\n').encode())
                     await proc.stdin.drain()
+                    continue
+                if kind.startswith('terminal') or kind=='diagnostic':
+                    self.event(owner,project_id,task_id,event)
                     continue
                 current=self.svc.store.get(owner,project_id)
                 task=next(t for t in current['tasks'] if t['id']==task_id)
@@ -277,7 +283,7 @@ class Runner:
                         self.svc.store.save(current)
                 elif kind=='result':
                     await self.svc.add_artifact(owner,project_id,task_id,event['files'])
-                elif kind in {'message','tool','status','activity','file','plan','policy','validation','terminal','terminal_info','terminal_attached','terminal_policy','terminal_complete'}:
+                elif kind in {'message','tool','status','activity','file','plan','policy','validation'}:
                     if task.get('editId') and kind=='validation':
                         self.svc.edits.mutate(owner,project_id,task['editId'],lambda p,e:e.update({'state':'validating'}))
                     self.event(owner,project_id,task_id,event)

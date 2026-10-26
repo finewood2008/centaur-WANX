@@ -1,4 +1,4 @@
-"""Real schema-31/32 DB, personal-space objects and independent Studio DB."""
+"""Real supported schemas, personal-space objects and independent Studio DB."""
 
 from __future__ import annotations
 
@@ -136,6 +136,175 @@ class Control:
 
     def complete(self, request_id, plan, receipt):
         self.completed = True
+
+
+@pytest.mark.parametrize("version", [31, 32, 33, 34])
+def test_supported_branch_schemas_keep_existing_business_migration(sample, version):
+    paths, identity, _ = sample
+    with sqlite3.connect(paths.home / "octop.db") as db:
+        # Reconstruct the older branch layouts, not just their version number.
+        if version in {31, 32}:
+            for table in (
+                "assistant_conversation_versions",
+                "assistant_conversations",
+                "assistant_knowledge_access_audit",
+                "assistant_knowledge_access",
+            ):
+                db.execute(f"DROP TABLE {table}")
+        if version in {31, 33}:
+            db.execute("DROP TABLE local_team_resources")
+            db.execute("DROP TABLE team_applications")
+        db.execute("UPDATE _schema_version SET version=?", (version,))
+    plan = build_plan(paths, identity)
+    assert plan["blockers"] == []
+    assert apply_plan(paths, plan, _digest(b"supported-schema"), Control())["phase"] == "complete"
+    with sqlite3.connect(paths.home / "octop.db") as db:
+        assert db.execute("SELECT version FROM _schema_version").fetchone()[0] == version
+        assert db.execute("SELECT user_id FROM agents WHERE agent_id='agent-old'").fetchone() == (
+            identity.target_user_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "version,missing_identity", [(31, True), (32, True), (34, True), (35, False)]
+)
+def test_unknown_version_or_missing_local_identity_schema_is_rejected(
+    sample, version, missing_identity
+):
+    paths, identity, _ = sample
+    with sqlite3.connect(paths.home / "octop.db") as db:
+        db.execute("UPDATE _schema_version SET version=?", (version,))
+        if missing_identity:
+            db.execute("DROP TABLE local_data_principals")
+    before = (paths.home / "octop.db").read_bytes()
+    with pytest.raises(MigrationError, match="SCHEMA_UNSUPPORTED"):
+        build_plan(paths, identity)
+    assert (paths.home / "octop.db").read_bytes() == before
+
+
+def _assistant_state(paths, uid, kind, other):
+    with sqlite3.connect(paths.home / "octop.db") as db:
+        if kind == "conversation":
+            agent = db.execute(
+                "SELECT agent_id FROM agents WHERE user_id=? LIMIT 1", (uid,)
+            ).fetchone()
+            agent_id = agent[0] if agent else f"assistant-{uid}"
+            if not agent:
+                db.execute(
+                    "INSERT INTO agents(agent_id,user_id,name,created_at,updated_at) VALUES (?,?,'assistant',1,1)",
+                    (agent_id, uid),
+                )
+            thread, conversation = f"assistant-thread-{uid}", f"conversation-{uid}"
+            db.execute(
+                "INSERT INTO threads(thread_id,agent_id,user_id,channel_type,session_key,last_active,created_at) "
+                "VALUES (?,?,?,'dashboard',?,1,1)",
+                (thread, agent_id, uid, f"{agent_id}:dashboard:{uid}:dm"),
+            )
+            db.execute(
+                "INSERT INTO assistant_conversations VALUES (?,?,?,?,?,1,1)",
+                (conversation, uid, agent_id, thread, '{"space":{"enabled":true}}'),
+            )
+            db.execute(
+                "INSERT INTO assistant_conversation_versions VALUES (?,?,NULL,NULL,'initial',1)",
+                (thread, conversation),
+            )
+            return "assistant_conversations.user_id"
+        if kind in {"access", "members"}:
+            db.execute(
+                "INSERT INTO assistant_knowledge_access VALUES ('box',?,'selected',?,1,?,1)",
+                (
+                    kind,
+                    json.dumps([uid]) if kind == "members" else "[]",
+                    other if kind == "members" else uid,
+                ),
+            )
+            return "assistant_knowledge_access." + (
+                "members_json" if kind == "members" else "updated_by"
+            )
+        if kind == "audit":
+            db.execute(
+                "INSERT INTO assistant_knowledge_access_audit VALUES ('audit','box','access',?,'{}','{}',1)",
+                (uid,),
+            )
+            return "assistant_knowledge_access_audit.actor_id"
+        if kind == "preferences":
+            db.execute(
+                "UPDATE users SET preferences_json=? WHERE id=?",
+                (
+                    json.dumps(
+                        {
+                            "wanx_assistant_history_v1": {
+                                "entries": {"legacy:chat": {"title": "Retained"}}
+                            }
+                        }
+                    ),
+                    uid,
+                ),
+            )
+            return "users.preferences_json"
+    directory = paths.home / ".wanx-assistant" / kind / str(uid)
+    directory.mkdir(parents=True)
+    (directory / "synthetic.json").write_text(json.dumps({"user_id": uid, "retained": kind}))
+    return kind
+
+
+_ASSISTANT_STATES = [
+    "conversation",
+    "access",
+    "members",
+    "audit",
+    "preferences",
+    "space-grants",
+    "knowledge-grants",
+    "knowledge-sources",
+]
+
+
+@pytest.mark.parametrize("owner", ["source", "target"])
+@pytest.mark.parametrize("kind", _ASSISTANT_STATES)
+def test_assistant_context_requires_review_before_reassigning_business(sample, owner, kind):
+    paths, identity, other = sample
+    uid = identity.source_user_id if owner == "source" else identity.target_user_id
+    blocker = _assistant_state(paths, uid, kind, other)
+    before = (paths.home / "octop.db").read_bytes()
+    files = {p: p.read_bytes() for p in paths.home.glob(".wanx-assistant/**/*.json")}
+    plan = build_plan(paths, identity)
+    assert "assistant-state-review:" + blocker in plan["blockers"]
+    with pytest.raises(MigrationError, match="PREFLIGHT_BLOCKED"):
+        apply_plan(paths, plan, _digest(b"assistant-needs-review"), Control())
+    assert (paths.home / "octop.db").read_bytes() == before
+    assert {p: p.read_bytes() for p in files} == files
+
+
+def test_other_principal_assistant_context_does_not_block_or_change(sample):
+    paths, identity, other = sample
+    for kind in _ASSISTANT_STATES:
+        _assistant_state(paths, other, kind, other)
+    tables = (
+        "assistant_conversations",
+        "assistant_conversation_versions",
+        "assistant_knowledge_access",
+        "assistant_knowledge_access_audit",
+    )
+    with sqlite3.connect(paths.home / "octop.db") as db:
+        rows = {table: db.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
+        preferences = db.execute(
+            "SELECT preferences_json FROM users WHERE id=?", (other,)
+        ).fetchone()
+    files = {p: p.read_bytes() for p in paths.home.glob(".wanx-assistant/**/*.json")}
+    plan = build_plan(paths, identity)
+    assert plan["blockers"] == []
+    assert apply_plan(paths, plan, _digest(b"other-assistant"), Control())["phase"] == "complete"
+    with sqlite3.connect(paths.home / "octop.db") as db:
+        assert {table: db.execute(f"SELECT * FROM {table}").fetchall() for table in tables} == rows
+        assert (
+            db.execute("SELECT preferences_json FROM users WHERE id=?", (other,)).fetchone()
+            == preferences
+        )
+        assert db.execute("SELECT user_id FROM agents WHERE agent_id='agent-old'").fetchone() == (
+            identity.target_user_id,
+        )
+    assert {p: p.read_bytes() for p in files} == files
 
 
 def test_preview_and_real_multidatabase_filesystem_migration(sample):

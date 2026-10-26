@@ -1,11 +1,12 @@
 import{build}from'esbuild';
+import{buildBuilderBrand}from'./build-brand.mjs';
 import{mkdir,copyFile,writeFile,readFile,cp,rm}from'node:fs/promises';
 import path from'node:path';
 import{fileURLToPath}from'node:url';
 const root=fileURLToPath(new URL('..',import.meta.url));
 const version=JSON.parse(await readFile(path.join(root,'package.json'),'utf8')).version;
 const runtime=path.join(root,'dist/runtime'),studio=path.join(root,'release/wanx-studio-'+version);
-await mkdir(path.join(studio,'assets'),{recursive:true});
+await buildBuilderBrand(root,path.join(studio,'assets'));
 await copyFile(path.join(root,'ui/assets/centaurai-mark.png'),path.join(studio,'assets/centaurai-mark.png'));
 await mkdir(runtime,{recursive:true});await mkdir(path.join(studio,'shell'),{recursive:true});
 for(const file of ['runtime-main.cjs','runtime-preload.cjs'])await build({entryPoints:[path.join(root,'shell',file)],bundle:true,platform:'node',format:'cjs',outfile:path.join(runtime,file),external:['electron'],logLevel:'silent'});

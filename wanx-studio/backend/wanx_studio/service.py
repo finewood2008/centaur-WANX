@@ -71,7 +71,6 @@ class StudioService:
     def snapshot(self, owner, project_id):
         p = self.store.get(owner, project_id)
         result = public(p)
-        result["readiness"] = readiness(p["solution"], p["decisions"])
         from .product_questions import pending_choices
         if pending_choices(p):
             result['readiness']['ready']=False
@@ -207,15 +206,21 @@ class StudioService:
         with self.store.lock:
             return self.store.db.execute("SELECT count(*) FROM usage WHERE owner=? AND task=?",(owner,project_id)).fetchone()[0]
 
-    async def generate(self, owner, project_id, body, *, published_runtime=False):
-        if not self.model:
+    async def generate(self, owner, project_id, body, *, published_runtime=False, runtime_model=None):
+        model = self.model
+        if runtime_model:
+            factory = getattr(model, 'for_runtime', None)
+            if not factory: raise StudioError('RUNTIME_MODEL_UPDATE_REQUIRED', 409)
+            model = factory(runtime_model)
+            if not model: raise StudioError('RUNTIME_MODEL_UNAVAILABLE', 409)
+        if not model:
             raise StudioError("MODEL_NOT_CONFIGURED",409)
         with self.store.transaction():
             if not published_runtime:self.store.get(owner,project_id)
             request_id = uuid4().hex
             self.store.db.execute("INSERT INTO usage VALUES(?,?,?,?,?)",(owner,request_id,project_id,"started",time.time()))
         try:
-            result = await self.model(owner,body)
+            result = await model(owner,body)
         except asyncio.CancelledError:
             with self.store.lock:
                 self.store.db.execute("UPDATE usage SET state='cancelled' WHERE id=?",(request_id,))
@@ -324,6 +329,9 @@ class StudioService:
             if body["solutionHash"] != digest(p["solution"]):
                 raise StudioError("SOLUTION_CHANGED",409)
             self.preparation.guard(owner,p,development=True)
+            if 'preparation' in p and not p['artifacts']:
+                from .iterative import proposal
+                if not proposal(p)['ready']:raise StudioError('SOLUTION_NOT_READY',409)
             if not readiness(p["solution"],p["decisions"])["ready"]:
                 raise StudioError("SOLUTION_NOT_READY",409)
             if p['solution'].get('prd') is not None and (len(body.get('reviewedSections',[]))!=len(PRD_REVIEW_SECTIONS) or set(body.get('reviewedSections',[]))!=set(PRD_REVIEW_SECTIONS)):
@@ -524,7 +532,10 @@ class StudioService:
         if method == "model.generate":
             if set(params) - {"prompt"} or not isinstance(params.get("prompt"),str) or not 1 <= len(params["prompt"]) <= 24000:
                 raise StudioError("MODEL_INPUT_INVALID")
-            result = await self.generate(owner,s["app"] if "publicationDigest" in s else s["project"],{"messages":[{"role":"user","content":params["prompt"]}],"max_tokens":4096},published_runtime="publicationDigest" in s)
+            from .delivery import selection
+            model_id = await to_thread(selection, self, s)
+            result = await self.generate(owner,s["app"] if "publicationDigest" in s else s["project"],{"messages":[{"role":"user","content":params["prompt"]}],"max_tokens":4096},published_runtime="publicationDigest" in s, runtime_model=model_id)
+            self.runtime(owner, token)
             return {"text":result["choices"][0]["message"].get("content", ""),"usage":result.get("usage")}
         if method == "files.read":
             if set(params) != {"id"} or params["id"] not in s["files"]:

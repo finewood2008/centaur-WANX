@@ -7,9 +7,11 @@ import { parseArgs } from "node:util";
 import semver from "semver";
 import { TEST_APP_ID, TEST_PRODUCT_NAME, TEST_EXTENSION, isTestClientIdentity } from "../updates/test-build.mjs";
 import { canonicalJSON, secureURL, verifyRelease } from "../updates/contracts.mjs";
+import { verifyClientBlockMap } from "./client-blockmap.mjs";
 
-export async function signClientRelease({ reportPath, artifactURL, keyId, privateKeyPath, releaseId,
-  metadataSequence, supportedOsVersions, compatibleApplications, expiresAt, outputPath, channel, testOnly = false, now = Date.now() }) {
+export async function signClientRelease({ reportPath, artifactURL, blockMapURL, keyId, privateKeyPath, releaseId,
+  metadataSequence, supportedOsVersions, compatibleApplications, expiresAt, outputPath, channel, testOnly = false, forceUpdate = false, now = Date.now() }) {
+  if (typeof forceUpdate !== "boolean") throw new Error("强制升级必须为布尔值。");
   const report = JSON.parse(await readFile(reportPath, "utf8"));
   const windows = report.platform === "windows";
   const testIdentity = { ...report.build, packaged: true };
@@ -38,6 +40,13 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
   if (digest !== artifact.sha256 || strongDigest !== artifact.sha512 || sizeBytes !== artifact.sizeBytes)
     throw new Error("更新制品与构建验证报告不一致。");
   secureURL(artifactURL);
+  let blockMap;
+  if (Object.hasOwn(artifact, "blockMap")) {
+    if (!blockMapURL) throw new Error("构建报告包含增量更新 blockmap，请通过 --blockmap-url 指定其 HTTPS 下载地址。");
+    if (!secureURL(blockMapURL).pathname.endsWith(".blockmap"))
+      throw new Error("增量更新 blockmap 下载地址路径必须以 .blockmap 结尾。");
+    blockMap = { url: blockMapURL, ...await verifyClientBlockMap(artifact.blockMap, sizeBytes) };
+  } else if (blockMapURL !== undefined) throw new Error("构建报告不包含增量更新 blockmap，不能指定 --blockmap-url。");
   if (!Array.isArray(supportedOsVersions) || !supportedOsVersions.length || supportedOsVersions.some(value => typeof value !== "string" || !value))
     throw new Error("必须明确列出经过验证的 os.release() 系统版本。");
   if (!Array.isArray(compatibleApplications) || compatibleApplications.some(rule => typeof rule.applicationId !== "string" ||
@@ -50,6 +59,7 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
   if (!Object.hasOwn(report.updateTrust || {}, keyId) || report.updateTrust[keyId] !== signerFingerprint)
     throw new Error("发行签名密钥不在安装包已验证的更新信任根中，请检查 key-id 与公钥配置。");
   const payload = { schemaVersion: 1, purpose: "wanx.release.v1", releaseId, product: "wanx-client", version: report.version,
+    ...(forceUpdate ? { forceUpdate: true } : {}),
     buildId: report.build.buildId, metadataSequence, securityEpoch: report.build.securityEpoch, channel: releaseChannel,
     ...(testOnly ? { sourceSnapshot: report.build.sourceSnapshot,
       testIsolation: { applicationId: TEST_APP_ID, testRunId: report.build.testRunId } } :
@@ -57,7 +67,7 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
     platform: { os: windows ? "win32" : "darwin", arch: report.arch, osVersion: supportedOsVersions[0] }, supportedOsVersions,
     backendContract: 1, hostProtocol: 1, dataPolicy: "backward-compatible", requiredExtensions: testOnly ? [TEST_EXTENSION] : [], compatibleApplications,
     components: { "wanx-client": { version: report.version, sha256: digest } },
-    artifacts: [{ component: "wanx-client", url: artifactURL, sha256: digest, sha512: strongDigest, sizeBytes, kind: windows ? "nsis" : "mac-zip" }],
+    artifacts: [{ component: "wanx-client", url: artifactURL, sha256: digest, sha512: strongDigest, sizeBytes, kind: windows ? "nsis" : "mac-zip", ...(blockMap ? { blockMap } : {}) }],
     createdAt: new Date(now).toISOString(), expiresAt };
   const envelope = { payload, signature: { algorithm: "ed25519", keyId,
     signatureBase64: sign(null, Buffer.from(canonicalJSON(payload)), key).toString("base64") } };
@@ -68,12 +78,12 @@ export async function signClientRelease({ reportPath, artifactURL, keyId, privat
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({ options: { "test-only": { type: "boolean" }, ...Object.fromEntries(["report", "url", "key-id", "private-key", "release-id", "sequence", "support", "expires-at", "out", "channel"].map(key => [key, { type: "string" }])) } });
+    const { values } = parseArgs({ options: { "test-only": { type: "boolean" }, "force-update": { type: "boolean" }, ...Object.fromEntries(["report", "url", "blockmap-url", "key-id", "private-key", "release-id", "sequence", "support", "expires-at", "out", "channel"].map(key => [key, { type: "string" }])) } });
     const support = JSON.parse(await readFile(values.support, "utf8"));
-    const result = await signClientRelease({ reportPath: values.report, artifactURL: values.url, keyId: values["key-id"],
+    const result = await signClientRelease({ reportPath: values.report, artifactURL: values.url, blockMapURL: values["blockmap-url"], keyId: values["key-id"],
       privateKeyPath: values["private-key"], releaseId: values["release-id"], metadataSequence: Number(values.sequence),
       supportedOsVersions: support.supportedOsVersions, compatibleApplications: support.compatibleApplications,
-      expiresAt: values["expires-at"], outputPath: values.out, channel: values.channel, testOnly: values["test-only"] === true });
+      expiresAt: values["expires-at"], outputPath: values.out, channel: values.channel, testOnly: values["test-only"] === true, forceUpdate: values["force-update"] === true });
     console.log(JSON.stringify(result));
   } catch (error) { console.error(error.code || error.message); process.exitCode = 1; }
 }

@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import {createObserver} from './observer.mjs';
 import {stopGroup} from '../dsh/sandbox.mjs';
 
-export async function startTerminal({server,sessionId,binary,python,config,env,taskRoot,root,emit,signal}){
+export async function startTerminal({server,sessionId,view,binary,python,config,env,taskRoot,root,emit,signal}){
   let resolveReady,rejectReady,closing=false,closePromise,child,bytes=0,observer,timer;
   let rejectFailure;const failure=new Promise((_,reject)=>rejectFailure=reject);failure.catch(()=>{});
   const ready=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject});
@@ -18,7 +18,7 @@ export async function startTerminal({server,sessionId,binary,python,config,env,t
   signal?.addEventListener('abort',abort,{once:true});
   try{
     if(signal?.aborted)throw new Error('CODEX_TERMINAL_CANCELLED');
-    observer=await createObserver({socket:server.socket,sessionId,onReady(){
+    observer=await createObserver({socket:server.socket,sessionId,view,onReady(){
       if(closing)return;
       clearTimeout(timer);emit({type:'terminal_attached',text:'原版 Codex CLI 已以只读方式连接同一原生开发会话',acpSessionId:sessionId,cliSessionId:sessionId});resolveReady();
     },onPolicy(info){if(!info.allowed)emit({type:'terminal_policy',text:'终端只读策略拒绝了控制操作',method:info.method})}});

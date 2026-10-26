@@ -231,6 +231,22 @@ test('real independent vault opens pinned LAN without cloud, signs exact staged 
   assert.equal(range.status, 206); assert.notEqual(f.seen[0].proof.jti, f.seen[1].proof.jti);
 });
 
+test('native assistant metadata uses only fixed read-only routes over the local session', async t => {
+  const f = await fixture(t), session = await f.connect({ applicationId: 'centaurai.wanx.dialogue' });
+  for (const target of ['/api/providers/resolved', '/api/providers/active-model', '/api/preferences', '/api/settings/timezone', '/api/assistant/conversations']) {
+    assert.equal((await session.request({ path: target })).status, 200);
+  }
+  assert.equal((await session.request({ path: '/api/assistant/profile', method: 'POST' })).status, 200);
+  const count = f.seen.length;
+  for (const [target, method] of [['/api/providers', 'GET'], ['/api/providers/active-model', 'PUT'], ['/api/preferences', 'PATCH'], ['/api/settings/captcha', 'GET'], ['/api/_client/space-mcp/connections', 'POST']]) {
+    await assert.rejects(session.request({ path: target, method }), /LOCAL_DATA_FORBIDDEN/);
+  }
+  assert.equal(f.seen.length, count);
+  const unrelated = await f.connect({ applicationId: 'centaurai.wanx.ai-browser' });
+  await assert.rejects(unrelated.request({ path: '/api/providers/resolved' }), /LOCAL_DATA_FORBIDDEN/);
+  await assert.rejects(unrelated.request({ path: '/api/assistant/conversations' }), /LOCAL_DATA_FORBIDDEN/);
+});
+
 test('first-session intent is a finite Access proof of the saved binding and exact channel proposal', async t => {
   const f = await fixture(t, { realVault: true }), now = Date.now();
   const payload = { schemaVersion: 1, purpose: 'centuarai.local-data.session-intent', boxId: f.descriptor.boxId,

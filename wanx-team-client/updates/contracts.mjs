@@ -3,6 +3,7 @@ import semver from "semver";
 import { TEST_APP_ID, TEST_EXTENSION, isTestClientIdentity } from "./test-build.mjs";
 
 export const updateError = code => Object.assign(new Error(code), { code });
+export const MAX_BLOCK_MAP_BYTES = 16 * 1024 * 1024;
 export const errorCode = error => /^[A-Z][A-Z0-9_]{1,100}$/.test(error?.code || error?.message || "")
   ? (error.code || error.message) : "UPDATE_REQUEST_FAILED";
 export function canonicalJSON(value) {
@@ -29,6 +30,8 @@ export function verifyRelease(envelope, { keys = {}, product, now = Date.now(), 
       extensions.some(extension => !(product === "wanx-box" && extension === "wanx.foundation-modules.v1") &&
         !(product === "wanx-client" && extension === TEST_EXTENSION && isTestClientIdentity(testIdentity))) ||
       payload.backendContract !== 1 || payload.hostProtocol !== 1 || payload.dataPolicy !== "backward-compatible")
+    throw updateError("CONTRACT_UNSUPPORTED");
+  if (Object.hasOwn(payload, "forceUpdate") && (product !== "wanx-client" || typeof payload.forceUpdate !== "boolean"))
     throw updateError("CONTRACT_UNSUPPORTED");
   if (extensions.includes(TEST_EXTENSION) && (payload.testIsolation?.applicationId !== TEST_APP_ID ||
       payload.testIsolation?.testRunId !== testIdentity.testRunId || payload.channel !== testIdentity.channel ||
@@ -58,6 +61,15 @@ export function verifyRelease(envelope, { keys = {}, product, now = Date.now(), 
         !Number.isSafeInteger(artifact.sizeBytes) || artifact.sizeBytes <= 0 ||
         payload.components[artifact.component]?.sha256 !== artifact.sha256)
       throw updateError("UPDATE_INVALID_ARTIFACT");
+    if (Object.hasOwn(artifact, "blockMap")) {
+      const map = artifact.blockMap;
+      if (product !== "wanx-client" || !map || typeof map !== "object" || Array.isArray(map) ||
+          Object.keys(map).sort().join(",") !== "sha256,sizeBytes,url" ||
+          typeof map.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(map.sha256) ||
+          !Number.isSafeInteger(map.sizeBytes) || map.sizeBytes <= 0 || map.sizeBytes > MAX_BLOCK_MAP_BYTES ||
+          !secureURL(map.url).pathname.endsWith(".blockmap"))
+        throw updateError("UPDATE_INVALID_ARTIFACT");
+    }
   }
   if (product === "wanx-box") {
     const foundation = payload.artifacts.filter(artifact => ["discovery", "p2p"].includes(artifact.component));
@@ -85,6 +97,17 @@ export function verifyRelease(envelope, { keys = {}, product, now = Date.now(), 
       throw updateError("CONTRACT_UNSUPPORTED");
   }
   return { release: structuredClone(payload), digest: createHash("sha256").update(bytes).digest("hex") };
+}
+
+// The server selects a published policy. Its signed release fixes the minimum
+// version and scope; a later optional release does not erase that minimum.
+export function clientRequirement(envelope, { current, keys, now = Date.now() }) {
+  if (envelope == null) return null;
+  const { release } = verifyRelease(envelope, { keys, product: "wanx-client", now, testIdentity: current });
+  if (release.forceUpdate !== true || release.channel !== current.channel ||
+      clientBlockers(release, current, []).length) throw updateError("UPDATE_INVALID_RELEASE");
+  return semver.gt(release.version, current.productVersion)
+    ? { required: true, minimumVersion: release.version, releaseId: release.releaseId } : null;
 }
 
 export function clientBlockers(release, current, applications) {

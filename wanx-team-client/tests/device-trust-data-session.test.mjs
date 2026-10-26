@@ -663,3 +663,19 @@ test('launch capacity reserves a whole fresh replacement batch and releases the 
   const replacement = client.applicationConnection('centaurai.wanx.dialogue'); await replacement.localContext();
   assert.equal((await replacement.request({ path: '/api/auth/me' })).status, 200);
 });
+
+test('native assistant metadata uses only fixed read-only routes over the local session', async t => {
+  const f = await fixture(t), session = await f.connect({ applicationId: 'centaurai.wanx.dialogue' });
+  for (const target of ['/api/providers/resolved', '/api/providers/active-model', '/api/preferences', '/api/settings/timezone', '/api/assistant/conversations']) {
+    assert.equal((await session.request({ path: target })).status, 200);
+  }
+  assert.equal((await session.request({ path: '/api/assistant/profile', method: 'POST' })).status, 200);
+  const count = f.seen.length;
+  for (const [target, method] of [['/api/providers', 'GET'], ['/api/providers/active-model', 'PUT'], ['/api/preferences', 'PATCH'], ['/api/settings/captcha', 'GET'], ['/api/_client/space-mcp/connections', 'POST']]) {
+    await assert.rejects(session.request({ path: target, method }), /LOCAL_DATA_FORBIDDEN/);
+  }
+  assert.equal(f.seen.length, count);
+  const unrelated = await f.connect({ applicationId: 'centaurai.wanx.ai-browser' });
+  await assert.rejects(unrelated.request({ path: '/api/providers/resolved' }), /LOCAL_DATA_FORBIDDEN/);
+  await assert.rejects(unrelated.request({ path: '/api/assistant/conversations' }), /LOCAL_DATA_FORBIDDEN/);
+});

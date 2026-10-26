@@ -313,3 +313,20 @@ test('same-box transport replacement preserves origin, rejects expired credentia
   for(const listener of listeners)listener('denied');
   assert.equal((await gateway.request({path:'/api/still-open'})).status,200,'retired session cannot close new transport');
 });
+
+test("native assistant knowledge retains its edition scope only on knowledge routes", async (t) => {
+  const { gateway } = await fixture(t, (incoming, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ scope: incoming.headers["x-wanx-data-context"] || null }));
+  });
+  for (const scope of ["personal", "team"]) {
+    for (const path of ["/api/assistant/knowledge/warehouses", "/api/assistant/knowledge-grant", "/api/assistant/knowledge/evidence"]) {
+      const result = await gateway.request({ path, headers: { "X-Wanx-Data-Context": scope } });
+      assert.equal(JSON.parse(result.body.toString()).scope, scope);
+    }
+  }
+  for (const [path, scope] of [["/api/auth/me", "team"], ["/api/assistant/profile", "personal"], ["/api/assistant/knowledge/warehouses", "other"]]) {
+    const result = await gateway.request({ path, headers: { "x-wanx-data-context": scope } });
+    assert.equal(JSON.parse(result.body.toString()).scope, null);
+  }
+});

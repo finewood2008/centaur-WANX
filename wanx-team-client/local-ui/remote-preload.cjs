@@ -92,7 +92,9 @@ const actions = {
  "wanx.mcp-copy":input=>mcpRequest("copy",input),
  ...Object.fromEntries(["share-details","create-share-key","reveal-share-key","copy-share-key","copy-share-value","release-share-key"].map(name=>["data."+name,input=>dataRequest(name,input)])),
  "data.install-starlink":input=>dataRequest("install-starlink",input),
- ...Object.fromEntries(["load","open","send","stop","retry","watch","unwatch","preferences"].map(method=>[`dialogue.${method}`,input=>ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`,input)])),
+ ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff","channels-list","channels-detail","channels-save","channels-toggle","channels-delete","channels-test","channels-start","channels-poll","channels-cancel"].map(method=>[`dialogue.${method}`,input=>ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`,input)])),
+  "data.assistant-access":input=>dataRequest("assistant-access",input),
+  "data.assistant-access-update":input=>dataRequest("assistant-access-update",input),
   "data.initialize":input=>dataRequest("initialize",input),
   "data.warehouses":input=>dataRequest("warehouses",input),
   "data.warehouse":input=>dataRequest("warehouse",input),
@@ -129,6 +131,8 @@ const actions = {
   "team.invite.create": input=>ipcRenderer.invoke("wanx-client:team",{operation:"invite.create",input}),
   "team.invite.revoke": input=>ipcRenderer.invoke("wanx-client:team",{operation:"invite.revoke",input}),
   "team.projects": input=>ipcRenderer.invoke("wanx-client:team",{operation:"projects",input}),
+  "team.publication": input=>ipcRenderer.invoke("wanx-client:team",{operation:"publication",input}),
+  "team.publication-audience": input=>ipcRenderer.invoke("wanx-client:team",{operation:"publication-audience",input}),
   "team.publish": input=>ipcRenderer.invoke("wanx-client:team",{operation:"publish",input}),
   "team.unpublish": input=>ipcRenderer.invoke("wanx-client:team",{operation:"unpublish",input}),
   "team.access": input=>ipcRenderer.invoke("wanx-client:team",{operation:"access",input}),
@@ -195,6 +199,11 @@ const actions = {
   "devices.disconnect": () => ipcRenderer.invoke("wanx-client:disconnect"),
   "devices.retry": () => ipcRenderer.invoke("wanx-client:retry-connection"),
   "maintenance.open": (input) => ipcRenderer.invoke("wanx-client:maintenance-open", { tool: input?.tool, deviceId: input?.deviceId }),
+  "studio.preview.open": input=>ipcRenderer.invoke("wanx-client:studio-preview-open",input),
+  "studio.preview.invoke": input=>ipcRenderer.invoke("wanx-client:studio-preview-invoke",input),
+  "studio.preview.close": input=>ipcRenderer.invoke("wanx-client:studio-preview-close",input),
+  "studio.runtime-model": input=>ipcRenderer.invoke("wanx-client:studio-runtime-model",input),
+  "studio.runtime-model.save": input=>ipcRenderer.invoke("wanx-client:studio-runtime-model-save",input),
   "studio.overview": input=>ipcRenderer.invoke("wanx-client:studio-overview",input),
   "studio.create": input=>ipcRenderer.invoke("wanx-client:studio-create",input),
   "studio.open": input=>ipcRenderer.invoke("wanx-client:studio-open",input),
@@ -249,7 +258,7 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["create", "list", "revoke", "audit", "config", "agent-config", "spaces", "requests", "approve", "reject", "space-manage", "connection-manage", "grants", "connection-audit", "sync-status", "sync-policy", "task-records", "task-delete", "grant", "grant-revoke", "file-transfer", "storage-set", "storage-choose"])
+for (const method of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
 
 for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])

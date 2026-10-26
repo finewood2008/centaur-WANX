@@ -66,6 +66,7 @@ import { protectPrivateDirectory } from "./private-storage.mjs";
 import { readClientIdentity, installationIdentity } from "../updates/identity.mjs";
 import { createUpdateStore } from "../updates/store.mjs";
 import { createClientUpdates } from "../updates/client-service.mjs";
+import { createUpdateChecks } from "./update-checks.mjs";
 import { createBoxUpdates } from "../updates/box-service.mjs";
 import { createElectronUpdateAdapter } from "../updates/electron.mjs";
 import { createDeviceTrustCoordinator } from "../device-trust/coordinator.mjs";
@@ -93,7 +94,7 @@ let panel;
 let uiState;
 let broadcast;
 let notifications;
-let aiDialogue;
+let aiDialogue, panelDialogue;
 let client;
 let unsubscribe;
 let setupRuntime;
@@ -142,7 +143,7 @@ async function marketTrustedKeys() {
 if (process.platform === "win32") app.setAppUserModelId(testBuild ? TEST_APP_ID : "ai.centuarai.wanx.client");
 if (process.argv.includes("--wanx-managed-app")) {
   marketTrustedKeys().then(trustedKeys => runManagedApplication({
-    applicationRoot: path.join(app.getPath("userData"), "applications"), trustedKeys, app,
+    applicationRoot: process.env.WANX_HOST_APPLICATION_ROOT || path.join(app.getPath("userData"), "applications"), trustedKeys, app,
   })).catch(error => {
     reportError(error);
     process.send?.({ type: "wanx:application-failed", launchId: process.env.WANX_HOST_LAUNCH_ID }, () => {});
@@ -183,7 +184,10 @@ if (process.argv.includes("--wanx-managed-app")) {
         directory: path.join(userData, "static-assets"),
       });
       const binaryPath = nativePaths.engine;
+      let updateIdentity = null, updateChecks = null;
       const account = createAccount({
+        getClientUpdateContext: () => updateIdentity,
+        onClientUpdateRequired: () => { void updateChecks?.checkNow(); },
         measure: timed,
         onGrantTiming: details => timings.grantResponse(details),
         ...(process.env.WANX_CONSUMER_URL
@@ -305,6 +309,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         createConnection: (applicationId, options) => client.applicationConnection(applicationId, options),
         getDataIdentity: () => client.snapshot().dataIdentity,
         trustedKeys,
+        assertClientUsable: () => updates?.client.assertUsable(),
         getCompatibilityContext,
         prepareApplication,
         authorizeRelease,
@@ -329,6 +334,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         authorizeRelease,
       });
       const deliveryScope = () => {
+        if (updates?.client.snapshot().requirement?.required) return null;
         const state = client.snapshot();
         const accountId = account.snapshot().phase === "authenticated" ? account.getIdentity()?.accountId : null;
         return accountId && state.phase === "ready" && state.connection?.deviceId
@@ -341,6 +347,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       const deliveryScheduler = createDefaultApplicationScheduler({ delivery: defaultApplications, getScope: deliveryScope });
       const identity = await readClientIdentity({ app });
+      updateIdentity = identity;
       const testRuntime = await createTestUpdateRuntime({ identity, app, session });
       let updateTrust = JSON.parse(await readFile(new URL("../updates/trust.json", import.meta.url), "utf8"));
       if (app.isPackaged) {
@@ -373,7 +380,8 @@ if (process.argv.includes("--wanx-managed-app")) {
           deviceId: client.snapshot().connection?.deviceId || null }),
       });
       updates = { client: clientUpdates, box: boxUpdates };
-      const updateListeners = [clientUpdates.subscribe(() => { notifications?.update(clientUpdates.snapshot()); void broadcast?.publish(); }),
+      updateChecks = createUpdateChecks({ updates: clientUpdates, getAccount: () => account.snapshot(), enabled: !testRuntime });
+      const updateListeners = [clientUpdates.subscribe(() => { notifications?.update(clientUpdates.snapshot()); deliveryScheduler.sync(); void broadcast?.publish(); }),
         boxUpdates.subscribe(() => { desktop?.sync(client.snapshot()); void broadcast?.publish(); })];
       let updateAccount = JSON.stringify(account.getIdentity());
       const unsubscribeUpdateAccount = account.subscribe(state => {
@@ -382,6 +390,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           clientUpdates.invalidate(); boxUpdates.invalidate();
         }
         updateAccount = next;
+        updateChecks.sync();
         deliveryScheduler.sync();
       });
       const startup = createStartupSettings({ app, testBuild: Boolean(testBuild) });
@@ -393,6 +402,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       });
       uiState = await createUIState({
         client, account, applications,
+        assertClientUsable: () => clientUpdates.assertUsable(),
         preferenceFile: path.join(userData, "ui-preferences.json"),
         serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         onChanged: () => { void broadcast?.publish(); },
@@ -491,6 +501,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         },
       });
       personalSpace = await createPersonalSpace({
+        driveCatalog: () => { if(!spaceLinks)throw Object.assign(new Error("BOX_CONNECTION_REQUIRED"),{code:"BOX_CONNECTION_REQUIRED"});return spaceLinks.manage("mcp-drives"); },
         onEvent: event => timings.transfer(event),
         client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
         store: createSecureAccountStore({ filePath: path.join(userData, "space-transfers.enc"), safeStorage }),
@@ -530,7 +541,8 @@ if (process.argv.includes("--wanx-managed-app")) {
         spaceLinks = await createSpaceLinkBridge({
           client, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
-          profileDirectory: path.join(userData, "space-agent-profiles"),
+          agentHubOptions: {team: false},
+          copyText: text => clipboard.writeText(text),
           chooseStorageDirectory: async () => {
             const result = await dialog.showOpenDialog(control, {
               title: "选择空间存储文件夹", buttonLabel: "选择此文件夹",
@@ -538,11 +550,6 @@ if (process.argv.includes("--wanx-managed-app")) {
             });
             return result.canceled ? null : result.filePaths[0];
           },
-          mcpConfig: { mcpServers: { "wanx-space": {
-            command: process.execPath,
-            args: [fileURLToPath(new URL("./space-links-mcp.mjs", import.meta.url))],
-            env: { ELECTRON_RUN_AS_NODE: "1" },
-          } } },
           onChanged: () => {
             if (control && !control.isDestroyed()) control.webContents.send("wanx-client:space-content-changed");
           },
@@ -551,11 +558,33 @@ if (process.argv.includes("--wanx-managed-app")) {
         const code = error.code || "SPACE_LINK_START_FAILED";
         spaceLinks = { manage: async () => { throw new Error(code); }, close: async () => {} };
       }
-      aiDialogue = createAIDialogue({ client, preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+      const assistantUploads = new Map();
+      aiDialogue = createAIDialogue({ client, sharedUploads: assistantUploads,
+        selectFiles: async () => {
+          const result = await dialog.showOpenDialog(control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        saveFile: async name => {
+          const result = await dialog.showSaveDialog(control, { title: "保存助理产物", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
         if (!control.isDestroyed()) control.webContents.send("wanx-client:ai-dialogue", event);
       } });
+      panelDialogue = createAIDialogue({ client, sharedUploads: assistantUploads,
+        selectFiles: async () => {
+          const result = await dialog.showOpenDialog(panel || control, { title: "添加助理附件", properties: ["openFile", "multiSelections"] });
+          return result.canceled ? [] : result.filePaths;
+        },
+        saveFile: async name => {
+          const result = await dialog.showSaveDialog(panel || control, { title: "保存助理产物", defaultPath: name });
+          return result.canceled ? null : result.filePath;
+        },
+        preferenceStore: createSecureAccountStore({ filePath: path.join(userData, "ai-dialogue-models.enc"), safeStorage }), onEvent: event => {
+        if (panel && !panel.isDestroyed()) panel.webContents.send("wanx-client:panel-ai-dialogue", event);
+      } });
       registerControlActions({
-        aiDialogue,
+        aiDialogue, panelDialogue,
         timings,
         notifications,
         spaceLinks,
@@ -624,9 +653,11 @@ if (process.argv.includes("--wanx-managed-app")) {
       shutdown = registerShutdown({
         app,
         async closeApplications() {
+          updateChecks.close();
           deviceTrust.lock("shutdown");
           uiState.invalidateOpen();
           aiDialogue?.close();
+          panelDialogue?.close();
           await deliveryScheduler.close();
           await defaultApplications.close();
           marketSession?.close();
@@ -682,6 +713,7 @@ if (process.argv.includes("--wanx-managed-app")) {
         state: "terminalError", errorCode: "SETUP_START_FAILED",
       });
       await clientUpdates.ready();
+      updateChecks.sync();
       if (process.env.WANX_SMOKE_USER_DATA)
         await writeFile(path.join(userData, "smoke-ui-ready.marker"), "ready");
       stopNetworkMonitor = monitorNetworkChanges({

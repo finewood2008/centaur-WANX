@@ -313,3 +313,36 @@ async def test_loop_shutdown_cancelling_cleanup_never_acknowledges_live_process(
         if proc.returncode is None:
             os.killpg(proc.pid, signal.SIGKILL)
             await proc.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+async def test_runtime_model_routes_reject_results_after_local_authority_revocation(actor, monkeypatch, method):
+    from fastapi import APIRouter, FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from uuid import uuid4
+    from wanx_studio import delivery
+
+    _, lease = actor
+    started, release = threading.Event(), threading.Event()
+
+    def paused(*_args):
+        started.set()
+        release.wait(3)
+        return {"models": ["private-model"]}
+
+    monkeypatch.setattr(delivery, "read" if method == "GET" else "save", paused)
+    router = APIRouter()
+    delivery.mount(router, None, lambda: "wanx:7")
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture") as client:
+        payload = {"operationId": uuid4().hex, "expectedRevision": 0, "modelId": "model"}
+        pending = asyncio.create_task(client.request(method, "/_client/projects/project/runtime-model", **({"json": payload} if method == "PUT" else {})))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            lease.revoked = True
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError, match="revoked"):
+            await pending

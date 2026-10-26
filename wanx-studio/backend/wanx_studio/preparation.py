@@ -196,12 +196,18 @@ class Preparation:
  async def validate_references(self,owner,refs):
   provider=getattr(self.svc,'context_provider',None)
   if refs and not provider:raise StudioError('CONTEXT_UNAVAILABLE',409)
-  checked=[]
   for ref in refs:
    if set(ref)-{'kind','id','name','revision'} or ref.get('kind') not in {'space','xingtu'} or not isinstance(ref.get('id'),str):raise StudioError('CONTEXT_REFERENCE_INVALID')
+  async def check(ref):
    metadata=await provider.metadata(owner,ref['kind'],ref['id'])
    if ref.get('revision') and ref['revision']!=metadata['revision']:raise StudioError('CONTEXT_SOURCE_CHANGED',409)
-   checked.append(metadata)
+   return metadata
+  checked=[]
+  for offset in range(0,len(refs),4):
+   batch=await asyncio.gather(*(check(ref) for ref in refs[offset:offset+4]),return_exceptions=True)
+   for item in batch:
+    if isinstance(item,BaseException):raise item
+    checked.append(item)
   return checked
  async def set_context(self,owner,pid,body):
   async with self.lock(owner,pid):

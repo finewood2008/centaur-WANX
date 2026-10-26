@@ -16,23 +16,28 @@ test('native CLI observer is bound to one thread and cannot steer, write, approv
     assert.equal(observeRequest({id:1,method,params:{threadId:'task'}},'task'),null,method);
   }
   assert.equal(observeRequest({method:'thread/read',params:{threadId:'other'}},'task'),null);
-  assert.deepEqual(observeRequest({id:1,method:'thread/resume',params:{threadId:'task',sandbox:'dangerFullAccess',config:{shell_tool:true}}},'task'),{id:1,method:'thread/resume',params:{threadId:'task',excludeTurns:true}});
+  assert.deepEqual(observeRequest({id:1,method:'thread/resume',params:{threadId:'task',sandbox:'dangerFullAccess',config:{shell_tool:true}}},'task'),{id:1,method:'thread/resume',params:{threadId:'task',excludeTurns:false}});
+  assert.deepEqual(observeRequest({id:2,method:'thread/resume',params:{threadId:'task',excludeTurns:true,config:{shell_tool:true}}},'task'),{id:2,method:'thread/resume',params:{threadId:'task',excludeTurns:true}});
   assert.equal(toml({features:{shell_tool:false},projects:{'/task':{trust_level:'trusted'}}}),'{"features"={"shell_tool"=false},"projects"={"/task"={"trust_level"="trusted"}}}');
 });
 
-test('observer transport rejects mutation before upstream and filters other thread history',async()=>{
-  const folder=await mkdtemp(path.join(os.tmpdir(),'wanx-observer-test-')),socket=path.join(folder,'s.sock');
-  const httpServer=http.createServer(),server=new WebSocketServer({server:httpServer});let observed=[],attached=false;
-  server.on('connection',peer=>peer.on('message',raw=>{const msg=JSON.parse(raw);observed.push(msg);const result=msg.method==='thread/list'?{data:[{id:'task'},{id:'other'}]}:msg.method==='thread/resume'?{thread:{id:'task'}}:{};peer.send(JSON.stringify({id:msg.id,result}))}));
-  await new Promise(resolve=>httpServer.listen(socket,resolve));
-  const observer=await createObserver({socket,sessionId:'task',onReady:()=>attached=true});
+test('observer transport stays readonly and uses the existing owner view',async()=>{
+  const folder=await mkdtemp(path.join(os.tmpdir(),'wanx-observer-test-')),socket=path.join(folder,'owner.sock');
+  const observed=[];let attached=false,subscriber,unsubscribed=false;
+  const view={request:async(method,params)=>{observed.push({method,params});return method==='thread/list'?{data:[{id:'task'},{id:'other'}]}:method==='thread/resume'?{thread:{id:'task'}}:{}},subscribe(fn){subscriber=fn;return()=>{unsubscribed=true}}};
+  const observer=await createObserver({socket,sessionId:'task',view,onReady:()=>attached=true});
   const client=new WebSocket('ws+unix://'+observer.socket+':/');await new Promise(resolve=>client.once('open',resolve));
   const rpc=(method,params)=>new Promise(resolve=>{client.once('message',raw=>resolve(JSON.parse(raw)));client.send(JSON.stringify({id:1,method,params}))});
   try{
     assert.equal((await rpc('turn/start',{threadId:'task'})).error.message,'WANX_TERMINAL_READ_ONLY');assert.equal(observed.length,0);
     const listing=await rpc('thread/list',{});assert.deepEqual(listing.result.data,[{id:'task'}]);
-    await rpc('thread/resume',{threadId:'task',config:{danger:true}});assert.ok(attached);assert.deepEqual(observed.at(-1).params,{threadId:'task',excludeTurns:true});
-  }finally{client.terminate();await observer.close();for(const peer of server.clients)peer.terminate();server.close();await new Promise(resolve=>httpServer.close(resolve));await rm(folder,{recursive:true,force:true})}
+    await rpc('thread/resume',{threadId:'task',config:{danger:true}});assert.ok(attached);assert.deepEqual(observed.at(-1).params,{threadId:'task',excludeTurns:false});
+    const received=new Promise(resolve=>client.once('message',raw=>resolve(JSON.parse(raw))));
+    subscriber({method:'item/agentMessage/delta',params:{threadId:'task',delta:'live owner progress'}});
+    assert.equal((await received).params.delta,'live owner progress');
+    assert.equal((await rpc('thread/read',{threadId:'other'})).error.message,'WANX_TERMINAL_READ_ONLY');
+  }finally{client.terminate();await observer.close();await rm(folder,{recursive:true,force:true})}
+  assert.equal(unsubscribed,true);
 });
 
 test('Codex public progress retains full tool details and excludes private reasoning and credentials',()=>{

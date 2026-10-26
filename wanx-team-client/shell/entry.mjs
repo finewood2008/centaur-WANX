@@ -10,7 +10,7 @@ if (application) {
   try {
     await launchInstalledApplication({
       app,
-      applicationRoot: path.join(app.getPath("userData"), "applications"),
+      applicationRoot: process.env.WANX_HOST_APPLICATION_ROOT || path.join(app.getPath("userData"), "applications"),
       installPath: application.slice("--wanx-application=".length),
     });
   } catch {

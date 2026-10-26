@@ -1,5 +1,5 @@
 import semver from "semver";
-import { clientBlockers, digestPayload, errorCode, updateError, verifyRelease } from "./contracts.mjs";
+import { clientBlockers, clientRequirement, digestPayload, errorCode, updateError, verifyRelease } from "./contracts.mjs";
 import { isTestClientIdentity } from "./test-build.mjs";
 
 export async function createClientUpdates({ current, request, applications, keys = {}, store,
@@ -17,11 +17,19 @@ export async function createClientUpdates({ current, request, applications, keys
   const unsupportedInstallation = current.packaged && current.platform === "win32" && current.installationScope !== "per-user";
   if (unsupportedInstallation) phase = "unavailable";
   const initialReason = stateInvalid ? "UPDATE_STATE_INVALID" : unsupportedInstallation ? "UPDATE_INSTALL_LOCATION_UNSUPPORTED" : phase === "development" ? "UPDATE_DEVELOPMENT_BUILD" : phase === "unavailable" ? "UPDATE_NOT_CONFIGURED" : null;
-  let state = { current, phase, reason: initialReason, candidate: null, checkedAt: null, progress: null, blockers: [], lastResult: null };
+  const requirementFor = envelope => clientRequirement(envelope, { current, keys, now: now() });
+  let requirement = null;
+  if (!initialReason && persisted.mandatoryRelease) {
+    try { requirement = requirementFor(persisted.mandatoryRelease); }
+    catch { persisted.mandatoryRelease = null; }
+  }
+  let state = { current, phase, reason: initialReason, candidate: null, checkedAt: null, progress: null, blockers: [], lastResult: null, requirement };
   let target, downloaded, adapter, active, generation = 0, closed = false;
   let controller = new AbortController();
   const listeners = new Set();
-  const snapshot = () => structuredClone(state);
+  const currentRequirement = () => state.requirement && Date.parse(persisted.mandatoryRelease?.payload?.expiresAt) > now()
+    ? state.requirement : null;
+  const snapshot = () => structuredClone({ ...state, requirement: currentRequirement() });
   function publish(patch) { state = { ...state, ...patch }; for (const listener of listeners) listener(snapshot()); }
   function context() {
     const session = captureSession(), epoch = generation;
@@ -52,6 +60,17 @@ export async function createClientUpdates({ current, request, applications, keys
     applicationId: app.applicationId, version: app.version || null,
     artifactId: app.artifactId || null, selectionRequired: Boolean(app.selectionRequired),
   })).sort((a, b) => a.applicationId.localeCompare(b.applicationId)));
+  async function applyRequirement(result, check) {
+    // Missing means an older server or a temporarily unavailable candidate;
+    // only an explicit, authenticated null revokes a previously known policy.
+    if (!Object.hasOwn(result, "mandatoryRelease")) return;
+    if (result.mandatoryRelease !== null && (typeof result.mandatoryRelease !== "object" || Array.isArray(result.mandatoryRelease)))
+      throw updateError("UPDATE_INVALID_RESPONSE");
+    const next = requirementFor(result.mandatoryRelease);
+    persisted.mandatoryRelease = next ? result.mandatoryRelease : null;
+    await store.save(persisted); check();
+    publish({ requirement: next });
+  }
   async function query(check, fixedTarget) {
     const installed = await applications.listInstalled(); check();
     const result = await request({ method: "POST", path: "/app-api/v1/upgrades/candidates", body: {
@@ -62,7 +81,10 @@ export async function createClientUpdates({ current, request, applications, keys
       ...(fixedTarget ? { releaseId: fixedTarget.release.releaseId } : {}),
     } }); check();
     if (!result || !["available", "current", "blocked"].includes(result.status)) throw updateError("UPDATE_INVALID_RESPONSE");
-    if (result.status === "blocked") return { blocked: result.reasonCode || "RELEASE_UNAVAILABLE" };
+    if (result.status === "blocked") {
+      await applyRequirement(result, check);
+      return { blocked: result.reasonCode || "RELEASE_UNAVAILABLE" };
+    }
     const verified = verifyRelease(result.release, { keys, product: "wanx-client", now: now(), testIdentity: current });
     const { release, digest } = verified;
     if (result.releaseDigest !== digest || release.channel !== current.channel) throw updateError("UPDATE_INVALID_RELEASE");
@@ -75,7 +97,12 @@ export async function createClientUpdates({ current, request, applications, keys
       throw updateError("UPDATE_METADATA_REPLAY");
     persisted.sequences[scope] = { sequence: release.metadataSequence, digest, securityEpoch: release.securityEpoch };
     await store.save(persisted); check();
+    await applyRequirement(!Object.hasOwn(result, "mandatoryRelease") && release.forceUpdate === true
+      ? { mandatoryRelease: result.release } : result, check);
     const blockers = clientBlockers(release, current, installed);
+    const required = currentRequirement();
+    if (required && semver.lt(release.version, required.minimumVersion))
+      blockers.push({ code: "CLIENT_UPDATE_REQUIRED" });
     return { ...verified, downloadUrls: result.downloadUrls || {}, blockers, baseline: applicationBaseline(installed) };
   }
   function presentation(release) {
@@ -91,6 +118,7 @@ export async function createClientUpdates({ current, request, applications, keys
   }
   return {
     snapshot,
+    assertUsable() { if (currentRequirement()?.required) throw updateError("CLIENT_UPDATE_REQUIRED"); },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async ready() {
       const previous = persisted.operation;

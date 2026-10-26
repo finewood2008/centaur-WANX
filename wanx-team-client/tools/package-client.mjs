@@ -12,6 +12,7 @@ import { clientBuildSource, clientTestSourceSnapshot } from "./package-client-so
 import { clientTrustFingerprints, validateClientTrust } from "./package-client-trust.mjs";
 import { prepareMacUpdatePermissions } from "./package-client-permissions.mjs";
 import { readPackagedNativeBinaries } from "./package-client-native.mjs";
+import { createClientBlockMap } from "./client-blockmap.mjs";
 import { TEST_APP_ID, TEST_PACKAGE_NAME, TEST_PRODUCT_NAME, testPackageIdentity, validTestRunId } from "../updates/test-build.mjs";
 import { testFeedURL as validateTestFeedURL } from "../updates/test-runtime.mjs";
 
@@ -172,14 +173,15 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
     run("xcrun", ["stapler", "staple", dmg]);
     run("xcrun", ["stapler", "validate", dmg]);
   }
+  const blockMap = await createClientBlockMap(zip);
   const digest = await sha256(dmg);
   const zipDigest = await sha256(zip);
   const zipSha512 = createHash("sha512");
   for await (const chunk of createReadStream(zip)) zipSha512.update(chunk);
   await mkdir(outputDir, { recursive: true });
-  await writeFile(path.join(outputDir, "SHA256SUMS.txt"), `${digest}  ${path.basename(dmg)}\n${zipDigest}  ${path.basename(zip)}\n`);
+  await writeFile(path.join(outputDir, "SHA256SUMS.txt"), `${digest}  ${path.basename(dmg)}\n${zipDigest}  ${path.basename(zip)}\n${blockMap.sha256}  ${path.basename(blockMap.path)}\n`);
   const report = { version, appId, name, platform: "macos", arch, dmg, sha256: digest,
-    build, updateTrust, nativeBinaries, updateArtifact: { path: zip, kind: "mac-zip", notarized: !local && !test, sizeBytes: (await stat(zip)).size, sha256: zipDigest, sha512: zipSha512.digest("base64") },
+    build, updateTrust, nativeBinaries, updateArtifact: { path: zip, kind: "mac-zip", notarized: !local && !test, sizeBytes: (await stat(zip)).size, sha256: zipDigest, sha512: zipSha512.digest("base64"), blockMap },
     signed: true, notarized: !local && !test, distributionClass: build.distributionClass };
   await writeFile(path.join(outputDir, "verification-client.json"), JSON.stringify(report, null, 2) + "\n");
   return report;

@@ -28,11 +28,11 @@ const CAPABILITIES = new Set(['identity.read', 'experts.read', 'experts.select',
 // This is only the desktop's transport family allowlist. The box resolves each
 // exact route/resource/action against current authority; these names grant none.
 const APP_FAMILIES = Object.freeze({
-  'wanx-host': ['app-studio', 'semantica', 'personal-space', 'clipboard', 'agents', 'chat', 'dialogue', 'browser', 'notifications', 'platform'],
+  'wanx-host': ['app-studio', 'semantica', 'personal-space', 'clipboard', 'agents', 'chat', 'dialogue', 'assistant', 'browser', 'notifications', 'platform'],
   'centaurai.wanx.ai-browser': ['agents', 'chat', 'browser'],
   'centaurai.wanx.centaurloop': ['agents', 'chat'],
   'centaurai.wanx.superadvisors': ['agents', 'chat', 'super-advisory'],
-  'centaurai.wanx.dialogue': ['dialogue', 'agents', 'chat'],
+  'centaurai.wanx.dialogue': ['dialogue', 'assistant', 'agents', 'chat'],
   'centaurai.wanx.zhijun': ['agents', 'chat'],
   'centaurai.wanx.semantica': ['semantica'],
   'centaurai.wanx.new-media-toolkit': ['agents', 'chat'],
@@ -109,6 +109,9 @@ function routeLimit(applicationId, rawTarget, method, transport) {
   const pathname = rawTarget.split('?')[0];
   const family = /^\/api\/([^/?]+)/.exec(pathname)?.[1];
   const profile = /^\/api\/auth\/me(?:\/avatar)?$/.test(pathname) && ['GET', 'PATCH', 'POST', 'DELETE'].includes(method);
+  const assistantMetadata = ['wanx-host', 'centaurai.wanx.dialogue'].includes(applicationId)
+    && transport === 'http' && ['GET', 'HEAD'].includes(method)
+    && /^(?:\/api\/providers\/(?:resolved|active-model)|\/api\/preferences|\/api\/settings\/timezone)$/.test(pathname);
   const asset = transport === 'http' && ['GET', 'HEAD'].includes(method)
     && (pathname === '/' || /^\/(?:assets|static)\/[A-Za-z0-9_./-]+$/.test(pathname)
       || /^\/(?:favicon\.ico|manifest\.webmanifest|logo\.svg)$/.test(pathname));
@@ -119,7 +122,7 @@ function routeLimit(applicationId, rawTarget, method, transport) {
     return method === 'GET' ? 0 : 100 * MIB;
   }
   const teamManagement = applicationId === 'wanx-host' && transport === 'http' && ((pathname === '/api/admin/applications' && ['GET', 'POST'].includes(method)) || /^\/api\/admin\/applications\/[A-Za-z0-9._-]{1,128}(?:\/(?:deployment|access))?$/.test(pathname) && ['GET', 'PUT'].includes(method));
-  requireValue(profile || asset || teamManagement || (family && APP_FAMILIES[applicationId].includes(family)), 'FORBIDDEN');
+  requireValue(profile || asset || assistantMetadata || teamManagement || (family && APP_FAMILIES[applicationId].includes(family)), 'FORBIDDEN');
   if (transport === 'websocket') requireValue(method === 'GET' && /(?:\/ws|\/stream|\/terminal)$/.test(pathname), 'FORBIDDEN');
   if (asset || ['GET', 'HEAD', 'OPTIONS'].includes(method)) return 0;
   // Archive exceptions must be explicitly registered. Ordinary routes never

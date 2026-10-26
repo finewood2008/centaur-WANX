@@ -242,8 +242,13 @@ async def _check_configuration(
 ) -> None:
     """Local accounts cannot turn private agent configuration into host access."""
     path = scope["path"]
+    assistant_context = path == "/api/assistant/context/validate" or (
+        scope.get("method") == "PATCH"
+        and re.fullmatch(r"/api/assistant/conversations/[^/]+", path) is not None
+    )
     if scope.get("method") not in {"POST", "PATCH", "PUT"} or not (
-        path == "/api/agents"
+        assistant_context
+        or path == "/api/agents"
         or re.fullmatch(r"/api/agents/[^/]+", path)
         or path.startswith("/api/knowledge-bases")
     ):
@@ -254,6 +259,16 @@ async def _check_configuration(
         value = json.loads(await context.read_body(2 * 1024 * 1024))
         if not isinstance(value, dict):
             raise ValueError()
+        if assistant_context:
+            selected = value if path.endswith("/context/validate") else value.get("context")
+            if selected is not None:
+                if not isinstance(selected, dict):
+                    raise ValueError()
+                for family in ("space", "knowledge"):
+                    choice = selected.get(family, {})
+                    if not isinstance(choice, dict) or choice.get("enabled", False) is not False:
+                        raise ValueError()
+            return
         if value.get("is_shared") or value.get("shared"):
             raise ValueError()
         if path.startswith("/api/agents"):

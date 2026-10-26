@@ -38,3 +38,11 @@ test("application installer copies a complete source atomically and records inst
   assert.equal(record.applicationId, manifest.applicationId);
   assert.equal((await installer.list()).length, 1);
 });
+
+test('incomplete local copy cannot activate a package without its entrypoint',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'wanx-incomplete-')),source=path.join(root,'source'),destination=path.join(root,'installed');
+ await mkdir(path.join(source,'shell'),{recursive:true});await writeFile(path.join(source,'shell/main.cjs'),'module.exports = {};');
+ const installer=createApplicationInstaller({rootDir:destination,copy:async(_source,target)=>{await mkdir(target,{recursive:true});}});
+ await assert.rejects(installer.install({sourceDir:source,manifest}),{code:'APPLICATION_INSTALL_FAILED'});
+ assert.deepEqual(await installer.list(),[]);
+});

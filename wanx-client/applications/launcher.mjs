@@ -9,9 +9,11 @@ const fail = (code) => Object.assign(new Error(code), { code });
 export function createApplicationLauncher({
   host,
   resolveRecord = async record => record,
+  assertClientUsable = () => {},
   onStarted = async () => {},
   spawn = defaultSpawn,
   electronPath = process.execPath,
+  resolveExecutable,
   runtimeArgs = [],
   launcherArgs = ["--wanx-managed-app"],
 } = {}) {
@@ -64,8 +66,10 @@ export function createApplicationLauncher({
   }
 
   async function start(state, input, signal) {
+    assertClientUsable();
     const record = await resolveRecord(input);
     assertActive(signal);
+    assertClientUsable();
     if (!record?.applicationId || !record.installPath || !record.entrypoint)
       throw fail("APPLICATION_RECORD_INVALID");
     assertApplicationPlatform(record);
@@ -82,8 +86,9 @@ export function createApplicationLauncher({
       assertActive(signal);
     }
     const bundled = record.launchMode === "bundled";
-    const executable = bundled ? await resolveApplicationEntry(record.installPath, record) : electronPath;
+    const executable = bundled ? await resolveApplicationEntry(record.installPath, record) : resolveExecutable ? await resolveExecutable(record) : electronPath;
     assertActive(signal);
+    assertClientUsable();
     const session = await host.createSession(record, { signal });
     let entry;
     try {
@@ -93,9 +98,11 @@ export function createApplicationLauncher({
       if (userData && !session.dataProfile) await mkdir(userData, { recursive: true, mode: 0o700 });
       assertActive(signal);
       session.assertLive?.();
+      assertClientUsable();
       const child = spawn(executable, bundled ? [] : record.envelope ? launcherArgs : [...runtimeArgs, `--wanx-application=${record.installPath}`], {
         cwd: record.installPath,
         env: { ...process.env, ...session.environment,
+          WANX_HOST_APPLICATION_ROOT: path.dirname(path.dirname(record.installPath)),
           WANX_HOST_DATA_PROFILE: session.dataProfile || "",
           WANX_HOST_USER_DATA_DIR: userData || "" },
         stdio: ["ignore", "ignore", "ignore", "ipc"],

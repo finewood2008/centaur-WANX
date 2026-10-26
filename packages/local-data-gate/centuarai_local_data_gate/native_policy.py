@@ -23,6 +23,7 @@ APPLICATION_FAMILIES = {
             "agents",
             "chat",
             "dialogue",
+            "assistant",
             "browser",
             "semantica",
             "platform",
@@ -36,7 +37,9 @@ APPLICATION_FAMILIES = {
     "centaurai.wanx.ai-browser": frozenset({"identity", "assets", "agents", "chat", "browser"}),
     "centaurai.wanx.centaurloop": frozenset({"identity", "assets", "agents", "chat"}),
     "centaurai.wanx.superadvisors": frozenset({"identity", "assets", "agents", "chat", "dialogue"}),
-    "centaurai.wanx.dialogue": frozenset({"identity", "assets", "dialogue"}),
+    "centaurai.wanx.dialogue": frozenset(
+        {"identity", "assets", "dialogue", "assistant", "agents", "chat"}
+    ),
     "centaurai.wanx.zhijun": frozenset({"identity", "assets", "agents", "chat"}),
     "centaurai.wanx.semantica": frozenset({"identity", "assets", "semantica"}),
     "centaurai.wanx.new-media-toolkit": frozenset({"identity", "assets", "agents", "chat"}),
@@ -67,9 +70,13 @@ def application_families(application_id):
 
 
 # method, anchored path, family, action, body cap. Host terminal/desktop/mobile,
-# admin, provider/settings, login/OIDC/exchange and internal MCP are absent.
+# admin, provider configuration, login/OIDC/exchange and internal MCP are absent.
+# Assistant metadata exposes only model identifiers and timezone, never credentials.
+# Local chat cannot acquire MCP, external knowledge or channel authority.
 OCTOP_RULES = (
     ("GET", r"/api/app-studio/(?:engines|preflight|_client/launch/sources)", "studio", "read", 0),
+    ("GET", rf"/api/app-studio/_client/projects/{FILE}/runtime-model", "studio", "read", 0),
+    ("PUT", rf"/api/app-studio/_client/projects/{FILE}/runtime-model", "studio", "write", MIB),
     ("PUT", r"/api/app-studio/engines/default", "studio", "write", MIB),
     ("POST", r"/api/app-studio/engines/check", "studio", "execute", MIB),
     ("PUT", rf"/api/app-studio/projects/{FILE}/engine", "studio", "write", MIB),
@@ -307,6 +314,14 @@ OCTOP_RULES = (
         2 * MIB,
     ),
     ("GET", r"/api/browser/control-capabilities", "browser", "read", 0),
+    ("GET", r"/api/providers/(?:resolved|active-model)", "assistant", "read", 0),
+    ("GET", r"/api/settings/timezone", "assistant", "read", 0),
+    ("POST", r"/api/assistant/profile", "assistant", "execute", 0),
+    ("GET", r"/api/assistant/(?:conversations|history)", "assistant", "read", 0),
+    ("GET", rf"/api/assistant/conversations/{ID}", "assistant", "read", 0),
+    ("POST", r"/api/assistant/(?:context/validate|history)", "assistant", "write", MIB),
+    ("PATCH", rf"/api/assistant/conversations/{ID}", "assistant", "write", MIB),
+    ("POST", rf"/api/assistant/conversations/{ID}/(?:open|versions)", "assistant", "write", MIB),
 )
 
 QUERY_KEYS = {
@@ -355,6 +370,7 @@ QUERY_KEYS = {
         }
     ),
     "dialogue": frozenset({"limit", "offset", "cursor", "after", "after_sequence"}),
+    "assistant": frozenset(),
     "browser": frozenset({"agent_id", "session_id", "listen_only", "interactive"}),
 }
 
@@ -389,7 +405,21 @@ def classify_octop(method, target, transport, application_id, data_context=None)
                     path == "/api/auth/me" and method in {"GET", "HEAD"}, "LOCAL_DATA_ROUTE_DENIED"
                 )
             query = query_values(target)
-            need(set(query) <= QUERY_KEYS[family], "LOCAL_DATA_ROUTE_DENIED")
+            allowed_query = QUERY_KEYS[family]
+            if (
+                family == "studio"
+                and method in {"GET", "HEAD"}
+                and re.fullmatch(
+                    rf"/api/app-studio/projects/{FILE}/versions/[a-f0-9]{{64}}/restore-check", path
+                )
+            ):
+                allowed_query = allowed_query | {"comparisonHash"}
+                if "comparisonHash" in query:
+                    need(
+                        re.fullmatch(r"[a-f0-9]{64}", query["comparisonHash"]) is not None,
+                        "LOCAL_DATA_ROUTE_DENIED",
+                    )
+            need(set(query) <= allowed_query, "LOCAL_DATA_ROUTE_DENIED")
             selected = team_resource(data_context)
             need(
                 data_context in (None, "personal") or selected is not None,

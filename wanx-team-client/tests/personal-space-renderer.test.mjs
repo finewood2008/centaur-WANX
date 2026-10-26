@@ -440,61 +440,6 @@ test("drop moves retain failed items and stop the group when the account changes
   assert.doesNotMatch(h.space.view(), /已移动 1 项，1 项未完成/);
 });
 
-test("Agent link creation, expiry, management and stale account results", async () => {
-  const calls = [], file = { ...entry("a", "report.txt"), version: 2, previous_digest: "old" };
-  const links = [{ id: "b".repeat(32), name: file.name, root: file.id, kind: "file", url: "http://127.0.0.1:123/space-links/"+"x".repeat(43), expires: null }];
-  const h = harness(async (action, input) => {
-    calls.push([action, input]);
-    if (action === "space.refresh") return ok({ phase: "ready", tasks: [] });
-    if (action === "space.list") return ok({ items: [file], breadcrumbs: [] });
-    if (action === "space.links-list") return ok(links);
-    if (action === "space.links-revoke") { links[0].revoked = 1; return ok(); }
-    return ok({});
-  });
-  h.space.hostState(connected("box")); h.space.activate(true); await tick();
-  await h.click("link-create", file.id);
-  assert.match(h.space.view(), /持有此链接的本机程序可读写/);
-  h.event("change", { target: { id: "space-link-expiry", value: "7" } });
-  await h.click("link-save");
-  const create = calls.find(([a]) => a === "space.links-create")[1];
-  assert.equal(create.root, file.id);
-  assert.ok(create.expires > Date.now()/1000 + 6*86400);
-  assert.match(h.space.view(), /MCP 接入配置|最近使用/);
-  await h.click("link-revoke", links[0].id);
-  assert.match(h.space.view(), /还没有链接/);
-  assert.doesNotMatch(h.space.view(), /space-link-card|已撤销/);
-  assert.equal(links[0].revoked, 1);
-  assert.doesNotMatch(h.space.view(), /http:\/\/127/);
-  h.space.hostState({ ...connected("box"), account: { accountId: "other" } });
-  assert.doesNotMatch(h.space.view(), /space-links\/x/);
-});
-test("Agent link list hides removed and revoked links while retaining active links and audit access", async () => {
-  let links = [
-    { id: "a".repeat(32), name: null, kind: null, revoked: 1 },
-    { id: "b".repeat(32), name: "visible-folder", kind: "folder" },
-    { id: "c".repeat(32), name: "revoked-existing.txt", kind: "file", revoked: 1 },
-  ];
-  const h = harness(async action => {
-    if (action === "space.refresh") return ok({ phase: "ready", tasks: [] });
-    if (action === "space.links-list") return ok(links);
-    return ok({ items: [], breadcrumbs: [] });
-  });
-  h.space.hostState(connected("box")); h.space.activate(true); await tick();
-  await h.click("links");
-  const view = h.space.view();
-  assert.doesNotMatch(view, /目标已删除|data-id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/);
-  assert.match(view, /visible-folder/);
-  assert.doesNotMatch(view, /revoked-existing.txt|已撤销/);
-  assert.equal((view.match(/space-link-card/g) || []).length, 1);
-  assert.equal((view.match(/data-action="space-link-audit"/g) || []).length, 1);
-  assert.equal(links.length, 3, "filtering the display must not delete stored records");
-  await h.click("dialog-close");
-  links = links.filter(link => link.revoked);
-  await h.click("links");
-  assert.match(h.space.view(), /还没有链接/);
-  assert.doesNotMatch(h.space.view(), /space-link-card|目标已删除/);
-});
-
 test("restore previous file version submits the observed revision", async () => {
   const calls = [], file = { ...entry("a", "report.txt"), version: 4, previous_digest: "old" };
   const h = harness(async (action,input) => { calls.push([action,input]); return ok(action === "space.refresh" ? { phase:"ready",tasks:[] } : { items:[file],breadcrumbs:[] }); });

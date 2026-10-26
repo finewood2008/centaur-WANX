@@ -30,7 +30,7 @@ const studioHome = window.createStudioHome({
   }, changed: () => { if (currentState) render(currentState); },
 });
 const construction=window.createConstruction({request:async(name,input)=>{const r=await window.wanxClient.action(name,input);if(!r.ok)throw Error(r.code);return r.value},changed:()=>{if(currentState)render(currentState)}});
-function constructionView(){return `<div class="app-layout construction-layout">${shellHeader("开物")}<div class="page-content construction-page"><div class="store-heading"><div><p class="store-eyebrow">让熟悉的工作，成为好用的产品</p><h2>开物</h2></div><div class="store-toolbar">${construction.engineButton()}<button class="button primary" data-action="studio-workspace">＋ 创建新产品</button></div></div>${construction.settings()}${studioHome.render(currentState)}</div></div>`}
+function constructionView(){return `<div class="app-layout construction-layout">${shellHeader("万象·开物")}<div class="page-content construction-page"><div class="kaiwu-surface">${construction.render({state:currentState,home:studioHome,team:teamView,canPublish:teamUIRole==='admin'})}</div></div></div>`}
 let selectedApplicationId = null;
 let posterPreview = null;
 let profileMenuOpen = false;
@@ -382,9 +382,9 @@ function shellHeader(title) {
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">团队版</span></strong><small>CentaurAI-WanX Studio</small></span></button>
     <h1 class="sr-only">${title}</h1>
-    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "AI对话"], ["construction", "开物"], ["data", "星图"], ["space", "空间"], ["boxes", "盒子"]].filter(([destination]) => teamUIRole === "admin" || !["construction","data"].includes(destination)).map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${destination === "credits" ? `<small class="nav-credit-balance">${currentState.account?.provider==="team-server"?"团队":creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
+    <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "助理"], ["construction", "开物"], ["data", "星图"], ["space", "空间"], ["boxes", "盒子"]].filter(([destination]) => teamUIRole === "admin" || !["construction","data"].includes(destination)).map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${["construction","data"].includes(destination) ? '<span class="feature-beta">Beta</span>' : ""}${destination === "credits" ? `<small class="nav-credit-balance">${currentState.account?.provider==="team-server"?"团队":creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
     <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><div class="team-role-badge"><span>${escapeHTML(teamView.snapshot().identity?.displayName || "核验盒子身份…")}</span><small>${teamView.snapshot().identity ? teamUIRole === "admin" ? "管理员" : "普通用户" : "权限由服务器核验"}</small></div><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}<button data-team-action="join">云账号与团队设备<span>›</span></button>${currentState.account?.phase !== "authenticated" ? '<button data-action="cloud-login">云端注册或登录<span>›</span></button>' : ""}${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>`;
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}<button data-team-action="join">云账号与团队设备<span>›</span></button>${currentState.account?.phase !== "authenticated" ? '<button data-action="cloud-login">云端注册或登录<span>›</span></button>' : ""}${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>${clientUpdateRequired() && page !== "client-update" ? clientUpdateRequirementNotice() : ""}`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -525,6 +525,7 @@ function updateGuidance(code) {
     ALREADY_CURRENT: "盒子已运行目标版本，无需再次更新。",
     UPDATE_UNAVAILABLE: "暂时无法检查更新，请稍后重试。",
     UPDATE_REQUEST_FAILED: "暂时无法连接更新服务，请检查网络后重试。",
+    CLIENT_UPDATE_REQUIRED: "请先更新万象，再启动新的业务。已打开的应用可继续保存工作。",
     UPDATE_DEVELOPMENT_BUILD: "这是开发构建，请使用正式发行包接收客户端更新。",
     UPDATE_NOT_CONFIGURED: "当前未配置正式更新，请联系发行维护人员获取受支持的安装包。",
     UPDATE_SIGNER_NOT_CONFIGURED: "当前未配置安装包签名校验，请联系发行维护人员。",
@@ -537,7 +538,8 @@ function updateGuidance(code) {
     UPDATE_ARTIFACT_MISMATCH: "下载内容与发行不一致，已保留当前版本，请重新检查更新。",
     APPLICATIONS_RUNNING: "请保存工作并关闭正在运行的应用，再重启更新。",
   };
-  return messages[String(code || "").toUpperCase()] || "请重新检查更新；若仍失败，请联系维护人员并提供错误代码。";
+  const key = String(code || "").toUpperCase().match(/(?:^|ERROR: )([A-Z][A-Z0-9_]{1,80})$/)?.[1];
+  return messages[key] || "请重新检查更新；若仍失败，请联系维护人员并提供错误代码。";
 }
 
 function updateIssueView(update) {
@@ -547,6 +549,26 @@ function updateIssueView(update) {
     const code = typeof issue === "string" ? issue : issue.code || issue.reason;
     return `<p>${escapeHTML(typeof issue === "object" && issue.message ? issue.message : updateGuidance(code))}${code ? ` <span class="muted">（${escapeHTML(code)}）</span>` : ""}</p>`;
   }).join("")}</div>` : "";
+}
+
+function clientUpdateRequired(state = currentState) {
+  return state?.upgrades?.client?.requirement?.required === true;
+}
+function clientUpdateRequirementNotice() {
+  const version = currentState.upgrades.client.requirement.minimumVersion;
+  return `<div class="notice" role="status">需要更新万象至 v${escapeHTML(version)} 或更高版本，才能启动新的业务。<button class="text-button" data-action="show-client-update">查看客户端更新</button></div>`;
+}
+function requiredClientUpdateView() {
+  const version = currentState.upgrades.client.requirement.minimumVersion;
+  const authenticated = currentState.account?.phase === "authenticated";
+  return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("需要更新万象")}<div class="page-content">
+    <div class="page-heading"><div><h2>需要更新万象</h2><p class="muted">请更新至 v${escapeHTML(version)} 或更高版本，再启动新的业务。</p></div></div>
+    <p>已打开的应用不会被强制关闭，请先保存正在进行的工作。下载完成后，由你确认重启安装。</p>
+    ${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
+    ${clientUpdateView()}
+    <p class="muted">${authenticated ? "若更新失败，可重新检查更新或查看诊断；也可联系管理员获取正式安装包。" : "请先登录万象平台账号，再检查和下载更新。"}</p>
+    <div class="settings-actions"><button class="button" data-action="show-settings">设置</button><button class="button" data-action="show-boxes">查看诊断</button><button class="button" data-action="${authenticated ? "logout" : "logout"}" ${busy ? "disabled" : ""}>${authenticated ? "切换登录账号" : "登录账号"}</button><button class="button" data-action="desktop-quit" ${busy ? "disabled" : ""}>退出万象</button></div>
+  </div></div>${confirmationView()}`;
 }
 
 function clientUpdateView() {
@@ -636,8 +658,8 @@ function scheduleBoxVersionRead() {
       if (!response.ok && response.code === "UPDATE_IN_PROGRESS") return;
       if (!response.ok) throw new Error(response.code);
       if (response.state) acceptRemoteState(response.state);
-    } catch {
-      if (key === boxVersionReadScope() && boxVersionReadRequest === request) boxVersionReadError = "版本读取失败，请检查连接后点击刷新版本重试。";
+    } catch (error) {
+      if (key === boxVersionReadScope() && boxVersionReadRequest === request) boxVersionReadError = `版本读取失败：${updateGuidance(error?.code || error?.message)}`;
     } finally {
       if (boxVersionReadRequest === request) { boxVersionReadRequest = null; render(currentState); }
     }
@@ -744,7 +766,7 @@ function settingsView() {
     <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small ${busyFor("auth.logout") ? "activity-button" : ""}" data-action="logout" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出当前账号"}</button></div></section>
     ${passwordEditing ? `<section class="password-panel"><h3>修改密码</h3><p class="muted">验证码将发送至当前账号${currentState.account?.maskedPhone ? `（${escapeHTML(currentState.account.maskedPhone)}）` : "绑定的手机号"}。修改后所有设备上的旧登录将失效，请重新登录。</p><form data-form="password-change" novalidate><label for="change-password">新密码</label><input id="change-password" name="password" type="password" required autocomplete="new-password" placeholder="设置 8–72 字节的新密码" />${passwordFields("change", "send-change-code", changeResendAt)}<div data-password-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div><div class="settings-actions"><button type="button" class="button" data-action="password-cancel" ${busy ? "disabled" : ""}>取消</button><button type="submit" class="button primary" ${busy ? "disabled" : ""}>${busy ? busyRequest?.action === "auth.change-password" ? "正在修改…" : "处理中…" : "确认修改"}</button></div></form></section>` : ""}
     <section class="settings-panel"><div><h3>登录电脑时启动</h3><p class="muted ${busyFor("desktop.startup.set") ? "activity-status" : ""}" role="status">${busyFor("desktop.startup.set") ? activityLabel("正在保存设置…") : escapeHTML(startup.reason || (startup.supported ? startup.status === "requires-approval" ? "请在系统设置中允许登录项。" : "在菜单栏静默启动，随时打开应用。" : "安装正式应用后可设置开机启动。"))}</p></div><button class="switch" role="switch" aria-checked="${Boolean(startup.enabled)}" aria-label="登录电脑时启动" aria-busy="${busyFor("desktop.startup.set")}" data-action="startup-toggle" ${busy || !startup.supported ? "disabled" : ""}><span></span></button></section>
-    <section class="settings-panel"><div><h3>AI 对话模型</h3><p class="muted">选择在 AI 对话中显示的模型，按盒子分别记忆。</p></div><button class="button small" data-action="show-dialogue-models">配置模型</button></section>
+
     <section class="settings-panel"><div><h3>关于万象</h3><p class="muted">万象团队版 · CentaurAI-WanX Studio</p></div><button class="button small" data-action="desktop-about">关于</button></section>
     <div class="settings-foot"><p class="muted">关闭窗口后继续后台运行。完全退出请在万象菜单中选择“退出万象”。</p></div>
   </div></div>${confirmationView()}`;
@@ -924,6 +946,7 @@ function marketErrorMessage(error) {
     MARKET_DOWNGRADE: "本机版本较新，不会自动降级。",
     MARKET_BUSY: "此应用正在处理中，请稍后再试。",
     MARKET_NOT_CONFIGURED: "应用市场尚未配置完成，请联系管理员。",
+    CLIENT_UPDATE_REQUIRED: "请先更新万象，再启动新的业务。已打开的应用可继续保存工作。",
     CLIENT_VERSION_INCOMPATIBLE: "请先在设置中更新万象，再安装或打开此应用。",
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
     APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会检查盒端准备状态。",
@@ -1004,6 +1027,7 @@ function candidateDetails(candidate) {
 }
 
 function applicationIcon(item) {
+  if(item.applicationId==="ai.wanx.studio")return '<img class="application-icon generated-app-icon" src="./assets/wanx-builder.svg" alt="" decoding="async"/>';
   const bundled = window.wanxAppCatalog?.[item.applicationId];
   if (bundled) return `<img class="application-icon generated-app-icon" src="./${bundled.icon}" alt="" decoding="async" />`;
   // Other apps retain the catalog-provided HTTPS or host-provided local icon.
@@ -1036,7 +1060,7 @@ function applicationActions(item, installed) {
     const opening = operationBusy(item.applicationId);
     return `<div class="application-actions"><button class="button primary small ${opening ? "activity-button" : ""}" data-action="applications-launch" data-application-id="ai.wanx.studio" aria-busy="${opening}" ${opening ? "disabled" : ""}>${opening ? activityLabel("正在打开…") : "打开开物"}</button></div>`;
   }
-  if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="application-actions"><button class="button primary small" data-action="show-ai-dialogue">打开AI对话</button></div>';
+  if (item.applicationId === "centaurai.wanx.dialogue") return '<div class="application-actions"><button class="button primary small" data-action="show-ai-dialogue">打开助理</button></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const id = escapeHTML(item.applicationId);
   const operation = operationFor(item.applicationId);
@@ -1053,7 +1077,7 @@ function applicationActions(item, installed) {
 }
 function applicationManagement(item, installed) {
   if(item.applicationId==="ai.wanx.studio"&&!installed)return '<div class="store-detail-body"><p>WanX Builder · 随团队客户端提供，首次打开时安装独立应用。沿用当前万象账号、盒子和管理员权限。</p></div>';
-  if(item.applicationId==="centaurai.wanx.dialogue")return '<div class="store-detail-body"><p>AI 对话已内置在团队客户端，所有成员均可使用自己的账号和对话历史。</p></div>';
+  if(item.applicationId==="centaurai.wanx.dialogue")return '<div class="store-detail-body"><p>助理已内置在团队客户端，所有成员均可使用自己的账号和对话历史。</p></div>';
   const candidate = marketCandidates.get(item.applicationId);
   const availability = item.editorialOnly && !candidate ? "暂未提供可安装版本" : candidateLabel(candidate);
   const id = escapeHTML(item.applicationId);
@@ -1153,7 +1177,7 @@ function applicationsView() {
   const preparingDefaults = delivery?.status === "preparing";
   const defaultsPending = delivery?.status === "pending";
   return `<div class="app-layout store-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("应用")}<div class="page-content store-page">
-    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar">${teamUIRole === "admin" ? `<button class="button primary" data-action="studio-workspace">＋ 创建应用</button>` : ""}<div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div>${applicationsTab === "wanx" ? `<button class="store-refresh ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" aria-busy="${marketLoading}" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在检查…") : "检查更新"}</button>` : ""}</div></div>
+    <div class="store-heading"><div><p class="store-eyebrow">为你的日常，打开更多可能</p><h2>应用</h2></div><div class="store-toolbar"><div class="connection-line"><span class="status-dot ${currentState.canLaunchApplications ? "ready" : ""}"></span><span>${currentState.canLaunchApplications ? `已连接 ${escapeHTML(activeDeviceName())}` : networkStatus().label}</span></div>${applicationsTab === "wanx" ? `<button class="store-refresh ${marketLoading ? "activity-button" : ""}" data-action="market-refresh" aria-busy="${marketLoading}" ${marketLoading ? "disabled" : ""}>${marketLoading ? activityLabel("正在检查…") : "检查更新"}</button>` : ""}</div></div>
     ${applicationsTab === "wanx" ? pendingOpenView() : ""}${notice ? `<div class="notice error" role="status">${escapeHTML(notice)}</div>` : ""}
     <div class="applications-tabs" role="tablist" aria-label="应用分类">${[["wanx","万象应用"],["company","公司应用"]].map(([key,label]) => `<button id="applications-tab-${key}" class="applications-tab" role="tab" aria-selected="${applicationsTab === key}" aria-controls="applications-panel-${key}" tabindex="${applicationsTab === key ? 0 : -1}" data-action="applications-tab" data-tab="${key}">${label}</button>`).join("")}</div>
     <div id="applications-panel-${applicationsTab}" role="tabpanel" aria-labelledby="applications-tab-${applicationsTab}">
@@ -1445,6 +1469,12 @@ function updateCreditsDOM(current, incoming) {
 }
 
 function render(state) {
+  const updateRequired = clientUpdateRequired(state);
+  // Let an existing file editor finish saving before replacing its DOM.
+  const retainingEditor = updateRequired && page === "space" && window.wanxSpace?.retainEditor?.();
+  if (updateRequired && !["client-update", "settings", "boxes", "profile"].includes(page) && !retainingEditor) page = "client-update";
+  else if (!updateRequired && page === "client-update") page = "applications";
+  if (updateRequired && marketConfirmation && !marketConfirmation.updateReleaseId) marketConfirmation = null;
   teamView.sync(state);teamUIRole=teamView.snapshot().identity?.permissions?.includes("applications.manage")?"admin":"user";
   if(state.account?.provider==="team-server" && page==="profile")page="applications";
   dataView.sync(state,teamUIRole === "admin");
@@ -1468,9 +1498,9 @@ function render(state) {
   scheduleBoxVersionRead();
   if (activeInteraction || window.wanxSpace?.isSelecting?.() || window.wanxSpace?.isDragging?.()) return;
   if (!auth && page === "space" && window.wanxSpace?.retainEditor?.()) return;
-  const markup = auth ? authView() : page === "provisioning" ? provisioningView()
-    : page === "ai-dialogue" ? `<div class="app-layout ai-dialogue-layout">${shellHeader("AI对话")}<div id="ai-dialogue-host"></div></div>`
-    : page === "dialogue-models" ? `<div class="app-layout">${shellHeader("AI 对话模型")}<div class="page-content dialogue-model-settings-page"><div id="dialogue-model-settings-host"></div></div></div>`
+  const markup = auth ? authView() : page === "client-update" ? requiredClientUpdateView() : page === "provisioning" ? provisioningView()
+    : page === "ai-dialogue" ? `<div class="app-layout ai-dialogue-layout">${shellHeader("万象·助理")}<div id="ai-dialogue-host"></div></div>`
+    : page === "dialogue-models" ? `<div class="app-layout">${shellHeader("助理模型")}<div class="page-content dialogue-model-settings-page"><div id="dialogue-model-settings-host"></div></div></div>`
     : page === "space" ? `<div class="app-layout space-app-layout">${shellHeader("空间")}<div class="page-content space-page-content space-files-page">${window.wanxSpace?.view() || ""}</div></div>`
     : page === "data" ? `<div class="app-layout">${shellHeader("数据星图")}<div class="page-content">${dataView.render()}</div></div>` : page === "team-management" ? `<div class="app-layout">${shellHeader("团队管理")}<div class="page-content store-page">${teamView.page()}</div></div>` : page === "construction" ? constructionView() : page === "notifications" ? notificationView() : page === "application-detail" ? applicationDetailView() : page === "profile" ? profileView() : page === "credits" && state.account?.provider==="team-server" ? `<div class="app-layout">${shellHeader("团队资源")}<section class="team-resources"><h2>团队资源</h2><p>当前使用团队服务器账号。模型和运行资源由管理员统一配置。</p><p class="muted">个人万象平台的购买记录保留在平台账号中。</p></section></div>` : page === "credits" ? `<div class="app-layout"><div ${creditsView.isOpen() ? "inert" : ""}>${shellHeader("积分")}</div>${creditsView.render()}</div>` : page === "boxes" ? boxesView() : page === "settings" ? settingsView() : applicationsView();
   if(studioInput.defer(markup))return;
@@ -1865,6 +1895,11 @@ app.addEventListener("click", async (event) => {
   if (!target) { if (profileMenuOpen) { profileMenuOpen = false; render(currentState); } return; }
   if (target.disabled) return;
   const action = target.dataset.action;
+  if (action === "show-client-update") { page = "client-update"; render(currentState); return; }
+  if (clientUpdateRequired() && ((action.startsWith("show-") && !["show-settings", "show-boxes", "show-maintenance", "show-box-version", "show-profile"].includes(action)) ||
+      ["applications-launch", "pending-confirm", "notifications-open", "market-install", "market-rollback", "store-details"].includes(action))) {
+    page = "client-update"; marketConfirmation = null; render(currentState); return;
+  }
   if (action === "notifications-filter") { notificationFilter = target.dataset.filter === "unread" ? "unread" : "all"; expandedNotificationId = null; render(currentState); return; }
   if (action === "notifications-select") { expandedNotificationId = expandedNotificationId === target.dataset.id ? null : target.dataset.id; await run("notifications.read", { id: target.dataset.id }); return; }
   if (action === "notifications-read-all") { expandedNotificationId = null; await run("notifications.read", { all: true }); return; }
@@ -1889,6 +1924,8 @@ app.addEventListener("click", async (event) => {
   }
   if(action==="show-data"){if(teamUIRole!=="admin")return;page="data";profileMenuOpen=false;render(currentState);void dataView.refresh();return}
   if(action==="show-construction"){page="construction";profileMenuOpen=false;render(currentState);return}
+  if(action==="construction-tab"){construction.showSection(target.dataset.tab);if(target.dataset.tab==='publishing')await teamView.action('publishing',{projectId:target.dataset.projectId});return}
+  if(action==="construction-refresh"){await Promise.all([studioHome.refresh(),teamView.refresh()]);return}
   if(action.startsWith("construction-")){await construction.action(action,target.dataset);return}
   if(action==="studio-workspace"){page="construction";render(currentState)}
   if (action === "applications-tab") {
@@ -2310,7 +2347,9 @@ async function submitConsoleClaim(scanned) {
 }
 
 app.addEventListener("input", event => {
+  if(event.target.dataset.publishingSearch!==undefined)teamView.searchPublication(event.target.value);
   if(event.target.dataset.constructionSearch!==undefined)studioHome.search(event.target.value);
+  if(event.target.dataset.studioProductField)studioHome.productField(event.target.dataset.studioProductField,event.target.value);
   if(event.target.dataset.intakeField)studioHome.field(event.target.dataset.intakeField,event.target.value);
   if(event.target.matches?.("[data-studio-name]"))studioHome.input(event.target.value);
   if (event.target.name === "goal" && event.target.closest?.('[data-form="studio-create"]')) studioHome.input(event.target.value);
@@ -2527,12 +2566,7 @@ async function loadWanxMcp(){
  catch{if(scope===wanxMcpScopeNow())wanxMcpError='暂时无法读取 MCP，请检查当前盒子连接后重试。'}
  finally{if(scope===wanxMcpScopeNow()){wanxMcpLoading=false;if(page==='settings')render(currentState)}}
 }
-function wanxMcpSettings(){
- const scope=wanxMcpScopeNow();
- if(wanxMcpScope!==scope){wanxMcpScope=scope;wanxMcpInfo=null;wanxMcpError='';wanxMcpNotice='';wanxMcpLoading=false;if(currentState.canLaunchApplications)queueMicrotask(()=>void loadWanxMcp())}
- const info=wanxMcpInfo;
- return `<section class="settings-panel wanx-mcp-settings" aria-label="空间 MCP 设置"><div class="wanx-mcp-title"><div><h3>空间 MCP</h3><p class="muted">独立的空间文件接入，仅开放空间 Key 获准的文件与目录。</p></div><button class="button small" data-action="wanx-mcp-refresh" ${wanxMcpLoading?'disabled':''}>刷新</button></div><div class="wanx-mcp-endpoint"><span>Streamable HTTP</span><code>${escapeHTML(info?.url||(wanxMcpLoading?'正在读取…':'连接盒子后提供地址'))}</code><button class="button small" data-action="wanx-mcp-copy-url" ${!info?'disabled':''}>复制地址</button><button class="button small" data-action="wanx-mcp-copy-config" ${!info?'disabled':''}>复制配置</button></div><p class="muted">Authorization: Bearer &lt;访问 Key&gt; · 本机接入，跟随当前账号与盒子。万象客户端需保持运行。</p><div class="wanx-mcp-resources"><div><strong>空间文件</strong><p>使用空间资源的授权 Key，仅操作获准文件与目录；沿用版本校验、到期和撤销规则。</p><button class="text-button" data-action="show-space">管理空间授权 →</button></div><div><strong>星图 MCP 独立接入</strong><p>星图的地址、配置和仓库 Key 在星图首页管理，与空间 MCP 分开。</p>${teamUIRole==='admin'?'<button class="text-button" data-action="show-data">前往星图 MCP →</button>':'<small>星图接入由团队管理员管理。</small>'}</div></div>${info?.keys?.length?`<div class="wanx-mcp-keys"><strong>现有空间授权 Key</strong>${info.keys.map(k=>`<div><span>${escapeHTML(k.name)} <code>${escapeHTML(k.prefix)}••••••</code><small>${escapeHTML(k.kind)} · ${escapeHTML(k.status)}</small></span><button class="button small" data-action="wanx-mcp-copy-space-key" data-id="${escapeHTML(k.id)}">复制 Key</button></div>`).join('')}</div>`:'<p class="muted">空间访问 Key 可从空间的资源授权中创建。</p>'}<p role="status" class="muted">${escapeHTML(wanxMcpError||wanxMcpNotice)}</p></section>`;
-}
+function wanxMcpSettings(){return `<section class="settings-panel" aria-label="空间 MCP"><div><h3>空间 MCP</h3><p class="muted">通用 MCP 的资料授权、记忆归档与接入管理统一在空间中完成。</p></div><button class="button small" data-action="show-space" data-agent-hub-open>管理连接 →</button></section>`;}
 app.addEventListener('click',async event=>{
  const button=event.target.closest('[data-action^="wanx-mcp-"]');if(!button||button.disabled)return;event.preventDefault();
  if(button.dataset.action==='wanx-mcp-refresh'){void loadWanxMcp();return}

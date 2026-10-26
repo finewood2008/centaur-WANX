@@ -1859,6 +1859,7 @@ class AgentManager:
                         name,
                     )
                     continue
+                agent.config.mcp_server_configs[name] = dict(spec)
                 if tools:
                     try:
                         agent.append_mcp_tools(tools)
@@ -1869,7 +1870,6 @@ class AgentManager:
                             name,
                         )
                         continue
-                agent.config.mcp_server_configs[name] = dict(spec)
 
         gateway_missing: list[str] = []
         if builtin_missing and uid is not None:
@@ -1955,8 +1955,8 @@ class AgentManager:
                         )
                         continue
                     if tools:
-                        agent.append_mcp_tools(tools)
                         agent.config.mcp_server_configs[name] = dict(spec)
+                        agent.append_mcp_tools(tools)
                     tool_set = getattr(agent, "_mcp_tool_name_set", frozenset())
 
         agent = self.get_agent(agent_id)
@@ -3568,6 +3568,8 @@ class AgentManager:
 
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
+        from octop.infra.agents.middleware.knowledge_tools import KnowledgeToolScopeMiddleware
+        from octop.infra.agents.middleware.model_billing import ModelBillingErrorMiddleware
         from octop.infra.agents.middleware.octop_ui_offload import OctopUiOffloadMiddleware
         from octop.infra.agents.middleware.private_storage import PrivateStorageBoundary
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
@@ -3593,6 +3595,10 @@ class AgentManager:
                 usage_repo=self._repos.usage_repo,
             ),
             ReasoningRequestMiddleware(),
+            ModelBillingErrorMiddleware(),
+            KnowledgeToolScopeMiddleware(
+                lambda: list(getattr(self.get_agent(row.agent_id), "_mcp_tools", []))
+            ),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),
             BinaryReadGuardMiddleware(),

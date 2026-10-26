@@ -1,7 +1,10 @@
 """Team authority uses real signatures and the same bounded session engine."""
 
+from urllib.parse import urlsplit
+
 import pytest
 from centuarai_local_data_gate.native_policy import check_octop_request
+from test_local_data_routes import observed
 from test_local_data_sessions import Harness, nonce
 
 from wanx_bridge import local_data_protocol as wire
@@ -68,6 +71,92 @@ async def test_team_v2_members_and_exact_native_policy():
     downgraded = {**claims, "schemaVersion": 1}
     with pytest.raises(wire.DataProtocolError):
         wire.sign_gateway_request(downgraded, h.gateway)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,target,action",
+    [
+        ("GET", "/api/app-studio/_client/projects/" + "a" * 32 + "/runtime-model", "read"),
+        ("PUT", "/api/app-studio/_client/projects/" + "a" * 32 + "/runtime-model", "write"),
+        (
+            "GET",
+            "/api/app-studio/projects/"
+            + "a" * 32
+            + "/versions/"
+            + "b" * 64
+            + "/restore-check?comparisonHash="
+            + "c" * 64,
+            "read",
+        ),
+    ],
+)
+async def test_studio_delivery_uses_signed_team_management_authority(method, target, action):
+    h = harness()
+    await h.start()
+    _, signed = await h.operation(method=method, rawTarget=target)
+    claims = wire.verify_gateway_request(signed, wire.public_jwk(h.gateway), h.clock.wall)
+    parsed = urlsplit(target)
+    scope = {
+        "type": "http",
+        "method": method,
+        "path": parsed.path,
+        "raw_path": parsed.path.encode(),
+        "query_string": parsed.query.encode(),
+    }
+    rule = check_octop_request(scope, claims)
+    assert rule["resourceId"] == "team:management" and rule["action"] == action
+    context = {
+        **h.view,
+        "applicationId": "ai.wanx.studio",
+        "principalNamespace": nonce(14),
+    }
+    assert route_policy(context, observed(target, method))["resourceId"] == "team:management"
+    context["team"] = {**context["team"], "permissions": []}
+    with pytest.raises(wire.DataProtocolError):
+        route_policy(context, observed(target, method))
+    claims["team"] = {**claims["team"], "permissions": []}
+    with pytest.raises(wire.DataProtocolError):
+        check_octop_request(scope, claims)
+
+
+@pytest.mark.parametrize(
+    "method,target",
+    [
+        ("POST", "/api/app-studio/_client/projects/" + "a" * 32 + "/runtime-model"),
+        ("GET", "/api/app-studio/_client/projects/not-a-project/runtime-model"),
+        (
+            "GET",
+            "/api/app-studio/_client/projects/"
+            + "a" * 32
+            + "/runtime-model?comparisonHash="
+            + "c" * 64,
+        ),
+        (
+            "GET",
+            "/api/app-studio/projects/"
+            + "a" * 32
+            + "/versions/"
+            + "b" * 64
+            + "/restore-check?comparisonHash=invalid",
+        ),
+        (
+            "GET",
+            "/api/app-studio/projects/"
+            + "a" * 32
+            + "/versions/"
+            + "b" * 64
+            + "/restore-check?comparisonHash="
+            + "c" * 64
+            + "&user_id=1",
+        ),
+    ],
+)
+def test_studio_delivery_routes_do_not_allow_other_methods_paths_or_queries(method, target):
+    h = harness()
+    context = {**h.view, "applicationId": "ai.wanx.studio", "principalNamespace": nonce(14)}
+    with pytest.raises(wire.DataProtocolError):
+        route_policy(context, observed(target, method))
 
 
 @pytest.mark.asyncio

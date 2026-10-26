@@ -1,3 +1,4 @@
+import {assistantAwareTeamDataService} from './assistant-team-data-addon.mjs';
 import {randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,readdir,readFile,writeFile,rm} from 'node:fs/promises';
 import path from 'node:path';
@@ -14,7 +15,7 @@ export function starlinkTarget(input={}){
      (input.warehouseId!=null&&!/^[a-f0-9-]{36}$/.test(input.warehouseId))||!VIEWS.has(input.view||'graph'))throw fail('TEAM_DATA_TARGET_INVALID');
   return {kind:'team-data',version:1,warehouseId:input.warehouseId||null,view:input.view||'graph'};
 }
-export function createTeamDataService({client,applications,selectFiles,starlinkPackageDir,writeClipboard,getMcpDetails,knowledgeCapabilities,emit=()=>{}}){
+function createBaseTeamDataService({client,applications,selectFiles,starlinkPackageDir,writeClipboard,getMcpDetails,knowledgeCapabilities,emit=()=>{}}){
   let service,serviceConnection,creating,scopeKey,link,share,disposed=false,scopeRevision=0,selectedWarehouse=null;
   const key=()=>{const s=client.snapshot();return s.phase==='ready'?JSON.stringify([s.dataIdentity?.profileId,s.dataIdentity?.generation,s.dataIdentity?.selected?.principalId,s.dataIdentity?.selected?.bindingId,s.connection?.deviceId]):null};
   const invalidate=()=>{scopeRevision++;const old=service;service=null;serviceConnection=null;creating=null;scopeKey=null;link=null;selectedWarehouse=null;old?.close();share?.clear();emit({type:'invalidated'})};
@@ -147,3 +148,5 @@ export function createTeamDataService({client,applications,selectFiles,starlinkP
     close(){disposed=true;stop();invalidate()}
   };
 }
+
+export const createTeamDataService=options=>assistantAwareTeamDataService(createBaseTeamDataService,options);

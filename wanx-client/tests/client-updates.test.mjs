@@ -57,6 +57,22 @@ test("signed release rejects tampering, unknown contracts, expiration and unsafe
   assert.throws(() => verifyRelease(release(), { keys: {}, product: "wanx-client", now }), { code: "UPDATE_UNTRUSTED_KEY" });
 });
 
+test("optional differential metadata is signed, bounded and cannot replace the full artifact", () => {
+  const blockMap = { url: "https://updates.example.test/wanx.zip.blockmap", sizeBytes: 200, sha256: "a".repeat(64) };
+  const envelope = release({ artifacts: [{ ...artifact, blockMap }] });
+  assert.deepEqual(verifyRelease(envelope, { keys, product: "wanx-client", now }).release.artifacts[0].blockMap, blockMap);
+  assert.equal(verifyRelease(release(), { keys, product: "wanx-client", now }).release.artifacts[0].blockMap, undefined);
+  for (const invalid of [null, {}, [], { ...blockMap, sizeBytes: 0 }, { ...blockMap, sizeBytes: 16 * 1024 * 1024 + 1 },
+    { ...blockMap, sha256: "bad" }, { ...blockMap, url: "http://updates.example.test/file.blockmap" },
+    { ...blockMap, url: "https://updates.example.test/file.zip" }, { ...blockMap, extra: true }])
+    assert.throws(() => verifyRelease(release({ artifacts: [{ ...artifact, blockMap: invalid }] }),
+      { keys, product: "wanx-client", now }), { code: "UPDATE_INVALID_ARTIFACT" });
+  envelope.payload.artifacts[0].blockMap.sha256 = "b".repeat(64);
+  assert.throws(() => verifyRelease(envelope, { keys, product: "wanx-client", now }), { code: "SIGNATURE_INVALID" });
+  assert.throws(() => verifyRelease(release({ artifacts: [{ ...artifact, blockMap, sha512: "" }] }),
+    { keys, product: "wanx-client", now }), { code: "UPDATE_INVALID_ARTIFACT" });
+});
+
 test("a controlled download requires a separate install confirmation; success requires new running identity", async () => {
   const h = await harness();
   assert.equal((await h.service.check()).phase, "available");
@@ -130,6 +146,11 @@ test("the signed provider fixes version and hash and downloaded file bytes are c
   const info = await provider.getLatestVersion();
   assert.equal(info.version, "1.1.0"); assert.equal(info.files[0].sha512, artifact.sha512);
   assert.equal(provider.resolveFiles(info)[0].url.href, artifact.url);
+  const mapped = new SignedReleaseProvider({ release: release({ artifacts: [{ ...artifact,
+    blockMap: { url: "https://updates.example.test/client.blockmap", sizeBytes: 200, sha256: "a".repeat(64) } }] }).payload,
+    downloadUrls: { "wanx-client.blockmap": "https://private.example.test/client.blockmap?token=limited" } });
+  assert.equal(mapped.blockMapURL.href, "https://private.example.test/client.blockmap?token=limited");
+  assert.equal(provider.blockMapURL, null);
   assert.throws(() => new SignedReleaseProvider({ release: release().payload, downloadUrls: { "wanx-client": "http://unsafe.test/wanx.zip" } }), { code: "UPDATE_INVALID_ARTIFACT" });
   const directory = await mkdtemp(path.join(os.tmpdir(), "wanx-update-")); t.after(() => rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, "client.zip"); await writeFile(file, bytes);
@@ -147,4 +168,112 @@ test("persistent state survives new store instances and corrupted state disables
   const h = await harness({ store: createUpdateStore(file) });
   assert.equal(h.service.snapshot().reason, "UPDATE_STATE_INVALID");
   await assert.rejects(h.service.check(), { code: "UPDATE_STATE_INVALID" });
+});
+
+test("mandatory releases block new work, persist across restart and never download or install automatically", async () => {
+  const h = await harness();
+  assert.doesNotThrow(() => h.service.assertUsable());
+  h.offer({ ...response(), mandatoryRelease: release({ forceUpdate: true }) });
+  const checked = await h.service.check();
+  assert.deepEqual(checked.requirement, { required: true, minimumVersion: "1.1.0", releaseId: "client-1.1.0" });
+  assert.throws(() => h.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  assert.equal(h.downloads(), 0); assert.equal(h.installs(), 0);
+  h.service.invalidate();
+  assert.throws(() => h.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  const restarted = await harness({ store: h.store });
+  assert.throws(() => restarted.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  await restarted.service.check(); // A legacy response must not silently undo a known requirement.
+  assert.throws(() => restarted.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  const upgraded = await harness({ store: h.store, current: { ...current, productVersion: "1.1.0", buildId: "build-2" } });
+  assert.equal(upgraded.service.snapshot().requirement, null);
+  assert.doesNotThrow(() => upgraded.service.assertUsable());
+});
+
+test("signed forceUpdate on a candidate is honored and still requires explicit installation", async () => {
+  const h = await harness(); h.offer(response(release({ forceUpdate: true })));
+  await h.service.check(); await h.service.download();
+  assert.throws(() => h.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  await assert.rejects(h.service.install({ confirmed: false }), { code: "UPDATE_CONFIRMATION_REQUIRED" });
+  assert.equal(h.installs(), 0);
+});
+
+test("optional newer releases retain the older mandatory floor until the server explicitly revokes it", async () => {
+  const h = await harness();
+  const mandatoryRelease = release({ forceUpdate: true });
+  const optional = release({ version: "1.2.0", releaseId: "client-1.2.0", metadataSequence: 3,
+    components: { "wanx-client": { version: "1.2.0", sha256: artifact.sha256 } } });
+  h.offer({ ...response(optional), mandatoryRelease });
+  assert.equal((await h.service.check()).requirement.minimumVersion, "1.1.0");
+  h.offer({ ...response(optional), mandatoryRelease: null });
+  assert.equal((await h.service.check()).requirement, null);
+  assert.equal(h.store.read().mandatoryRelease, null);
+  assert.doesNotThrow(() => h.service.assertUsable());
+});
+
+test("withdrawal can clear the mandatory policy even when there is no replacement candidate", async () => {
+  const h = await harness(); h.offer(response(release({ forceUpdate: true })));
+  await h.service.check();
+  h.offer({ status: "blocked", reasonCode: "RELEASE_WITHDRAWN", mandatoryRelease: null });
+  const checked = await h.service.check();
+  assert.equal(checked.phase, "blocked");
+  assert.equal(checked.requirement, null);
+  assert.doesNotThrow(() => h.service.assertUsable());
+});
+
+test("failed checks and invalid policies cannot clear a known mandatory requirement", async () => {
+  const h = await harness(); h.offer(response(release({ forceUpdate: true })));
+  await h.service.check();
+  for (const mandatoryRelease of [false, {}, release({ forceUpdate: false }),
+    release({ forceUpdate: true, channel: "beta" }), release({ forceUpdate: true, supportedOsVersions: ["other"] })]) {
+    h.offer({ ...response(release({ forceUpdate: true })), mandatoryRelease });
+    await assert.rejects(h.service.check());
+    assert.throws(() => h.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  }
+  h.offer({ status: "blocked", reasonCode: "RELEASE_UNAVAILABLE" });
+  await h.service.check();
+  assert.throws(() => h.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+});
+
+test("a downloaded release below a newly required version cannot install", async () => {
+  const h = await harness(); await h.service.check(); await h.service.download();
+  const mandatoryRelease = release({ forceUpdate: true, version: "1.2.0", releaseId: "client-1.2.0", metadataSequence: 3,
+    components: { "wanx-client": { version: "1.2.0", sha256: artifact.sha256 } } });
+  h.offer({ status: "blocked", reasonCode: "CLIENT_UPDATE_REQUIRED", mandatoryRelease });
+  await assert.rejects(h.service.install({ confirmed: true }), { code: "CLIENT_UPDATE_REQUIRED" });
+  assert.equal(h.installs(), 0);
+  assert.equal(h.maintenance(), false);
+  assert.equal(h.service.snapshot().requirement.minimumVersion, "1.2.0");
+});
+
+test("expired or out-of-scope cached policies and development builds do not lock work", async () => {
+  for (const override of [
+    { now: () => Date.parse("2026-12-01T00:00:00Z") },
+    { current: { ...current, channel: "other" } },
+    { current: { ...current, arch: "x64" } },
+    { current: { ...current, packaged: false } },
+  ]) {
+    const store = memoryStore({ schemaVersion: 1, sequences: {}, operation: null, mandatoryRelease: release({ forceUpdate: true }) });
+    const h = await harness({ store, ...override });
+    assert.equal(h.service.snapshot().requirement, null);
+    assert.doesNotThrow(() => h.service.assertUsable());
+  }
+});
+
+test("forceUpdate is a signed boolean, not a truthy policy value", () => {
+  for (const forceUpdate of ["true", "false", 0, 1, null, {}])
+    assert.throws(() => verifyRelease(release({ forceUpdate }), { keys, product: "wanx-client", now }), { code: "CONTRACT_UNSUPPORTED" });
+  const tampered = release({ forceUpdate: false }); tampered.payload.forceUpdate = true;
+  assert.throws(() => verifyRelease(tampered, { keys, product: "wanx-client", now }), { code: "SIGNATURE_INVALID" });
+});
+
+test("an offline session does not continue enforcing an expired signed requirement", async () => {
+  let time = now;
+  const h = await harness({ now: () => time }); h.offer(response(release({ forceUpdate: true })));
+  await h.service.check();
+  assert.throws(() => h.service.assertUsable(), { code: "CLIENT_UPDATE_REQUIRED" });
+  time = Date.parse("2026-12-01T00:00:00Z");
+  h.offer(null);
+  await assert.rejects(h.service.check());
+  assert.equal(h.service.snapshot().requirement, null);
+  assert.doesNotThrow(() => h.service.assertUsable());
 });
