@@ -258,7 +258,7 @@
         if (!attachmentsAvailable) { attachments = []; for (const cached of drafts.values()) cached.attachments = []; if (submitted) submitted.attachments = []; }
         if (!channelsAvailable) channelsPanel?.reset();
         const settings = result.settings || {}; savedModel = settings.model || null;
-        if(!threadId){spaceEnabled=false;spaceSelection=null;spaceLabel='';knowledgeEnabled=false;knowledgeWarehouses=[];}
+        if(!threadId)acceptSources(settings,result.validation_errors);
         organization = result.organization || {}; historyAvailable = result.historyManagementAvailable === true; timezone = result.timezone || 'UTC';
         if (!selected) selected = result.defaultModel;
         else if (!models.some(m => m.id === selected)) error = errors.MODEL_UNAVAILABLE;
@@ -308,10 +308,12 @@
     function acceptConversation(value) {
       if(!value)return;
       conversationId=value.id;conversationRevision=value.revision;versions=value.versions||[];
-      const ctx=value.context||{};
+      acceptSources(value.context||{},value.validation_errors);
+    }
+    function acceptSources(ctx,validationErrors) {
       spaceEnabled=spaceAvailable&&ctx.space?.enabled===true;spaceSelection=spaceEnabled ? ctx.space?.selection||null : null;spaceLabel=spaceEnabled ? ctx.space?.label||'' : '';
       knowledgeEnabled=knowledgeAvailable&&ctx.knowledge?.enabled===true;knowledgeWarehouses=knowledgeEnabled ? ctx.knowledge?.warehouses||[] : [];
-      if(value.validation_errors?.length) error=value.validation_errors.map(v=>(v.name||'资料')+'：'+errorText({code:v.code})).join('；');
+      if(validationErrors?.length) error=validationErrors.map(v=>(v.name||'资料')+'：'+errorText({code:v.code})).join('；');
     }
     function stashDraft() {if(conversationId)drafts.set(conversationId,{draft,attachments:attachments.slice(),reference});}
     async function refreshUsage() {
@@ -376,11 +378,12 @@
     async function newChat() {
       if (busy || uploading) return;
       recentRequested=false;
-
-      if (spaceEnabled || knowledgeEnabled) await call('release-context');
+      const gen=generation,turn=epoch;
+      const defaults=await call('release-context');
+      if(gen!==generation||turn!==epoch)return;
       stashDraft();epoch++; clearTimeout(refreshTimer); stopWatch(); threadId = null;conversationId=null;conversationRevision=0;versions=[];contextUsage=null;polishUndo=null;spaceEnabled=false;spaceSelection=null;spaceLabel='';knowledgeEnabled=false;knowledgeWarehouses=[]; legacy = null; legacyId = null; legacyAnswer = null;
       messages = []; sourceLinks.clear(); active = false; uncertain = false; pending = null; pendingPaint = ''; draft = ''; attachments = []; reference = ''; submitted = null; hasMore = false;
-      error = ''; notice = ''; if ($('[data-chat-input]')) { $('[data-chat-input]').value = ''; $('[data-chat-input]').style.height = ''; }
+      error = ''; notice = ''; acceptSources(defaults.context||{},defaults.validation_errors); if ($('[data-chat-input]')) { $('[data-chat-input]').value = ''; $('[data-chat-input]').style.height = ''; }
       if ($('[data-chat-artifacts]')) $('[data-chat-artifacts]').innerHTML = '';
       paint(); $('[data-chat-input]')?.focus();
     }

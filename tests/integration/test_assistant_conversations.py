@@ -351,3 +351,47 @@ async def test_new_im_turn_rotates_deleted_binding_but_preserves_archive(
         channel_type="weixin",
     )
     assert registry.get_bound_thread_id(sk) == new
+
+
+async def test_new_conversation_defaults_are_selection_only_and_scoped(
+    env_with_provider: Any,
+) -> None:
+    client, server, admin = env_with_provider
+    owner, _, tid = await setup(client, admin, "defaults-owner")
+    other, _, _ = await setup(client, admin, "defaults-other")
+    base = "/api/assistant/context/defaults?data_scope=team"
+    context = {
+        "space": {"enabled": True, "selection": {"mode": "all"}},
+        "knowledge": {"enabled": False},
+    }
+    assert (await client.get(base)).status_code == 401
+    result = await client.patch(base, headers=owner, json=context)
+    assert result.status_code == 200, result.text
+    assert (await client.get(base, headers=owner)).json()["context"]["space"]["enabled"]
+    assert not (await client.get(base, headers=other)).json()["context"]["space"]["enabled"]
+    assert not (await client.get(base.replace("team", "personal"), headers=owner)).json()[
+        "context"
+    ]["space"]["enabled"]
+    # Opening an existing conversation cannot change the remembered new-draft template.
+    existing = await client.get(f"/api/assistant/conversations/{tid}", headers=owner)
+    assert not existing.json()["context"]["space"]["enabled"]
+    await client.post(f"/api/assistant/conversations/{tid}/open", headers=owner)
+    assert (await client.get(base, headers=owner)).json()["context"]["space"]["selection"] == {
+        "mode": "all"
+    }
+    uid = await resolve_user_id(client, admin, "defaults-owner")
+    assert not list(SpaceGrantStore(server.paths.root, uid).directory.glob("*.json"))
+    invalid = {
+        **context,
+        "space": {
+            "enabled": True,
+            "selection": {"mode": "folder", "space_id": "personal", "folder_id": "../outside"},
+        },
+    }
+    invalid_result = await client.patch(base, headers=owner, json=invalid)
+    assert invalid_result.status_code == 200
+    assert invalid_result.json()["validation_errors"][0]["source"] == "space"
+    assert (await client.get(base, headers=owner)).json()["validation_errors"]
+    off = {"space": {"enabled": False}, "knowledge": {"enabled": False}}
+    assert (await client.patch(base, headers=owner, json=off)).status_code == 200
+    assert not (await client.get(base, headers=owner)).json()["context"]["space"]["enabled"]

@@ -2,6 +2,10 @@ export interface AssistantSourceContext {
   space: { enabled: boolean; selection?: {mode:'all'|'space'|'folder';space_id?:string;folder_id?:string}; label?:string };
   knowledge: { enabled:boolean; data_scope?:'personal'|'team'; warehouses:Array<{id:string;name?:string}> };
 }
+export interface AssistantSourceDefaults {
+  context:AssistantSourceContext;
+  validation_errors:Array<{source:string;id?:string;name?:string;code:string}>;
+}
 export interface AssistantConversation {
   id:string;
   active_thread_id:string;

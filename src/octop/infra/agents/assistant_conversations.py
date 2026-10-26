@@ -202,6 +202,24 @@ class AssistantConversations:
         state["context"], errors = await self.validate_context(user, state["context"], strict=False)
         return self.public(state, errors)
 
+    async def source_defaults(
+        self, user: Any, data_scope: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        key = "wanx_assistant_source_defaults_" + data_scope
+        repo = self.server.services.user_repo
+        if context is None:
+            row = repo.get(user.id)
+            preferences = json.loads(row.preferences_json or "{}")
+            context = preferences.get(key, empty_context())
+            if not isinstance(context, dict):
+                context = empty_context()
+            checked, errors = await self.validate_context(user, context, strict=False)
+        else:
+            context["knowledge"]["data_scope"] = data_scope
+            checked, errors = await self.validate_context(user, context, strict=False)
+            await asyncio.to_thread(repo.mutate_preference_json, user.id, key, lambda _: checked)
+        return {"context": checked, "validation_errors": errors}
+
     async def opened(self, user: Any, identity: str) -> dict[str, Any]:
         value = await self.get(user, identity)
         await asyncio.to_thread(

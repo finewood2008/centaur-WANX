@@ -33,7 +33,8 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     const context = {...(previous?.context || configuration), ...delta};delete context.model;
     const value = tid ? remember(await request(key, '/api/assistant/conversations/'+previous.id, {method:'PATCH',body:{revision:previous.revision,context}}))
       : {context:(await request(key,'/api/assistant/context/validate',{method:'POST',body:context})).context};
-    if(tid) fences.set(rootFor(tid), fence(tid)+1); else configuration=value.context;
+    if(!resolveDataContext?.(client.snapshot())) await optional(key, '/api/assistant/context/defaults?data_scope='+edition, null, {method:'PATCH',body:value.context});
+    if(tid) fences.set(rootFor(tid), fence(tid)+1); else configuration={...value.context,model:configuration.model};
     return value;
   }
   async function ensureSpace(key, tid, config) {
@@ -226,9 +227,13 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     catalog = (await request(key, '/api/providers/resolved')).map(publicModel);
     if (!catalog.some(m => m.id === ref)) throw fail('MODEL_UNAVAILABLE');
   }
-  async function optional(key, route, fallback) {
-    try { return await request(key, route); }
+  async function optional(key, route, fallback, options) {
+    try { return await request(key, route, options); }
     catch (error) { assertScope(key); if (error.status === 404) return fallback; throw error; }
+  }
+  async function sourceDefaults(key) {
+    if(resolveDataContext?.(client.snapshot())) return {context:emptyContext(),validation_errors:[]};
+    return optional(key,'/api/assistant/context/defaults?data_scope='+edition,{context:emptyContext()});
   }
   return {
     async action(method, input = {}) {
@@ -267,6 +272,8 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
           optional(key, '/api/assistant/history', { entries: {}, unavailable: true }),
           optional(key, '/api/settings/timezone', { timezone: 'UTC' }),
         ]);
+        const defaults=await sourceDefaults(key);
+        configuration={...defaults.context,model:configuration.model};
         assertScope(key); catalog = resolved.map(publicModel);
         for (const thread of recent.items) threads.add(thread.thread_id);
         const candidates = [configuration.model, prefs.preferred_model, profile.default_model, activeModel?.provider_name && `${activeModel.provider_name}/${activeModel.model}`];
@@ -278,7 +285,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
           organization: organization.entries, historyManagementAvailable: !organization.unavailable, timezone: timezone.timezone || 'UTC',
           capabilities: resolveDataContext?.(client.snapshot())
             ? { knowledge: false, space: false, channels: false, attachments: false }
-            : { knowledge: true, space: true, channels: true, attachments: true }, settings: configuration };
+            : { knowledge: true, space: true, channels: true, attachments: true }, settings: configuration, validation_errors:defaults.validation_errors };
       }
       if (method.startsWith('knowledge-')) {
         const base = '/api/assistant/knowledge';
@@ -299,7 +306,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         }
         throw fail('ASSISTANT_INVALID_INPUT');
       }
-      if (method === 'release-context') { configuration={...emptyContext(),model:configuration.model}; return {scope:key}; }
+      if (method === 'release-context') { const defaults=await sourceDefaults(key); configuration={...defaults.context,model:configuration.model}; return {scope:key,...defaults}; }
       if (method === 'usage') {
         const tid=identifier(input.threadId);if(!threads.has(tid))await history(key,tid);
         const chosen=catalog.find(m=>m.id===input.model), max=chosen?.contextWindow;
