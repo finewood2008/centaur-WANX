@@ -106,6 +106,7 @@ packages = ["src/octop", "wanx-studio/backend/wanx_studio"]
 [tool.hatch.build]
 include = [
     "wanx-studio/backend/wanx_studio/**/*.py",
+    "wanx-studio/backend/wanx_studio/**/*.json",
     "src/octop/**/*.py",
     "src/octop/**/*.json",
     "src/octop/**/*.md",
