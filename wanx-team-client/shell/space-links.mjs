@@ -1,5 +1,6 @@
 // Space MCP runs on the box; session-bound team knowledge keeps its local endpoint.
 import path from 'node:path';
+import {createSpaceShares} from './space-shares.mjs';
 import {createSpaceMcp} from './space-mcp.mjs';
 import {createLocalKnowledgeMcp} from './local-knowledge-mcp.mjs';
 import {dataInteractionKey,dataOwnerKey} from '../device-trust/data-context.mjs';
@@ -18,13 +19,15 @@ export async function createSpaceLinkBridge({client,store,serviceURL,onChanged=(
  let previous=interaction();const unsubscribe=client.subscribe(()=>{const next=interaction();if(next===previous)return;previous=next;generation++;for(const c of controllers)c.abort();});
  async function remote(bound,route,{method='GET',body,prefix='/api/personal-space'}={}){
   assertScope(bound);const epoch=generation,connection=await client.applicationConnection();const controller=new AbortController();controllers.add(controller);
-  try{assertScope(bound);const response=await connection.request({path:prefix+route,method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(120000)])});assertScope(bound);if(epoch!==generation)throw fail('SPACE_CONTEXT_CHANGED');let value;try{value=JSON.parse(Buffer.from(response.body||'').toString());}catch{}if(response.status<200||response.status>=300)throw fail(value?.detail?.code||value?.code||(response.status===404?'SPACE_LINK_UPGRADE_REQUIRED':'SPACE_REQUEST_FAILED'),response.status);return {value};}finally{controllers.delete(controller);connection.close?.();}
+  try{assertScope(bound);const response=await connection.request({path:prefix+route,method,headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(120000)])});assertScope(bound);if(epoch!==generation)throw fail('SPACE_CONTEXT_CHANGED');let value;try{value=JSON.parse(Buffer.from(response.body||'').toString());}catch{}if(response.status<200||response.status>=300)throw fail(value?.detail?.code||(typeof value?.detail==='string'?value.detail:null)||value?.code||(response.status===404?'SPACE_LINK_UPGRADE_REQUIRED':'SPACE_REQUEST_FAILED'),response.status);return {value};}finally{controllers.delete(controller);connection.close?.();}
  }
+ const shares=createSpaceShares({remote,scope,assertScope,client,copyText,onChanged});
  const mcp=createSpaceMcp({state,persist,scope,storageScope,assertScope,remote,client,copyText,team:agentHubOptions.team===true});
  const localKnowledge=knowledgeCapabilities?createLocalKnowledgeMcp({client,knowledgeCapabilities,scope,assertScope}):null;
  return {
   async manage(action,input={}){
    const bound=scope();assertScope(bound);
+   if(action.startsWith('share-'))return shares(action,input);
    if(action.startsWith('mcp-')){const v=await mcp.manage(action,input);assertScope(bound);if(['mcp-issue','mcp-revoke','mcp-manage','mcp-rotate'].includes(action))onChanged();return v;}
    if(action==='spaces'){const own=(await remote(bound,'/spaces')).value.filter(s=>s.id==='personal');assertScope(bound);const drives=client.snapshot().connection.authorization==='local-trust-v1'?[]:await mcp.manage('mcp-drives');assertScope(bound);return [...own,...drives].map(s=>({...s,connections:[]}));}
    if(action==='space-manage')return (await remote(bound,`/spaces/${id(input.id)}/manage`,{method:'POST',body:{action:input.action,name:input.name||''}})).value;

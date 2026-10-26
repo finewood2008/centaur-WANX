@@ -177,7 +177,7 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"])
+for (const method of ["share-create", "share-list", "share-detail", "share-copy", "share-revoke", "share-dismiss", "spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
 
 for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])
