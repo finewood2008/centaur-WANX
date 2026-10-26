@@ -103,6 +103,10 @@ octop = "octop.cli.main:cli"
 [tool.hatch.build.targets.wheel]
 packages = ["src/octop", "wanx-studio/backend/wanx_studio"]
 
+[tool.hatch.build.hooks.custom]
+path = "wanx-studio/backend/wanx_studio/_build.py"
+foundation-policy = "wanx-studio/core/wanx-foundation.json"
+
 [tool.hatch.build]
 include = [
     "wanx-studio/backend/wanx_studio/**/*.py",
