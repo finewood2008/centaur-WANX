@@ -425,7 +425,7 @@ test("completed history disappears while the app heading entry and dedicated ass
   assert.match(apps, /class="apps-link" data-page="applications"/);
   const footer = h.html.match(/<footer[\s\S]*?<\/footer>/)?.[0];
   assert.match(footer, /class="space-entry" data-assistant-open/);
-  assert.match(footer, /打开迷你助理/);
+  assert.match(footer, /打开迷你对话/);
   assert.match(footer, /随时问，接着做/);
   assert.match(footer, /class="note-entry" data-action="clipboard-toggle"/);
   assert.match(footer, /打开便签/);

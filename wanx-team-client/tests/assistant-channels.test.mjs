@@ -4,11 +4,21 @@ import {createAssistantChannels} from '../shell/assistant-channels.mjs';
 import {createAIDialogue} from '../shell/assistant-service.mjs';
 
 function fixture(){
-  let scope='owner-box', next=1; const rows=new Map(),routes=[],overrides=new Map(),cleanups=[];
+  let scope='owner-box', next=1; const bindings=new Map(), rows=new Map(),routes=[],overrides=new Map(),cleanups=[];
   const base='/api/agents/private-default/channels';
   const publicRow=row=>({...row,config:undefined,runtime:{connected:row.enabled}});
   const request=async(key,route,options={})=>{
     assert.equal(key,scope,'stale account/box request');routes.push({route,...options});
+    if(route==='/api/loops/channel-bindings'){
+      if(options.method==='POST'){const binding={binding_id:'binding-'+next++,agent_id:options.body.agent_id,channel_id:options.body.channel_id,status:'awaiting_message',expires_at:Math.floor(Date.now()/1000)+300,code:'ABCD2345'};bindings.set(binding.binding_id,binding);return binding;}
+      return [...bindings.values()];
+    }
+    if(route.startsWith('/api/loops/channel-bindings/')){
+      const bid=route.split('/')[4],b=bindings.get(bid);assert(b);
+      if(route.endsWith('/confirm')){assert.equal(b.status,'awaiting_confirmation');b.status='active';}
+      if(options.method==='DELETE')b.status='revoked';
+      return b;
+    }
     if(overrides.has(route))return overrides.get(route)(options);
     const channelId=route.slice(base.length+1), row=rows.get(channelId);
     if(route===base){
@@ -21,7 +31,7 @@ function fixture(){
     return structuredClone(row);
   };
   const service=createAssistantChannels({request,base:()=>base,assertScope:key=>assert.equal(key,scope),cleanup:async(key,route)=>cleanups.push({key,route})});
-  return {service,rows,routes,cleanups,base,act:(method,input={})=>service.action('channels-'+method,input,scope),override:(path,value)=>overrides.set(base+path,typeof value==='function'?value:()=>structuredClone(value)),changeScope(){service.reset();scope='other-owner-box';}};
+  return {service,rows,bindings,routes,cleanups,base,act:(method,input={})=>service.action('channels-'+method,input,scope),override:(path,value)=>overrides.set(base+path,typeof value==='function'?value:()=>structuredClone(value)),changeScope(){service.reset();scope='other-owner-box';}};
 }
 
 test('manual channel credentials are merged in main and never returned to the renderer',async()=>{
@@ -96,4 +106,28 @@ test('trusted dialogue service derives agent and preserves native channel permis
   await assert.rejects(service.action('load'),e=>e.code==='FORBIDDEN');
   await assert.rejects(service.action('channels-list',{scope:'forged',agent_id:'other'}),e=>e.code==='DIALOGUE_CONTEXT_CHANGED');
   assert.deepEqual(routes,['/api/assistant/profile']);service.close();
+});
+
+test('channel verification requires a received private message and explicit confirmation; ids stay in main',async()=>{
+ const f=fixture();const {channel}=await f.act('save',{kind:'wecom',name:'Synthetic',values:{bot_id:'fixture',secret:'private'}});
+ const started=await f.act('verify-start',{id:channel.id});assert.equal(started.verification.code,undefined);assert(!JSON.stringify(started).includes('ABCD2345'));
+ assert.equal(started.verification.status,'awaiting_message');assert(!JSON.stringify(started).includes('binding-'));
+ await assert.rejects(f.act('verify-confirm',{id:channel.id}),{code:'ASSISTANT_CHANNEL_VERIFICATION_CHANGED'});
+ const b=[...f.bindings.values()][0];b.status='awaiting_confirmation';b.display_name='Synthetic owner';b.message_preview='Synthetic pairing';
+ const received=await f.act('verification',{id:channel.id});assert.equal(received.verification.name,'Synthetic owner');assert.equal(b.status,'awaiting_confirmation');
+ assert.equal((await f.act('verify-confirm',{id:channel.id})).verification.status,'active');
+ f.bindings.set('duplicate',{...b,binding_id:'duplicate'});
+ await f.act('verify-revoke',{id:channel.id});assert([...f.bindings.values()].every(b=>b.status==='revoked'));
+});
+
+test('verification never confirms another expert or channel and expires old challenges',async()=>{
+ const f=fixture();const {channel}=await f.act('save',{kind:'dingtalk',name:'Synthetic',values:{client_id:'fixture',client_secret:'private'}});
+ f.bindings.set('foreign',{binding_id:'foreign',agent_id:'foreign-expert',channel_id:channel.id,status:'awaiting_confirmation'});
+ await assert.rejects(f.act('verify-confirm',{id:channel.id}),{code:'ASSISTANT_CHANNEL_VERIFICATION_CHANGED'});
+ const first=await f.act('verify-start',{id:channel.id});const own=[...f.bindings.values()].find(b=>b.agent_id==='private-default');own.expires_at=0;
+ assert.equal((await f.act('verification',{id:channel.id})).verification.status,'expired');
+ const second=await f.act('verify-start',{id:channel.id});assert.equal(second.verification.status,'awaiting_message');assert.equal(own.status,'revoked');
+ assert.equal(f.bindings.get('foreign').status,'awaiting_confirmation');
+ await assert.rejects(f.act('verify-start',{id:'../foreign'}));
+ f.changeScope();assert.notEqual(first.verification.status,'active');
 });

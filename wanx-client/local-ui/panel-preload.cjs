@@ -65,7 +65,7 @@ contextBridge.exposeInMainWorld('wanxClient',{
   },
 });
 
-const assistantMethods=new Set(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff"]);
+const assistantMethods=new Set(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff","history-list"]);
 contextBridge.exposeInMainWorld('wanxPanelAssistant',{
  async request(action,input={}){
   const method=action.replace(/^dialogue\./,'');

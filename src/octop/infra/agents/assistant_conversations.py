@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -211,6 +212,123 @@ class AssistantConversations:
         )
         return value
 
+    async def recover_channel(self, user: Any, source: Any, entry: dict[str, Any]) -> bool:
+        """Recover only post-deletion turns, preserving the trashed source verbatim."""
+        from langchain_core.messages import message_to_dict
+
+        from octop.infra.agents.assistant_history import PREFERENCE_KEY
+        from octop.infra.agents.threads.fork import _message_text, _msg_id
+        from octop.infra.history.projection import checkpoint_ts_ms, message_inputs
+
+        deleted = int(entry.get("deleted_at", 0))
+        if (
+            source.channel_type in {"dashboard", "cli"}
+            or not deleted
+            or source.last_active <= deleted
+        ):
+            return False
+        cutoff = int(entry.get("deleted_at_ms") or (deleted + 1) * 1000 - 1)
+        registry = self.server.app_runtime.gateway.thread_registry
+        if entry.get("channel_successor") and registry.get_thread(entry["channel_successor"]):
+            return False
+        async with self.locks.setdefault(source.thread_id, asyncio.Lock()):
+            state = self.state(user, source.thread_id)
+            checker = getattr(self.server.app_runtime.agent_registry, "is_agent_active", None)
+            if self.busy(user, state) or callable(checker) and checker(source.agent_id) is True:
+                return False
+            original = await self.messages(source.agent_id, source.thread_id)
+            start = next(
+                (
+                    i
+                    for i, m in enumerate(original)
+                    if getattr(m, "type", "") == "human" and (checkpoint_ts_ms(m) or 0) > cutoff
+                ),
+                None,
+            )
+            if start is None:
+                return False
+            tail = original[start:]
+            digest = hashlib.sha256(
+                f"{user.id}:{source.agent_id}:{source.thread_id}:{cutoff}".encode()
+            ).hexdigest()[:32]
+            tid = "channel-recovered-" + digest
+            existing = registry.get_thread(tid)
+            if existing and (existing.agent_id, existing.user_id) != (source.agent_id, user.id):
+                raise ConversationError("ASSISTANT_CONVERSATION_CONFLICT")
+            created = existing is None
+            if created:
+                registry.create_thread(
+                    agent_id=source.agent_id,
+                    user_id=user.id,
+                    channel_type=source.channel_type,
+                    session_key=source.session_key,
+                    thread_id=tid,
+                    title=_message_text(tail[0])[:100],
+                    last_active=source.last_active,
+                )
+            archive = getattr(self.server.app_runtime, "history_archive", None)
+            committed = False
+            try:
+                copied = await self.messages(source.agent_id, tid) if not created else []
+                if not copied:
+                    await write_checkpoint_messages(
+                        self.server.app_runtime.agent_registry.get_agent(source.agent_id),
+                        thread_id=tid,
+                        messages=tail,
+                    )
+                    turn = (
+                        archive.begin(source.agent_id, tid)
+                        if isinstance(archive, HistoryArchive)
+                        else None
+                    )
+                    if turn is not None and isinstance(archive, HistoryArchive):
+                        await asyncio.to_thread(
+                            archive.save_messages, turn, [message_to_dict(m) for m in tail]
+                        )
+                        await asyncio.to_thread(archive.finish, turn["id"], "complete")
+                    else:
+                        self.server.services.thread_message_repo.append_if_ready(
+                            tid, message_inputs(tail)
+                        )
+                elif [_msg_id(m) for m in copied] != [_msg_id(m) for m in tail]:
+                    raise ConversationError("ASSISTANT_CONVERSATION_CONFLICT")
+                current = await self.messages(source.agent_id, source.thread_id)
+                if (
+                    [_msg_id(m) for m in current] != [_msg_id(m) for m in original]
+                    or self.busy(user, state)
+                    or callable(checker)
+                    and checker(source.agent_id) is True
+                ):
+                    raise ConversationError("ASSISTANT_TURN_ACTIVE")
+                key = f"thread:{source.agent_id}:{source.thread_id}"
+
+                def mark(raw: Any) -> dict[str, Any]:
+                    value = dict(raw or {})
+                    entries = dict(value.get("entries", {}))
+                    meta = dict(entries.get(key, {}))
+                    if meta.get("status") != "trash" or meta.get("deleted_at") != deleted:
+                        raise ConversationError("ASSISTANT_CONVERSATION_CONFLICT")
+                    meta["channel_successor"] = tid
+                    entries[key] = meta
+                    value["entries"] = entries
+                    value["revision"] = int(value.get("revision", 0)) + 1
+                    return value
+
+                self.server.services.user_repo.mutate_preference_json(user.id, PREFERENCE_KEY, mark)
+                committed = True
+                registry.update_composer(tid, model_ref=source.model_ref)
+                for session in registry.im_sessions_for_thread(source.thread_id):
+                    if registry.get_bound_thread_id(session.session_key) == source.thread_id:
+                        await registry.rebind(
+                            session_key=session.session_key, thread_id=tid, agent_id=source.agent_id
+                        )
+                return True
+            finally:
+                if created and not committed:
+                    if isinstance(archive, HistoryArchive):
+                        await asyncio.to_thread(archive.remove_thread, tid)
+                    registry.delete_thread(tid)
+
     async def listing(self, user: Any) -> dict[str, Any]:
         profile = await asyncio.to_thread(AssistantProfiles(self.server)._existing, user.id)
         if user.application_id != "wanx" or profile is None:
@@ -221,6 +339,22 @@ class AssistantConversations:
             user_id=user.id,
             limit=10000,
         )
+        account = self.server.services.user_repo.get(user.id)
+        preferences = json.loads(account.preferences_json or "{}") if account else {}
+        metadata = preferences.get("wanx_assistant_history_v1", {}).get("entries", {})
+        recovered = False
+        for row in rows:
+            entry = metadata.get(f"thread:{profile.agent_id}:{row.thread_id}", {})
+            if entry.get("status") == "trash":
+                try:
+                    recovered = await self.recover_channel(user, row, entry) or recovered
+                except ConversationError as exc:
+                    if exc.code not in {"ASSISTANT_TURN_ACTIVE", "ASSISTANT_CONVERSATION_CONFLICT"}:
+                        raise
+        if recovered:
+            rows = self.server.app_runtime.gateway.thread_registry.list_threads(
+                agent_id=profile.agent_id, user_id=user.id, limit=10000
+            )
         groups: dict[str, list[Any]] = {}
         for row in rows:
             groups.setdefault(self.repo.root(row.thread_id), []).append(row)
@@ -233,6 +367,7 @@ class AssistantConversations:
             items.append(
                 {
                     "thread_id": cid,
+                    "channel_type": original.channel_type,
                     "active_thread_id": state["active_thread_id"] if state else cid,
                     "title": original.title,
                     "last_active": max(r.last_active for r in versions),

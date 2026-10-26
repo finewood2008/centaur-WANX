@@ -121,7 +121,7 @@ async def assistant_context_validate(
 @router.get(
     "/assistant/conversations",
     summary="List logical assistant conversations",
-    description="Owner and box scoped. Internal answer-version threads are grouped under the original conversation.",
+    description="Owner and box scoped. Includes native channel conversations and their channel_type without copying history. Internal answer-version threads are grouped under the original conversation.",
 )
 async def assistant_conversations_list(
     request: Request, user: Any = Depends(current_user), server: Any = Depends(get_server)

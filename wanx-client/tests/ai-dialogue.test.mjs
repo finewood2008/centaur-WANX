@@ -233,3 +233,30 @@ test('usage forwarding includes counts and call identity but no arbitrary event 
  const frame=f.events.at(-1).event;
  assert.equal(frame.call_id,'call-1');assert.deepEqual(frame.usage,{input_tokens:100,output_tokens:10});assert(!JSON.stringify(frame).includes('private'));f.service.close();
 });
+
+test('restored dialogue sends with the selected model and has no task dispatch',async()=>{
+ const f=fixture(), {scope}=await f.service.action('load',{});
+ await f.service.action('send',{scope,model:'fixture/two',prompt:'Synthetic restored chat'});
+ assert.equal(f.sockets.at(-1).sent.find(r=>r.type==='user_turn').model,'fixture/two');
+ await assert.rejects(f.service.action('tasks-create',{scope}),{code:'ASSISTANT_INVALID_INPUT'});
+ assert(!f.routes.some(r=>r.path.startsWith('/api/assistant/tasks')));
+ f.service.close();
+});
+
+test('background history listing includes native channel source without changing conversation or configuration',async()=>{
+ const f=fixture(),{scope}=await f.service.action('load');
+ f.respond('/api/assistant/conversations',async()=>({status:200,body:Buffer.from(JSON.stringify({items:[{thread_id:'channel-thread',title:'Synthetic channel',channel_type:'wecom'}]}))}));
+ const list=await f.service.action('history-list',{scope});
+ assert.equal(list.sessions[0].channel_type,'wecom');
+ assert.equal(f.sockets.length,0);
+ assert(!f.routes.some(r=>r.method==='PATCH'));
+ f.switchBox();await assert.rejects(f.service.action('history-list',{scope}),{code:'DIALOGUE_CONTEXT_CHANGED'});f.service.close();
+});
+
+test('older boxes enrich original source from native threads without leaking routing metadata',async()=>{
+ const f=fixture();
+ f.respond('/api/agents/private-default/threads?limit=10000',async()=>({status:200,body:Buffer.from(JSON.stringify([{thread_id:'thread-1',channel_type:'weixin',session_key:'private-routing-subject',channel_id:'private-bot'}]))}));
+ const loaded=await f.service.action('load');assert.equal(loaded.sessions[0].channel_type,'weixin');assert(!JSON.stringify(loaded.sessions).includes('private-'));
+ f.respond('/api/assistant/conversations',async()=>({status:200,body:Buffer.from('{"items":[{"thread_id":"new-unresolved"}]}')}));
+ const rows=await f.service.action('history-list',{scope:loaded.scope});assert.equal(rows.sessions[0].channel_type,'unknown');f.service.close();
+});

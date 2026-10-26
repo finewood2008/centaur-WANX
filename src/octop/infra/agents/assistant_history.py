@@ -98,6 +98,7 @@ class AssistantHistory:
                         entry["previous_status"] = entry.get("status", "active")
                         entry["status"] = "trash"
                         entry["deleted_at"] = int(time.time())
+                        entry["deleted_at_ms"] = int(time.time() * 1000)
                     elif operation == "restore" and entry.get("status") == "trash":
                         entry["status"] = entry.pop("previous_status", "active")
                         entry.pop("deleted_at", None)
@@ -116,3 +117,44 @@ class AssistantHistory:
             return self._response(data, agent.agent_id)
 
         return await asyncio.to_thread(write)
+
+
+async def rotate_trashed_channel(
+    registry: Any,
+    user_repo: Any,
+    *,
+    agent_id: str,
+    user_id: int,
+    session_key: str,
+    channel_type: str,
+) -> None:
+    """A new IM turn must not disappear into a deleted assistant conversation."""
+    if channel_type in {"dashboard", "cli"}:
+        return
+    user = user_repo.get(user_id)
+    raw = getattr(user, "preferences_json", None)
+    try:
+        preferences = json.loads(raw) if isinstance(raw, str) and raw else {}
+    except ValueError:
+        return
+    if not isinstance(preferences, dict):
+        return
+    if preferences.get("wanx_assistant_agent_id") != agent_id:
+        return
+    tid = registry.get_bound_thread_id(session_key)
+    row = registry.get_thread(tid) if tid else None
+    if not row or row.agent_id != agent_id or row.user_id != user_id:
+        return
+    entry = (
+        preferences.get(PREFERENCE_KEY, {}).get("entries", {}).get(f"thread:{agent_id}:{tid}", {})
+    )
+    if entry.get("status") != "trash":
+        return
+    successor = registry.get_thread(entry.get("channel_successor", ""))
+    if successor and (successor.agent_id, successor.user_id) == (agent_id, user_id):
+        await registry.rebind(
+            session_key=session_key, thread_id=successor.thread_id, agent_id=agent_id
+        )
+    elif row.last_active <= int(entry.get("deleted_at", 0)):
+        # Post-deletion turns from older clients are recovered separately before rebinding.
+        await registry.reset_by_session_key(session_key)

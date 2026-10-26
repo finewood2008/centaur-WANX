@@ -166,6 +166,16 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     return Buffer.concat(chunks);
   }
   function nativePath() { if (!profile) throw fail('ASSISTANT_NOT_READY'); return `/api/agents/${identifier(profile.agent_id)}`; }
+  async function listing(key) {
+    const result=await request(key,'/api/assistant/conversations');
+    if(result.items.some(row=>!row.channel_type)){
+      // Older boxes already expose native channel metadata. Keep routing keys in main.
+      const native=await optional(key,`${nativePath()}/threads?limit=10000`,[]).catch(()=>{assertScope(key);return [];});
+      const origins=new Map(native.map(row=>[row.thread_id,row.channel_type]));
+      result.items=result.items.map(row=>({...row,channel_type:row.channel_type||origins.get(row.thread_id)||'unknown'}));
+    }
+    return result;
+  }
   async function history(key, tid, offset = 0) {
     identifier(tid);
     const value = await request(key, `${nativePath()}/threads/${tid}/history?limit=25&offset=${offset}`);
@@ -237,6 +247,12 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         if(cid)await conversation(key,cid);
         return {scope:key,conversationId:cid,draft:input.draft,reference:input.reference,attachments:files.map(f=>publicUpload(f.handle,uploads.get(f.handle).data,f.size||0)),model:input.model,context:{space:configuration.space,knowledge:configuration.knowledge}};
       }
+      if (method === 'history-list') {
+        const [recent, organization] = await Promise.all([listing(key),optional(key,'/api/assistant/history',{entries:{},unavailable:true})]);
+        assertScope(key);
+        for(const row of recent.items)threads.add(row.thread_id);
+        return {scope:key,sessions:recent.items,organization:organization.entries||{}};
+      }
       if (method === 'load') {
         const stored = preferenceStore ? await preferenceStore.load() || {} : preferenceMemory;
         assertScope(key);
@@ -246,7 +262,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         identifier(profile.agent_id);
         const [resolved, prefs, activeModel, recent, legacy, organization, timezone] = await Promise.all([
           request(key, '/api/providers/resolved'), request(key, '/api/preferences'),
-          optional(key, '/api/providers/active-model', {}), request(key, '/api/assistant/conversations'),
+          optional(key, '/api/providers/active-model', {}), listing(key),
           optional(key, '/api/dialogue/sessions?limit=10000', { sessions: [] }).catch(error => { assertScope(key); return { sessions: [], unavailable: true }; }),
           optional(key, '/api/assistant/history', { entries: {}, unavailable: true }),
           optional(key, '/api/settings/timezone', { timezone: 'UTC' }),

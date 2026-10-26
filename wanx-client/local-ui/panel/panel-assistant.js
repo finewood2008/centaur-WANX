@@ -6,7 +6,7 @@
   const home = document.getElementById('panel-content');
   const shell = document.createElement('section');
   shell.id = 'panel-assistant'; shell.hidden = true; shell.setAttribute('aria-label', '迷你助理');
-  shell.innerHTML = '<header class="mini-assistant-header"><button type="button" data-mini-back aria-label="返回我的应用">‹</button><strong>万象·助理</strong><nav><button type="button" data-mini-new aria-label="新对话" title="新对话">＋</button><button type="button" data-mini-expand aria-label="在主窗口打开助理" title="打开完整版">↗</button></nav></header><button type="button" class="mini-assistant-context" data-mini-expand hidden></button><div id="assistant-mini-host"></div><p class="mini-assistant-error" role="status"></p>';
+  shell.innerHTML = '<header class="mini-assistant-header"><button type="button" data-mini-back aria-label="返回我的应用">‹</button><strong>万象·对话</strong><nav><button type="button" data-mini-new aria-label="新对话" title="新对话">＋</button><button type="button" data-mini-expand aria-label="在主窗口打开对话" title="打开完整版">↗</button></nav></header><button type="button" class="mini-assistant-context" data-mini-expand hidden></button><div id="assistant-mini-host"></div><p class="mini-assistant-error" role="status"></p>';
   document.getElementById('panel').append(shell);
   const view = window.createAIDialogueView({
     compact: true,
