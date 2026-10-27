@@ -974,6 +974,7 @@ export function createAccount({
       )
         throw failure("ACCOUNT_INVALID_STORED_SESSION");
       record = { phone: active.phone, identity, session: active.session };
+      publish({ phase: "authenticating", reason: null });
       try {
         await refresh();
         assert(generation);

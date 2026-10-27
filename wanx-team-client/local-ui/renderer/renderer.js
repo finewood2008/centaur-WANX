@@ -102,6 +102,7 @@ const expandedDetails = new Set();
 let busy = false;
 let busyRequest = null;
 function busyFor(action) { return busyRequest?.action === action; }
+function authBusy() { return busy || currentState?.account?.phase === "authenticating"; }
 function activityLabel(label) { return `<span class="activity-spinner" aria-hidden="true"></span>${escapeHTML(label)}`; }
 let boxUpdatePollTimer;
 let boxUpdatePollKey = null;
@@ -492,7 +493,7 @@ function authView() {
           ${newPassword ? passwordFields("account", reset ? "send-reset-code" : "send-registration-code", reset ? resetResendAt : resendAt) : ""}
           ${!newPassword ? `<label class="remember-login"><input type="checkbox" name="remember" checked ${busy ? "disabled" : ""} />记住账号密码</label>` : ""}
           <div data-auth-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div>
-          <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? authBusyLabel() : authSubmitLabel()}</button>
+          <button class="button primary wide" type="submit" ${authBusy() ? "disabled" : ""}>${authBusy() ? authBusyLabel() : authSubmitLabel()}</button>
         </form>
         <button class="text-button auth-help" data-action="${reset ? "auth-login" : "auth-reset"}" ${busy ? "disabled" : ""}>${reset ? "返回登录" : "忘记密码？"}</button>
     <div class="team-auth-entry"><button class="text-button" data-action="device-trust-open">本地身份与设备批准</button><button class="text-button" data-team-action="join">接受团队邀请</button>${currentState.dataIdentity?.phase === "unlocked" ? '<button class="text-button" data-action="local-return">返回已批准的本地身份</button>' : ""}</div></section></div>`;
@@ -1393,7 +1394,7 @@ function authBusyLabel() {
     "auth.login": "正在登录…",
     "auth.register": "正在创建账号…",
     "auth.reset-password": "正在重置密码…",
-  }[busyRequest?.action] || "处理中…";
+  }[busyRequest?.action] || (currentState?.account?.phase === "authenticating" ? "正在恢复登录…" : "处理中…");
 }
 
 // State broadcasts must not detach the pressed control before Chromium emits click.
@@ -1590,8 +1591,8 @@ function render(state) {
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
-      submit.disabled = busy;
-      const pending = authForm ? busy && ["auth.login", "auth.register", "auth.reset-password"].includes(busyRequest?.action)
+      submit.disabled = authForm ? authBusy() : busy;
+      const pending = authForm ? currentState?.account?.phase === "authenticating" || busy && ["auth.login", "auth.register", "auth.reset-password"].includes(busyRequest?.action)
         : passwordForm ? busyFor("auth.change-password") : profileForm ? busyFor("profile.save") : false;
       submit.classList.toggle("activity-button", pending);
       submit.setAttribute("aria-busy", String(pending));
@@ -2418,6 +2419,7 @@ app.addEventListener("submit", async (event) => {
     return;
   }
   if (event.target.dataset.form !== "auth") return;
+  if (authBusy()) return;
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.target));
   authUsername = String(data.username || "").trim();

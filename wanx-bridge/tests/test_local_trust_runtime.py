@@ -153,6 +153,36 @@ def test_config_does_not_require_cloud_credentials(configured, monkeypatch):
     assert value.state_directory == configured.directory
 
 
+@pytest.mark.parametrize("first", ["_", "-"])
+async def test_random_boot_id_always_satisfies_authority_protocol(configured, monkeypatch, first):
+    from wanx_bridge import local_team_config, local_trust_operations_loader
+    from wanx_bridge import local_trust_runtime as runtime
+
+    random_value = first + "a" * 42
+    monkeypatch.setattr(
+        runtime, "secrets", SimpleNamespace(token_urlsafe=lambda size: random_value)
+    )
+    monkeypatch.setattr(local_team_config, "load_team_identity_policy", lambda: None)
+    monkeypatch.setattr(
+        local_trust_operations_loader, "create_operation_provider", lambda value: None
+    )
+    boots = []
+
+    def server(config, service, application):
+        async def serve_with_cleanup(cleanup):
+            try:
+                boots.append(service._authority._boot_id)
+            finally:
+                await cleanup.aclose()
+
+        return SimpleNamespace(serve_with_cleanup=serve_with_cleanup)
+
+    monkeypatch.setattr(runtime, "server_for", server)
+    await runtime._serve(LocalTrustConfig.load(configured.filename))
+    assert len(boots) == 1
+    assert boots[0].endswith(random_value)
+
+
 @pytest.mark.parametrize(
     "problem",
     [

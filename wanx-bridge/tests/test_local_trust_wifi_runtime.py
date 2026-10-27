@@ -131,6 +131,12 @@ async def test_protected_runtime_owns_wifi_and_drains_it_before_single_authority
             if failure == "https":
                 raise RuntimeError("fixture-https")
 
+        async def serve_with_cleanup(self, cleanup):
+            try:
+                await self.serve()
+            finally:
+                await cleanup.aclose()
+
     monkeypatch.setattr(runtime, "LocalTrustAuthority", lambda *args, **kwargs: authority)
     monkeypatch.setattr(runtime, "LocalTrustService", Service)
     monkeypatch.setattr(runtime, "data_application", data)
