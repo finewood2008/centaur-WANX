@@ -62,7 +62,7 @@ async function harness(initial = state(), installed = [application], options = {
   const calls = [], launches = [], dashboards = [];
   const accountListeners = new Set(), clientListeners = new Set();
   let uiState;
-  const snapshot = () => ({ ...rawState, applications: records, ui: uiState?.snapshot(), desktopStartup: { supported: false, enabled: false } });
+  const snapshot = () => ({ ...rawState, applications: records, ui: uiState?.snapshot(), desktopStartup: { supported: false, enabled: false }, ...(options.identitySecurity ? { identitySecurity: options.identitySecurity.snapshot() } : {}) });
   const publish = () => listeners.get("wanx-client:state")?.({}, snapshot());
   const notify = () => { for (const fn of accountListeners) fn(); for (const fn of clientListeners) fn(); };
   let markup = "", renderCount = 0;
@@ -175,6 +175,7 @@ async function harness(initial = state(), installed = [application], options = {
     accountProfile: options.accountProfile,
     support: options.support,
     aiDialogue: options.aiDialogue,
+    identitySecurity: options.identitySecurity,
     applications, uiState, getState: snapshot, publishState: publish,
     openDeviceTrust: async () => { calls.push(["device-trust-window", "overview"]); },
   });
@@ -194,7 +195,7 @@ async function harness(initial = state(), installed = [application], options = {
     ipcRenderer: {
       invoke: async (name, input) => {
         calls.push([name, input]);
-        if (name === "wanx-client:team" && options.teamIdentity) return input.operation === "identity" ? options.teamIdentity : [];
+        if (name === "wanx-client:team" && options.teamIdentity) return input.operation === "identity" ? typeof options.teamIdentity === "function" ? options.teamIdentity() : options.teamIdentity : [];
         if (name === "wanx:discovery:bluetooth-state") return { status: options.bluetoothStatus || "available" };
         if (name === "wanx:discovery:open-bluetooth-settings") return { ok: true };
         if (name.startsWith("wanx:setup:")) return { ok: true, value: await options.setupRequest?.(name, input) ?? { state: name === "wanx:setup:begin" ? "previewReady" : "idle" } };
@@ -2861,6 +2862,80 @@ test("catalog product pages have bundled icons, product posters and a safe back 
     assert.doesNotMatch(h.app.innerHTML, /data-application-detail=/);
   }
   assert.equal(h.launches.length, 0);
+});
+
+function securitySettings(active) {
+  let enabled = active;
+  return { snapshot: () => ({ enabled, active, restartRequired: enabled !== active }),
+    set: async input => { enabled = input.enabled; } };
+}
+
+test("identity security switch saves a pending change without hiding active approval controls", async () => {
+  const h = await harness(state(), [], { identitySecurity: securitySettings(true) });
+  await h.click("show-settings");
+  assert.match(h.app.innerHTML, /aria-checked="true" aria-label="本地身份安全"/);
+  await h.click("identity-security-toggle");
+  assert.match(h.app.innerHTML, /aria-checked="false" aria-label="本地身份安全"/);
+  assert.match(h.app.innerHTML, /重启后关闭/);
+  assert.match(h.app.innerHTML, /data-action="device-trust-open"/);
+  assert.equal(h.calls.find(([name]) => name === "wanx-client:identity-security-set")[1].enabled, false);
+});
+
+test("disabled identity security hides approval entry points and can be enabled for next restart", async () => {
+  const raw = { ...state(), devices: [], team: { identitySecurityEnabled: false } };
+  const h = await harness(raw, [], { identitySecurity: securitySettings(false) });
+  await h.click("profile-menu");
+  assert.doesNotMatch(h.app.innerHTML, /云账号与团队设备/);
+  await h.click("show-boxes");
+  assert.doesNotMatch(h.app.innerHTML, /尚无已批准的盒子|data-team-action="join"/);
+  await h.click("show-settings");
+  assert.match(h.app.innerHTML, /aria-checked="false" aria-label="本地身份安全"/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="device-trust-open"|data-team-action="join"/);
+  await h.click("identity-security-toggle");
+  assert.match(h.app.innerHTML, /重启后开启/);
+  assert.doesNotMatch(h.app.innerHTML, /data-action="device-trust-open"/);
+});
+
+test("locked local identity still exposes the restart-only security switch", async () => {
+  const h = await harness({ ...state(), dataIdentity: { profileId: "profile", phase: "locked" } }, [], { identitySecurity: securitySettings(true) });
+  assert.match(h.app.innerHTML, /解锁本地身份/);
+  assert.match(h.app.innerHTML, /data-action="identity-security-toggle"/);
+  await h.click("identity-security-toggle");
+  assert.match(h.app.innerHTML, /重启后关闭/);
+  assert.match(h.app.innerHTML, /解锁本地身份/);
+});
+
+test("team identity badge shows cloud login without claiming an unconnected box is being verified", async () => {
+  const h = await harness(state());
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>云账号已登录<\/span><small>连接盒子后确认团队身份<\/small>/);
+  assert.doesNotMatch(h.app.innerHTML, /核验盒子身份…/);
+  assert.equal(h.calls.filter(([name, input]) => name === "wanx-client:team" && input.operation === "identity").length, 0);
+});
+
+test("team identity badge ends its pending state when the connected box identity request fails", async () => {
+  let reject;
+  const pending = new Promise((resolve, fail) => { reject = fail; });
+  const h = await harness(state("ready", "ready", "box-102"), [], { teamIdentity: () => pending });
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>核验盒子身份…<\/span>/);
+  reject(new Error("TEAM_IDENTITY_INVALID"));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>盒子身份核验失败<\/span>/);
+  assert.doesNotMatch(h.app.innerHTML, /核验盒子身份…/);
+  h.update(state());
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>云账号已登录<\/span>/);
+});
+
+test("team identity badge uses the verified box name and role only while that box is connected", async () => {
+  let resolveIdentity;
+  const pending = new Promise(resolve => { resolveIdentity = resolve; });
+  const h = await harness(state("ready", "ready", "box-102"), [], { teamIdentity: () => pending });
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>核验盒子身份…<\/span>/);
+  resolveIdentity({ roleId: "owner", permissions: ["applications.manage"], displayName: "测试管理员" });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>测试管理员<\/span><small>管理员<\/small>/);
+  h.update(state());
+  assert.match(h.app.innerHTML, /class="team-role-badge"><span>云账号已登录<\/span>/);
+  assert.doesNotMatch(h.app.innerHTML, /<span>测试管理员<\/span>/);
 });
 
 test("administrator opens the bundled Builder from applications and sees 开物 in navigation; members cannot see it",async()=>{

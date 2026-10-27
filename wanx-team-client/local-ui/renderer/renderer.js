@@ -330,6 +330,16 @@ function deviceApprovalHint() {
   return "云账号关联不代表这台电脑已获准访问。成员请接受管理员邀请并等待设备批准；管理员请在已批准的管理设备上处理邀请与批准。";
 }
 
+function identitySecurityActive() {
+  return currentState.identitySecurity?.active ?? currentState.team?.identitySecurityEnabled ?? true;
+}
+
+function identitySecurityPanel() {
+  const security = currentState.identitySecurity;
+  if (!security) return "";
+  return `<section class="settings-panel identity-security-panel"><div><h3>本地身份安全</h3><p class="muted">开启后使用本地身份与设备批准；关闭后使用云账号和盒子原有访问权限。</p><p class="muted" role="status">${security.restartRequired ? `已保存，重启后${security.enabled ? "开启" : "关闭"}。当前仍${security.active ? "开启" : "关闭"}。` : `当前已${security.active ? "开启" : "关闭"}。更改后需完全退出并重新启动万象。`}</p><p class="muted">关闭不会删除本地身份，也不会解除盒端访问限制。</p></div><div class="settings-actions"><button class="switch" role="switch" aria-checked="${security.enabled}" aria-label="本地身份安全" data-action="identity-security-toggle" ${busy ? "disabled" : ""}><span></span></button>${security.restartRequired ? '<button class="button small" data-action="desktop-quit">退出万象</button>' : ""}</div></section>`;
+}
+
 function deviceCard(device) {
   const selected = currentState.activeDeviceId === device.deviceId;
   const connecting = (busyRequest?.action === "devices.connect" && busyRequest.deviceId === device.deviceId) ||
@@ -346,9 +356,9 @@ function deviceCard(device) {
     ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
     : selected
     ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>断开</button>`
-    : device.accessState === "device_approval_required"
+    : identitySecurityActive() && device.accessState === "device_approval_required"
     ? `<button class="button small" data-team-action="join" ${busy ? "disabled" : ""}>云账号与设备批准</button>`
-    : device.accessState === "locked"
+    : identitySecurityActive() && device.accessState === "locked"
     ? `<button class="button small" data-action="device-trust-open" ${busy ? "disabled" : ""}>解锁本地身份</button>`
     : available && (device.local || currentState.networkReady)
       ? `<button class="button small" data-action="connect" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>${currentState.activeDeviceId ? "切换并连接" : "连接"}</button>`
@@ -368,7 +378,7 @@ function networkStatus() {
     : { label: "本地身份", detail: currentState.dataIdentity.phase === "unlocked" ? "请选择已批准的盒子；尚无盒子时请接受团队邀请。" : "请在“本地身份与设备批准”中解锁身份。" };
   if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
   if (currentState.network?.enabled === false) return { label: "网络尚未就绪", detail: "请检查本机网络后点击“刷新设备”重试。" };
-  if (currentState.networkReady) return { label: "网络已连接", detail: currentState.team ? "网络已就绪；盒子的账号权限与本机设备批准状态请见下方。" : "可以连接盒子并使用应用。" };
+  if (currentState.networkReady) return { label: "网络已连接", detail: currentState.team && identitySecurityActive() ? "网络已就绪；盒子的账号权限与本机设备批准状态请见下方。" : "可以连接盒子并使用应用。" };
   if (currentState.platform?.reason === "NETWORK_REVOCATION_PENDING")
     return { label: "网络会话清理中", detail: "服务器正在清理旧连接，完成后将自动重连；传输会保留进度等待恢复。" };
   if (currentState.platform?.reason === "NETWORK_LEASE_EXPIRED")
@@ -387,15 +397,26 @@ function profileAvatar(large = false) {
   const avatar = typeof profile.avatarDataUrl === "string" && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(profile.avatarDataUrl) && profile.avatarDataUrl.length <= 512000 ? profile.avatarDataUrl : null;
   return `<span class="user-avatar ${large ? "large" : ""}">${avatar ? `<img src="${avatar}" alt="用户头像" />` : `<span aria-hidden="true">${escapeHTML(Array.from(profile.displayName || "万")[0])}</span>`}</span>`;
 }
+function teamIdentityStatus() {
+  const { identity, loading, error } = teamView.snapshot();
+  if (!currentState.canLaunchApplications) return {
+    label: currentState.account?.phase === "authenticated" ? "云账号已登录" : "尚未连接盒子",
+    detail: "连接盒子后确认团队身份",
+  };
+  if (identity) return { label: identity.displayName || "盒子身份已核验", detail: teamUIRole === "admin" ? "管理员" : "普通用户" };
+  if (loading) return { label: "核验盒子身份…", detail: "正在读取团队身份与权限" };
+  return { label: error ? "盒子身份核验失败" : "盒子身份待核验", detail: "请重新连接盒子后重试" };
+}
 function shellHeader(title) {
   const activePage = page === "provisioning" ? "boxes" : page === "application-detail" ? "applications" : page;
   const name = currentState.account?.profile?.displayName || "万象用户";
+  const teamIdentity = teamIdentityStatus();
   return `<header class="topbar">
     <button class="brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">团队版</span></strong><small>CentaurAI-WanX Studio</small></span></button>
     <h1 class="sr-only">${title}</h1>
     <nav class="main-nav" aria-label="管理导航">${[["applications", "应用"], ["ai-dialogue", "对话"], ["construction", "开物"], ["data", "星图"], ["space", "空间"], ["boxes", "盒子"]].filter(([destination]) => teamUIRole === "admin" || !["construction","data"].includes(destination)).map(([destination, label]) => `<button class="nav-item ${activePage === destination ? "active" : ""}" data-action="show-${destination}" ${activePage === destination ? 'aria-current="page"' : ""} ${page === "provisioning" ? "disabled" : ""}>${label}${["construction","data"].includes(destination) ? '<span class="feature-beta">Beta</span>' : ""}${destination === "credits" ? `<small class="nav-credit-balance">${currentState.account?.provider==="team-server"?"团队":creditsView.label()}</small>` : ""}</button>`).join("")}</nav>
-    <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><div class="team-role-badge"><span>${escapeHTML(teamView.snapshot().identity?.displayName || "核验盒子身份…")}</span><small>${teamView.snapshot().identity ? teamUIRole === "admin" ? "管理员" : "普通用户" : "权限由服务器核验"}</small></div><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
-    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}<button data-team-action="join">云账号与团队设备<span>›</span></button>${currentState.account?.phase !== "authenticated" ? '<button data-action="cloud-login">云端注册或登录<span>›</span></button>' : ""}${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>${clientUpdateRequired() && page !== "client-update" ? clientUpdateRequirementNotice() : ""}`;
+    <div class="header-personal"><button class="notification-trigger ${page === "notifications" ? "active" : ""}" data-action="show-notifications" aria-label="通知中心，${currentState.notifications?.unreadCount || 0} 条未读" title="通知中心" ${page === "provisioning" ? "disabled" : ""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 9v6h4l8 4V5L7 9H3Z" stroke-linejoin="round"/><path d="m7 15 1 5h3l-1-4M18 8c2 2 2 6 0 8" stroke-linecap="round" stroke-linejoin="round"/></svg>${currentState.notifications?.unreadCount > 0 ? `<span class="notification-badge" aria-hidden="true">${currentState.notifications.unreadCount > 99 ? "99+" : currentState.notifications.unreadCount}</span>` : ""}</button><div class="account-menu"><div class="team-role-badge"><span>${escapeHTML(teamIdentity.label)}</span><small>${escapeHTML(teamIdentity.detail)}</small></div><button class="avatar-trigger" data-action="profile-menu" aria-label="个人资料与设置" aria-expanded="${profileMenuOpen}" aria-controls="profile-menu" ${page === "provisioning" ? "disabled" : ""}>${profileAvatar()}<span aria-hidden="true">⌄</span></button>
+    ${profileMenuOpen ? `<div class="profile-menu" id="profile-menu"><div class="profile-menu-identity"><strong>${escapeHTML(name)}</strong><small>${escapeHTML(currentState.account?.maskedPhone || "万象账号")}</small></div>${currentState.account?.provider!=="team-server" ? `<button data-action="show-profile">个人资料<span>›</span></button>` : ""}${identitySecurityActive() ? '<button data-team-action="join">云账号与团队设备<span>›</span></button>' : ""}${currentState.account?.phase !== "authenticated" ? '<button data-action="cloud-login">云端注册或登录<span>›</span></button>' : ""}${teamUIRole === "admin" ? `<button data-action="team-discussion">团队管理<span>›</span></button>` : ""}<button data-action="show-credits">积分<span class="profile-credit-balance">${escapeHTML(creditsView.label())} ›</span></button><button data-action="show-settings">设置<span>›</span></button><div class="profile-menu-divider"></div><button data-action="logout" class="${busyFor("auth.logout") ? "activity-button" : ""}" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出登录"}</button></div>` : ""}</div></div></header>${clientUpdateRequired() && page !== "client-update" ? clientUpdateRequirementNotice() : ""}`;
 }
 function profileView() {
   const account = currentState.account || {}, profile = account.profile || {};
@@ -511,7 +532,7 @@ function authView() {
           <button class="button primary wide" type="submit" ${authBusy() ? "disabled" : ""}>${authBusy() ? authBusyLabel() : authSubmitLabel()}</button>
         </form>
         <button class="text-button auth-help" data-action="${reset ? "auth-login" : "auth-reset"}" ${busy ? "disabled" : ""}>${reset ? "返回登录" : "忘记密码？"}</button>`}
-    <div class="team-auth-entry">${unlocking ? "" : `<button class="text-button" data-action="device-trust-open">${currentState.dataIdentity?.profileId && currentState.dataIdentity.phase === "locked" ? "解锁本地身份" : "本地身份与设备批准"}</button>`}<button class="text-button" data-team-action="join">接受团队邀请</button>${currentState.dataIdentity?.phase === "unlocked" ? '<button class="text-button" data-action="local-return">返回已批准的本地身份</button>' : ""}</div></section></div>`;
+    ${identitySecurityActive() ? `<div class="team-auth-entry">${unlocking ? "" : `<button class="text-button" data-action="device-trust-open">${currentState.dataIdentity?.profileId && currentState.dataIdentity.phase === "locked" ? "解锁本地身份" : "本地身份与设备批准"}</button>`}<button class="text-button" data-team-action="join">接受团队邀请</button>${currentState.dataIdentity?.phase === "unlocked" ? '<button class="text-button" data-action="local-return">返回已批准的本地身份</button>' : ""}</div>` : ""}${identitySecurityPanel()}</section></div>`;
 }
 
 function updateBytes(value) {
@@ -776,7 +797,8 @@ function settingsView() {
   return `<div class="app-layout" ${marketConfirmation ? "inert" : ""}>${shellHeader("设置")}<div class="page-content">
     <div class="page-heading"><h2>设置</h2><p class="muted">让万象在需要时，安静地为你准备好。</p></div>
     ${notice && !passwordEditing ? `<div class="notice ${codeSent ? "success" : "error"}" role="status">${escapeHTML(notice)}</div>` : ""}
-    <section class="settings-panel"><div><h3>本地身份与设备批准</h3><p class="muted">团队成员统一使用云账号。访问盒子还需独立本地身份和已批准设备。</p></div><button class="button small" data-team-action="join">云身份与团队批准</button>${currentState.account?.phase !== "authenticated" ? '<button class="button small" data-action="cloud-login">云端注册或登录</button>' : ""}<button class="button small" data-action="device-trust-open">管理身份与设备</button></section>
+    ${identitySecurityPanel()}
+    ${identitySecurityActive() ? `<section class="settings-panel"><div><h3>本地身份与设备批准</h3><p class="muted">团队成员统一使用云账号。访问盒子还需独立本地身份和已批准设备。</p></div><button class="button small" data-team-action="join">云身份与团队批准</button>${currentState.account?.phase !== "authenticated" ? '<button class="button small" data-action="cloud-login">云端注册或登录</button>' : ""}<button class="button small" data-action="device-trust-open">管理身份与设备</button></section>` : ""}
     ${wanxMcpSettings()}
     ${versionUpdatesView()}
     <section class="settings-panel"><div><h3>账号</h3><p class="muted">已登录万象平台。退出账号会断开盒子，万象仍在后台运行。</p></div><div class="settings-actions"><button class="button small" data-action="password-open" ${busy ? "disabled" : ""}>修改密码</button><button class="button small ${busyFor("auth.logout") ? "activity-button" : ""}" data-action="logout" aria-busy="${busyFor("auth.logout")}" ${busy ? "disabled" : ""}>${busyFor("auth.logout") ? activityLabel("正在退出…") : "退出当前账号"}</button></div></section>
@@ -809,7 +831,7 @@ function boxesView() {
     ${boxVersionSummaryView()}
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
-    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : currentState.team || currentState.dataIdentity?.profileId ? `<div class="empty-state"><h3>尚无已批准的盒子</h3><p>${deviceApprovalHint()}</p><button class="button small" data-team-action="join">云账号与设备批准</button></div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
+    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : (currentState.team && identitySecurityActive()) || currentState.dataIdentity?.profileId ? `<div class="empty-state"><h3>尚无已批准的盒子</h3><p>${deviceApprovalHint()}</p><button class="button small" data-team-action="join">云账号与设备批准</button></div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
     ${ownershipView()}
     ${supportView.render()}
   </div></div>${confirmationView()}`;
@@ -1808,6 +1830,7 @@ function operationErrorMessage(error, fallback) {
       LOCAL_BOX_AUTH_FAILED: "本机万象登录失败，请检查本机盒子的登录配置。",
       LOCAL_BOX_AUTH_TIMEOUT: "本机万象暂未响应，请确认服务已启动后重试。",
       LOCAL_BOX_INVALID_REGISTRATION: "本机盒子的连接配置无效，请重新登记。",
+      IDENTITY_SECURITY_WRITE_FAILED: "身份安全设置未保存，请检查本地存储权限后重试。",
       NETWORK_NOT_READY: "网络尚未连接，请在设置中检查网络状态。",
       BOX_CONNECTION_REQUIRED: "请先在盒子空间中连接一台盒子。",
       NETWORK_CHANGED: "盒子连接已变化，请重新连接后打开应用。",
@@ -2081,6 +2104,7 @@ app.addEventListener("click", async (event) => {
   if (action === "desktop-about") { await run("desktop.about"); return; }
   if (action === "cloud-login") { cloudAuthOpen = true; render(currentState); return; }
   if (action === "local-return") { cloudAuthOpen = false; render(currentState); return; }
+  if (action === "identity-security-toggle") { await run("identity-security.set", { enabled: !currentState.identitySecurity.enabled }); return; }
   if (action === "device-trust-open") { await run("device-trust.open"); return; }
   if (busy && action !== "cancel-provisioning") return;
   if (action === "updates-client-check") { await run("updates.client.check"); return; }

@@ -6,7 +6,7 @@ import {createLocalKnowledgeMcp} from './local-knowledge-mcp.mjs';
 import {dataInteractionKey,dataOwnerKey} from '../device-trust/data-context.mjs';
 const fail=(code,status=409)=>Object.assign(Error(code),{code,status});
 const id=value=>{if(!/^[a-f0-9]{32}$/.test(value||''))throw fail('SPACE_INVALID_ID',400);return value;};
-export async function createSpaceLinkBridge({client,store,serviceURL,onChanged=()=>{},chooseStorageDirectory,copyText,agentHubOptions={},knowledgeCapabilities}){
+export async function createSpaceLinkBridge({client,store,serviceURL,onChanged=()=>{},chooseStorageDirectory,copyText,agentHubOptions={},knowledgeCapabilities,identitySecurityEnabled=true}){
  const state=(await store.load())||{version:1,spaceMcp:[]};
  let closed=false,generation=0,writes=Promise.resolve();const controllers=new Set();
  // Keep keys across one owner's session renewals, but bind every operation to
@@ -23,7 +23,7 @@ export async function createSpaceLinkBridge({client,store,serviceURL,onChanged=(
  }
  const shares=createSpaceShares({remote,scope,assertScope,client,copyText,onChanged});
  const mcp=createSpaceMcp({state,persist,scope,storageScope,assertScope,remote,client,copyText,team:agentHubOptions.team===true});
- const localKnowledge=knowledgeCapabilities?createLocalKnowledgeMcp({client,knowledgeCapabilities,scope,assertScope}):null;
+ const localKnowledge=knowledgeCapabilities||identitySecurityEnabled===false?createLocalKnowledgeMcp({client,knowledgeCapabilities,scope,assertScope,identitySecurityEnabled}):null;
  return {
   async manage(action,input={}){
    const bound=scope();assertScope(bound);
@@ -43,7 +43,7 @@ export async function createSpaceLinkBridge({client,store,serviceURL,onChanged=(
   },
   async mcpDetails(kind='space'){
    if(!['space','starlink'].includes(kind))throw fail('MCP_SURFACE_INVALID');const bound=scope();assertScope(bound);
-   if(kind==='starlink'&&client.snapshot().connection.authorization==='local-trust-v1'){if(!localKnowledge)throw fail('TEAM_DATA_CAPABILITY_UNAVAILABLE');return localKnowledge.details();}
+   if(kind==='starlink'&&(identitySecurityEnabled===false||client.snapshot().connection.authorization==='local-trust-v1')){if(!localKnowledge)throw fail('TEAM_DATA_CAPABILITY_UNAVAILABLE');return localKnowledge.details();}
    const u=new URL(client.snapshot().connection.url);u.pathname='/mcp/'+kind;u.search='';u.hash='';
    return {url:u.href,transport:'Streamable HTTP',authentication:'Authorization: Bearer <访问 Key>',configuration:{mcpServers:{[kind==='space'?'wanx-space':'wanx-starlink']:{url:u.href,headers:{Authorization:'Bearer <访问 Key>'}}}},serverHosted:true,localOnly:false};
   },

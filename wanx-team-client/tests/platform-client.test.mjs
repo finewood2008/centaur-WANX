@@ -1217,6 +1217,26 @@ test("team cloud directory cannot advertise a usable network peer as locally app
   assert.equal(h.sessions.length, 0, "cloud credentials must never bypass the local approval gate");
 });
 
+test("team with identity security disabled connects through platform authorization and obeys later revocation", async t => {
+  const h = harness(t);
+  const team = createTeamConnection({ base: h.client, identitySecurityEnabled: false });
+  await team.loginPassword({ phone: "account-a" });
+  assert.equal(team.snapshot().devices[0].canOpen, true);
+  assert.equal(team.snapshot().dataIdentity, undefined);
+  await team.connectBox(device.deviceId);
+  assert.equal(team.snapshot().phase, "ready");
+  assert.equal(team.snapshot().connection.mode, "netbird");
+  assert.equal(h.sessions.length, 1);
+  assert.equal(h.sessions[0].input.device.deviceId, device.deviceId);
+  h.override(input => input.path.startsWith("/app-api/network/boxes")
+    ? { boxes: [{ ...device, accessState: "access_denied" }] } : undefined);
+  await team.refreshDevices();
+  assert.equal(team.snapshot().devices[0].canOpen, false);
+  assert.equal(h.sessions[0].closed, true);
+  await assert.rejects(team.connectBox(device.deviceId), { code: "NETWORK_DEVICE_ACCESS_DENIED" });
+  assert.equal(h.sessions.length, 1);
+});
+
 test("registered development boxes also require team device approval before offering connect", async t => {
   const h = harness(t, { localDataAccess: localApproval(), enabled: false,
     localBoxes: { list: async () => [{ deviceId: "development-box", displayName: "开发盒子", local: true,

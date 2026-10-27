@@ -28,3 +28,24 @@ test('approved local binding gates business access and logout locks signing befo
   f.set({ dataIdentity: { phase: 'unlocked' }, connection: { authorization: 'legacy-jwt' } });
   await assert.rejects(f.client.applicationRequest({ path: '/api/auth/me' }), { code: 'TEAM_DEVICE_APPROVAL_REQUIRED' });
 });
+
+test('disabled identity security delegates only to the cloud connector and preserves its denial', async () => {
+  const calls = [];
+  let state = { account: { phase: 'authenticated' }, phase: 'disconnected' };
+  const base = { snapshot: () => state, subscribe: () => () => {},
+    connectBox: async id => { calls.push(id); if (id === 'denied') throw Object.assign(Error('NETWORK_DEVICE_ACCESS_DENIED'), { code: 'NETWORK_DEVICE_ACCESS_DENIED' });
+      state = { ...state, phase: 'ready', connection: { deviceId: id, mode: 'netbird' } }; },
+    connectLocalBox: () => assert.fail('local identity must not be used in cloud mode'),
+    applicationRequest: async input => input,
+  };
+  const client = createTeamConnection({ base, identitySecurityEnabled: false,
+    localDataAccess: { isProtectedBox: () => assert.fail('disabled feature must not consult the vault') } });
+  assert.equal(client.snapshot().team.identitySecurityEnabled, false);
+  await client.connectBox('cloud-box');
+  assert.deepEqual(await client.applicationRequest({ path: '/api/auth/me' }), { path: '/api/auth/me' });
+  await assert.rejects(client.connectBox('denied'), { code: 'NETWORK_DEVICE_ACCESS_DENIED' });
+  await assert.rejects(client.connectLocalBox('cloud-box'), { code: 'LOCAL_TRUST_DISABLED' });
+  state = { ...state, account: { phase: 'signed_out' } };
+  await assert.rejects(client.applicationRequest({ path: '/api/auth/me' }), { code: 'ACCOUNT_LOGIN_REQUIRED' });
+  assert.deepEqual(calls, ['cloud-box', 'denied']);
+});

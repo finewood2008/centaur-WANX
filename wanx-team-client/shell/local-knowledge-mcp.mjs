@@ -3,13 +3,20 @@ import http from 'node:http';
 const fail = (code, status = 403) => Object.assign(Error(code), { code, status });
 const endpoint = '/mcp/starlink';
 
-// Existing wmcp_ capabilities belong to this desktop session, not the box's
-// server MCP. Expose only their finite knowledge surface on loopback.
-export function createLocalKnowledgeMcp({ client, knowledgeCapabilities, scope, assertScope }) {
+// Keep the finite knowledge surface on loopback. Each mode still authenticates
+// through its current device session or cloud session and real warehouse Key.
+export function createLocalKnowledgeMcp({ client, knowledgeCapabilities, scope, assertScope, identitySecurityEnabled = true }) {
   const state = { port: 0, links: [] };
   let closed = false, starting, server, bridge;
   const assertLocal = bound => {
-    if (closed || !bound || client.snapshot().connection?.authorization !== 'local-trust-v1') throw fail('MCP_SESSION_CLOSED');
+    const current = client.snapshot();
+    if (closed || !bound) throw fail('MCP_SESSION_CLOSED');
+    if (identitySecurityEnabled === false) {
+      if (current.phase !== 'ready' || current.account?.phase !== 'authenticated' || current.dataIdentity
+        || current.connection?.authorization === 'local-trust-v1'
+        || ![current.account?.accountId, current.account?.clientId, current.connection?.deviceId]
+          .every(value => typeof value === 'string' && value.length > 0)) throw fail('MCP_SESSION_CLOSED');
+    } else if (current.connection?.authorization !== 'local-trust-v1') throw fail('MCP_SESSION_CLOSED');
     assertScope(bound);
   };
   const start = () => {
@@ -19,7 +26,7 @@ export function createLocalKnowledgeMcp({ client, knowledgeCapabilities, scope, 
       assertLocal(scope());
       const denied = () => { throw fail('MCP_SURFACE_INVALID'); };
       bridge = createWanxMcpBridge({ client, state, scope, assertScope: assertLocal,
-        knowledgeCapabilities, access: denied, remote: denied });
+        knowledgeCapabilities, identitySecurityEnabled, access: denied, remote: denied });
       server = http.createServer({ requestTimeout: 30000, headersTimeout: 10000, maxHeaderSize: 8192 }, (req, res) => {
         void (async () => {
           try {
@@ -52,7 +59,7 @@ export function createLocalKnowledgeMcp({ client, knowledgeCapabilities, scope, 
     },
     async close() {
       if (closed) return;
-      closed = true; knowledgeCapabilities.clear();
+      closed = true; knowledgeCapabilities?.clear();
       await starting?.catch(() => {});
       if (server?.listening) {
         server.closeAllConnections();

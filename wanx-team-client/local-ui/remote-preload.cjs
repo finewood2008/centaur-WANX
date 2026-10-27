@@ -246,6 +246,7 @@ const actions = {
   "applications.cancel-open": (input) => ipcRenderer.invoke("wanx-client:applications-cancel-open", input),
   "desktop.startup.get": () => ipcRenderer.invoke("wanx-client:desktop-startup-get"),
   "desktop.startup.set": (input) => ipcRenderer.invoke("wanx-client:desktop-startup-set", input),
+  "identity-security.set": input => ipcRenderer.invoke("wanx-client:identity-security-set", input),
   "desktop.about": () => ipcRenderer.invoke("wanx-client:desktop-about"),
   "desktop.quit": () => ipcRenderer.invoke("wanx-client:desktop-quit"),
   "applications.select-current": (input) => ipcRenderer.invoke("wanx-client:applications-select-current", input),
