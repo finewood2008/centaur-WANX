@@ -745,6 +745,17 @@ class GlobalProcessor:
                 yield MessageEvent.completed()
                 return
 
+        from octop.infra.agents.assistant_history import rotate_trashed_channel
+
+        await rotate_trashed_channel(
+            self._thread_registry,
+            self._user_repo,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_key=session_key,
+            channel_type=channel_type,
+        )
+
         thread_id = await self._thread_registry.get_or_create_by_key(
             session_key=session_key,
             agent_id=agent_id,

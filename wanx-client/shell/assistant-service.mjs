@@ -33,7 +33,8 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     const context = {...(previous?.context || configuration), ...delta};delete context.model;
     const value = tid ? remember(await request(key, '/api/assistant/conversations/'+previous.id, {method:'PATCH',body:{revision:previous.revision,context}}))
       : {context:(await request(key,'/api/assistant/context/validate',{method:'POST',body:context})).context};
-    if(tid) fences.set(rootFor(tid), fence(tid)+1); else configuration=value.context;
+    if(!resolveDataContext?.(client.snapshot())) await optional(key, '/api/assistant/context/defaults?data_scope='+edition, null, {method:'PATCH',body:value.context});
+    if(tid) fences.set(rootFor(tid), fence(tid)+1); else configuration={...value.context,model:configuration.model};
     return value;
   }
   async function ensureSpace(key, tid, config) {
@@ -166,6 +167,16 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     return Buffer.concat(chunks);
   }
   function nativePath() { if (!profile) throw fail('ASSISTANT_NOT_READY'); return `/api/agents/${identifier(profile.agent_id)}`; }
+  async function listing(key) {
+    const result=await request(key,'/api/assistant/conversations');
+    if(result.items.some(row=>!row.channel_type)){
+      // Older boxes already expose native channel metadata. Keep routing keys in main.
+      const native=await optional(key,`${nativePath()}/threads?limit=10000`,[]).catch(()=>{assertScope(key);return [];});
+      const origins=new Map(native.map(row=>[row.thread_id,row.channel_type]));
+      result.items=result.items.map(row=>({...row,channel_type:row.channel_type||origins.get(row.thread_id)||'unknown'}));
+    }
+    return result;
+  }
   async function history(key, tid, offset = 0) {
     identifier(tid);
     const value = await request(key, `${nativePath()}/threads/${tid}/history?limit=25&offset=${offset}`);
@@ -216,9 +227,13 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
     catalog = (await request(key, '/api/providers/resolved')).map(publicModel);
     if (!catalog.some(m => m.id === ref)) throw fail('MODEL_UNAVAILABLE');
   }
-  async function optional(key, route, fallback) {
-    try { return await request(key, route); }
+  async function optional(key, route, fallback, options) {
+    try { return await request(key, route, options); }
     catch (error) { assertScope(key); if (error.status === 404) return fallback; throw error; }
+  }
+  async function sourceDefaults(key) {
+    if(resolveDataContext?.(client.snapshot())) return {context:emptyContext(),validation_errors:[]};
+    return optional(key,'/api/assistant/context/defaults?data_scope='+edition,{context:emptyContext()});
   }
   return {
     async action(method, input = {}) {
@@ -237,6 +252,12 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         if(cid)await conversation(key,cid);
         return {scope:key,conversationId:cid,draft:input.draft,reference:input.reference,attachments:files.map(f=>publicUpload(f.handle,uploads.get(f.handle).data,f.size||0)),model:input.model,context:{space:configuration.space,knowledge:configuration.knowledge}};
       }
+      if (method === 'history-list') {
+        const [recent, organization] = await Promise.all([listing(key),optional(key,'/api/assistant/history',{entries:{},unavailable:true})]);
+        assertScope(key);
+        for(const row of recent.items)threads.add(row.thread_id);
+        return {scope:key,sessions:recent.items,organization:organization.entries||{}};
+      }
       if (method === 'load') {
         const stored = preferenceStore ? await preferenceStore.load() || {} : preferenceMemory;
         assertScope(key);
@@ -246,11 +267,13 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         identifier(profile.agent_id);
         const [resolved, prefs, activeModel, recent, legacy, organization, timezone] = await Promise.all([
           request(key, '/api/providers/resolved'), request(key, '/api/preferences'),
-          optional(key, '/api/providers/active-model', {}), request(key, '/api/assistant/conversations'),
+          optional(key, '/api/providers/active-model', {}), listing(key),
           optional(key, '/api/dialogue/sessions?limit=10000', { sessions: [] }).catch(error => { assertScope(key); return { sessions: [], unavailable: true }; }),
           optional(key, '/api/assistant/history', { entries: {}, unavailable: true }),
           optional(key, '/api/settings/timezone', { timezone: 'UTC' }),
         ]);
+        const defaults=await sourceDefaults(key);
+        configuration={...defaults.context,model:configuration.model};
         assertScope(key); catalog = resolved.map(publicModel);
         for (const thread of recent.items) threads.add(thread.thread_id);
         const candidates = [configuration.model, prefs.preferred_model, profile.default_model, activeModel?.provider_name && `${activeModel.provider_name}/${activeModel.model}`];
@@ -262,7 +285,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
           organization: organization.entries, historyManagementAvailable: !organization.unavailable, timezone: timezone.timezone || 'UTC',
           capabilities: resolveDataContext?.(client.snapshot())
             ? { knowledge: false, space: false, channels: false, attachments: false }
-            : { knowledge: true, space: true, channels: true, attachments: true }, settings: configuration };
+            : { knowledge: true, space: true, channels: true, attachments: true }, settings: configuration, validation_errors:defaults.validation_errors };
       }
       if (method.startsWith('knowledge-')) {
         const base = '/api/assistant/knowledge';
@@ -283,7 +306,7 @@ export function createAIDialogue({ client, onEvent = () => {}, selectFiles, save
         }
         throw fail('ASSISTANT_INVALID_INPUT');
       }
-      if (method === 'release-context') { configuration={...emptyContext(),model:configuration.model}; return {scope:key}; }
+      if (method === 'release-context') { const defaults=await sourceDefaults(key); configuration={...defaults.context,model:configuration.model}; return {scope:key,...defaults}; }
       if (method === 'usage') {
         const tid=identifier(input.threadId);if(!threads.has(tid))await history(key,tid);
         const chosen=catalog.find(m=>m.id===input.model), max=chosen?.contextWindow;

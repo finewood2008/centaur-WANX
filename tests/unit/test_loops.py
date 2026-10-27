@@ -1812,3 +1812,30 @@ async def test_scheduled_round_needs_no_cloud_budget_lease(env, monkeypatch):
     assert called
     assert row["reason"] != "cloud_budget_authorization_required"
     assert row["status"] != "running"
+
+
+async def test_personal_agent_normal_messages_require_verified_owner(env):
+    svc, uid, _a, _c = env
+    # Other experts retain their existing conversational behavior.
+    assert await svc.interactions.handle_inbound(inbound("An ordinary question")) is None
+    svc.repos.user_repo.set_preference(uid, "wanx_assistant_agent_id", "expert")
+    assert "验证" in await svc.interactions.handle_inbound(inbound("An ordinary question"))
+    bid = await bind_owner(svc, uid)
+    svc.executor.ensure = AsyncMock(return_value={"agent_id": "expert"})
+    message = inbound("An ordinary question")
+    message.metadata["message_id"] = "synthetic-inbound-1"
+    assert await svc.interactions.handle_inbound(message) is None
+    assert await svc.interactions.handle_inbound(message) is None
+    intake = await svc.list_loops(uid)
+    assert intake == []
+    assert not svc._tasks
+    assert (
+        await svc.interactions.handle_inbound(inbound("An ordinary question", subject="visitor"))
+        is not None
+    )
+    assert (
+        await svc.interactions.handle_inbound(inbound("An ordinary question", chat="group"))
+        is not None
+    )
+    await svc.interactions.revoke_binding(uid, bid)
+    assert await svc.interactions.handle_inbound(inbound("An ordinary question")) is not None

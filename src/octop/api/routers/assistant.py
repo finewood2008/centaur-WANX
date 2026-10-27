@@ -119,9 +119,47 @@ async def assistant_context_validate(
 
 
 @router.get(
+    "/assistant/context/defaults",
+    summary="Read last explicitly selected sources for a new conversation",
+    description="Account and box scoped, separated by data scope. Revalidates selections without creating access grants. Existing conversations are unaffected.",
+)
+async def assistant_context_defaults_get(
+    request: Request,
+    data_scope: Literal["personal", "team"] = "team",
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    if user.application_id != "wanx" or getattr(user, "disabled", False):
+        raise HTTPException(403)
+    return await conversations(request, server).source_defaults(user, data_scope)
+
+
+@router.patch(
+    "/assistant/context/defaults",
+    summary="Remember explicitly selected sources for future new conversations",
+    description="Validates scope and stores a selection template only. Does not grant MCP access or change any existing conversation.",
+)
+async def assistant_context_defaults_patch(
+    body: ConversationContext,
+    request: Request,
+    data_scope: Literal["personal", "team"] = "team",
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    if user.application_id != "wanx" or getattr(user, "disabled", False):
+        raise HTTPException(403)
+    try:
+        return await conversations(request, server).source_defaults(
+            user, data_scope, body.model_dump(exclude_none=True)
+        )
+    except ConversationError as exc:
+        raise conversation_error(exc, user) from exc
+
+
+@router.get(
     "/assistant/conversations",
     summary="List logical assistant conversations",
-    description="Owner and box scoped. Internal answer-version threads are grouped under the original conversation.",
+    description="Owner and box scoped. Includes native channel conversations and their channel_type without copying history. Internal answer-version threads are grouped under the original conversation.",
 )
 async def assistant_conversations_list(
     request: Request, user: Any = Depends(current_user), server: Any = Depends(get_server)

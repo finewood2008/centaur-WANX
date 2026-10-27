@@ -172,6 +172,7 @@ async function harness(initial = state(), installed = [application], options = {
     creditWallet: options.creditWallet,
     accountProfile: options.accountProfile,
     support: options.support,
+    aiDialogue: options.aiDialogue,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -538,6 +539,23 @@ test("Centaurloop uses its Admin application ID for installed artwork and featur
   assert.match(h.app.innerHTML, /app-detail-title[^>]*>后台环名称<\/h2>/);
   assert.match(h.app.innerHTML, /assets\/app-icons\/loop-v1.png/);
   assert.match(h.app.innerHTML, /loop-product-v1.png/);
+});
+
+test("retired task workspace does not bypass standalone Loop compatibility", async () => {
+  const loop = { applicationId: "centaurai.wanx.centaurloop", name: "半人马环", version: "0.10.4" };
+  const methods = [];
+  const h = await harness(state("ready", "ready", "box-102"), [], {
+    list: async () => ({ items: [loop] }),
+    candidate: async () => ({ status: "incompatible", reason: "wanx_version", release: { version: "0.10.4" } }),
+    aiDialogue: { action: async method => { methods.push(method); return {}; } },
+  });
+  assert.doesNotMatch(h.app.innerHTML, /data-action="open-loop-engine"/);
+  assert.match(h.app.innerHTML, /请先升级万象/);
+  await h.click("store-details", { applicationId: loop.applicationId });
+  assert.doesNotMatch(h.app.innerHTML, /data-action="open-loop-engine"/);
+  assert.match(h.app.innerHTML, /尚未安装/);
+  assert.deepEqual(methods, []);
+  assert.equal(h.launches.length, 0);
 });
 
 for (const mode of ["unlisted", "offline", "blank"]) test(`installed names remain available when Admin metadata is ${mode}`, async () => {

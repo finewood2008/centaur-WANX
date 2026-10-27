@@ -47,6 +47,43 @@ export function createAssistantChannels({ request, base, assertScope, cleanup })
     if (ticket.kind === 'feishu') void cleanup(ticket.key, ticket.route + '/feishu/bot-creator/stop').catch(() => {});
   }
   function reset() { for (const ticket of [...sessions.values()]) cancel(ticket); }
+  const agentId = () => id(base().split('/').at(-2));
+  async function ownerBinding(key, channelId) {
+    const rows = await request(key, '/api/loops/channel-bindings');
+    assertScope(key);
+    const rank = {active:0,awaiting_confirmation:1,awaiting_message:2,invalid:3,expired:4,revoked:5};
+    return rows.filter(row => row.channel_id === channelId && row.agent_id === agentId())
+      .sort((a,b)=>(rank[a.status]??6)-(rank[b.status]??6)||Number(b.created_at||0)-Number(a.created_at||0)||String(b.binding_id).localeCompare(String(a.binding_id)))[0];
+  }
+  function verification(binding) {
+    const pending = binding?.status?.startsWith('awaiting_');
+    const status = pending && Number(binding.expires_at)*1000 <= Date.now() ? 'expired' : binding?.status || 'unverified';
+    return {status,
+      ...(pending ? {expiresAt:Number(binding.expires_at)} : {}),
+      ...(status === 'awaiting_confirmation' ? {name:String(binding.display_name||'收到私聊').slice(0,100),preview:String(binding.message_preview||'').slice(0,300)} : {})};
+  }
+  async function verifyAction(method, input, key) {
+    const channelId = id(input.id), {row} = await existing(key, channelId);
+    let binding = await ownerBinding(key, channelId);
+    if (method === 'channels-verify-start') {
+      if (!row.enabled) throw fail('ASSISTANT_CHANNEL_DISABLED');
+      const current = verification(binding);
+      if (['active','awaiting_confirmation','awaiting_message'].includes(current.status)) return {verification:current};
+      if (binding?.status?.startsWith('awaiting_')) await request(key, '/api/loops/channel-bindings/'+id(binding.binding_id), {method:'DELETE'});
+      await request(key, '/api/loops/channel-bindings', {method:'POST',body:{agent_id:agentId(),channel_id:channelId}});
+      assertScope(key);
+      binding = await ownerBinding(key, channelId);
+    } else if (method === 'channels-verify-confirm') {
+      if (verification(binding).status !== 'awaiting_confirmation') throw fail('ASSISTANT_CHANNEL_VERIFICATION_CHANGED');
+      await request(key, '/api/loops/channel-bindings/'+id(binding.binding_id)+'/confirm', {method:'POST'});
+      binding = await ownerBinding(key, channelId);
+    } else if (method === 'channels-verify-revoke') {
+      const bindings=await request(key,'/api/loops/channel-bindings');
+      for(const owned of bindings.filter(b=>b.channel_id===channelId&&b.agent_id===agentId()&&['active','awaiting_message','awaiting_confirmation'].includes(b.status)))await request(key, '/api/loops/channel-bindings/'+id(owned.binding_id), {method:'DELETE'});
+      binding = await ownerBinding(key, channelId);
+    }
+    return {verification:verification(binding)};
+  }
   async function saveQR(ticket, config) {
     active(ticket.key, ticket);
     // Keep credentials privately for a retry if saving fails after phone approval.
@@ -99,13 +136,14 @@ export function createAssistantChannels({ request, base, assertScope, cleanup })
   return {
     reset,
     async action(method, input, key) {
+      if (['channels-verification','channels-verify-start','channels-verify-confirm','channels-verify-revoke'].includes(method)) return mutate(()=>verifyAction(method,input,key));
       if (method === 'channels-list') {
         const rows = await request(key,base());
-        return {items:rows.filter(row => ASSISTANT_CHANNEL_KINDS.includes(row.kind)).map(summary)};
+        return {items:await Promise.all(rows.filter(row => ASSISTANT_CHANNEL_KINDS.includes(row.kind)).map(async row=>({...summary(row),verification:verification(await ownerBinding(key,row.id))})))};
       }
       if (method === 'channels-detail') {
         const {row} = await existing(key,input.id), config = row.config || {};
-        return {channel:summary(row),values:Object.fromEntries(fields[row.kind].filter(f=>!secrets.has(f)).map(f=>[f,String(config[f]||'')])),
+        return {channel:{...summary(row),verification:verification(await ownerBinding(key,row.id))},values:Object.fromEntries(fields[row.kind].filter(f=>!secrets.has(f)).map(f=>[f,String(config[f]||'')])),
           configured:fields[row.kind].filter(f=>secrets.has(f) && !!config[f])};
       }
       if (method === 'channels-save') return mutate(async () => {
