@@ -3,10 +3,13 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { testPackageIdentity } from "./test-build.mjs";
+import { validClientEdition } from "./edition.mjs";
 
 export async function readClientIdentity({ app, platform = process.platform, arch = process.arch, versions = process.versions }) {
   const root = app.getAppPath();
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  if (!validClientEdition(pkg.wanxEdition)) throw new Error("UPDATE_CLIENT_EDITION_INVALID");
+  const edition = pkg.wanxEdition;
   const build = pkg.wanxBuild || {};
   const testIdentity = app.isPackaged ? testPackageIdentity(pkg) : null;
   let buildId = build.buildId || "unknown";
@@ -24,7 +27,7 @@ export async function readClientIdentity({ app, platform = process.platform, arc
     buildId = `source-${hash.digest("hex").slice(0, 16)}`;
   }
   return Object.freeze({
-    productVersion: app.getVersion(), buildId, channel: build.channel || "stable-studio",
+    productVersion: app.getVersion(), buildId, edition, channel: build.channel || (edition === "team" ? "stable-studio" : "stable"),
     distributionClass: app.isPackaged ? build.distributionClass || "unverified" : "development",
     platform, osVersion: os.release(), arch, electronVersion: versions.electron || null,
     nodeVersion: versions.node, hostProtocol: 1, securityEpoch: build.securityEpoch || 0,

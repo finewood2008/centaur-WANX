@@ -513,7 +513,10 @@ function updateGuidance(code) {
     UPDATE_UNAVAILABLE: "暂时无法检查更新，请稍后重试。",
     UPDATE_REQUEST_FAILED: "暂时无法连接更新服务，请检查网络后重试。",
     CLIENT_UPDATE_REQUIRED: "请先更新万象，再启动新的业务。已打开的应用可继续保存工作。",
+    ACCOUNT_LOGIN_REQUIRED: "请先登录万象平台账号，再检查更新。",
     UPDATE_DEVELOPMENT_BUILD: "这是开发构建，请使用正式发行包接收客户端更新。",
+    UPDATE_INSTALL_LOCATION_UNSUPPORTED: "当前安装位置不支持应用内更新，请使用面向当前用户的正式安装包重新安装。",
+    UPDATE_EDITION_MISMATCH: "此更新包与当前客户端版本类型不一致，请选择对应的个人版或团队版安装包。",
     UPDATE_NOT_CONFIGURED: "当前未配置正式更新，请联系发行维护人员获取受支持的安装包。",
     UPDATE_SIGNER_NOT_CONFIGURED: "当前未配置安装包签名校验，请联系发行维护人员。",
     UPDATE_LOCAL_NEWER: "当前版本高于渠道版本，继续保留现有安装。",
@@ -578,7 +581,7 @@ function clientUpdateView() {
   const total = Number(progress?.total);
   const hasProgress = progress && Number.isFinite(transferred) && transferred >= 0;
   const hasTotal = hasProgress && Number.isFinite(total) && total > 0;
-  return `<article class="update-card"><div class="update-heading"><div><h3>万象客户端 <span class="update-version">${current.productVersion ? `v${escapeHTML(current.productVersion)}` : "版本待核验"}</span></h3><p class="muted ${pending ? "activity-status" : ""}" role="status">${pending ? '<span class="activity-spinner" aria-hidden="true"></span>' : ""}${escapeHTML(checking ? labels.checking : downloading ? labels.downloading : labels[phase] || "更新状态待确认")}</p></div><div class="settings-actions">${!["development", "unavailable", "downloaded", "installing"].includes(phase) ? `<button class="button small ${checking ? "activity-button" : ""}" data-action="updates-client-check" aria-busy="${checking}" ${disabled}>${checking ? activityLabel("检查中…") : "检查更新"}</button>` : ""}${phase === "available" && candidate ? `<button class="button primary small ${downloading ? "activity-button" : ""}" data-action="updates-client-download" aria-busy="${downloading}" ${disabled}>${downloading ? activityLabel("正在下载…") : "下载更新"}</button>` : ""}${phase === "downloaded" && candidate ? `<button class="button primary small" data-action="updates-client-install" ${disabled}>重启并更新</button>` : ""}</div></div>
+  return `<article class="update-card"><div class="update-heading"><div><h3>万象客户端 <span class="update-version">${current.productVersion ? `v${escapeHTML(current.productVersion)}` : "版本待核验"}</span></h3><p class="muted ${pending ? "activity-status" : ""}" role="status">${pending ? '<span class="activity-spinner" aria-hidden="true"></span>' : ""}${escapeHTML(checking ? labels.checking : downloading ? labels.downloading : labels[phase] || "更新状态待确认")}</p></div><div class="settings-actions">${!["downloaded", "installing"].includes(phase) ? `<button class="button small ${checking ? "activity-button" : ""}" data-action="updates-client-check" aria-busy="${checking}" ${disabled}>${checking ? activityLabel("检查中…") : "检查更新"}</button>` : ""}${phase === "available" && candidate ? `<button class="button primary small ${downloading ? "activity-button" : ""}" data-action="updates-client-download" aria-busy="${downloading}" ${disabled}>${downloading ? activityLabel("正在下载…") : "下载更新"}</button>` : ""}${phase === "downloaded" && candidate ? `<button class="button primary small" data-action="updates-client-install" ${disabled}>重启并更新</button>` : ""}</div></div>
     ${candidate ? `<p class="update-candidate">可用版本 v${escapeHTML(candidate.productVersion || "待核验")}${candidate.size != null ? ` · ${escapeHTML(updateBytes(candidate.size))}` : ""}${candidate.requiresRestart ? " · 需要重启万象" : ""}</p>${candidate.releaseNotes ? `<p class="update-notes">${escapeHTML(candidate.releaseNotes)}</p>` : ""}` : ""}
     ${hasProgress ? `<div class="update-progress" role="status"><progress aria-label="客户端下载进度" ${hasTotal ? `max="${total}" value="${Math.min(transferred, total)}"` : ""}></progress><span>${escapeHTML(updateBytes(transferred))}${hasTotal ? ` / ${escapeHTML(updateBytes(total))}` : " · 总大小待确认"}</span></div>` : ""}
     ${updateIssueView(update)}

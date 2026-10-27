@@ -92,11 +92,23 @@ test("a controlled download requires a separate install confirmation; success re
   assert.equal(h.store.read().operation.phase, "succeeded");
 });
 
-test("development, internal and unconfigured builds cannot contact the update endpoint", async () => {
-  for (const override of [{ current: { ...current, packaged: false } }, { current: { ...current, distributionClass: "unsigned-internal-only" } }, { keys: {} }]) {
+test("local update gates explain checks without querying, downloading or installing", async () => {
+  for (const [override, code, phase] of [
+    [{ current: { ...current, packaged: false } }, "UPDATE_DEVELOPMENT_BUILD", "development"],
+    [{ current: { ...current, packaged: false, channel: "stable-studio" } }, "UPDATE_DEVELOPMENT_BUILD", "development"],
+    [{ current: { ...current, distributionClass: "unsigned-internal-only" } }, "UPDATE_NOT_CONFIGURED", "unavailable"],
+    [{ keys: {} }, "UPDATE_NOT_CONFIGURED", "unavailable"],
+    [{ current: { ...current, platform: "win32", installationScope: "per-machine" } }, "UPDATE_INSTALL_LOCATION_UNSUPPORTED", "unavailable"],
+  ]) {
     const h = await harness(override);
-    await assert.rejects(h.service.check());
-    assert.equal(h.calls(), 0); assert.equal(h.downloads(), 0);
+    await assert.rejects(h.service.check(), { code });
+    assert.equal(h.service.snapshot().phase, phase);
+    assert.equal(h.service.snapshot().reason, code);
+    assert.equal(h.service.snapshot().checkedAt, null);
+    assert.equal(h.service.snapshot().candidate, null);
+    await assert.rejects(h.service.download(), { code });
+    await assert.rejects(h.service.install({ confirmed: true }), { code });
+    assert.equal(h.calls(), 0); assert.equal(h.downloads(), 0); assert.equal(h.installs(), 0);
   }
 });
 

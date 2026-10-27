@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
 import semver from "semver";
+import { validClientEdition, editionMatchesChannel } from "./edition.mjs";
 import { TEST_APP_ID, TEST_EXTENSION, isTestClientIdentity } from "./test-build.mjs";
 
 export const updateError = code => Object.assign(new Error(code), { code });
@@ -30,6 +31,9 @@ export function verifyRelease(envelope, { keys = {}, product, now = Date.now(), 
       extensions.some(extension => !(product === "wanx-box" && extension === "wanx.foundation-modules.v1") &&
         !(product === "wanx-client" && extension === TEST_EXTENSION && isTestClientIdentity(testIdentity))) ||
       payload.backendContract !== 1 || payload.hostProtocol !== 1 || payload.dataPolicy !== "backward-compatible")
+    throw updateError("CONTRACT_UNSUPPORTED");
+  if (Object.hasOwn(payload, "edition") && (product !== "wanx-client" || !validClientEdition(payload.edition) ||
+      !editionMatchesChannel(payload.edition, payload.channel, extensions.includes(TEST_EXTENSION) ? testIdentity : undefined)))
     throw updateError("CONTRACT_UNSUPPORTED");
   if (Object.hasOwn(payload, "forceUpdate") && (product !== "wanx-client" || typeof payload.forceUpdate !== "boolean"))
     throw updateError("CONTRACT_UNSUPPORTED");
@@ -112,6 +116,8 @@ export function clientRequirement(envelope, { current, keys, now = Date.now() })
 
 export function clientBlockers(release, current, applications) {
   const blockers = [];
+  if (Object.hasOwn(release, "edition") && release.edition !== current.edition)
+    blockers.push({ code: "UPDATE_EDITION_MISMATCH" });
   if (release.platform.os !== current.platform || release.platform.arch !== current.arch ||
       !release.supportedOsVersions?.includes(current.osVersion)) blockers.push({ code: "UNSUPPORTED_PLATFORM" });
   if (release.securityEpoch < current.securityEpoch) blockers.push({ code: "UPDATE_SECURITY_DOWNGRADE" });

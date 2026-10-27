@@ -46,7 +46,7 @@ test("test release requires explicit mode, isolated metadata and test trust; for
   const keys = { test: publicKey.export({ type: "spki", format: "pem" }) };
   const build = { distributionClass: "test-only", applicationId: TEST_APP_ID, testRunId: "fixture", channel: "test-client-fixture",
     sourceSnapshot: "a".repeat(64), sourceDirty: true, sourceCommit: null, securityEpoch: 0, buildId: "test-fixture-2" };
-  const report = { appId: TEST_APP_ID, name: TEST_PRODUCT_NAME, version: "0.1.5-test.2", platform: "macos", arch: "arm64",
+  const report = { edition: "team", appId: TEST_APP_ID, name: TEST_PRODUCT_NAME, version: "0.1.5-test.2", platform: "macos", arch: "arm64",
     distributionClass: "test-only", signed: true, notarized: false, build, updateTrust: clientTrustFingerprints({ schemaVersion: 1, keys }),
     updateArtifact: { path: artifactPath, kind: "mac-zip", notarized: false, sizeBytes: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"), sha512: createHash("sha512").update(bytes).digest("base64") } };

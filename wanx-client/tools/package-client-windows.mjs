@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import semver from "semver";
+import { editionForApplicationId, editionMatchesChannel } from "../updates/edition.mjs";
 import { readSourceClientManifest, assertSourceClientManifestUnchanged, readPackagedClientManifest } from "./client-package-manifest.mjs";
 import { clientBuildSource } from "./package-client-source.mjs";
 import { clientTrustFingerprints, validateClientTrust } from "./package-client-trust.mjs";
@@ -26,11 +27,13 @@ export function windowsReleaseConfiguration({ pkg, version, arch, out, trustFile
   if (!out || !trustFile || semver.valid(version) !== version || !["x64", "arm64"].includes(arch) || !publisherName?.trim() ||
       Boolean(certificateFile) === Boolean(certificateSha1) || certificateSha1 && !/^[A-Fa-f0-9]{40}$/.test(certificateSha1))
     throw new Error("WINDOWS_SIGNING_CONFIGURATION_REQUIRED");
+  if (editionForApplicationId(pkg.build?.appId) !== pkg.wanxEdition || !editionMatchesChannel(pkg.wanxEdition, build?.channel))
+    throw new Error("客户端版别与更新渠道不匹配。");
   return {
-    ...pkg.build, appId: "ai.centuarai.wanx.client", productName: pkg.build.productName,
+    ...pkg.build, appId: pkg.build.appId, productName: pkg.build.productName,
     asar: true, npmRebuild: false, nodeGypRebuild: false, forceCodeSigning: true,
     directories: { ...pkg.build.directories, output: path.resolve(out) },
-    extraMetadata: { version, wanxBuild: { ...build, distributionClass: "formal", installationScope: "per-user" } },
+    extraMetadata: { version, wanxEdition: pkg.wanxEdition, wanxBuild: { ...build, distributionClass: "formal", installationScope: "per-user" } },
     extraResources: [...pkg.build.extraResources, { from: path.resolve(trustFile), to: "wanx-update-trust.json" },
       { from: path.join(projectRoot, "shell/windows-private-acl.ps1"), to: "security/windows-private-acl.ps1" },
       { from: path.join(projectRoot, "shell/verify-signed.ps1"), to: "security/verify-signed.ps1" }],
@@ -92,7 +95,7 @@ export async function packageWindowsClient({ version, arch = "x64", out, trustFi
   for (const file of [installer, path.join(unpacked, "WANX.exe")]) {
     run("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", path.join(root, "shell/verify-signed.ps1"), "-Path", file, "-PublisherName", publisherName]);
   }
-  const packed = readPackagedClientManifest(path.join(unpacked, "resources/app.asar"));
+  const packed = readPackagedClientManifest(path.join(unpacked, "resources/app.asar"), pkg.wanxEdition);
   if (packed.version !== version || packed.wanxBuild?.buildId !== build.buildId || packed.wanxBuild.installationScope !== "per-user")
     throw new Error("包内版本、构建身份或安装范围验证失败。");
   const packedTrust = validateWindowsTrust(JSON.parse(await readFile(path.join(unpacked, "resources/wanx-update-trust.json"), "utf8")), publisherName);
@@ -105,7 +108,7 @@ export async function packageWindowsClient({ version, arch = "x64", out, trustFi
   const sha256 = createHash("sha256"), sha512 = createHash("sha512");
   for await (const chunk of createReadStream(installer)) { sha256.update(chunk); sha512.update(chunk); }
   const digest = sha256.digest("hex");
-  const report = { version, appId: pkg.build.appId, name: pkg.build.productName, platform: "windows", arch,
+  const report = { version, edition: pkg.wanxEdition, appId: pkg.build.appId, name: pkg.build.productName, platform: "windows", arch,
     signed: true, authenticodeVerified: true, publisherName, distributionClass: "formal", build, updateTrust, nativeBinaries,
     updateArtifact: { path: installer, kind: "nsis", sha256: digest, sha512: sha512.digest("base64"), sizeBytes: (await stat(installer)).size, blockMap } };
   await mkdir(out, { recursive: true });

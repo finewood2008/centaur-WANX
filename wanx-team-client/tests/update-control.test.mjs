@@ -21,6 +21,24 @@ test("update IPC is restricted to the trusted management frame and explicit inst
   assert.deepEqual(calls, [{ confirmed: true }]);
 });
 
+test("manual update checks still require a signed-in trusted management frame", async () => {
+  const handlers = new Map(), calls = [];
+  const frame = { url: "file:///trusted/index.html" }, webContents = { mainFrame: frame };
+  const event = { sender: webContents, senderFrame: frame };
+  let phase = "anonymous";
+  registerControlActions({ ipcMain: { handle: (name, action) => handlers.set(name, action) },
+    control: { webContents, isDestroyed: () => false }, controlURL: frame.url,
+    client: { snapshot: () => ({ account: { phase } }) },
+    updates: { client: { check: () => calls.push("check") } } });
+  const check = handlers.get("wanx-client:updates-client-check");
+  assert.throws(() => check(event), /ACCOUNT_LOGIN_REQUIRED/);
+  phase = "authenticated";
+  assert.throws(() => check({ ...event, senderFrame: { url: frame.url } }));
+  assert.deepEqual(calls, []);
+  await check(event);
+  assert.deepEqual(calls, ["check"]);
+});
+
 test("updater installation runs only after application and Host shutdown, without a plain quit", async () => {
   const events = [], app = new EventEmitter(); app.quit = () => events.push("quit");
   const shutdown = registerShutdown({ app, closeApplications: async () => events.push("apps"), closeHost: async () => events.push("host"), onError: assert.fail });

@@ -7,6 +7,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import semver from "semver";
+import { editionMatchesChannel } from "../updates/edition.mjs";
 import { readSourceClientManifest, assertSourceClientManifestUnchanged, readPackagedClientManifest } from "./client-package-manifest.mjs";
 import { clientBuildSource, clientTestSourceSnapshot } from "./package-client-source.mjs";
 import { clientTrustFingerprints, validateClientTrust } from "./package-client-trust.mjs";
@@ -81,6 +82,8 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
     ...source, channel, securityEpoch,
     distributionClass: test ? "test-only" : local ? "local-verification-only" : "formal",
     ...(test ? { applicationId: appId, testRunId, testFeedURL, testCAFingerprint } : {}) };
+  if (!editionMatchesChannel(pkg.wanxEdition, channel, test ? { ...build, packaged: true } : undefined))
+    throw new Error("客户端版别与更新渠道不匹配。");
   const outputDir = path.resolve(out || path.join(root, "release/client", version, `macos-${arch}-${stamp}-${randomBytes(3).toString("hex")}`));
   try { await access(outputDir); throw new Error(`输出目录已存在，请另选 --out：${outputDir}`); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -105,7 +108,7 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
   await writeFile(configurationFile, JSON.stringify({ ...pkg.build, appId, productName: name,
     afterPack: path.join(root, "tools/package-client-native.mjs"),
     forceCodeSigning: true, mac: { ...pkg.build.mac, defaultArch: "x64" },
-    directories: { ...pkg.build.directories, output: outputDir }, extraMetadata: { version, wanxBuild: build,
+    directories: { ...pkg.build.directories, output: outputDir }, extraMetadata: { version, wanxEdition: pkg.wanxEdition, wanxBuild: build,
       ...(test ? { name: TEST_PACKAGE_NAME, productName: TEST_PRODUCT_NAME, main: "updates/test-entry.mjs" } : {}) },
     extraResources: [...pkg.build.extraResources, ...(trust ? [{ from: trustSnapshot, to: "wanx-update-trust.json" }] : []),
       ...(test ? [{ from: testCASnapshot, to: "wanx-test-ca.pem" }] : [])],
@@ -132,7 +135,7 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
     throw new Error("应用包处理器架构不匹配。");
   const nativeBinaries = await readPackagedNativeBinaries({ resourcesPath: path.join(app, "Contents/Resources"),
     platform: "darwin", arch });
-  const packed = readPackagedClientManifest(path.join(app, "Contents/Resources/app.asar"));
+  const packed = readPackagedClientManifest(path.join(app, "Contents/Resources/app.asar"), pkg.wanxEdition);
   if (packed.version !== version) throw new Error("包内 package.json 版本与发行参数不一致。");
   if (packed.wanxBuild?.buildId !== build.buildId) throw new Error("包内构建身份与发行参数不一致。");
   if (test) {
@@ -179,7 +182,7 @@ export async function packageClient({ version, arch = process.arch, out, notaryP
   for await (const chunk of createReadStream(zip)) zipSha512.update(chunk);
   await mkdir(outputDir, { recursive: true });
   await writeFile(path.join(outputDir, "SHA256SUMS.txt"), `${digest}  ${path.basename(dmg)}\n${zipDigest}  ${path.basename(zip)}\n${blockMap.sha256}  ${path.basename(blockMap.path)}\n`);
-  const report = { version, appId, name, platform: "macos", arch, dmg, sha256: digest,
+  const report = { version, appId, name, edition: pkg.wanxEdition, platform: "macos", arch, dmg, sha256: digest,
     build, updateTrust, nativeBinaries, updateArtifact: { path: zip, kind: "mac-zip", notarized: !local && !test, sizeBytes: (await stat(zip)).size, sha256: zipDigest, sha512: zipSha512.digest("base64"), blockMap },
     signed: true, notarized: !local && !test, distributionClass: build.distributionClass };
   await writeFile(path.join(outputDir, "verification-client.json"), JSON.stringify(report, null, 2) + "\n");
