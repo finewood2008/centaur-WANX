@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_CANONICAL_POLICY = _REPO_ROOT / "wanx-studio" / "core" / "wanx-foundation.json"
+_CANONICAL_POLICY = _REPO_ROOT / "wanx-studio" / "backend" / "wanx_studio" / "wanx-foundation.json"
 _IMPORT_INSTALLED = """
 import sys
 from pathlib import Path

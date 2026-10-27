@@ -49,8 +49,10 @@ class ACPSettingsStore:
         self._settings = settings_repo
         self._agents = agents_repo
 
-    def load_runners(self, user_id: int) -> dict[str, Any]:
-        """Return merged runner dict (built-ins + saved overrides)."""
+    def load_runners(
+        self, user_id: int, *, defaults: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Merge defaults without replacing or persisting a saved runner entry."""
         raw = self._settings.get(_settings_key(user_id))
         if raw:
             try:
@@ -61,15 +63,15 @@ class ACPSettingsStore:
             if isinstance(data, dict):
                 runners_raw = data.get("runners")
                 if isinstance(runners_raw, dict):
-                    return _runners_response(runners_raw)
-                return _runners_response(data)
+                    return _runners_response(runners_raw, defaults=defaults)
+                return _runners_response(data, defaults=defaults)
 
         migrated = self._migrate_legacy_from_agents(user_id)
         if migrated is not None:
             self._save_raw_runners(user_id, migrated)
-            return _runners_response(migrated)
+            return _runners_response(migrated, defaults=defaults)
 
-        return _runners_response({})
+        return _runners_response({}, defaults=defaults)
 
     def save_runners(self, user_id: int, runners: dict[str, Any]) -> dict[str, Any]:
         filtered = {k: v for k, v in runners.items() if k not in _HIDDEN_RUNNERS}
@@ -120,8 +122,10 @@ class ACPSettingsStore:
             )
 
 
-def _runners_response(raw_runners: dict[str, Any]) -> dict[str, Any]:
-    merged_raw = dict(raw_runners)
+def _runners_response(
+    raw_runners: dict[str, Any], *, defaults: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    merged_raw = {**(defaults or {}), **raw_runners}
     harness_names = set(default_acp_runners())
     for name, spec in _OCTOP_BUILTIN_RUNNERS.items():
         if name not in harness_names and name not in merged_raw:

@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { createAIDialogue } from '../shell/ai-dialogue.mjs';
+import { createAIDialogue as createScopedDialogue } from '../shell/assistant-service.mjs';
 
 function fixture(options = {}) {
   let state = { phase: 'ready', account: { phase: 'authenticated', accountId: 'synthetic-owner', clientId: 'synthetic-client' }, connection: { deviceId: 'synthetic-box', gatewayURL: 'http://127.0.0.1' } };
-  const records=new Map();let recentOpened=null;
+  const records=new Map(),sourceDefaults=new Map();let recentOpened=null;
   const listeners = new Set(), routes = [], sockets = [], events = [], responses = new Map();
   const history = { thread_id: 'thread-1', messages: [], turn_active: false, hitl_pending: null, artifact_refs: [{ path: 'result.md', agent_id: 'private-default' }] };
   let modelRows = [{ provider_name: 'fixture', model: 'one', name: 'One' }, { provider_name: 'fixture', model: 'two', name: 'Two' }];
@@ -17,6 +18,11 @@ function fixture(options = {}) {
       let result = {}, status = 200;
       if (input.path === '/api/assistant/profile') result = { agent_id: 'private-default', template_id: 'default', default_model: 'fixture/one' };
       else if(input.path==='/api/assistant/conversations')result={items:[{thread_id:'thread-1',title:'Synthetic'}],recent_conversation_id:recentOpened};
+      else if(input.path.startsWith('/api/assistant/context/defaults?')) {
+        const key=state.account.accountId+':'+state.connection.deviceId+':'+input.path;
+        if(input.method==='PATCH')sourceDefaults.set(key,JSON.parse(input.body));
+        result={context:sourceDefaults.get(key)||{space:{enabled:false},knowledge:{enabled:false,warehouses:[]}}};
+      }
       else if(input.path==='/api/assistant/context/validate'){
         const context=JSON.parse(input.body);if(context.space?.enabled){if(!['all','space','folder'].includes(context.space.selection?.mode)||String(context.space.selection?.folder_id||'').includes('/'))throw Object.assign(Error(),{code:'ASSISTANT_INVALID_INPUT'});context.space.label='Allowed folder';}result={context};
       }
@@ -47,7 +53,7 @@ function fixture(options = {}) {
   const client = { snapshot: () => structuredClone(state), subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }, applicationConnection: async (id, options) => {
     assert.equal(id, 'centaurai.wanx.dialogue'); assert.deepEqual(options, { backendProductId: 'wanx' }); return link;
   } };
-  const service = createAIDialogue({ client, onEvent: event => events.push(event), selectFiles: async () => [], ...options });
+  const service = (options.serviceFactory || createAIDialogue)({ client, onEvent: event => events.push(event), selectFiles: async () => [], ...options });
   return { service, routes, sockets, events, history, respond(route, handler) { responses.set(route, handler); }, setModels(value) { modelRows = value; }, recoverNetwork(phase) { state.phase = phase; for (const fn of listeners) fn(); }, switchBox() { state.connection.deviceId = 'different-box'; for (const fn of listeners) fn(); } };
 }
 test('mini handoff keeps trusted attachment metadata and source scope, rejecting stale handles', async () => {
@@ -190,7 +196,7 @@ for (const edition of ['personal','team']) test(edition + ' persists explicit kn
   assert.deepEqual(f.sockets.at(-1).sent.at(-1).mcp_servers,['space-tools','knowledge-tools']);
   await f.service.action('release-context', {scope});
   const loaded = await f.service.action('load');
-  assert.equal(loaded.settings.space.enabled,false); assert.equal(loaded.settings.knowledge.enabled,false); assert.equal(loaded.defaultModel,'fixture/two');
+  assert.equal(loaded.settings.space.enabled,true); assert.equal(loaded.settings.knowledge.enabled,true); assert.equal(loaded.defaultModel,'fixture/two');
   await f.service.action('send', {scope,threadId:'thread-1',model:'fixture/two',prompt:'next',spaceEnabled:true,knowledgeEnabled:true});
   assert.equal(created,1);
   f.service.close();
@@ -211,18 +217,25 @@ test('revocation while knowledge renewal is pending prevents dispatch', async ()
 });
 
 
-test('conversation sources survive reopening but never initialize another conversation or global preferences', async()=>{
+test('new drafts inherit last manual sources while existing conversations and account scopes remain independent', async()=>{
   let saved;
   const f=fixture({preferenceStore:{load:async()=>saved,save:async v=>saved=v}}),{scope}=await f.service.action('load');
   await f.service.action('space-grant',{scope,threadId:'thread-1',enabled:true,selection:{mode:'all'}});
   const opened=await f.service.action('open',{scope,threadId:'thread-1'});
   assert.equal(opened.conversation.context.space.enabled,true);
-  await f.service.action('release-context',{scope});
+  const defaults=await f.service.action('release-context',{scope});
+  assert.equal(defaults.context.space.enabled,true);
+  assert.deepEqual(defaults.context.space.selection,{mode:'all'});
   const other=await f.service.action('open',{scope,threadId:'thread-2'});
   assert.equal(other.conversation.context.space.enabled,false);
   const restored=await f.service.action('open',{scope,threadId:'thread-1'});
   assert.equal(restored.conversation.context.space.enabled,true);
   assert.equal(saved,undefined);
+  const again=await f.service.action('release-context',{scope});
+  assert.equal(again.context.space.enabled,true);
+  f.switchBox();
+  const fresh=await f.service.action('load');
+  assert.equal(fresh.settings.space.enabled,false);
   f.service.close();
 });
 
@@ -232,4 +245,43 @@ test('usage forwarding includes counts and call identity but no arbitrary event 
  f.sockets[0].emit('message',Buffer.from(JSON.stringify({type:'usage',call_id:'call-1',model:'fixture/one',usage:{input_tokens:100,output_tokens:10,api_key:'private'},secret:'private'})));
  const frame=f.events.at(-1).event;
  assert.equal(frame.call_id,'call-1');assert.deepEqual(frame.usage,{input_tokens:100,output_tokens:10});assert(!JSON.stringify(frame).includes('private'));f.service.close();
+});
+
+test('restored dialogue sends with the selected model and has no task dispatch',async()=>{
+ const f=fixture(), {scope}=await f.service.action('load',{});
+ await f.service.action('send',{scope,model:'fixture/two',prompt:'Synthetic restored chat'});
+ assert.equal(f.sockets.at(-1).sent.find(r=>r.type==='user_turn').model,'fixture/two');
+ await assert.rejects(f.service.action('tasks-create',{scope}),{code:'ASSISTANT_INVALID_INPUT'});
+ assert(!f.routes.some(r=>r.path.startsWith('/api/assistant/tasks')));
+ f.service.close();
+});
+
+test('background history listing includes native channel source without changing conversation or configuration',async()=>{
+ const f=fixture(),{scope}=await f.service.action('load');
+ f.respond('/api/assistant/conversations',async()=>({status:200,body:Buffer.from(JSON.stringify({items:[{thread_id:'channel-thread',title:'Synthetic channel',channel_type:'wecom'}]}))}));
+ const list=await f.service.action('history-list',{scope});
+ assert.equal(list.sessions[0].channel_type,'wecom');
+ assert.equal(f.sockets.length,0);
+ assert(!f.routes.some(r=>r.method==='PATCH'));
+ f.switchBox();await assert.rejects(f.service.action('history-list',{scope}),{code:'DIALOGUE_CONTEXT_CHANGED'});f.service.close();
+});
+
+test('older boxes enrich original source from native threads without leaking routing metadata',async()=>{
+ const f=fixture();
+ f.respond('/api/agents/private-default/threads?limit=10000',async()=>({status:200,body:Buffer.from(JSON.stringify([{thread_id:'thread-1',channel_type:'weixin',session_key:'private-routing-subject',channel_id:'private-bot'}]))}));
+ const loaded=await f.service.action('load');assert.equal(loaded.sessions[0].channel_type,'weixin');assert(!JSON.stringify(loaded.sessions).includes('private-'));
+ f.respond('/api/assistant/conversations',async()=>({status:200,body:Buffer.from('{"items":[{"thread_id":"new-unresolved"}]}')}));
+ const rows=await f.service.action('history-list',{scope:loaded.scope});assert.equal(rows.sessions[0].channel_type,'unknown');f.service.close();
+});
+
+
+test('restricted team context does not restore local source defaults',async()=>{
+ const f=fixture({serviceFactory:createScopedDialogue,edition:'team',resolveDataContext:()=>({ownerKey:'synthetic-local-owner',interactionKey:'synthetic-local-interaction'})});
+ const result=await f.service.action('load');
+ assert.equal(result.capabilities.space,false);assert.equal(result.capabilities.knowledge,false);
+ assert.equal(result.settings.space.enabled,false);assert.equal(result.settings.knowledge.enabled,false);
+ const defaults=await f.service.action('release-context',{scope:result.scope});
+ assert.equal(defaults.context.space.enabled,false);
+ assert(!f.routes.some(r=>r.path.startsWith('/api/assistant/context/defaults')));
+ f.service.close();
 });

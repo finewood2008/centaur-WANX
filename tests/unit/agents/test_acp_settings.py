@@ -99,3 +99,60 @@ def test_migrate_legacy_per_agent_runners(
     cfg = json.loads(row.config_json or "{}")
     assert "runners" not in (cfg.get("acp") or {})
     assert cfg["acp"]["tool_enabled"] is True
+
+
+_BUNDLED_CODEX = {
+    "codex": {
+        "command": "codex",
+        "args": ["app-server"],
+        "trusted": True,
+        "enabled": True,
+    }
+}
+
+
+def test_caller_default_enables_bundled_runner_without_persisting_it(
+    acp_store: tuple[ACPSettingsStore, AgentRepo, int],
+) -> None:
+    store, _, user_id = acp_store
+    ordinary = store.load_runners(user_id)
+    bundled = store.load_runners(user_id, defaults=_BUNDLED_CODEX)
+    assert bundled["codex"]["enabled"] is True
+    assert bundled["codex"]["command"] == "codex"
+    assert bundled["codex"]["args"] == ["app-server"]
+    assert bundled["codex"]["trusted"] is True
+    assert store.load_runners(user_id) == ordinary
+    assert store.load_runners(user_id + 1) == ordinary
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_saved_runner_replaces_caller_default_as_a_complete_entry(
+    acp_store: tuple[ACPSettingsStore, AgentRepo, int], enabled: bool
+) -> None:
+    store, _, user_id = acp_store
+    store.save_runners(
+        user_id,
+        {"codex": {"enabled": enabled, "command": "custom-codex", "args": ["custom"]}},
+    )
+    saved = store.load_runners(user_id)
+    assert store.load_runners(user_id, defaults=_BUNDLED_CODEX) == saved
+    assert saved["codex"]["enabled"] is enabled
+    assert saved["codex"]["command"] == "custom-codex"
+
+
+def test_legacy_disabled_runner_is_preserved_and_defaults_are_not_migrated(
+    acp_store: tuple[ACPSettingsStore, AgentRepo, int],
+) -> None:
+    store, agents, user_id = acp_store
+    agents.create(
+        agent_id="legacy-codex",
+        user_id=user_id,
+        name="legacy",
+        config_json=json.dumps(
+            {"acp": {"tool_enabled": True, "runners": {"codex": {"enabled": False}}}}
+        ),
+    )
+    runners = store.load_runners(user_id, defaults=_BUNDLED_CODEX)
+    assert runners["codex"]["enabled"] is False
+    assert runners["codex"]["args"] != ["app-server"]
+    assert store.load_runners(user_id)["codex"] == runners["codex"]

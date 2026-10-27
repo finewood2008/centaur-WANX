@@ -14,9 +14,5 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["wanx_studio"]
 
-[tool.hatch.build.hooks.custom]
-path = "wanx_studio/_build.py"
-foundation-policy = "../core/wanx-foundation.json"
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

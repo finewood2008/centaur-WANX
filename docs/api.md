@@ -587,3 +587,10 @@ All routes below require the owner of the private, trusted Zhijun primary agent.
 | POST | `/api/agents/{agent_id}/ontology/changes/{relation_id}` | `action` change/exception/reject, `expected_version` (relation), `source_version`, `target_version`, `request_id`, optional `note` (required for exception). Returns status ready or stale; never silently overwrites changed versions. |
 
 Request bodies reject unknown fields. Interview replies have an `InterviewView` schema; changes return `ChangeView[]`. Progress stores no answers. A change confirmation atomically checkpoints the two claims and records the relation decision in the existing ontology document; raw memory records remain unchanged. `GET .../ontology/context/{thread_id}` also returns `changes`, and those candidates are excluded from its ordinary pending confirmation list. Model-generated relation resolution fields are discarded; only an explicit owner action can set them.
+
+
+### New-conversation source defaults / 新对话资料默认选择
+
+`GET/PATCH /api/assistant/context/defaults?data_scope=personal|team` reads or remembers the last explicitly selected Space and knowledge scopes for future drafts. The body is `ConversationContext`; the response contains `context` and `validation_errors`. Values are stored per authenticated account on the actual box, separately for the existing personal/team data contexts. Saving a template creates no grant. Unavailable selections are retained with explicit validation errors and must pass authorization again before a send. New drafts copy the template; existing conversations are never modified, and merely reopening history does not update defaults. Sending still validates and creates or renews conversation-bound two-hour grants.
+
+新对话沿用最后一次手动选择的空间、星图开关及范围；历史对话保持独立配置。默认选择不等于授权，发送时仍需重新校验。尚无模板时默认关闭。客户端团队云身份仍沿用已确认的资料能力限制，不恢复被禁止的来源选择。

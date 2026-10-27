@@ -6,12 +6,19 @@ import time
 import pytest
 from test_studio import svc,seeded,op
 from wanx_studio.contracts import StudioError,digest
+from wanx_studio.edits import ACTIVE,STOPPED
 from wanx_studio.versions import verify
 
 
 async def wait(svc,pid):
     for _ in range(500):
-        if ('alice',pid) not in svc.edits.jobs:return svc.edits.result('alice',pid)
+        result=svc.edits.result('alice',pid)
+        states=[edit['state'] for edit in result['items']]
+        pending=next((state for state in states if state in ACTIVE|STOPPED|{'queued'}),None)
+        # Dispatch awaits the upgrade guard after persisting preparing, before
+        # registering a job. A stopped head can also leave queued followers.
+        if ('alice',pid) not in svc.edits.jobs and not any(state in ACTIVE for state in states) and (pending is None or pending in STOPPED or getattr(svc,'closing',False)):
+            return result
         await asyncio.sleep(.01)
     raise AssertionError('edit did not finish')
 
@@ -147,6 +154,27 @@ async def test_failed_edit_retries_once_and_restoration_keeps_records(svc,pipeli
     assert restored['versioning']['adoptedHash'] is None
     new=svc.open_runtime('alice',p['id'],restored['artifacts'][-1]['hash'],'preview')['session']
     assert (await svc.invoke('alice',new,'data.list',{'collection':'items'}))['items'][0]['_id']==row['_id']
+
+
+async def test_failed_head_stops_queued_followers_until_explicit_retry(svc,pipeline,monkeypatch):
+    p=await seeded(svc);entered=asyncio.Event();release=asyncio.Event();execute=pipeline[1];attempts=0
+    async def fail_first(*args):
+        nonlocal attempts
+        attempts+=1
+        if attempts==1:
+            entered.set();await release.wait();raise StudioError('ISOLATION_UNAVAILABLE',409)
+        await execute(*args)
+    monkeypatch.setattr(svc.runner,'execute',fail_first)
+    await svc.edits.submit('alice',p['id'],body(p,'先改标题'));await entered.wait()
+    current=svc.edits.result('alice',p['id'])['project']
+    await svc.edits.submit('alice',p['id'],body(current,'再改颜色'))
+    release.set();result=await wait(svc,p['id'])
+    assert [edit['state'] for edit in result['items']]==['failed','queued']
+    assert attempts==1 and len(result['project']['artifacts'])==1
+    await svc.edits.retry('alice',p['id'],result['items'][0]['id'],{'contextId':'qa'})
+    result=await wait(svc,p['id'])
+    assert [edit['state'] for edit in result['items']]==['completed','completed']
+    assert attempts==3 and len(result['project']['artifacts'])==3
 
 
 async def test_restart_recovers_draft_without_automatically_repeating_build(svc,pipeline):
