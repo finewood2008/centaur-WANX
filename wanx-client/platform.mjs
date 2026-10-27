@@ -22,6 +22,18 @@ const routeFailures = new Set([
   "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EPIPE",
 ]);
 
+// Production has a compiled-in network pin, so its same-identity engine can
+// warm while cloud authority is checked. Custom Consumer endpoints must still
+// discover their network endpoint from the authenticated server response.
+function defaultManagementURL(consumerURL) {
+  if (!consumerURL) return "https://p2p.qeeshu.com";
+  try {
+    const authority = new URL(consumerURL);
+    return authority.origin === "https://boss.nexusaos.qitus.cn" &&
+      !authority.username && !authority.password ? "https://p2p.qeeshu.com" : null;
+  } catch { return null; }
+}
+
 /** Consumer authority owns enrollment and box selection. All credentials stay in main. */
 export function createPlatformClient({
   account,
@@ -31,7 +43,7 @@ export function createPlatformClient({
   localDataAccess,
   creditsServiceURL = "",
   consumerURL,
-  managementURL = consumerURL ? null : "https://p2p.qeeshu.com",
+  managementURL = defaultManagementURL(consumerURL),
   readPreference = async () => true,
   writePreference = async () => {},
   renewIntervalMs = 60_000,
