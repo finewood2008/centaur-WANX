@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import semver from "semver";
+import { validClientEdition, editionForApplicationId, editionMatchesChannel } from "../updates/edition.mjs";
 import { TEST_APP_ID, TEST_PRODUCT_NAME, TEST_EXTENSION, isTestClientIdentity } from "../updates/test-build.mjs";
 import { canonicalJSON, secureURL, verifyRelease } from "../updates/contracts.mjs";
 import { verifyClientBlockMap } from "./client-blockmap.mjs";
@@ -27,11 +28,17 @@ export async function signClientRelease({ reportPath, artifactURL, blockMapURL, 
       report.build?.distributionClass !== distributionClass || !verifiedSource ||
       !["arm64", "x64"].includes(report.arch) || semver.valid(report.version) !== report.version)
     throw new Error(testOnly ? "只接受隔离测试包的真实系统签名与源码快照验证报告。" : "只接受已完成系统签名验证且包含构建身份的正式 macOS 或 Windows 客户端验证报告。");
+  const applicationEdition = editionForApplicationId(report.appId, { testOnly });
+  const edition = Object.hasOwn(report, "edition") ? report.edition : testOnly ? null : applicationEdition;
+  if (!validClientEdition(edition) || edition !== applicationEdition) throw new Error("客户端验证报告缺少可核验的版别或与应用 ID 不一致。");
   const releaseChannel = channel ?? report.build.channel;
   if (typeof releaseChannel !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(releaseChannel))
     throw new Error("发行渠道无效。");
   if (testOnly && releaseChannel !== testIdentity.channel)
     throw new Error("隔离测试发行只能使用构建报告中的专用测试渠道。");
+  if (!editionMatchesChannel(edition, report.build.channel, testOnly ? testIdentity : undefined) ||
+      !editionMatchesChannel(edition, releaseChannel, testOnly ? testIdentity : undefined))
+    throw new Error("客户端版别与发行渠道不匹配。");
   const artifact = report.updateArtifact;
   const sha256 = createHash("sha256"), sha512 = createHash("sha512");
   for await (const chunk of createReadStream(artifact.path)) { sha256.update(chunk); sha512.update(chunk); }
@@ -58,7 +65,7 @@ export async function signClientRelease({ reportPath, artifactURL, blockMapURL, 
   const signerFingerprint = createHash("sha256").update(createPublicKey(key).export({ type: "spki", format: "der" })).digest("hex");
   if (!Object.hasOwn(report.updateTrust || {}, keyId) || report.updateTrust[keyId] !== signerFingerprint)
     throw new Error("发行签名密钥不在安装包已验证的更新信任根中，请检查 key-id 与公钥配置。");
-  const payload = { schemaVersion: 1, purpose: "wanx.release.v1", releaseId, product: "wanx-client", version: report.version,
+  const payload = { schemaVersion: 1, purpose: "wanx.release.v1", releaseId, product: "wanx-client", edition, version: report.version,
     ...(forceUpdate ? { forceUpdate: true } : {}),
     buildId: report.build.buildId, metadataSequence, securityEpoch: report.build.securityEpoch, channel: releaseChannel,
     ...(testOnly ? { sourceSnapshot: report.build.sourceSnapshot,

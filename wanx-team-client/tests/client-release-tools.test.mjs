@@ -27,7 +27,7 @@ test("release tool signs exact verified bytes, refuses internal reports, tamperi
   await writeFile(file, bytes);
   const { publicKey, privateKey } = generateKeyPairSync("ed25519"), privateKeyPath = path.join(root, "test-only.pem");
   await writeFile(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
-  const report = { version: "2.0.0", platform: "macos", signed: true, notarized: true, distributionClass: "formal", arch: "arm64",
+  const report = { version: "2.0.0", appId: "ai.centuarai.wanx.client", platform: "macos", signed: true, notarized: true, distributionClass: "formal", arch: "arm64",
     updateTrust: clientTrustFingerprints({ schemaVersion: 1, keys: { "test-only": publicKey.export({ type: "spki", format: "pem" }) } }),
     build: { distributionClass: "formal", buildId: "build-2", channel: "stable", securityEpoch: 2,
       sourceCommit: "a".repeat(40), sourceDirty: false },
@@ -101,7 +101,7 @@ test("release signing binds the exact final blockmap bytes and refuses missing, 
   const { publicKey, privateKey } = generateKeyPairSync("ed25519"), privateKeyPath = path.join(root, "test-only.pem");
   const publicPem = publicKey.export({ type: "spki", format: "pem" });
   await writeFile(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
-  const report = { version: "2.0.0", platform: "macos", signed: true, notarized: true, distributionClass: "formal", arch: "arm64",
+  const report = { version: "2.0.0", appId: "ai.centuarai.wanx.client", platform: "macos", signed: true, notarized: true, distributionClass: "formal", arch: "arm64",
     updateTrust: clientTrustFingerprints({ schemaVersion: 1, keys: { fixture: publicPem } }),
     build: { distributionClass: "formal", buildId: "build-2", channel: "stable", securityEpoch: 0,
       sourceCommit: "a".repeat(40), sourceDirty: false },
@@ -152,7 +152,7 @@ test("release signing binds the exact final blockmap bytes and refuses missing, 
 test("formal Windows build pins certificate, publisher, current-user NSIS scope and forbids unsigned fallback", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const input = { pkg, version: "2.0.0", arch: "x64", out: "output", trustFile: "production-trust.json",
-    publisherName: "Example Publisher", certificateSha1: "a".repeat(40), build: { buildId: "test-build" } };
+    publisherName: "Example Publisher", certificateSha1: "a".repeat(40), build: { buildId: "test-build", channel: pkg.wanxEdition === "team" ? "stable-studio" : "stable" } };
   const config = windowsReleaseConfiguration(input);
   await validateConfiguration(config, { isEnabled: false });
   assert.equal(config.forceCodeSigning, true); assert.equal(config.win.forceCodeSigning, true);
@@ -247,6 +247,8 @@ for (const arch of ["arm64", "x64"]) test(`formal macOS ${arch} verifies the act
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const report = await packageClient({ version: "2.0.0", arch, out, trustFile, notaryProfile: "fixture" });
+  assert.equal(report.edition, pkg.wanxEdition);
+  assert.equal(packed.wanxEdition, pkg.wanxEdition);
   assert.deepEqual(report.updateTrust, clientTrustFingerprints(trust));
   assert.equal(report.nativeBinaries.engine.sha256, createHash("sha256").update("fixture").digest("hex"));
   assert.equal(report.updateArtifact.notarized, true);
@@ -285,7 +287,7 @@ test("Windows Authenticode gate rejects invalid signatures, publisher mismatch a
 test("source changes produce different build identities without changing the product version", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "wanx-build-identity-")); t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of ["shell", "updates", "applications", "local-ui", "account", "app-host", "network", "octop"]) await mkdir(path.join(root, directory));
-  await writeFile(path.join(root, "package.json"), JSON.stringify({ version: "1.0.0" }));
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ version: "1.0.0", wanxEdition: "team" }));
   for (const file of ["client.mjs", "platform.mjs"]) await writeFile(path.join(root, file), "initial");
   const app = { getAppPath: () => root, getVersion: () => "1.0.0", isPackaged: false };
   const before = await readClientIdentity({ app });

@@ -42,6 +42,28 @@ test("settings show build identity and unknown box evidence without claiming cur
   assert.doesNotMatch(h.app.innerHTML, /已是.*最新|data-action="updates-client-install"/);
 });
 
+for (const [phase, code, guidance] of [
+  ["development", "UPDATE_DEVELOPMENT_BUILD", /这是开发构建，请使用正式发行包/],
+  ["unavailable", "UPDATE_NOT_CONFIGURED", /当前未配置正式更新/],
+  ["unavailable", "UPDATE_INSTALL_LOCATION_UNSUPPORTED", /当前安装位置不支持应用内更新/],
+  ["idle", "ACCOUNT_LOGIN_REQUIRED", /请先登录万象平台账号，再检查更新/],
+  ["blocked", "UPDATE_EDITION_MISMATCH", /此更新包与当前客户端版本类型不一致/],
+]) {
+  test(`client update check remains actionable in ${phase} (${code}) and explains its local gate`, async () => {
+    const initial = state();
+    initial.account.phase = "authenticated";
+    initial.upgrades.client = { ...client, current: { ...client.current, channel: "stable-studio" }, phase, reason: code };
+    const h = await harness(initial, async action => action === "updates.client.check" ? { ok: false, code } : undefined);
+    const button = h.app.innerHTML.match(/<button[^>]*data-action="updates-client-check"[^>]*>[^<]*<\/button>/)?.[0];
+    assert.ok(button, "version settings must offer a client update check");
+    assert.doesNotMatch(button, /disabled/);
+    await h.click("updates-client-check");
+    assert.equal(h.calls.filter(call => call.action === "updates.client.check").length, 1);
+    assert.match(h.app.innerHTML, guidance);
+    assert.doesNotMatch(h.app.innerHTML, /data-action="updates-client-(?:download|install)"|最近检查未发现适用更新/);
+  });
+}
+
 test("reported installed versions without running evidence stay unverified", async () => {
   const h = await harness(state({ phase: "blocked", reason: "INVENTORY_UNKNOWN", inventory: {
     updaterVersion: "1.1.0", otaReady: false, suiteVersion: null,

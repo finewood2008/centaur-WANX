@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validClientEdition, editionForApplicationId } from "../updates/edition.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -11,7 +12,7 @@ export async function readSourceClientManifest(root) {
   const file = path.join(root, "package.json");
   const text = await readFile(file, "utf8");
   const pkg = JSON.parse(text);
-  if (pkg.name !== "centuarai-wanx-client" || pkg.main !== "shell/entry.mjs" || pkg.wanxBuild ||
+  if (pkg.wanxEdition !== "personal" || editionForApplicationId(pkg.build?.appId) !== pkg.wanxEdition || pkg.name !== "centuarai-wanx-client" || pkg.main !== "shell/entry.mjs" || pkg.wanxBuild ||
       pkg.build?.appId !== "ai.centuarai.wanx.client" || !pkg.scripts?.start || !pkg.scripts?.test ||
       !pkg.devDependencies?.electron || !pkg.dependencies?.["electron-updater"] ||
       !pkg.build?.files?.includes("updates/**"))
@@ -26,8 +27,11 @@ export async function assertSourceClientManifestUnchanged(snapshot) {
 
 // Unlike `asar extract-file`, this reads into memory and never writes a file
 // named package.json into the working directory.
-export function readPackagedClientManifest(archive) {
-  return JSON.parse(require("@electron/asar").extractFile(archive, "package.json").toString("utf8"));
+export function readPackagedClientManifest(archive, expectedEdition) {
+  const pkg = JSON.parse(require("@electron/asar").extractFile(archive, "package.json").toString("utf8"));
+  if (expectedEdition !== undefined && (!validClientEdition(expectedEdition) || pkg.wanxEdition !== expectedEdition))
+    throw new Error("CLIENT_PACKAGE_EDITION_MISMATCH");
+  return pkg;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
