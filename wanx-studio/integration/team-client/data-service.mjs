@@ -15,20 +15,23 @@ export function starlinkTarget(input={}){
      (input.warehouseId!=null&&!/^[a-f0-9-]{36}$/.test(input.warehouseId))||!VIEWS.has(input.view||'graph'))throw fail('TEAM_DATA_TARGET_INVALID');
   return {kind:'team-data',version:1,warehouseId:input.warehouseId||null,view:input.view||'graph'};
 }
-function createBaseTeamDataService({client,applications,selectFiles,starlinkPackageDir,writeClipboard,getMcpDetails,knowledgeCapabilities,emit=()=>{}}){
+function createBaseTeamDataService({client,applications,selectFiles,starlinkPackageDir,writeClipboard,getMcpDetails,knowledgeCapabilities,identitySecurityEnabled=true,emit=()=>{}}){
+  const secure=identitySecurityEnabled!==false;
   let service,serviceConnection,creating,scopeKey,link,share,disposed=false,scopeRevision=0,selectedWarehouse=null;
-  const key=()=>{const s=client.snapshot();return s.phase==='ready'?JSON.stringify([s.dataIdentity?.profileId,s.dataIdentity?.generation,s.dataIdentity?.selected?.principalId,s.dataIdentity?.selected?.bindingId,s.connection?.deviceId]):null};
+  const key=()=>{const s=client.snapshot();return s.phase==='ready'?JSON.stringify(secure?[s.dataIdentity?.profileId,s.dataIdentity?.generation,s.dataIdentity?.selected?.principalId,s.dataIdentity?.selected?.bindingId,s.connection?.deviceId]:[s.account?.accountId,s.account?.clientId,s.connection?.deviceId]):null};
   const invalidate=()=>{scopeRevision++;const old=service;service=null;serviceConnection=null;creating=null;scopeKey=null;link=null;selectedWarehouse=null;old?.close();share?.clear();emit({type:'invalidated'})};
   const stop=client.subscribe(()=>{if(scopeKey&&scopeKey!==key())invalidate()});
   async function identity(){
     if(disposed)throw fail('TEAM_SESSION_CHANGED');
     const next=key();if(!next)throw fail('TEAM_SESSION_CHANGED');
-    const connection=await client.applicationConnection();
+    const connection=await client.applicationConnection(secure?undefined:'wanx');
+    const context=connection.context(),state=client.snapshot();
+    if(!secure&&(context.protocolVersion!==1||context.authorization!=null||context.dataIdentity||state.account?.phase!=='authenticated'||!context.accountId||!context.clientId||!context.boxId||context.accountId!==state.account.accountId||context.clientId!==state.account.clientId||context.boxId!==state.connection?.deviceId)){invalidate();throw fail('TEAM_IDENTITY_INVALID')}
     const response=await connection.request({path:'/api/auth/me'});
     if(next!==key())throw fail('TEAM_SESSION_CHANGED');
     if(response.status!==200){invalidate();throw fail('TEAM_LOGIN_EXPIRED')}
     const me=JSON.parse(response.body.toString('utf8'));
-    if(!me.team?.permissions?.includes('resources.manage')||me.role!=='user'||me.application_id!=='wanx'||connection.context().authorization!=='local-trust-v1'){invalidate();throw fail('TEAM_ADMIN_REQUIRED')}
+    if(secure?(!me.team?.permissions?.includes('resources.manage')||me.role!=='user'||me.application_id!=='wanx'||connection.context().authorization!=='local-trust-v1'):(me.role!=='admin'||me.application_id!=='wanx'||!Number.isSafeInteger(me.id)||me.id<=0||me.id!==context.user?.id)){invalidate();throw fail('TEAM_ADMIN_REQUIRED')}
     if(scopeKey&&scopeKey!==next)invalidate();
     scopeKey=next;link=connection;return {connection,me,next};
   }
@@ -39,7 +42,8 @@ function createBaseTeamDataService({client,applications,selectFiles,starlinkPack
       async request(input){
         assertLive();await identity();assertLive();
         const headers={...input.headers};delete headers['x-wanx-data-context'];
-        if(/^\/api\/semantica\//.test(input.path)&&!input.path.startsWith('/api/semantica/open/')) {
+        if(!secure&&/^\/api\/semantica\//.test(input.path)&&!input.path.startsWith('/api/semantica/open/'))headers['x-wanx-data-context']='team';
+        if(secure&&/^\/api\/semantica\//.test(input.path)&&!input.path.startsWith('/api/semantica/open/')) {
           const url=new URL(input.path,'https://local.invalid');
           let bodyWarehouse=null; if(input.body instanceof Uint8Array && input.body.byteLength<=1048576 && Object.entries(headers).some(([name,value])=>name.toLowerCase()==='content-type'&&value==='application/json')){try{bodyWarehouse=JSON.parse(Buffer.from(input.body).toString('utf8')).warehouse_id||null}catch{throw fail('TEAM_DATA_REQUEST_INVALID')}}
           const warehouse=/^\/api\/semantica\/warehouses\/([a-f0-9-]{36})(?:\/|$)/.exec(url.pathname)?.[1] || url.searchParams.get('warehouse_id') || bodyWarehouse || target?.warehouseId || selectedWarehouse;
@@ -87,7 +91,7 @@ function createBaseTeamDataService({client,applications,selectFiles,starlinkPack
     creating=pending;
     try{return await pending}finally{if(creating===pending)creating=null}
   }
-  share=createDataShareAccess({identity,instance,writeClipboard,getMcpDetails,knowledgeCapabilities});
+  share=createDataShareAccess({identity,instance,writeClipboard,getMcpDetails,knowledgeCapabilities,identitySecurityEnabled});
   return {connection,
     async action(action,input={}){
       if(action==='release-share-key')return share.action(action,input);
@@ -117,7 +121,7 @@ function createBaseTeamDataService({client,applications,selectFiles,starlinkPack
       }
       if(!ACTIONS.has(action))throw fail('TEAM_DATA_ACTION_DENIED');
       if(action==='select-warehouse'){if(input.warehouseId&&!/^[a-f0-9-]{36}$/.test(input.warehouseId))throw fail('TEAM_DATA_TARGET_INVALID');selectedWarehouse=input.warehouseId||null}
-      if(action==='warehouses'){
+      if(secure&&action==='warehouses'){
         const {connection:link}=await identity();const grants=link.context().dataIdentity?.grants||[];const items=[];
         for(const grant of grants.filter(row=>/^team:knowledge:[a-f0-9-]{36}$/.test(row.resourceId))){
           const scope=await connection({warehouseId:grant.resourceId.slice('team:knowledge:'.length)});
@@ -126,7 +130,8 @@ function createBaseTeamDataService({client,applications,selectFiles,starlinkPack
           if(!Array.isArray(result.items))throw fail('TEAM_DATA_RESPONSE_INVALID');items.push(...result.items);
         }return {items};
       }
-      if(action==='create-warehouse'){
+      if(!secure&&action==='create-warehouse')input={name:input.name,description:input.description||'',operationId:randomUUID()};
+      if(secure&&action==='create-warehouse'){
         const {connection:current}=await identity();let candidate=null;
         for(const grant of current.context().dataIdentity?.grants||[]){
           if(!/^team:knowledge:[a-f0-9-]{36}$/.test(grant.resourceId)||!grant.actions.includes('write'))continue;

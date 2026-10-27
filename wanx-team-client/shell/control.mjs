@@ -82,6 +82,7 @@ export function registerControlActions({
   setDesktopStartup,
   showAbout,
   openDeviceTrust,
+  identitySecurity,
   quit,
   allowDevelopmentInstall = false,
   timings = null,
@@ -460,6 +461,10 @@ export function registerControlActions({
   register("desktop-startup-set", (input) => {
     if (typeof input?.enabled !== "boolean") throw new Error("invalid_startup_setting");
     return setDesktopStartup?.(input.enabled);
+  });
+  register("identity-security-set", input => {
+    if (!identitySecurity) throw new Error("IDENTITY_SECURITY_UNAVAILABLE");
+    return identitySecurity.set(input);
   });
   register("desktop-about", () => showAbout?.());
   register("desktop-quit", () => quit?.());

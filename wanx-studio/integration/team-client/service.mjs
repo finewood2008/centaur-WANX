@@ -6,28 +6,34 @@ import {writeMiniappPackage} from '../../core/package.mjs';
 const fail=code=>Object.assign(new Error(code),{code});
 const integer=v=>Number.isSafeInteger(v)&&v>0;
 const membershipDigest=value=>{if(typeof value!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(value))return false;const decoded=Buffer.from(value,'base64url');return decoded.length===32&&decoded.toString('base64url')===value};
-export function createTeamService({client,applications,assets,deviceTrust,openDeviceTrust}){
+const nativeMemberId=value=>integer(Number(value))&&String(Number(value))===String(value);
+export function createTeamService({client,applications,assets,deviceTrust,openDeviceTrust,identitySecurityEnabled=true}){
+  const secure=identitySecurityEnabled!==false;
+  const nativeContext=c=>{const state=client.snapshot();if(c.protocolVersion!==1||c.authorization!=null||c.dataIdentity||!integer(c.user?.id)||state.account?.phase!=='authenticated'||!['ready','recovering'].includes(state.phase)||!c.accountId||!c.clientId||!c.boxId||c.accountId!==state.account.accountId||c.clientId!==state.account.clientId||c.boxId!==state.connection?.deviceId)throw fail('TEAM_IDENTITY_INVALID')};
+  const nativeMember=member=>({...member,membershipId:String(member.id),subject:member.display_name||member.username,roleId:member.role==='admin'?'manager':'member',status:member.disabled?'disabled':'active'});
   const pendingTeamReads=new Map();
   const teamState=s=>{const context=s.link.context(),key=JSON.stringify([context.boxId,context.principalId,context.dataIdentity?.bindingId,context.dataIdentity?.generation]);let pending=pendingTeamReads.get(key);if(!pending){pending=deviceTrust.refreshTeam({boxId:s.me.team.boxId}).finally(()=>{if(pendingTeamReads.get(key)===pending)pendingTeamReads.delete(key)});pendingTeamReads.set(key,pending)}return pending};
   async function session(){
-    const link=await client.applicationConnection();
+    const link=await client.applicationConnection(secure?undefined:'wanx');
     const c=link.context();
+    if(!secure)nativeContext(c);
     const request=async(route,method='GET',body,resource)=>{
-      link.context();const r=await link.request({path:route,method,headers:{...(body?{'content-type':'application/json'}:{}),...(resource?{'x-wanx-data-context':resource}:{})},...(body?{body:Buffer.from(JSON.stringify(body))}:{})});link.context();
+      if(!secure)nativeContext(link.context());else link.context();const r=await link.request({path:route,method,headers:{...(body?{'content-type':'application/json'}:{}),...(secure&&resource?{'x-wanx-data-context':resource}:{})},...(body?{body:Buffer.from(JSON.stringify(body))}:{})});if(!secure)nativeContext(link.context());else link.context();
       if(r.body.length>8*1024*1024)throw fail('TEAM_RESPONSE_TOO_LARGE');
       let value;try{value=r.body.length?JSON.parse(r.body.toString('utf8')):null}catch{throw fail('TEAM_RESPONSE_INVALID')}
       if(r.status<200||r.status>=300){const code=typeof value?.code==='string'&&/^[A-Z_]+$/.test(value.code)?value.code:[401,403].includes(r.status)?'TEAM_PERMISSION_DENIED':r.status===404?'TEAM_SERVICE_UNAVAILABLE':'TEAM_REQUEST_FAILED';throw Object.assign(fail(code),{status:r.status})}return value;
     };
     const me=await request('/api/auth/me');
-    if(!integer(me.id)||me.id!==c.user.id||me.application_id!=='wanx'||me.role!=='user'||c.authorization!=='local-trust-v1'||!me.team||me.team.principalId!==c.principalId||!Array.isArray(me.team.permissions))throw fail('TEAM_IDENTITY_INVALID');
+    if(!integer(me.id)||me.id!==c.user?.id||me.application_id!=='wanx'||(secure?(me.role!=='user'||c.authorization!=='local-trust-v1'||!me.team||me.team.principalId!==c.principalId||!Array.isArray(me.team.permissions)):!['admin','user'].includes(me.role)))throw fail('TEAM_IDENTITY_INVALID');
     return {request,link,me};
   }
-  const manages=me=>me.team.permissions.includes('applications.manage');
-  const identity=me=>({membershipId:me.team.membershipId,principalId:me.team.principalId,username:me.username,displayName:me.display_name||me.username,roleId:me.team.roleId,permissions:[...me.team.permissions]});
-  const directory=async s=>{if(!s.me.team.permissions.includes('members.read'))throw fail('TEAM_PERMISSION_DENIED');return (await teamState(s)).members};
+  const manages=me=>secure?me.team.permissions.includes('applications.manage'):me.role==='admin';
+  const identity=me=>secure?({membershipId:me.team.membershipId,principalId:me.team.principalId,username:me.username,displayName:me.display_name||me.username,roleId:me.team.roleId,permissions:[...me.team.permissions]}):({id:me.id,membershipId:String(me.id),username:me.username,displayName:me.display_name||me.username,roleId:me.role==='admin'?'manager':'member',permissions:me.role==='admin'?['applications.manage','members.read','resources.manage']:[]});
+  const directory=async s=>{if(!secure)return (await s.request('/api/users')).map(nativeMember);if(!s.me.team.permissions.includes('members.read'))throw fail('TEAM_PERMISSION_DENIED');return (await teamState(s)).members};
   async function ready(s){const c=await s.request('/api/app-studio/context');if(c.features?.teamPublishing!==1)throw fail('TEAM_PUBLISHING_UNAVAILABLE')}
   async function catalog(s){
     if(!manages(s.me)){
+      if(!secure){await ready(s);return (await s.request('/api/app-studio/projects')).projects}
       const items=[];for(const grant of s.link.context().dataIdentity?.grants||[]){
         const match=/^team:application:(ai\.wanx\.selfmade\.[a-f0-9]{32})$/.exec(grant.resourceId);if(!match||!grant.actions.includes('read'))continue;
         const item=await s.request('/api/app-studio/apps/'+match[1],'GET',undefined,grant.resourceId);
@@ -49,16 +55,16 @@ export function createTeamService({client,applications,assets,deviceTrust,openDe
     return {route,product,deployment};
   }
   function audienceMembers(input,members){
-    const selected=[...new Set(input.members||[])];
-    if(!['all','selected'].includes(input.audience)||input.audience==='selected'&&(!selected.length||selected.some(id=>!membershipDigest(id)||!members.some(m=>m.membershipId===id&&m.status==='active'))))throw fail('TEAM_MEMBERS_REQUIRED');
+    const selected=[...new Set((input.members||[]).map(id=>secure?id:String(id)))];
+    if(!['all','selected'].includes(input.audience)||input.audience==='selected'&&(!selected.length||selected.some(id=>!(secure?membershipDigest(id):nativeMemberId(id))||!members.some(m=>m.membershipId===id&&m.status==='active'))))throw fail('TEAM_MEMBERS_REQUIRED');
     return selected;
   }
   async function writeAudience(s,route,input,members,selected){
-    for(const member of members.filter(m=>m.status==='active'))await s.request(route+'/access','PUT',{membership_id:member.membershipId,enabled:input.audience==='all'||selected.includes(member.membershipId)||member.membershipId===s.me.team.membershipId});
+    for(const member of members.filter(m=>m.status==='active'))await s.request(route+'/access','PUT',{...(secure?{membership_id:member.membershipId}:{user_id:member.id}),enabled:input.audience==='all'||selected.includes(member.membershipId)||member.membershipId===identity(s.me).membershipId});
   }
   return {async action(operation,input={}){
-    if(['join','security','invite.create','invite.revoke','member.update'].includes(operation)){if(!openDeviceTrust)throw fail('LOCAL_TRUST_UNAVAILABLE');await openDeviceTrust({view:'team'});return {opened:true}}
-    if(operation==='login')throw fail('TEAM_CLOUD_LOGIN_REQUIRED');
+    if(secure&&['join','security','invite.create','invite.revoke','member.update'].includes(operation)){if(!openDeviceTrust)throw fail('LOCAL_TRUST_UNAVAILABLE');await openDeviceTrust({view:'team'});return {opened:true}}
+    if(['login','join','security'].includes(operation))throw fail('TEAM_CLOUD_LOGIN_REQUIRED');
     const s=await session();
     if(operation==='identity')return identity(s.me);
     if(operation==='catalog')return catalog(s);
@@ -72,11 +78,19 @@ export function createTeamService({client,applications,assets,deviceTrust,openDe
     }
     if(!manages(s.me))throw fail('TEAM_ADMIN_REQUIRED');
     if(operation==='members')return directory(s);
-    if(operation==='invites')return (await teamState(s)).invitations;
+    if(operation==='invites')return secure?(await teamState(s)).invitations:(await s.request('/api/users/invites')).map(invite=>({...invite,invitationId:String(invite.id),roleId:'member'}));
+    if(!secure&&operation==='invite.create')return s.request('/api/users/invites','POST',{note:String(input.note||'团队成员').slice(0,200),expires_in_days:7,role:'user'});
+    if(!secure&&operation==='invite.revoke'){if(!integer(input.id))throw fail('TEAM_INPUT_INVALID');return s.request('/api/users/invites/'+input.id+'/revoke','POST')}
+    if(!secure&&operation==='member.update'){
+      if(!integer(input.id)||input.id===s.me.id||Object.keys(input).some(k=>!['id','disabled','role'].includes(k)))throw fail('TEAM_INPUT_INVALID');
+      const body={};if('disabled'in input){if(typeof input.disabled!=='boolean')throw fail('TEAM_INPUT_INVALID');body.disabled=input.disabled}
+      if('role'in input){if(!['admin','user'].includes(input.role))throw fail('TEAM_INPUT_INVALID');body.role=input.role}
+      if(!Object.keys(body).length)throw fail('TEAM_INPUT_INVALID');return s.request('/api/users/'+input.id,'PATCH',body);
+    }
     if(operation==='publication'){
       const {route,product,deployment}=await publication(s,input),access=await s.request(route+'/access');
       const p=deployment.configuration.studio_team;
-      return {applicationId:input.applicationId,artifactHash:p.artifactHash,audience:p.audience,enabled:deployment.enabled,canPublish:product.created_by===s.me.id,members:access.filter(a=>a.enabled).map(a=>a.membership_id)};
+      return {applicationId:input.applicationId,artifactHash:p.artifactHash,audience:p.audience,enabled:deployment.enabled,canPublish:product.created_by===s.me.id,members:access.filter(a=>a.enabled).map(a=>secure?a.membership_id:String(a.user_id))};
     }
     if(operation==='publication-audience'){
       const {route,product,deployment}=await publication(s,input);
@@ -110,7 +124,7 @@ export function createTeamService({client,applications,assets,deviceTrust,openDe
       if(!/^ai\.wanx\.selfmade\.[a-f0-9]{32}$/.test(input.applicationId))throw fail('TEAM_INPUT_INVALID');const route='/api/admin/applications/'+input.applicationId+'/deployment';const p=await s.request(route);if(!p.configuration?.studio_team)throw fail('TEAM_APPLICATION_UNAVAILABLE');return s.request(route,'PUT',{enabled:false,resource_bindings:p.resource_bindings,configuration:p.configuration});
     }
     if(operation==='access'){
-      if(!/^ai\.wanx\.selfmade\.[a-f0-9]{32}$/.test(input.applicationId)||!membershipDigest(input.membershipId)||typeof input.enabled!=='boolean')throw fail('TEAM_INPUT_INVALID');return s.request('/api/admin/applications/'+input.applicationId+'/access','PUT',{membership_id:input.membershipId,enabled:input.enabled});
+      if(!/^ai\.wanx\.selfmade\.[a-f0-9]{32}$/.test(input.applicationId)||!(secure?membershipDigest(input.membershipId):integer(input.userId))||typeof input.enabled!=='boolean')throw fail('TEAM_INPUT_INVALID');return s.request('/api/admin/applications/'+input.applicationId+'/access','PUT',{...(secure?{membership_id:input.membershipId}:{user_id:input.userId}),enabled:input.enabled});
     }
     throw fail('TEAM_OPERATION_DENIED');
   },identity:async()=>identity((await session()).me)};

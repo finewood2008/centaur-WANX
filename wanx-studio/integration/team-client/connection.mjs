@@ -2,15 +2,21 @@ const fail = code => Object.assign(new Error(code), { code });
 
 // Team login always authenticates a Consumer account. A legacy local JWT is
 // retained only as a migration signal; it is never restored or exchanged.
-export function createTeamConnection({ base, localDataAccess, deviceTrust, store }) {
+export function createTeamConnection({ base, localDataAccess, deviceTrust, store, identitySecurityEnabled = true }) {
   let migrationRequired = false;
-  const snapshot = () => ({ ...base.snapshot(), team: { legacyMigrationRequired: migrationRequired } });
+  const snapshot = () => ({ ...base.snapshot(), team: { legacyMigrationRequired: migrationRequired, identitySecurityEnabled } });
   const trusted = () => {
     const state = base.snapshot();
+    if (!identitySecurityEnabled) {
+      if (state.account?.phase !== 'authenticated') throw fail('ACCOUNT_LOGIN_REQUIRED');
+      if (!state.connection?.deviceId || state.connection.authorization === 'local-trust-v1') throw fail('NETWORK_NOT_READY');
+      return;
+    }
     if (state.connection?.authorization !== 'local-trust-v1' || state.dataIdentity?.phase !== 'unlocked')
       throw fail('TEAM_DEVICE_APPROVAL_REQUIRED');
   };
   const connect = async (deviceId, options) => {
+    if (!identitySecurityEnabled) { await base.connectBox(deviceId, options); return snapshot(); }
     if (typeof deviceId !== 'string' || !deviceId || !localDataAccess?.isProtectedBox(deviceId))
       throw fail('TEAM_DEVICE_APPROVAL_REQUIRED');
     await base.connectLocalBox(deviceId, options);
@@ -32,7 +38,10 @@ export function createTeamConnection({ base, localDataAccess, deviceTrust, store
     async teamJoin() { throw fail('TEAM_DEVICE_APPROVAL_REQUIRED'); },
     connect: input => connect(input?.deviceId),
     connectBox: connect,
-    connectLocalBox: connect,
+    async connectLocalBox(...args) {
+      if (!identitySecurityEnabled) throw fail('LOCAL_TRUST_DISABLED');
+      return connect(...args);
+    },
     async applicationContext(...args) { trusted(); return base.applicationContext(...args); },
     async applicationConnection(...args) { trusted(); return base.applicationConnection(...args); },
     async applicationRequest(...args) { trusted(); return base.applicationRequest(...args); },

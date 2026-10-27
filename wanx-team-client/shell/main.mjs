@@ -82,6 +82,7 @@ import { createRecoveryFiles } from "./recovery-files.mjs";
 import { createBackupFiles } from "./backup-files.mjs";
 import { createDeviceTrustWindow } from "./device-trust-window.mjs";
 import { registerDeviceTrustLifecycle } from "./device-trust-lifecycle.mjs";
+import { createIdentitySecuritySettings } from "./identity-security.mjs";
 
 import { testPackageIdentity, TEST_APP_ID, TEST_PRODUCT_NAME } from "../updates/test-build.mjs";
 import { createTestUpdateRuntime } from "../updates/test-runtime.mjs";
@@ -167,6 +168,8 @@ if (process.argv.includes("--wanx-managed-app")) {
       const userData = app.getPath("userData");
       const safeStorage = process.platform === "darwin" ? createLocalEncryption({directory:userData}) : osSafeStorage;
       await protectPrivateDirectory(userData, { packaged: app.isPackaged });
+      const identitySecurity = await createIdentitySecuritySettings({ filePath: path.join(userData, "identity-security.json") });
+      const identitySecurityEnabled = identitySecurity.snapshot().active;
       if (process.argv.includes("--wanx-smoke-safe-storage")) {
         const smokeFile = path.join(userData, "smoke-account.enc");
         const smokeStore = createSecureAccountStore({ filePath: smokeFile, safeStorage });
@@ -236,21 +239,24 @@ if (process.argv.includes("--wanx-managed-app")) {
           ? timed(step, () => requestAccount(input))
           : requestAccount(input);
       };
-      const localVault = createIdentityVault({
-        directory: path.join(userData, "local-device-identity"),
-        protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
-      });
-      const recoveryFiles = createRecoveryFiles({ dialog, parentWindow: () => control, packaged: app.isPackaged });
-      const backupFiles = createBackupFiles({ dialog, parentWindow: () => control, packaged: app.isPackaged });
-      const localDataAccess = createLocalDataAccess({
-        vault: localVault,
-        stagingDirectory: path.join(userData, "local-data-staging"),
-        protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
-      });
-      const deviceTrust = await createDeviceTrustCoordinator({ account,
-        vault: localVault, files: recoveryFiles, backupFiles,
-        ensureBackupNamespace: input => localDataAccess.ensureBackupNamespace(input),
-      });
+      let recoveryFiles, backupFiles, localDataAccess, deviceTrust;
+      if (identitySecurityEnabled) {
+        const localVault = createIdentityVault({
+          directory: path.join(userData, "local-device-identity"),
+          protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
+        });
+        recoveryFiles = createRecoveryFiles({ dialog, parentWindow: () => control, packaged: app.isPackaged });
+        backupFiles = createBackupFiles({ dialog, parentWindow: () => control, packaged: app.isPackaged });
+        localDataAccess = createLocalDataAccess({
+          vault: localVault,
+          stagingDirectory: path.join(userData, "local-data-staging"),
+          protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
+        });
+        deviceTrust = await createDeviceTrustCoordinator({ account,
+          vault: localVault, files: recoveryFiles, backupFiles,
+          ensureBackupNamespace: input => localDataAccess.ensureBackupNamespace(input),
+        });
+      }
       client = createPlatformClient({
         account,
         localDataAccess,
@@ -302,7 +308,7 @@ if (process.argv.includes("--wanx-managed-app")) {
           };
         },
       });
-      client=createTeamConnection({base:client,localDataAccess,deviceTrust,store:createSecureAccountStore({filePath:path.join(userData,"team-server.enc"),safeStorage})});
+      client=createTeamConnection({base:client,localDataAccess,deviceTrust,identitySecurityEnabled,store:createSecureAccountStore({filePath:path.join(userData,"team-server.enc"),safeStorage})});
       const trustedKeys = await marketTrustedKeys();
       const releaseAccess = createApplicationReleaseAccess({ account });
       const authorizeRelease = (descriptor, options) => releaseAccess.authorize(descriptor, options);
@@ -469,10 +475,10 @@ if (process.argv.includes("--wanx-managed-app")) {
         window.webContents.on("will-attach-webview", event => event.preventDefault());
       }
       const knowledgeCapabilities = createKnowledgeCapabilities({ client });
-      const teamService=createTeamService({client,applications,deviceTrust,openDeviceTrust: input => deviceTrustWindow.open(input),assets:path.join(app.getAppPath(),"applications/studio-runtime")});
+      const teamService=createTeamService({client,applications,deviceTrust,identitySecurityEnabled,openDeviceTrust: identitySecurityEnabled ? input => deviceTrustWindow.open(input) : undefined,assets:path.join(app.getAppPath(),"applications/studio-runtime")});
       const teamTrusted=event=>isControlSender(event,control,controlURL);
       registerTeamIPC({ipcMain,isTrusted:teamTrusted,team:teamService});
-      teamDataService=createTeamDataService({client,applications,knowledgeCapabilities,getMcpDetails:()=>spaceLinks.mcpDetails("starlink"),writeClipboard:text=>clipboard.writeText(text),starlinkPackageDir:path.join(app.getAppPath(),"applications/starlink"),selectFiles:async()=>{const r=await dialog.showOpenDialog(control,{title:"导入团队知识材料",properties:["openFile","multiSelections"],filters:[{name:"知识材料",extensions:["txt","md","markdown","pdf","docx","pptx","xlsx","xls","xlsm","png","jpg","jpeg","webp","wav","mp3","m4a","flac"]}]});return r.canceled?[]:r.filePaths}});
+      teamDataService=createTeamDataService({client,applications,identitySecurityEnabled,knowledgeCapabilities,getMcpDetails:()=>spaceLinks.mcpDetails("starlink"),writeClipboard:text=>clipboard.writeText(text),starlinkPackageDir:path.join(app.getAppPath(),"applications/starlink"),selectFiles:async()=>{const r=await dialog.showOpenDialog(control,{title:"导入团队知识材料",properties:["openFile","multiSelections"],filters:[{name:"知识材料",extensions:["txt","md","markdown","pdf","docx","pptx","xlsx","xls","xlsm","png","jpg","jpeg","webp","wav","mp3","m4a","flac"]}]});return r.canceled?[]:r.filePaths}});
       ipcMain.handle("wanx-client:mcp",async(event,{action,input={}}={})=>{
         if(!teamTrusted(event))return {ok:false,code:"TEAM_ORIGIN_DENIED"};
         try{
@@ -485,15 +491,15 @@ if (process.argv.includes("--wanx-managed-app")) {
         }catch(error){return {ok:false,code:error.code||"MCP_UNAVAILABLE"}}
       });
       ipcMain.handle("wanx-client:data",async(event,{action,input}={})=>{if(!teamTrusted(event))return {ok:false,code:"TEAM_ORIGIN_DENIED"};try{return {ok:true,value:await teamDataService.action(action,input)}}catch(error){return {ok:false,code:error.code||"TEAM_DATA_REQUEST_FAILED"}}});
-      const deviceTrustWindow = createDeviceTrustWindow({
+      const deviceTrustWindow = identitySecurityEnabled ? createDeviceTrustWindow({
         BrowserWindow, ipcMain, service: deviceTrust, parentWindow: control,
         onError: () => reportError(new Error("LOCAL_TRUST_WINDOW_UNAVAILABLE")),
-      });
-      const stopDeviceTrustLifecycle = registerDeviceTrustLifecycle({ app, powerMonitor, service: {
+      }) : null;
+      const stopDeviceTrustLifecycle = identitySecurityEnabled ? registerDeviceTrustLifecycle({ app, powerMonitor, service: {
         lock: reason => { void deviceTrustWindow.invalidate(reason).catch(() => reportError(new Error("LOCAL_TRUST_LOCK_FAILED"))); },
-      } });
+      } }) : () => {};
       broadcast = createUIBroadcast({
-        client, applications, uiState, startup, updates, defaultApplications, notifications, studioRevision:()=>studioChanged, windows: () => [control, panel], onError: reportError,
+        client, applications, uiState, startup, identitySecurity, updates, defaultApplications, notifications, studioRevision:()=>studioChanged, windows: () => [control, panel], onError: reportError,
       });
       let quitPrompt;
       const requestQuit = () => {
@@ -567,7 +573,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       }
       try {
         spaceLinks = await createSpaceLinkBridge({
-          client, knowledgeCapabilities, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+          client, knowledgeCapabilities, identitySecurityEnabled, serviceURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
           store: createSecureAccountStore({ filePath: path.join(userData, "space-links.enc"), safeStorage }),
           agentHubOptions: {team: true},
           copyText: text => clipboard.writeText(text),
@@ -648,8 +654,9 @@ if (process.argv.includes("--wanx-managed-app")) {
         publishState: broadcast.publish,
         getDesktopStartup: startup.get,
         setDesktopStartup: startup.set,
+        identitySecurity,
         showAbout: () => { desktop.hidePanel({ preserveIntent: true }); app.showAboutPanel(); },
-        openDeviceTrust: () => deviceTrustWindow.open({ view: "overview" }),
+        openDeviceTrust: identitySecurityEnabled ? () => deviceTrustWindow.open({ view: "overview" }) : undefined,
         quit: requestQuit,
         client,
         applications,
@@ -681,7 +688,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       shutdown = registerShutdown({
         app,
         async closeApplications() {
-          deviceTrust.lock("shutdown");
+          deviceTrust?.lock("shutdown");
           updateChecks.close();
           uiState.invalidateOpen();
           aiDialogue?.close();
@@ -696,11 +703,11 @@ if (process.argv.includes("--wanx-managed-app")) {
         async closeHost() {
           stopDeviceTrustLifecycle();
           knowledgeCapabilities.close();
-          await deviceTrustWindow.dispose();
-          deviceTrust.close();
-          recoveryFiles.close();
-          await backupFiles.close();
-          localDataAccess.close();
+          await deviceTrustWindow?.dispose();
+          deviceTrust?.close();
+          recoveryFiles?.close();
+          await backupFiles?.close();
+          localDataAccess?.close();
           await notifications?.close();
           support.close();
           unsubscribeUpdateAccount();

@@ -125,6 +125,8 @@ button { transition: background .14s, border-color .14s; }
 .settings-panel { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 0; border-bottom: 1px solid var(--fn-border-primary); }
 .settings-panel .muted { margin-top: 5px; }
 .settings-actions { display: flex; align-items: center; gap: 15px; flex: 0 0 auto; }
+.identity-security-panel { flex-wrap: wrap; }
+.identity-security-panel > div:first-child { flex: 1 1 240px; min-width: 0; }
 .settings-foot { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 24px; }
 .updates-section { padding: 20px 0; border-bottom: 1px solid var(--fn-border-primary); }
 .updates-section > h3 { margin-bottom: 14px; }
