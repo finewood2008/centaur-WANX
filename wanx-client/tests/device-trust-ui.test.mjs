@@ -5,6 +5,23 @@ import { createDeviceTrustView, renderDeviceTrust } from '../local-ui/device-tru
 
 const base = () => ({ profile: { locked: false, principalId: 'principal-1', clientId: 'client-1', keyProtection: 'software-passphrase-v1' }, boxes: [{ boxId: 'box-1', role: 'root' }], window: { view: 'overview' } });
 const review = kind => ({ kind, reviewHandle: 'opaque-handle', boxId: 'box-1', boxKeyThumbprint: 'box-fingerprint', principalId: 'principal-1', clientId: 'client-2', accessKeyThumbprint: 'device-fingerprint', role: kind === 'first-root' ? 'root' : 'use', grants: [{ resourceId: 'space:personal', actions: ['read'] }], expiresAt: 2000000000, grantExpiresAt: null, ownershipEpoch: 1, rosterVersion: 3, requestDigest: 'immutable-request-digest', approverBindingId: kind === 'approval' ? 'manager-binding' : undefined });
+test('offline Wi-Fi review states the exact network, box and independent local approval', () => {
+  const html = renderDeviceTrust({ snapshot: base(), view: 'wifi', review: { ...review('offline-wifi'),
+    ssid: '<untrusted-network>', security: 'wpa_personal', hidden: false, bindingId: 'binding-local',
+    grants: [{ resourceId: 'network:wifi', actions: ['write'] }] } });
+  assert.match(html, /仅修改本次 Wi-Fi/);
+  assert.match(html, /&lt;untrusted-network&gt;/);
+  assert.match(html, /box-fingerprint/);
+  assert.match(html, /network:wifi/);
+  assert.match(html, /再次输入本地口令/);
+  assert.doesNotMatch(html, /name="password"/);
+});
+test('offline Wi-Fi is available from unlocked local identity without cloud state', () => {
+  const html = renderDeviceTrust({ snapshot: base(), view: 'wifi' });
+  assert.match(html, /无需云端登录/);
+  assert.match(html, /data-form="beginOfflineWifi"/);
+  assert.match(html, /box-1/);
+});
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 async function harness(t, state = base(), overrides = {}) {
   const events = new Map(), calls = [];

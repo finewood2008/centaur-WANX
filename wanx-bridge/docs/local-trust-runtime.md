@@ -2,6 +2,8 @@
 
 本服务实现设备首次认领、申请、独立批准和签名状态读取，监听独立 HTTPS 端口。它使用盒端账本及绑定密钥证明，不依赖云账号、旧 Bridge Bearer、Octop 或管理后台在线。数据切换需要显式安装 required policy、独立 gateway key、原生 gate 与数据配置；仅完成绑定不表示数据入口已经切换。required 模式在同一个 HTTPS runtime 中运行数据网关和唯一 authority。
 
+2026-10-27：required runtime 同时接入 root-only 离线 Wi-Fi broker；这不自动授予任何绑定网络权限。192.168.1.80 仍处于 legacy，本地信任未启用；101 当前源码的 Linux 隔离验证已通过 102 项测试、33 个子测试，无跳过，物理 BLE、NetworkManager 联网、systemd 安装和目标盒子切换尚待验收。详细权限、线协议和发布步骤见 [OS 离线配网文档](../../../centuarai-os/docs/local-trust-offline-wifi.md)。
+
 协议见 [`management-v1.md`](../../contracts/local-trust/management-v1.md)。成功响应是 `application/jose` 原始 compact JWS；错误响应是仅含 `code` 的 JSON，所有响应禁止缓存。桌面必须从受控交付包取得 HTTPS origin、TLS SPKI pin 和 box public key，在主进程校验 pin、响应签名和 checkpoint。不能从首次网络连接、旧 Bearer 或制造证书推导主人资格。
 
 ## 受信安装与初始化
@@ -15,10 +17,11 @@ uv sync --project /opt/centuarai/wanx-bridge --frozen --no-dev --no-editable
 /opt/centuarai/wanx-bridge/.venv/bin/python -I -m wanx_bridge.local_trust_runtime --help
 ```
 
-OS 离线制备入口必须使用同一个 Python 环境，才能导入同版本 `wanx_bridge.local_authority_store`。将经审查的完整 OS `deployment/` 模块目录安装到 root 管理、其他用户不可写的 `/opt/centuarai/os/deployment/`；不要只复制 `local_trust_provisioning.py`，它需要相邻的 `box_reset.py`、`box_reset_legacy.py`、`box_reset_data_engine.py`、`consumer_authorization.py` 等既有 helper。操作员批准制备后，入口为：
+OS 离线制备入口必须使用同一个 Python 环境，才能导入同版本 `wanx_bridge.local_authority_store`。将经审查的完整 OS `deployment/` 模块目录放在 root 管理、其他用户不可写的独立发布暂存目录，例如 `/opt/centuarai/releases/<release>/os/deployment/`；不要只复制 `local_trust_provisioning.py`，它需要相邻的 `box_reset.py`、`box_reset_legacy.py`、`box_reset_data_engine.py`、`consumer_authorization.py` 等既有 helper。固定目标 `/opt/centuarai/os/deployment/` 的工作器文件由 create-only 安装器写入，不能先复制同名文件再运行安装器。操作员批准制备、替换实际 release 后，入口为：
 
 ```sh
-/opt/centuarai/wanx-bridge/.venv/bin/python -E /opt/centuarai/os/deployment/local_trust_provisioning.py < /root/approved-local-trust-provision.json
+cd /opt/centuarai/releases/<release>/os
+/opt/centuarai/wanx-bridge/.venv/bin/python -E -m deployment.local_trust_provisioning < /root/approved-local-trust-provision.json
 ```
 
 该输入应由 OS 制备流程生成并经操作员审查；服务安装不会生成或执行擦除命令。当前制备仅接受可验证的完整擦除回执，`provision-factory` 在缺少可信工厂清洁数据证据时保持拒绝；存量数据也不能凭旧账号或历史 grant 自动迁移。制备创建 `/var/lib/centauros/local-trust`、账本和 seal，另行输出一次性交付包。交付包只通过受控渠道交给主人，不存入应用目录、工单、日志或环境变量。
@@ -26,6 +29,18 @@ OS 离线制备入口必须使用同一个 Python 环境，才能导入同版本
 完整擦除制备输入的 exact 字段为 `action: "provision-full-erase"`、`deviceId`、`resetId`、`eraseReceiptSha256`、`baseUrl`、按 v1 排序的 `grants`。仅低层 `box_reset.apply` 返回 `erase_complete` 或安装标记返回 `marker_installed` 的隔离阶段接受制备；不能用已经自动完成 identity-only reset 的旧 `box.sh reset` 代替，也不能在 `ready` 已恢复写入后继续制备。输出包固定为 `/var/lib/centauros/local-trust-delivery/first-root.json`。authority、staging 或 delivery 任何遗留状态都会阻止自动重发/重建；业务备份与恢复应排除这三个目录。
 
 运行期只打开已初始化状态，不运行 `initialize_authority`，不创建 box identity，也不重建缺失数据库。目录必须为当前运行 UID 所有且 `0700`，配置、密钥、证书、bundle、DB 与 seal 为 `0600` 普通单链接文件，不允许 symlink。默认制备由 root 执行，示例 unit 因此使用 root，且通过 systemd 限制写入范围；不能把该目录共享给旧 Bridge 或业务容器。
+
+### 显式安装与 v1→v2 迁移
+
+完整 required 安装使用同一受审解释器从上述发布暂存目录执行现有命令：
+
+```sh
+/opt/centuarai/wanx-bridge/.venv/bin/python -E -m deployment.local_trust_install --runtime-python /opt/centuarai/wanx-bridge/.venv/bin/python --bind-host <盒子监听IP>
+```
+
+安装器先检查业务 writer 持久隔离及 authority 排他锁，对已封存 v1（SQLite `user_version=0`）显式调用 `migrate_authority_v2`，记录 `schema.migrated` 和只前进下限，再调用 `verify_authority_v2` 完整验证。已有 v2（`user_version=2`）只验证，不改变 boot、会话、维护数据或文件 mtime。它拒绝未恢复 WAL/journal、未知版本、损坏或缺失状态；正常 runtime 和应用 OTA 不执行该迁移。迁移不创建 owner、不消费首根秘密、不导入云 grants；unclaimed 状态仍须用户在独立本地 vault 中用原交付秘密及自己的 AccessKey/ApprovalKey 完成首绑。
+
+安装器还创建独立 gateway key、配置、固定 OS 工作器、unit 和 tmpfiles，不启动服务，不恢复旧 writer。旧输出或部分安装残留均拒绝覆盖，不能把它当作可重复覆盖的升级器。已有 protected 主机升级须逐项审查宿主 wheel/文件/unit/tmpfiles 的差异并保留身份、UID、origin/pin 和安全下限；只有应用镜像 OTA 不会更新这些宿主组件。首次配置应使用安装器输出的 `/etc/centuarai/local-trust/runtime/management.json`，无需另建下节的管理模式样本配置。
 
 ## 配置与启动
 
@@ -41,7 +56,7 @@ OS 离线制备入口必须使用同一个 Python 环境，才能导入同版本
 
 示例 unit 清空 capabilities，因此使用 `9443` 等非特权端口；不要直接改为需要特权的 `443`。`private-bundle.json` 中 `baseUrl` 是客户端可达的 HTTPS origin，例如 `https://box.example:9443`，不包含 `/local-trust/v1`、凭据或查询参数。所有请求的 Host 必须匹配该 origin。证书需匹配部署身份、当前有效，密钥及 SPKI 必须与制备材料一致。运行服务不会修改 pin 或证书。
 
-初始化成功后，将调整好的样本以 create-only 方式保存为 `/var/lib/centauros/local-trust/management-runtime.json`，root 所有、`0600`。不要覆盖已存在配置；先审查现有配置与制备 origin。将 unit 安装到 `/etc/systemd/system/centuarai-local-trust.service` 后显式启动：
+以下样本路径只用于尚未切换数据面的独立管理模式。初始化成功后，将调整好的样本以 create-only 方式保存为 `/var/lib/centauros/local-trust/management-runtime.json`，root 所有、`0600`。不要覆盖已存在配置；先审查现有配置与制备 origin。required 安装使用上一节安装器生成的配置和 unit，不以样本替换它们。将相应 unit 安装到 `/etc/systemd/system/centuarai-local-trust.service` 后显式启动：
 
 ```sh
 systemctl daemon-reload
@@ -72,7 +87,7 @@ unit 不含自动制备或擦除步骤。`ConditionPathExists` 只防止缺少�
 
 生产数据 broker 只支持 Linux `SO_PEERCRED`。原生 Octop、Semantica、MCP 与 Clipboard 运行在独立非 root 服务 UID，只有独立 runtime 持有 authority 和 gateway 私钥。业务服务只得到 gateway 公钥、固定 Unix socket 与自己的 `0700` 临时目录。每次原生 HTTP/WS 请求都需要独立 purpose 的 ES256 proof、一次性 broker 准入和实时租约；旧 Bearer、原生 JWT/OIDC、Cookie、query token 不作为备用路径。旧 Bridge 在固定 required policy 存在时拒绝启动。
 
-操作员在停服并持有既有材料后，显式执行一次 gateway key 制备：
+完整 OS 安装器会在材料均不存在时制备 gateway key，无需重复运行。仅在单独审查的数据入口安装流程中，操作员可在停服并持有既有材料后显式执行一次 gateway key 制备：
 
 ```sh
 /opt/centuarai/wanx-bridge/.venv/bin/python -I -m wanx_bridge.local_data_install --provision-gateway /var/lib/centauros/local-trust
@@ -101,17 +116,35 @@ unit 不含自动制备或擦除步骤。`ConditionPathExists` 只防止缺少�
 
 安装器应先创建 socket 目录，再启动挂载该目录的原生服务；systemd 使用 `RuntimeDirectoryPreserve=yes` 保留目录 inode，避免重启后容器继续看到旧目录。异常终止遗留的 socket 仅由持有 authority 排他锁的 runtime 恢复：验证 root 所有、单链接、`0660`、正确 IPC 组及文件类型，连接探测明确返回 `ECONNREFUSED` 后再次核对同一 inode 才删除。活监听器、异物或权限不符一律拒绝；通用 broker 不自动清理。冷启动仍需先创建目录并保证 native 服务与 runtime 的正确依赖顺序。
 
-本地 principal 使用迁移 031 的独立用户映射。旧账号、相同用户名和历史共享 Agent 不会自动成为本地私人资源。当前模型执行仅允许纯文本模型对话与 `current_time` 工具；聊天前置流程同样拒绝平台 slash 命令、附件、临时 MCP/技能/其他 Agent/知识外挂和 HITL 提权，避免工具中间件之前发生宿主访问。后台消息队列只携带不可序列化的进程内租约检查，断开或撤权会停止当前本地任务；宿主终端、桌面、手机控制、宿主浏览器交互、MCP/ACP/任意插件和文件工具不向普通本地数据授权开放。HTTP 私人文件、个人空间、剪贴板和 Semantica 使用各自资源边界；剪贴板子调用在文件事务内验证应用目录，导出只允许批准的固定 ID 和目标。
+本地 principal 使用独立用户映射；设备分支原为迁移 031，当前合并版本位于 schema 33，不能仅凭数字 31 判断身份表已经存在。旧账号、相同用户名和历史共享 Agent 不会自动成为本地私人资源。当前模型执行仅允许纯文本模型对话与 `current_time` 工具；聊天前置流程同样拒绝平台 slash 命令、附件、临时 MCP/技能/其他 Agent/知识外挂和 HITL 提权，避免工具中间件之前发生宿主访问。后台消息队列只携带不可序列化的进程内租约检查，断开或撤权会停止当前本地任务；宿主终端、桌面、手机控制、宿主浏览器交互、MCP/ACP/任意插件和文件工具不向普通本地数据授权开放。HTTP 私人文件、个人空间、剪贴板和 Semantica 使用各自资源边界；剪贴板子调用在文件事务内验证应用目录，导出只允许批准的固定 ID 和目标。
 
 共享原生 gate 包支持 Python 3.11 及以上；Bridge 和 Octop 保持各自项目声明的 Python 版本。该兼容性已通过独立 Python 3.11 wheel 构建安装及真实 gate/ASGI 签名、租约和暂存测试验证，不能据此跳过服务自身的依赖与集成测试。
+
+## Root-only 离线 Wi-Fi broker
+
+required runtime 使用同一个 authority 和事务锁加载 [LocalWifiAuthority](../wanx_bridge/local_wifi_authority.py) 与 [LocalWifiBroker](../wanx_bridge/local_wifi_broker.py)，没有第二个独立权限库。固定 socket 为 `/run/centuarai-local-trust-network/network.sock`，root:root `0600`，父目录 root:root `0700`；双向校验 Linux `SO_PEERCRED` 的 UID 0。该目录与 native broker 目录分开，禁止挂到应用容器；增加网络权限不会增加原生数据、文件或备份权限。
+
+仅有效 `manage` 绑定、独立 ApprovalKey 和当前 `network:wifi/write` grant 能使用该通道。首次自授权限当前原始主人，或主人主体内明确有 `ownership.transfer` 能力的管理设备；同主体后续委派须已有可委派网络来源且目标已绑定。受限恢复和普通管理角色不能自行开启；成员邀请不得夹带网络 grant。`network-wifi.authorize`/`network-wifi.revoke` 走名册治理及逐笔确认，委派期限和来源链受到当前权限限制。
+
+IPC 固定 POST 路径为 `/v1/wifi/challenge`、`session`、`check`、`consume`、`result`。最大 body/response 各 32 KiB、8 个连接；严格拒绝重复头、Transfer-Encoding、pipelining 和额外字段。authority 不收明文 SSID/密码及其摘要，只有本次 BLE 身份/版本、密文摘要与回执；密码仅从 root GATT 的 AEAD 解密内存经 stdin 交给固定 CLI。
+
+GATT 读取现存持久 `device-key.pem` 的 RSA 公钥，由客户端已固定的 box ES256 challenge 签名绑定其 SPKI 摘要；每次新生成的是 pairingSessionId、nonce 和 32 字节 pairing token，RSA 密钥并非临时生成。此交换不提供前向保密承诺，制造 RSA 身份本身也不授予本地主人资格。
+
+root GATT 还将已签 `security` 传入 local CLI 的必填 `--security open|wpa_personal`。CLI 激活前创建固定安全模式的全新 UUID profile（初始 autoconnect no），WPA 设置 `key-mgmt=wpa-psk`、open 无 security section，读回核对后只激活该 UUID 和网卡；确认活动 UUID/IPv4 才设 autoconnect yes。失败/取消删除仅本次 profile，密码只 stdin，不删除或复用历史同名配置。不能把签名包含 security 等同于已经约束实际 NetworkManager，也不能先按 SSID 连接后才验安全模式。
+
+AccessKey intent 固定当前 BLE challenge 与 RSA SPKI，session receipt 只建立加密通道；每次 apply 必须额外使用 ApprovalKey 签署 sessionDigest、一次性 applyNonce、实际 requestId/counter/密文摘要。consume 在事务内重查 grant、委派链、principal、binding、epoch、boot 与版本，只有新鲜 root IPC 的 `execute=true` 可以启动。精确重试返回 `execute=false`，丢失响应不重新授权，重启不自动执行未完成操作。取消/锁定关闭 BLE 和未提交批准；撤权在 consume 前生效，不能承诺撤回已经开始的物理网络修改。详情及 GATT 分片/AEAD deviceId 映射见 [OS 协议说明](../../../centuarai-os/docs/local-trust-offline-wifi.md#ble-会话与逐笔执行)。
+
+新版 OS 安装器创建独立网络目录的 tmpfiles 规则，authority unit 增加其 `ReadWritePaths`，目录准备服务位于 Docker 和 authority 启动之前。已有 protected 主机必须同步升级这些宿主文件，不能只升级应用镜像或 Bridge wheel。没有目录、错误属主/权限、活 socket 或不可验证的残留状态均应失败关闭；不得通过删除 required policy 回退旧 owner/console Wi-Fi。只有 marker 和 authority 路径均不存在的 legacy 才保留旧流程；任一残留（包括坏 symlink）都不能作为 factory-clean 证明。
 
 ## 可选 OS 备份工作器
 
 只有固定 `/etc/centuarai/local-trust/operations.json` 存在时 runtime 才加载受信 OS `deployment.local_trust_operations.create_provider(authority)`，与同一 authority 共享账本。配置或安装模块不安全会阻止启动；未安装时相关操作明确不可用。runtime 校验 `/opt/centuarai/os/deployment` 为 root 所有、无 symlink、非组/其他用户可写的代码树，不从调用方选择模块或路径。
 
+已安装 profile 还须与原生业务 schema 一起升级。`wanx-personal-v1` 只读识别已审设备分支 schema 31 和当前 schema 33 的精确形状，主身份库不进入归档；普通 31/32 或未知变体拒绝。`semantica-private-v1` 精确支持 11/19，恢复仅允许 11→11、11→19、19→19；schema 19 的技能内容属于业务范围，仓库身份/密钥、模型凭据、确认/执行租约、准备与转移记录不恢复。版本号不是放行条件，还须通过完整 schema 指纹、完整性及私域检查。目标使用已经独立建立的当前身份与空私域，业务恢复不得覆盖 authority、seal、首根秘密、名册、恢复材料、批准/撤销与安全下限；其他成员数据保持不变。
+
 `/local-trust/v2/backup-io/` 只有七个固定 POST 操作：`targets.list`、`source.begin`、`source.append`、`source.finalize`、`source.read`、`archive.read`、`transfer.plan`。outer body 为 `{body,proof}`，响应是 `{receipt,contentBase64}`；chunk hash/length/range 由 receipt 绑定。仅 source.append 请求和 archive.read 响应放宽至 1,420,000 bytes，其余 IO 为 32 KiB，普通管理证明限制不变。`/local-trust/v2/operations/restore-key` 单独接收受证明约束的临时归档密钥，不记录请求体、不写入账本。
 
-仓库当前跨平台真实网络测试在 macOS 仅替换 peer UID 查询 seam；生产 Linux 的 socket 权限、真实 UID、systemd 限制与磁盘故障行为仍需盒端验收，不能把合成测试当成已部署。
+早期跨平台真实网络测试在 macOS 仅替换 peer UID 查询 seam。2026-10-27 在 101 的 root 临时目录补跑当前源码离线 Wi-Fi Linux 测试：102 passed、33 个子测试、0 skipped，覆盖真实双向 SO_PEERCRED、非 root 对端拒绝、并发唯一消费、丢回执重试、撤权/重放、时钟回拨保护与约 2 秒超时；另含真实 GLib/私有 D-Bus、内核权限和临时 tmpfiles 重建，临时文件已清理。该隔离结果不等于原生服务、systemd 安装、挂载和磁盘故障已在目标盒子验收，也不代表 80 已部署或物理蓝牙/NetworkManager 联网已通过。
 
 
 `source.finalize` 与 `transfer.plan` 先在短账本事务内验证当前证明，再由共享的单线程、单在途槽执行归档校验或实际 OS 清单检查，最后重新取得盒端当前时间和授权提交。检查期间不持有 authority 执行锁，也不占用管理线程；调用方取消不提前释放仍在运行的检查槽。桌面仅这两个固定检查操作使用 60 秒截止时间，其他操作保持较短时限。

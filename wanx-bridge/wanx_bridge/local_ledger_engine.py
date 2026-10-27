@@ -28,6 +28,8 @@ ACTION_EVENTS = {
     "backup.create": "backup.operation-authorized",
     "backup.restore": "backup.operation-authorized",
     "ownership.transfer-prepare": "ownership.transfer-frozen",
+    "network-wifi.authorize": "network-wifi.authorized",
+    "network-wifi.revoke": "network-wifi.revoked",
 }
 ACTION_CAPS = {
     "device.add-manager": "device.approve_manage",
@@ -958,6 +960,125 @@ def transition(snapshot, mutation, now, sequence, *, invalidated=()):
                     "retiredAtSequence": None,
                 }
             )
+    elif action in ("network-wifi.authorize", "network-wifi.revoke"):
+        target = binding(snapshot, args["bindingId"])
+        need(target is not None and target["principalId"] == actor["principalId"])
+        need(target["role"] == "manage" and target["approvalKey"] is not None)
+        need(binding_valid(snapshot, target, now))
+        owner = snapshot["ownership"]
+        governance = actor["principalId"] == owner["ownerPrincipalId"] and (
+            actor["bindingId"] == owner["originalOwnerBindingId"]
+            or "ownership.transfer" in actor_row["capabilities"]
+        )
+        sources = [
+            item
+            for item in effective_grants(snapshot, actor_row, now, delegation=True)
+            if item["resourceId"] == "network:wifi" and "write" in item["delegableActions"]
+        ]
+        target_ids = [target["bindingId"]]
+        if action == "network-wifi.authorize":
+            need(
+                bool(sources) or governance and target["bindingId"] == actor["bindingId"],
+                "LOCAL_BINDING_SCOPE_EXCEEDED",
+            )
+            need(
+                not any(
+                    item["resourceId"] == "network:wifi"
+                    for item in effective_grants(snapshot, target, now)
+                ),
+                "LOCAL_BINDING_CONTEXT_MISMATCH",
+            )
+            deadline = args["expiresAt"]
+            limits = [actor_row["expiresAt"], actor_row["delegationExpiresAt"], target["expiresAt"]]
+            principal_network = [
+                item
+                for item in snapshot["grants"]
+                if item["resourceId"] == "network:wifi"
+                and item["principalId"] == actor["principalId"]
+                and item["bindingId"] is None
+                and item["status"] == "active"
+                and live(item["expiresAt"], now)
+            ]
+            limits += [
+                minimum(item["expiresAt"], item["delegationExpiresAt"])
+                for item in principal_network
+            ]
+            if sources:
+                limits += [
+                    minimum(item["expiresAt"], item["delegationExpiresAt"]) for item in sources
+                ]
+            ceiling = minimum(*limits)
+            need(deadline is None or deadline > now, "LOCAL_BINDING_EXPIRED")
+            need(
+                ceiling is None or deadline is not None and deadline <= ceiling,
+                "LOCAL_BINDING_SCOPE_EXCEEDED",
+            )
+            network = [{"resourceId": "network:wifi", "actions": ["write"]}]
+            grant_target = {
+                "grants": network,
+                "delegableGrants": network if args["delegable"] else [],
+                "expiresAt": deadline,
+                "delegationExpiresAt": deadline,
+            }
+            grant_row = {
+                **target,
+                "sourceRequestId": mutation["requestId"],
+                "createdByBindingId": actor["bindingId"] if sources else None,
+            }
+            if not principal_network:
+                need(
+                    governance and target["bindingId"] == actor["bindingId"],
+                    "LOCAL_BINDING_SCOPE_EXCEEDED",
+                )
+                _new_grants(
+                    snapshot,
+                    grant_row,
+                    {**grant_target, "delegableGrants": network},
+                    sequence,
+                    principal_grants=True,
+                )
+            _new_grants(snapshot, grant_row, grant_target, sequence, sources=sources)
+            target["delegableGrants"] = sorted(
+                [item for item in target["delegableGrants"] if item["resourceId"] != "network:wifi"]
+                + grant_target["delegableGrants"],
+                key=lambda item: item["resourceId"],
+            )
+        else:
+            target_network = [
+                grant
+                for grant in snapshot["grants"]
+                if grant["bindingId"] == target["bindingId"]
+                and grant["resourceId"] == "network:wifi"
+                and grant["status"] == "active"
+            ]
+            need(
+                governance
+                or target["bindingId"] == actor["bindingId"]
+                or bool(sources)
+                and all(grant["sourceBindingId"] == actor["bindingId"] for grant in target_network),
+                "LOCAL_BINDING_SCOPE_EXCEEDED",
+            )
+            for grant in snapshot["grants"]:
+                if (
+                    grant["bindingId"] == target["bindingId"]
+                    and grant["resourceId"] == "network:wifi"
+                    and grant["status"] == "active"
+                ):
+                    grant["status"] = "revoked"
+                    grant["revision"] += 1
+            target["delegableGrants"] = [
+                item for item in target["delegableGrants"] if item["resourceId"] != "network:wifi"
+            ]
+        target["bindingRevision"] += 1
+        result_authority = {
+            "grants": grant_list(effective_grants(snapshot, target, now)),
+            "delegableGrants": grant_list(
+                effective_grants(snapshot, target, now, delegation=True), delegate=True
+            ),
+            "capabilities": target["capabilities"],
+            "expiresAt": target["expiresAt"],
+            "delegationExpiresAt": target["delegationExpiresAt"],
+        }
     elif action == "ownership.transfer-prepare":
         need(args["expectedOwnerPrincipalId"] == snapshot["ownership"]["ownerPrincipalId"])
         snapshot["ownership"].update(state="transfer_frozen", pendingTransferId=args["transferId"])

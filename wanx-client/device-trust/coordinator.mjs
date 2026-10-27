@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { createIdentityVault } from './identity-vault.mjs';
 import { createPinnedTransport } from './pinned-transport.mjs';
 import { createLedgerCoordinator } from './ledger-coordinator.mjs';
+import { createOfflineWifiCoordinator } from './offline-wifi-coordinator.mjs';
 import {
   parseDeliveryPacket, parseJoinInfo, parseInvitation, validateDescriptor,
   verifyResponse, firstRootDigest,
@@ -27,14 +28,14 @@ export async function createDeviceTrustCoordinator({
   vault = createIdentityVault({ directory, protectDirectory, clock }),
   transportFactory = descriptor => createPinnedTransport({ descriptor }),
   ledgerTransportFactory = descriptor => createPinnedTransport({ descriptor, protocolVersion: 2 }),
-  files, backupFiles, ensureBackupNamespace,
+  files, backupFiles, ensureBackupNamespace, wifiTransportFactory,
 } = {}) {
   let generation = 0;
   let busy = false;
   let review = null;
   let loadError = null;
   let closed = false;
-  let ledger;
+  let ledger, offlineWifi;
   const inflight = new Set();
   try { await vault.load(); } catch (error) { loadError = error.code || 'LOCAL_IDENTITY_STORAGE_UNAVAILABLE'; }
   const now = () => Math.floor(clock() / 1000);
@@ -60,6 +61,7 @@ export async function createDeviceTrustCoordinator({
     generation += 1;
     review = null;
     ledger?.invalidate(reason);
+    offlineWifi?.invalidate(reason);
     for (const abort of inflight) abort.abort();
     vault.lock(reason);
   };
@@ -194,14 +196,17 @@ export async function createDeviceTrustCoordinator({
 
   ledger = createLedgerCoordinator({ vault, state, box, saveBox, assertCheckpoint, run,
     requireProfile, clock, transportFactory: ledgerTransportFactory, files, backupFiles, ensureBackupNamespace });
+  offlineWifi = createOfflineWifiCoordinator({ vault, box, run, requireProfile, transportFactory: wifiTransportFactory });
   const unsubscribeVault = vault.subscribe?.(event => {
     if (event.type !== 'locked') return;
     generation += 1; review = null; ledger.invalidate(event.reason);
+    offlineWifi.invalidate(event.reason);
     for (const abort of inflight) abort.abort();
   });
 
   return {
     ...ledger.api,
+    ...offlineWifi.api,
     snapshot() {
       const meta = vault.snapshot();
       const saved = !loadError && meta.exists && !meta.locked ? state() : { boxes: {} };

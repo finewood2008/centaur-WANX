@@ -38,6 +38,8 @@ ACTIONS = frozenset(
         "backup.create",
         "backup.restore",
         "ownership.transfer-prepare",
+        "network-wifi.authorize",
+        "network-wifi.revoke",
     }
 )
 ACTIONS |= team_protocol.ACTIONS
@@ -164,7 +166,15 @@ def validate_args(action, value):
     evidence._require(type(action) is str and action in ACTIONS)
     if action in team_protocol.ACTIONS:
         return team_protocol.validate_args(action, value)
-    if action == "owner-policy.activate-v2":
+    if action == "network-wifi.authorize":
+        evidence._fields(value, {"bindingId", "expiresAt", "delegable"})
+        evidence._token(value["bindingId"])
+        _expiry(value["expiresAt"])
+        evidence._require(type(value["delegable"]) is bool)
+    elif action == "network-wifi.revoke":
+        evidence._fields(value, {"bindingId"})
+        evidence._token(value["bindingId"])
+    elif action == "owner-policy.activate-v2":
         evidence._fields(value, {"capabilities"})
         capabilities(value["capabilities"])
         evidence._require("device.approve_use" in value["capabilities"])
@@ -175,6 +185,11 @@ def validate_args(action, value):
         if action == "principal.invite":
             evidence._token(value["principalId"])
         target(value["target"])
+        # This release deliberately closes cross-principal network delegation.
+        if action == "principal.invite":
+            evidence._require(
+                all(item["resourceId"] != "network:wifi" for item in value["target"]["grants"])
+            )
     elif action == "device.revoke":
         evidence._fields(value, {"bindingId", "mode"})
         evidence._token(value["bindingId"])
@@ -234,6 +249,7 @@ def validate_args(action, value):
         evidence._token(value["scopeProfile"])
         evidence._token(value["targetId"])
         _tokens(value["resourceIds"])
+        evidence._require("network:wifi" not in value["resourceIds"])
         evidence._integer(value["expectedRecoveryVersion"])
         evidence._digest(value["recipientKeyThumbprint"])
         evidence._require(type(value["includeBusinessSecrets"]) is bool)
@@ -263,6 +279,7 @@ def validate_args(action, value):
         for name in ("scopeProfile", "sourceId"):
             evidence._token(value[name])
         _tokens(value["resourceIds"])
+        evidence._require("network:wifi" not in value["resourceIds"])
         mapping = value["ownerMapping"]
         evidence._require(type(mapping) is list and 1 <= len(mapping) <= 16)
         identifiers = []

@@ -170,7 +170,10 @@ export function createLedgerCoordinator({
     const current = await principalState(item, guard);
     if (action === 'owner-policy.activate-v2') {
       if (!current.projection.qualifiedOriginalOwnerRoot) fail('LOCAL_TRUST_ORIGINAL_OWNER_REQUIRED');
-    } else if (!current.own.capabilities.includes(capabilityFor[action])) fail('LOCAL_TRUST_CAPABILITY_REQUIRED');
+    } else if (!['network-wifi.authorize', 'network-wifi.revoke'].includes(action)
+      && !current.own.capabilities.includes(capabilityFor[action])) fail('LOCAL_TRUST_CAPABILITY_REQUIRED');
+    // Network authority is a separate explicit resource grant. The box verifies
+    // original-root qualification or the current delegation chain during prepare.
     const actor = { kind: 'binding', principalId: item.principalId, bindingId: current.own.bindingId,
       keyVersion: current.own.approvalKeyVersion };
     const challenge = await challengeFor(box(boxId), guard, action);
@@ -464,6 +467,8 @@ export function createLedgerCoordinator({
       }),
       prepareActivatePolicy: ({ boxId, capabilities }) => run(guard => prepare(boxId, 'owner-policy.activate-v2', { capabilities }, guard)),
       prepareDeviceRevocation: ({ boxId, bindingId, mode }) => run(guard => prepare(boxId, 'device.revoke', { bindingId, mode }, guard)),
+      prepareWifiAuthorization: ({ boxId, bindingId, expiresAt, delegable }) => run(guard => prepare(boxId, 'network-wifi.authorize', { bindingId, expiresAt, delegable }, guard)),
+      prepareWifiRevocation: ({ boxId, bindingId }) => run(guard => prepare(boxId, 'network-wifi.revoke', { bindingId }, guard)),
       prepareDescendantReview: ({ boxId, bindingIds }) => run(guard => prepare(boxId, 'device.review-descendants', { bindingIds }, guard)),
       prepareMemberRevocation: ({ boxId, principalId }) => run(guard => prepare(boxId, 'principal.revoke', { principalId }, guard)),
       confirmSecurityMutation: ({ reviewHandle, passphrase }) => run(async guard => {

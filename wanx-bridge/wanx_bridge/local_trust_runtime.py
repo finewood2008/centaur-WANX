@@ -24,7 +24,7 @@ except ImportError:  # Windows has no reviewed ACL/lock adapter for this box ser
 import uvicorn
 
 from .local_authority_store import LocalTrustAuthority
-from .local_trust_config import LocalTrustConfig, LocalTrustError
+from .local_trust_config import NETWORK_SOCKET, LocalTrustConfig, LocalTrustError
 from .local_trust_protocol import BindingProtocolError
 from .local_trust_server import create_app
 from .local_trust_service import LocalTrustService
@@ -38,8 +38,10 @@ class _HeldRuntimeLock:
     active: bool = True
 
 
-def _reclaim_stale_socket(path, *, guard, expected_gid, _owner_uid=0):
+def _reclaim_stale_socket(path, *, guard, expected_gid, expected_mode=0o660, _owner_uid=0):
     """Production callers always require root ownership; UID seam is tests only."""
+    if expected_mode not in (0o600, 0o660):
+        raise LocalTrustError("LOCAL_TRUST_SOCKET_RECOVERY_DENIED")
     if not os.path.lexists(path):
         return
     if guard is None or not guard.active or guard.pid != os.getpid():
@@ -56,6 +58,8 @@ def _reclaim_stale_socket(path, *, guard, expected_gid, _owner_uid=0):
         or parent.st_uid != _owner_uid
         or parent.st_mode & 0o022
         or parent.st_gid != expected_gid
+        or expected_mode == 0o600
+        and stat.S_IMODE(parent.st_mode) != 0o700
     ):
         raise LocalTrustError("LOCAL_TRUST_SOCKET_RECOVERY_DENIED")
     before = path.lstat()
@@ -66,7 +70,7 @@ def _reclaim_stale_socket(path, *, guard, expected_gid, _owner_uid=0):
             and info.st_uid == _owner_uid
             and info.st_gid == expected_gid
             and info.st_nlink == 1
-            and stat.S_IMODE(info.st_mode) == 0o660
+            and stat.S_IMODE(info.st_mode) == expected_mode
         )
 
     if not valid(before):
@@ -155,8 +159,10 @@ async def _serve(config: LocalTrustConfig, runtime_guard=None) -> None:
     )
     service = LocalTrustService(authority)
     components = None
-    provider = None
-    try:
+    async with contextlib.AsyncExitStack() as cleanup:
+        # Register each owner before starting it. A partial start or failed
+        # shutdown must still drain the other listeners before the sole ledger.
+        cleanup.push_async_callback(service.close)
         from .local_team_config import load_team_identity_policy
         from .local_trust_operations_loader import create_operation_provider
 
@@ -164,23 +170,33 @@ async def _serve(config: LocalTrustConfig, runtime_guard=None) -> None:
         await service.execute_authority(authority.configure_team_identity, team_policy)
         provider = await service.execute_authority(create_operation_provider, authority)
         if provider is not None:
+            cleanup.push_async_callback(asyncio.to_thread, provider.close)
             await asyncio.to_thread(provider.start)
         if config.data_config is not None:
+            from .local_wifi_authority import LocalWifiAuthority
+            from .local_wifi_broker import LocalWifiBroker
+
+            wifi = await service.execute_authority(LocalWifiAuthority, authority)
+            await asyncio.to_thread(
+                _reclaim_stale_socket,
+                NETWORK_SOCKET,
+                guard=runtime_guard,
+                expected_gid=0,
+                expected_mode=0o600,
+            )
+            network = LocalWifiBroker(
+                wifi, execute_authority=service.execute_authority, socket_path=NETWORK_SOCKET
+            )
+            cleanup.push_async_callback(network.close)
+            await network.start()
             components = await data_application(
                 config, authority, service, operation_provider=provider, runtime_guard=runtime_guard
             )
-        await server_for(config, service, components[0] if components else None).serve()
-    finally:
-        if components:
             _, gateway, broker, sessions = components
-            await sessions.close()
-            await gateway.close()
-            await broker.close()
-        if provider is not None:
-            # Worker shutdown may finish an authority callback. Never hold the
-            # authority execution lock while waiting for its thread to exit.
-            await asyncio.to_thread(provider.close)
-        await service.close()
+            cleanup.push_async_callback(broker.close)
+            cleanup.push_async_callback(gateway.close)
+            cleanup.push_async_callback(sessions.close)
+        await server_for(config, service, components[0] if components else None).serve()
 
 
 class RuntimeDispatcher:

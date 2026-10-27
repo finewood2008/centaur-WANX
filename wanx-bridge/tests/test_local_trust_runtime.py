@@ -157,6 +157,8 @@ def test_config_does_not_require_cloud_credentials(configured, monkeypatch):
     "problem",
     [
         "unknown",
+        "network-socket-override",
+        "disable-wifi",
         "boolean-port",
         "relative-dir",
         "http",
@@ -171,6 +173,10 @@ def test_configuration_errors_fail_without_reinitializing(configured, problem):
     config = dict(configured.config)
     if problem == "unknown":
         config["cloudAccount"] = "not-a-trust-root"
+    elif problem == "network-socket-override":
+        config["networkSocket"] = "/tmp/caller.sock"
+    elif problem == "disable-wifi":
+        config["wifiEnabled"] = False
     elif problem == "boolean-port":
         config["bindPort"] = True
     elif problem == "relative-dir":

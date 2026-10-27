@@ -1,6 +1,6 @@
-const labels = { overview: '概览', identity: '本地身份', 'first-root': '首次绑定', join: '申请新设备', approval: '核对与批准', devices: '设备清单', security: '安全管理', enrollment: '管理设备与成员', recovery: '身份恢复', backup: '业务备份与还原', transfer: '擦除后转移' };
+const labels = { overview: '概览', identity: '本地身份', 'first-root': '首次绑定', join: '申请新设备', approval: '核对与批准', devices: '设备清单', security: '安全管理', enrollment: '管理设备与成员', recovery: '身份恢复', backup: '业务备份与还原', transfer: '擦除后转移', wifi: '离线 Wi-Fi' };
 const backupProfileLabels = { 'semantica-private-v1': '个人知识空间', 'wanx-personal-v1': '个人文件空间与便签' };
-const resourceLabels = { clipboard: '个人剪贴板', semantica: '个人知识空间', 'space:personal': '个人文件空间', wanx: '个人应用与对话' };
+const resourceLabels = { clipboard: '个人剪贴板', semantica: '个人知识空间', 'space:personal': '个人文件空间', wanx: '个人应用与对话', 'network:wifi': '盒子 Wi-Fi 网络管理' };
 const capabilityLabels = {
   'backup.create': '创建加密备份', 'backup.restore': '恢复业务数据', 'device.approve_manage': '添加管理设备',
   'device.approve_use': '批准使用设备', 'device.review_descendants': '重新核验受影响设备', 'device.revoke': '撤销本身份的设备',
@@ -11,6 +11,8 @@ const actionLabels = { 'owner-policy.activate-v2': '启用扩展安全管理', '
   'device.add-manager': '添加管理设备', 'principal.invite': '邀请独立成员',
   'recovery.setup': '配置身份恢复', 'recovery.rotate': '轮换恢复材料', 'recovery.recover': '恢复本地身份',
   'backup.create': '创建加密业务备份', 'backup.restore': '还原业务数据', 'ownership.transfer-prepare': '冻结并擦除后转移盒子' };
+actionLabels['network-wifi.authorize'] = '明确授予 Wi-Fi 管理权限';
+actionLabels['network-wifi.revoke'] = '撤销 Wi-Fi 管理权限';
 const ownerOnlyCapabilities = new Set(['member.invite', 'member.revoke', 'ownership.transfer']);
 const roles = { root: '首台管理设备', manager: '管理设备', manage: '管理设备', use: '使用设备' };
 const states = { awaiting_actor_commit: '本机已确认，等待管理设备提交', pending: '等待管理设备批准', approved: '已批准', committed: '已提交', outcome_unknown: '提交结果待核实', prepared: '已准备，尚未提交', cancelled: '已取消', canceled: '已取消', expired: '已过期', rejected: '已拒绝', active: '有效', suspended: '已暂停', revoked: '已撤销' };
@@ -35,6 +37,14 @@ function passwordField(label = '独立本地口令', create = false) {
 function boxSelect(model) {
   const boxes = model.snapshot?.boxes || [];
   return `<label>选择已绑定的盒子<select name="boxId" required><option value="">请选择盒子</option>${boxes.map(box => `<option value="${escape(box.boxId)}" ${model.boxId === box.boxId ? 'selected' : ''}>${escape(box.boxId)} · ${escape(roles[box.role] || box.role || '已绑定')}</option>`).join('')}</select></label>`;
+}
+function wifiView(model) {
+  const wifi = model.wifi;
+  return `<section class="card"><h2>通过蓝牙修改盒子 Wi-Fi</h2><p>无需云端登录，也无需盒子已连接局域网。需要这台设备已绑定盒子，并且当前明确拥有网络管理权限。</p>
+    ${!wifi ? `<form data-form="beginOfflineWifi">${boxSelect(model)}<button type="submit">扫描附近盒子</button></form>` : `${facts([['已核验盒子', id(wifi.boxId)], ['状态', escape(wifi.state === 'completed' ? '盒子已确认连接' : '蓝牙加密会话已建立')]])}
+    ${wifi.state === 'completed' ? '<p class="success">盒子已确认本次 Wi-Fi 配置完成。</p>' : `<button data-action="scan-wifi">扫描 Wi-Fi 网络</button>${model.wifiNetworks?.length ? `<ul>${model.wifiNetworks.map(network => `<li>${escape(network.ssid)} · ${escape(network.security === 'open' ? '开放网络' : network.security === 'wpa_personal' ? 'WPA 个人网络' : '暂不支持的安全类型')}</li>`).join('')}</ul>` : ''}
+    <form data-form="prepareOfflineWifi"><label>Wi-Fi 名称<input name="ssid" required maxlength="32" autocomplete="off" /></label><label>安全类型<select name="security"><option value="wpa_personal">WPA 个人网络</option><option value="open">开放网络</option></select></label><label>Wi-Fi 密码<input name="password" type="password" maxlength="64" autocomplete="new-password" /></label><label class="check"><input type="checkbox" name="hidden" />隐藏网络</label><button type="submit">核对本次网络配置</button></form>`}<button data-action="cancel-wifi">结束此蓝牙会话</button>`}
+    ${model.wifiPicker ? `<section><h3>选择附近的盒子</h3><p>蓝牙名称仅供辨认，随后会核验已保存的盒子身份。</p>${model.wifiPicker.candidates.map(candidate => `<button data-action="select-wifi-box" data-candidate-id="${escape(candidate.candidateId)}">${escape(candidate.advertisedName || candidate.name || '附近盒子')}</button>`).join('') || '<p>正在搜索…</p>'}<button data-action="cancel-wifi-selection">取消扫描</button></section>` : ''}</section>`;
 }
 const capabilitiesView = values => Array.isArray(values) && values.length
   ? `<ul>${values.map(value => `<li>${escape(capabilityLabels[value] || value)}</li>`).join('')}</ul>` : '<p class="muted">无管理能力。</p>';
@@ -62,6 +72,7 @@ function ledgerReviewView(review, model) {
     ${review.action === 'backup.create' && review.args.scopeProfile === 'wanx-personal-v1' ? '<p>仅包含当前身份的个人文件空间与便签，不包含对话、Agent、主用户库、设备授权、连接配置或外部存储。目标还原空间必须为空，不导出业务集成秘密。</p>' : ''}
     ${review.action === 'backup.restore' ? `<p class="notice">当前私人业务还原要求目标空间为空；已有数据时将停止并保留原数据。请先另存目标数据并核对所选身份。此操作不会恢复旧设备、撤销记录或所有权，也不会自动启用旧集成。源材料不能取得目标盒子的管理资格。</p>${review.backupSource ? facts([['来源盒子', id(review.backupSource.source.boxId)], ['来源地址', id(review.backupSource.source.baseUrl)], ['目标盒子', id(review.backupSource.target.boxId)], ['目标地址', id(review.backupSource.target.baseUrl)], ['备份创建时间', escape(date(review.backupSource.createdAt))], ['加密备份大小', `${(review.backupSource.archiveBytes / 1048576).toFixed(2)} MiB`]]) : ''}${facts([['源盒子指纹', id(review.args.sourceBoxKeyThumbprint)], ['目标描述摘要', id(review.args.targetDescriptorDigest)], ['备份编号', id(review.args.backupId)], ['密文摘要', id(review.args.archiveSha256)], ['清单摘要', id(review.args.manifestSha256)], ['范围', id(review.args.scopeProfile)]])}${review.args.ownerMapping.map(mapping => facts([['源本地成员', id(mapping.sourcePrincipalId)], ['目标本地成员', id(mapping.targetPrincipalId)], ['还原资源', escape(mapping.resourceIds.join('、'))]])).join('')}` : ''}
     ${review.action === 'ownership.transfer-prepare' ? transferScopeView(review.transferPlan) : ''}
+    ${review.action.startsWith('network-wifi.') ? `<p class="notice">此操作只变更盒子的 Wi-Fi 管理权限，不授予文件或备份访问。</p>${facts([['目标绑定', id(review.args.bindingId)], ['资源', id('network:wifi')], ['操作', '写入'], ...(review.action === 'network-wifi.authorize' ? [['网络权限到期', escape(date(review.args.expiresAt))], ['允许继续委派', review.args.delegable ? '是；可授权同一身份下的其他管理设备' : '否']] : [])])}` : ''}
     ${emergency ? '<p class="notice">紧急锁定可能撤销最后一条管理路径。没有已配置且可用的独立恢复材料时，将无法从云账号重新取得管理权。</p>' : ''}
     ${facts([['盒子', id(review.boxId)], ['盒子签名指纹', id(review.boxKeyThumbprint)], ['操作身份', id(review.principalId)],
       ['操作摘要', id(review.mutationDigest)], ['所有权版本', escape(review.ownershipEpoch)], ['安全清单版本', escape(review.rosterVersion)], ['核对截止', escape(date(review.expiresAt))],
@@ -87,7 +98,7 @@ function enrollmentView(model) {
       <label>新设备提供的公开材料<textarea name="targetInfo" rows="5" maxlength="65536" required></textarea></label><h3>明确选择管理能力</h3>
       ${model.security.capabilities.filter(value => !member || !ownerOnlyCapabilities.has(value)).map(value => `<label class="check"><input type="checkbox" name="cap:${escape(value)}" />${escape(capabilityLabels[value])}</label>`).join('')}
       <h3>数据范围</h3><p>独立成员得到自己的新空间；这些选项不会转交邀请人的私人数据。</p>
-      ${Object.entries(resourceLabels).map(([resource, label]) => `<fieldset><legend>${escape(label)}</legend>${['read', 'write', 'execute'].map(action => `<label class="check"><input type="checkbox" name="grant:${escape(resource)}:${action}" />${escape(({ read: '读取', write: '写入', execute: '执行' })[action])}<input type="checkbox" name="delegate:${escape(resource)}:${action}" />允许向后续设备授予此项</label>`).join('')}</fieldset>`).join('')}
+      ${Object.entries(resourceLabels).filter(([resource]) => resource !== 'network:wifi').map(([resource, label]) => `<fieldset><legend>${escape(label)}</legend>${['read', 'write', 'execute'].map(action => `<label class="check"><input type="checkbox" name="grant:${escape(resource)}:${action}" />${escape(({ read: '读取', write: '写入', execute: '执行' })[action])}<input type="checkbox" name="delegate:${escape(resource)}:${action}" />允许向后续设备授予此项</label>`).join('')}</fieldset>`).join('')}
       <label>设备到期时间（空白表示请求不限期）<input type="datetime-local" name="expiresAt" /></label><label>转授权到期时间<input type="datetime-local" name="delegationExpiresAt" /></label><p class="hint">盒子会核对当前有效权限和期限；请求不能扩大已有授权。</p><button class="primary" type="submit">准备最终权限清单</button></form>` : ''}</section>`;
 }
 function recoveryView(model) {
@@ -134,9 +145,17 @@ function securityView(model) {
         ${current.capabilities.includes('device.revoke') && device.status !== 'revoked' ? `<div class="actions"><button data-action="revoke-device" data-binding-id="${escape(device.bindingId)}">核对撤销</button><button data-action="emergency-revoke" data-binding-id="${escape(device.bindingId)}">核对紧急锁定</button></div>` : ''}
         ${current.capabilities.includes('device.review_descendants') && device.status === 'suspended' ? `<button data-action="review-descendant" data-binding-id="${escape(device.bindingId)}">重新核验授权链</button>` : ''}</article>`).join('')}</div>
       ${current.capabilities.some(value => ['member.invite', 'member.revoke'].includes(value)) ? '<button data-action="refresh-members">读取成员资格清单</button>' : ''}
+      <h3>Wi-Fi 网络管理权限</h3><p>首次需原始首台管理设备，或当前所有者身份下已明确具备所有权管理能力的设备，为自己启用；随后只有具有可委派网络权限的设备可授权同一身份下的其他管理设备。此权限不授予文件或备份访问。</p>
+      <form data-form="prepareWifiAuthorization"><label>目标管理设备<select name="bindingId" required>${current.devices.filter(device => device.role === 'manage' && device.status === 'active').map(device => `<option value="${escape(device.bindingId)}">${escape(device.clientId)} · ${escape(device.bindingId)}</option>`).join('')}</select></label><label>权限到期时间（空白表示请求不限期）<input type="datetime-local" name="expiresAt" /></label><label class="check"><input type="checkbox" name="delegable" />明确允许该设备继续委派 Wi-Fi 管理权限</label><button type="submit">核对网络权限授权</button></form>
+      ${(current.grants || []).filter(grant => grant.resourceId === 'network:wifi' && grant.bindingId && grant.status === 'active').map(grant => `<article class="request"><p>已授权绑定 ${id(grant.bindingId)} · ${escape(date(grant.expiresAt))}</p><button data-action="revoke-wifi-authority" data-binding-id="${escape(grant.bindingId)}">核对撤销网络权限</button></article>`).join('')}
       ${model.members ? `<h3>成员资格</h3><p>成员的私人设备和数据不会显示在此清单中。</p>${model.members.members.map(member => `<article class="device">${facts([['成员', id(member.principalId)], ['状态', escape(states[member.status] || member.status)]])}${current.capabilities.includes('member.revoke') && member.principalId !== current.self.principalId && member.status !== 'revoked' ? `<button data-action="revoke-member" data-principal-id="${escape(member.principalId)}">核对撤销成员资格</button>` : ''}</article>`).join('')}` : ''}` : ''}</section>`;
 }
 function reviewView(review, model) {
+  if (review.kind === 'offline-wifi') return `<section class="card review"><h2>仅修改本次 Wi-Fi</h2><p>请核对实际盒子及目标网络。本次确认仅用于当前蓝牙会话中的这一次配置。</p>
+    ${facts([['盒子', id(review.boxId)], ['盒子签名指纹', id(review.boxKeyThumbprint)], ['本机绑定', id(review.bindingId)], ['目标网络', escape(review.ssid)], ['安全类型', review.security === 'open' ? '开放网络' : 'WPA 个人网络'], ['隐藏网络', review.hidden ? '是' : '否'], ['所有权版本', escape(review.ownershipEpoch)], ['当前授权版本', escape(review.authorizationVersion)], ['本次核对截止', escape(date(review.expiresAt))]])}
+    <h3>本次使用的权限</h3>${grantsView(review.grants)}<form data-form="confirm-review">${passwordField('再次输入本地口令以确认此次操作')}
+    <p class="hint">口令仅在本机验证，不会发送到盒子或云端。Wi-Fi 密码只通过本次加密蓝牙会话发送。</p><label class="check"><input type="checkbox" name="reviewed" required />我已核对盒子、目标网络及本次修改</label>
+    <div class="actions"><button class="primary" type="submit">确认修改 Wi-Fi</button><button type="button" data-action="lock">取消并锁定</button></div></form></section>`;
   if (['ledger-mutation', 'ledger-target', 'ledger-recovery'].includes(review.kind)) return ledgerReviewView(review, model);
   const kind = review.kind;
   return `<section class="card review"><div class="eyebrow">提交前核对</div><h2>${kind === 'first-root' ? '建立首台管理设备' : kind === 'join' ? '申请此设备的使用权限' : '批准新的使用设备'}</h2>
@@ -187,6 +206,7 @@ function content(model) {
   if (!profile) return `<section class="card"><div class="eyebrow">从这台设备开始</div><h2>建立独立本地身份</h2><p>设置与平台登录密码不同的口令。身份和密钥保存在这台设备，不通过平台账号恢复。</p><form data-form="createProfile">${passwordField('设置本地口令（至少 12 个字符）', true)}<label>再次输入本地口令<input name="repeatPassphrase" type="password" autocomplete="new-password" required minlength="12" maxlength="1024" /></label><p class="hint">请妥善保存口令。绑定盒子后，请单独配置并验证身份恢复材料。</p><button class="primary" type="submit">建立本地身份</button></form></section>`;
   if (!profileOpen(state)) return `<section class="card"><div class="eyebrow">本地身份已锁定</div><h2>解锁这台设备</h2><p>平台登录不会解锁本地身份。关闭此窗口、锁定或系统休眠后，需要重新输入本地口令。</p><form data-form="unlock">${passwordField()}<button class="primary" type="submit">解锁本地身份</button></form></section>`;
   if (model.review) return reviewView(model.review, model);
+  if (model.view === 'wifi') return wifiView(model);
   if (model.view === 'security') return securityView(model);
   if (model.view === 'enrollment') return enrollmentView(model);
   if (model.view === 'recovery') return recoveryView(model);
@@ -212,6 +232,14 @@ export function renderDeviceTrust(model) {
 }
 
 const messages = {
+  LOCAL_WIFI_UNAUTHORIZED: '本机没有当前有效的 Wi-Fi 管理权限。请先由有资格的管理设备明确授权，再开始新的蓝牙会话。',
+  LOCAL_WIFI_FORBIDDEN: '本机没有当前有效的 Wi-Fi 管理权限。',
+  LOCAL_WIFI_CONTEXT_CHANGED: '盒子身份或当前权限已变化，请重新核验并建立新的蓝牙会话。',
+  LOCAL_WIFI_EXPIRED: '本次蓝牙授权已到期，请重新扫描、输入 Wi-Fi 配置并确认。',
+  LOCAL_WIFI_SESSION_REQUIRED: '本次蓝牙会话已结束，请重新扫描并确认。',
+  LOCAL_WIFI_UNAVAILABLE: '当前离线配网服务不可用，请检查蓝牙以及盒子的本地安全配置。',
+  LOCAL_SELECTION_TIMEOUT: '蓝牙扫描已超时，请靠近盒子后重新扫描。',
+  LOCAL_TRUST_CONTEXT_CHANGED: '本地安全状态已变化，请重新解锁并开始新的操作。',
   LOCAL_TRUST_INVALID_INPUT: '输入格式不正确，请检查后重试。',
   LOCAL_TRUST_CONTEXT_CHANGED: '本地身份或核对上下文已变化，请重新解锁并核对。',
   LOCAL_TRUST_BUSY: '已有操作正在处理，请稍候。',
@@ -260,15 +288,19 @@ const messages = {
   LOCAL_BACKUP_NOT_COMPLETED: '尚无已经核验完成的备份，暂时不能另存。',
   LOCAL_TRUST_MIGRATION_PROOF_REQUIRED: '该盒子需要独立的原主人证明，当前流程不会覆盖已有数据或身份。',
 };
-export function createDeviceTrustView({ root, api, FormDataClass = globalThis.FormData }) {
+export function createDeviceTrustView({ root, api, FormDataClass = globalThis.FormData,
+  wifiTransport = globalThis.wanxDeviceSetupTransport, discovery = globalThis.wanxDiscovery }) {
   const model = { snapshot: null, view: 'overview', boxId: null, review: null, result: null, devices: null, security: null, members: null, joinInfo: null,
     targetInfo: null, reviewHandoff: null, material: null, recoveryImport: null, backupTargets: null, backupSource: null, backupProfile: null,
-    enrollmentKind: 'prepareManagerEnrollment', notice: '', busy: false };
+    enrollmentKind: 'prepareManagerEnrollment', notice: '', busy: false, wifi: null, wifiPicker: null, wifiNetworks: null };
   let generation = 0, initialized = false, disposed = false;
   const render = () => { if (!disposed) root.innerHTML = renderDeviceTrust(model); };
   const clearTransient = () => { model.review = null; model.result = null; model.devices = null; model.security = null; model.members = null; model.joinInfo = null;
     model.targetInfo = null; model.reviewHandoff = null; model.material = null; model.recoveryImport = null;
-    model.backupTargets = null; model.backupSource = null; model.backupProfile = null; };
+    model.backupTargets = null; model.backupSource = null; model.backupProfile = null;
+    if (model.wifiPicker) discovery?.cancel(model.wifiPicker.sessionId);
+    void wifiTransport?.cancelSelection().catch(() => {});
+    model.wifi = null; model.wifiPicker = null; model.wifiNetworks = null; };
   async function snapshot() {
     const current = generation;
     const state = await api.snapshot();
@@ -286,6 +318,9 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
       const value = await api[method](input);
       if (current !== generation || disposed) return;
       if (method.startsWith('prepare')) { model.review = value; model.result = null; model.reviewHandoff = null; }
+      else if (['beginOfflineWifi', 'confirmOfflineWifi'].includes(method)) { model.wifi = value; model.boxId = value.boxId; model.review = null; }
+      else if (method === 'scanOfflineWifi') model.wifiNetworks = value;
+      else if (method === 'cancelOfflineWifi') { model.wifi = null; model.wifiNetworks = null; model.review = null; }
       else if (method === 'exportJoinInfo') model.joinInfo = value.joinInfo;
       else if (method === 'refreshDevices') { model.devices = value; model.boxId = input.boxId; }
       else if (method === 'refreshSecurityState') { model.security = value; model.boxId = input.boxId; model.members = null; }
@@ -320,6 +355,7 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
       model.notice = messages[error?.code || error?.message] || '操作未完成，请检查本地口令、盒子连接和申请有效期后重试。';
       // A failed confirmation never displays a stale success or reusable review.
       if (method.startsWith('confirm') || method === 'submitJoin') model.review = null;
+      if (method.endsWith('OfflineWifi')) { model.wifi = null; model.wifiNetworks = null; }
       try { await snapshot(); } catch { /* Keep the safe error message. */ }
     } finally {
       if (current === generation && !disposed) { model.busy = false; render(); }
@@ -330,9 +366,18 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
     if (action === 'lock') { await run('lock'); return; }
+    if (action === 'select-wifi-box' && model.wifiPicker) { discovery?.select(model.wifiPicker.sessionId, target.dataset.candidateId); return; }
+    if (action === 'cancel-wifi-selection' && model.wifiPicker) {
+      discovery?.cancel(model.wifiPicker.sessionId); void wifiTransport?.cancelSelection().catch(() => {}); return;
+    }
     if (!model.busy && model.review && action === 'export-target-review') { await run('exportTargetReview', { reviewHandle: model.review.reviewHandle }); return; }
     if (model.busy || model.review) return;
-    if (target.dataset.view && labels[target.dataset.view]) { model.view = target.dataset.view; model.notice = ''; model.result = null; render(); return; }
+    if (target.dataset.view && labels[target.dataset.view]) {
+      if (model.wifi && target.dataset.view !== 'wifi') await run('cancelOfflineWifi');
+      model.view = target.dataset.view; model.notice = ''; model.result = null; render(); return;
+    }
+    if (action === 'scan-wifi') await run('scanOfflineWifi');
+    if (action === 'cancel-wifi') await run('cancelOfflineWifi');
     if (action === 'refresh-request' || action === 'cancel-request')
       await run(action === 'refresh-request' ? 'refreshRequest' : 'cancelRequest', { boxId: target.dataset.boxId, requestId: target.dataset.requestId });
     if (action === 'refresh-security-operation' || action === 'refresh-data-effect')
@@ -347,6 +392,7 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
     if (model.security && action === 'review-descendant') await run('prepareDescendantReview', { boxId: model.security.boxId, bindingIds: [target.dataset.bindingId] });
     if (model.security && action === 'refresh-members') await run('refreshMembers', { boxId: model.security.boxId });
     if (model.security && action === 'revoke-member') await run('prepareMemberRevocation', { boxId: model.security.boxId, principalId: target.dataset.principalId });
+    if (model.security && action === 'revoke-wifi-authority') await run('prepareWifiRevocation', { boxId: model.security.boxId, bindingId: target.dataset.bindingId });
     if (action === 'export-target-info') await run('exportTargetInfo');
     if (action === 'export-security-receipt') await run('exportSecurityReceipt', { boxId: target.dataset.boxId, requestId: target.dataset.requestId });
     if (action === 'import-identity-recovery') await run('importIdentityRecovery');
@@ -366,7 +412,28 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
     const name = form.dataset.form;
     // Do not keep passwords or delivery secrets in DOM nodes while awaiting IPC.
     form.reset();
-    if (name === 'createProfile') {
+    if (name === 'beginOfflineWifi') {
+      if (!wifiTransport) { model.notice = '此设备没有可用的蓝牙，请检查系统权限。'; render(); return; }
+      const current = ++generation;
+      try {
+        // Invoke before awaiting so Chromium sees the actual button gesture.
+        const selection = wifiTransport.requestDeviceFromUserGesture();
+        model.busy = true; model.boxId = data.boxId; model.notice = ''; render();
+        const selected = await selection;
+        if (disposed || current !== generation) return;
+        model.busy = false; model.wifiPicker = null;
+        await run('beginOfflineWifi', { boxId: data.boxId, selected });
+      } catch (error) {
+        if (disposed || current !== generation) return;
+        model.busy = false; model.wifiPicker = null;
+        model.notice = messages[error?.code || error?.message] || '未连接到盒子，请检查蓝牙权限后重新扫描。'; render();
+      }
+    } else if (name === 'prepareOfflineWifi') {
+      await run(name, { ssid: data.ssid, security: data.security, hidden: data.hidden === 'on', password: data.password || '' });
+    } else if (name === 'prepareWifiAuthorization' && model.security) {
+      await run(name, { boxId: model.security.boxId, bindingId: data.bindingId,
+        expiresAt: data.expiresAt ? Math.floor(Date.parse(data.expiresAt) / 1000) : null, delegable: data.delegable === 'on' });
+    } else if (name === 'createProfile') {
       if (data.passphrase !== data.repeatPassphrase) { model.notice = '两次输入的本地口令不一致，请重新输入。'; render(); return; }
       await run(name, { passphrase: data.passphrase });
     } else if (name === 'unlock') await run(name, { passphrase: data.passphrase });
@@ -374,7 +441,7 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
       if (!model.review || data.reviewed !== 'on') return;
       const review = model.review;
       if (review.action === 'ownership.transfer-prepare' && data.eraseConfirmation !== '清除本地数据') { model.notice = '请逐字输入“清除本地数据”，并核对所有成员的数据影响。'; render(); return; }
-      const method = { 'first-root': 'confirmFirstRoot', join: 'submitJoin', approval: 'confirmApproval', 'ledger-mutation': 'confirmSecurityMutation', 'ledger-target': 'confirmTargetApproval', 'ledger-recovery': 'confirmIdentityRecovery' }[review.kind];
+      const method = { 'first-root': 'confirmFirstRoot', join: 'submitJoin', approval: 'confirmApproval', 'ledger-mutation': 'confirmSecurityMutation', 'ledger-target': 'confirmTargetApproval', 'ledger-recovery': 'confirmIdentityRecovery', 'offline-wifi': 'confirmOfflineWifi' }[review.kind];
       if (method) await run(method, { reviewHandle: review.reviewHandle, ...(method !== 'submitJoin' ? { passphrase: data.passphrase } : {}) });
     } else if (name === 'refreshDevices') {
       model.boxId = data.boxId;
@@ -422,6 +489,11 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
     }
   };
   root.addEventListener('change', change);
+  const unsubscribeDiscovery = discovery?.subscribe(value => {
+    if (!disposed && model.busy && model.view === 'wifi' && Array.isArray(value?.candidates)) {
+      model.wifiPicker = { sessionId: value.sessionId, candidates: value.candidates.slice(0, 64) }; render();
+    }
+  }, () => { if (!disposed) { model.wifiPicker = null; render(); } });
   const unsubscribe = api.onChanged?.(() => {
     generation++; model.busy = false; clearTransient(); initialized = false;
     if (model.snapshot?.profile) model.snapshot = { ...model.snapshot, profile: { ...model.snapshot.profile, locked: true } };
@@ -429,7 +501,7 @@ export function createDeviceTrustView({ root, api, FormDataClass = globalThis.Fo
     void snapshot().then(render).catch(() => { model.notice = '本地状态暂时不可用，请关闭窗口后重新打开。'; render(); });
   });
   const ready = snapshot().then(render).catch(() => { model.notice = '无法读取本地身份，请关闭窗口后重新打开。'; render(); });
-  return { ready, dispose() { disposed = true; generation++; unsubscribe?.(); root.removeEventListener('click', click); root.removeEventListener('submit', submit); root.removeEventListener('change', change); } };
+  return { ready, dispose() { disposed = true; generation++; unsubscribe?.(); unsubscribeDiscovery?.(); root.removeEventListener('click', click); root.removeEventListener('submit', submit); root.removeEventListener('change', change); } };
 }
 
 if (typeof document !== 'undefined' && globalThis.wanxDeviceTrust) {

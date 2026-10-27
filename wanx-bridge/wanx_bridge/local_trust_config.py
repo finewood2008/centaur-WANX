@@ -18,6 +18,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+# Separate from the native data IPC directory mounted into business containers.
+# This root-only OS channel is mandatory in the protected runtime, not a caller
+# configurable transport or an alternative source of network permissions.
+NETWORK_SOCKET = Path("/run/centuarai-local-trust-network/network.sock")
+
 
 class LocalTrustError(Exception):
     def __init__(self, code: str, status: int = 503):

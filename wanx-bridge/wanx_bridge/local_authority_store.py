@@ -95,7 +95,7 @@ def _materials(directory: Path):
     return bundle, key
 
 
-def _open(directory: Path):
+def _open(directory: Path, *, verify_only=False):
     # Validate inode/sidecars before SQLite; the directory is private to this
     # service uid and runtime never creates a missing database.
     _read(directory, SEAL)
@@ -103,6 +103,9 @@ def _open(directory: Path):
         path = directory / name
         if name != DATABASE and not path.exists() and not path.is_symlink():
             continue
+        # Offline verification never performs journal recovery or creates WAL
+        # sidecars. A recovery-needed ledger must remain stopped for repair.
+        _need(not verify_only or name == DATABASE, "LOCAL_TRUST_RECOVERY_REQUIRED")
         try:
             info = path.lstat()
             _need(
@@ -115,15 +118,18 @@ def _open(directory: Path):
         except OSError as exc:
             raise BindingProtocolError("LOCAL_TRUST_STATE_MISSING") from exc
     db = sqlite3.connect(
-        (directory / DATABASE).as_uri() + "?mode=rw",
+        (directory / DATABASE).as_uri() + ("?mode=ro&immutable=1" if verify_only else "?mode=rw"),
         uri=True,
         isolation_level=None,
         check_same_thread=False,
         timeout=5,
     )
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=DELETE")
-    db.execute("PRAGMA synchronous=FULL")
+    if verify_only:
+        db.execute("PRAGMA query_only=ON")
+    else:
+        db.execute("PRAGMA journal_mode=DELETE")
+        db.execute("PRAGMA synchronous=FULL")
     return db
 
 
@@ -210,7 +216,7 @@ def initialize_authority(directory, *, now: int) -> None:
 class LocalTrustAuthority:
     """Synchronous authority; callers must use their bounded worker executor."""
 
-    def __init__(self, directory, *, boot_id: str):
+    def __init__(self, directory, *, boot_id: str, _verify_only=False):
         evidence._token(boot_id)
         self.directory = _directory(directory)
         self.bundle, self._key = _materials(self.directory)
@@ -222,16 +228,17 @@ class LocalTrustAuthority:
         self._commit_callbacks = None
         self._commit_observer = None
         self._team_identity_policy = None
-        self._db = _open(self.directory)
+        self._db = _open(self.directory, verify_only=_verify_only)
         self._ledger = None
         try:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute("BEGIN" if _verify_only else "BEGIN IMMEDIATE")
             _need(self._db.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
             _need("receipt" in {row[1] for row in self._db.execute("PRAGMA table_info(requests)")})
             meta = self._meta()
             _need(meta["bundleDigest"] == wire.digest(self.bundle))
             schema = self._db.execute("PRAGMA user_version").fetchone()[0]
             _need(schema in (0, 2), "LOCAL_TRUST_SCHEMA_UNSUPPORTED")
+            _need(not _verify_only or schema == 2, "LOCAL_TRUST_MIGRATION_REQUIRED")
             if schema == 0:
                 floor = self.directory / "local-trust-required.json"
                 _need(
@@ -255,8 +262,9 @@ class LocalTrustAuthority:
                     and meta["recoveryConfigured"] is False
                 )
                 self._verify_checkpoint(meta)
-            _challenge_indexes(self._db)
-            if meta["bootId"] != boot_id:
+            if not _verify_only:
+                _challenge_indexes(self._db)
+            if not _verify_only and meta["bootId"] != boot_id:
                 _need(
                     not self._db.execute(
                         "SELECT 1 FROM retired_boots WHERE boot_id=?", (boot_id,)
@@ -348,8 +356,14 @@ class LocalTrustAuthority:
             )
 
     @contextmanager
-    def _transaction(self, now):
+    def _transaction(self, now, *, observed_now=None):
+        """Retain trusted clock observations even when an operation is denied.
+
+        observed_now is an internal callback returning the greatest wall time
+        sampled by the serialized caller, never a client-provided timestamp.
+        """
         _time(now)
+        _need(observed_now is None or callable(observed_now))
         with self._lock:
             _need(not self._closed, "LOCAL_TRUST_CLOSED")
             self._db.execute("BEGIN IMMEDIATE")
@@ -384,9 +398,11 @@ class LocalTrustAuthority:
                 except BindingProtocolError:
                     self._db.execute("ROLLBACK TO operation")
                     self._db.execute("RELEASE operation")
+                    self._persist_observed_time(observed_now)
                     self._db.commit()
                     raise
                 self._db.execute("RELEASE operation")
+                self._persist_observed_time(observed_now)
                 self._db.commit()
                 self._commit_callbacks = None
                 for callback in callbacks:
@@ -396,6 +412,19 @@ class LocalTrustAuthority:
                 raise
             finally:
                 self._commit_callbacks = None
+
+    def _persist_observed_time(self, observed_now):
+        if observed_now is None:
+            return
+        observed = observed_now()
+        _time(observed)
+        # The yielded meta object may contain writes that the savepoint just
+        # rolled back. Read the actual post-operation row and change only time;
+        # saving that stale object would resurrect rejected security changes.
+        current = self._meta()
+        if observed > current["lastSeenNow"]:
+            current["lastSeenNow"] = observed
+            self._save_meta(current)
 
     def _after_commit(self, callback):
         _need(self._commit_callbacks is not None and callable(callback))
@@ -1281,6 +1310,36 @@ for _operation in (
     "get_authorization",
 ):
     _versioned(_operation)
+
+
+def verify_authority_v2(directory):
+    """Offline complete v2 verification with no boot, grant or ledger mutation.
+
+    The same runtime lock excludes a live authority and migrations. Existing
+    startup validation checks the seal, signed history, origin and projections;
+    a read-only connection enforces that verification cannot repair any state.
+    """
+    from .local_trust_runtime import runtime_lock
+
+    directory = _directory(directory)
+    with runtime_lock(directory):
+        authority = LocalTrustAuthority(
+            directory, boot_id="offline-verification", _verify_only=True
+        )
+        try:
+            meta = authority._meta()
+            return {
+                name: meta[name]
+                for name in (
+                    "schemaVersion",
+                    "boxId",
+                    "ownershipEpoch",
+                    "rosterVersion",
+                    "rosterDigest",
+                )
+            }
+        finally:
+            authority.close()
 
 
 def migrate_authority_v2(directory, *, now):

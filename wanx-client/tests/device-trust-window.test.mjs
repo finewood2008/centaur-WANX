@@ -31,6 +31,12 @@ const methodInputs = {
   reimportRecoveryMaterial: { materialHandle: requestId }, prepareRecoveryConfiguration: { materialHandle: requestId },
   importIdentityRecovery: {}, beginIdentityRecovery: { recoveryHandle: requestId },
   prepareIdentityRecovery: { materialHandle: requestId }, confirmIdentityRecovery: { reviewHandle, passphrase: 'local-secret-passphrase' },
+  beginOfflineWifi: { boxId: 'box-1', selected: { candidateId: 'candidate', transport: 'ble-gatt', transportHandle: 'handle',
+    selectionLeaseId: 'lease', advertisedName: 'box', rssi: null, firstSeenMonotonicMs: 1, lastSeenMonotonicMs: 1 } },
+  scanOfflineWifi: {}, prepareOfflineWifi: { ssid: 'home', security: 'wpa_personal', hidden: false, password: 'wifi-password' },
+  confirmOfflineWifi: { reviewHandle, passphrase: 'local-secret-passphrase' }, cancelOfflineWifi: {},
+  prepareWifiAuthorization: { boxId: 'box-1', bindingId: 'binding-1', expiresAt: null, delegable: false },
+  prepareWifiRevocation: { boxId: 'box-1', bindingId: 'binding-1' },
 };
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 async function harness(t, overrides = {}) {

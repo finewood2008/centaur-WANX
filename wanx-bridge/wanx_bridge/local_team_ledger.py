@@ -503,10 +503,15 @@ def transition(snapshot, mutation, now, sequence, *, invalidated=()):
                 )
                 engine.need(set(grant["actions"]) <= set(allowed), "LOCAL_BINDING_SCOPE_EXCEEDED")
         for grant in snapshot["grants"]:
-            if grant["bindingId"] == device["bindingId"] and grant["status"] != "revoked":
+            if (
+                grant["bindingId"] == device["bindingId"]
+                and grant["resourceId"].startswith("team:")
+                and grant["status"] != "revoked"
+            ):
                 grant.update(status="revoked", revision=grant["revision"] + 1)
         projected = {**device, "sourceRequestId": mutation["requestId"]}
-        wanted = {grant["resourceId"]: set(grant["actions"]) for grant in args["grants"]}
+        team_grants = [grant for grant in args["grants"] if grant["resourceId"].startswith("team:")]
+        wanted = {grant["resourceId"]: set(grant["actions"]) for grant in team_grants}
         delegates = [
             {
                 "resourceId": item["resourceId"],
@@ -516,14 +521,27 @@ def transition(snapshot, mutation, now, sequence, *, invalidated=()):
             if set(item["actions"]) & wanted.get(item["resourceId"], set())
         ]
         target = {
-            "grants": args["grants"],
+            "grants": team_grants,
             "delegableGrants": delegates,
             "expiresAt": device["expiresAt"],
             "delegationExpiresAt": device["delegationExpiresAt"],
         }
         engine._new_grants(snapshot, projected, target, sequence, principal_grants=True)
         engine._new_grants(snapshot, projected, target, sequence)
-        device.update(bindingRevision=device["bindingRevision"] + 1, delegableGrants=delegates)
+        # Non-team grants retain their own expiry and delegation provenance.
+        # Reissuing them from device-level limits would widen that authority.
+        device.update(
+            bindingRevision=device["bindingRevision"] + 1,
+            delegableGrants=sorted(
+                [
+                    item
+                    for item in device["delegableGrants"]
+                    if not item["resourceId"].startswith("team:")
+                ]
+                + delegates,
+                key=lambda item: item["resourceId"],
+            ),
+        )
         engine.principal(snapshot, affected)["principalSecurityVersion"] += 1
         member["revision"] += 1
         targets = [device["bindingId"]]
@@ -629,6 +647,12 @@ def transition(snapshot, mutation, now, sequence, *, invalidated=()):
 def _validate_target_grants(snapshot, actor, target, now, role_id):
     from . import local_ledger_engine as engine
 
+    # Team admission must obey the same cross-principal network restriction as
+    # principal.invite; cloud membership never delegates box network control.
+    engine.need(
+        all(item["resourceId"] != "network:wifi" for item in target["grants"]),
+        "LOCAL_BINDING_SCOPE_EXCEEDED",
+    )
     sources = engine.effective_grants(snapshot, actor, now, delegation=True)
     private = [item for item in target["grants"] if not item["resourceId"].startswith("team:")]
     private_delegate = [

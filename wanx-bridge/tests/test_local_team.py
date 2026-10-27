@@ -233,6 +233,111 @@ def test_cloud_team_activate_invite_consent_and_restart(team_ledger):
     assert ledger.authority.get_authorization(target.binding_id, NOW + 15)["team"] == auth["team"]
 
 
+@pytest.mark.parametrize("action", ["team.invite-create", "team.member-admit"])
+def test_team_invitation_cannot_delegate_wifi_to_another_principal(team_ledger, action):
+    from test_local_wifi_authority import authorize
+
+    ledger = team_ledger
+    authorize(ledger, now=NOW + 12)
+    target = manager_target(principal_id="principal:network-member")
+    target.target["capabilities"] = sorted(protocol.INVITED_CAPABILITIES)
+    network = {"resourceId": "network:wifi", "actions": ["write"]}
+    for name in ("grants", "delegableGrants"):
+        target.target[name] = sorted(
+            target.target[name] + [network], key=lambda grant: grant["resourceId"]
+        )
+    invitation_id = evidence._encode(os.urandom(32))
+    invitation = {
+        "invitationId": invitation_id,
+        "roleId": "manager",
+        "targetPolicy": {key: target.target[key] for key in team.TARGET_POLICY_FIELDS},
+        "expiresAt": NOW + 100,
+    }
+    if action == "team.invite-create":
+        with pytest.raises(evidence.BindingProtocolError, match="LOCAL_BINDING_SCOPE_EXCEEDED"):
+            prepare(ledger, action, invitation, now=NOW + 13)
+        return
+
+    # Admission must also reject a previously prepared invitation carrying this
+    # cross-principal grant, independently of the invitation creation guard.
+    snapshot = ledger.authority._v2().snapshot(ledger.authority._meta())
+    snapshot["team"]["invitations"].append(
+        {
+            **invitation,
+            "status": "pending",
+            "revision": 1,
+            "createdAt": NOW + 12,
+            "usedByMembershipId": None,
+        }
+    )
+    value = request(ledger, target.payload["principalId"], target.target, invitation_id)
+    mutation = {
+        **ledger.authority._context(ledger.authority._meta()),
+        "requestId": evidence._encode(os.urandom(32)),
+        "action": action,
+        "actor": actor(ledger.root),
+        "args": {
+            "request": value,
+            "cloudProof": identity_proof(
+                ledger.team.key,
+                ledger.team.policy,
+                value,
+                subject="account:network-member",
+                now=NOW + 13,
+            ),
+        },
+    }
+    protocol.validate_args(action, mutation["args"])
+    with pytest.raises(evidence.BindingProtocolError, match="LOCAL_BINDING_SCOPE_EXCEEDED"):
+        engine.transition(snapshot, mutation, NOW + 13, 100)
+
+
+@pytest.mark.parametrize("invalidation", ["expiry", "source-revoke"])
+def test_team_device_resources_preserves_wifi_lifetime_and_delegation(team_ledger, invalidation):
+    from test_local_wifi_authority import add_manager, authorize
+
+    ledger = team_ledger
+    manager = add_manager(ledger, capabilities={"device.approve_manage"}, now=NOW + 12)
+    authorize(ledger, expires=NOW + 100, now=NOW + 13)
+    authorize(ledger, manager, expires=NOW + 40, now=NOW + 14)
+    before = ledger.authority.get_authorization(manager.binding_id, NOW + 14)
+    args = {
+        "principalId": manager.payload["principalId"],
+        "bindingId": manager.binding_id,
+        "expectedBindingRevision": before["bindingRevision"],
+        "grants": sorted(
+            before["grants"] + [{"resourceId": "team:management", "actions": ["read", "write"]}],
+            key=lambda grant: grant["resourceId"],
+        ),
+    }
+    snapshot = ledger.authority._v2().snapshot(ledger.authority._meta())
+    mutation = {
+        **ledger.authority._context(ledger.authority._meta()),
+        "requestId": evidence._encode(os.urandom(32)),
+        "action": "team.device-resources",
+        "actor": actor(ledger.root),
+        "args": args,
+    }
+    protocol.validate_args(mutation["action"], args)
+    after, _, _, _ = engine.transition(snapshot, mutation, NOW + 15, 100)
+    current = engine.binding(after, manager.binding_id)
+    assert engine.grant_list(engine.effective_grants(after, current, NOW + 15)) == args["grants"]
+    if invalidation == "source-revoke":
+        revoked = {
+            **mutation,
+            "requestId": evidence._encode(os.urandom(32)),
+            "action": "network-wifi.revoke",
+            "args": {"bindingId": ledger.root.binding_id},
+        }
+        after, _, _, _ = engine.transition(after, revoked, NOW + 16, 101)
+        now = NOW + 17
+    else:
+        now = NOW + 41
+    grants = engine.effective_grants(after, engine.binding(after, manager.binding_id), now)
+    assert "network:wifi" not in [grant["resourceId"] for grant in grants]
+    assert "team:management" in [grant["resourceId"] for grant in grants]
+
+
 def test_cloud_proof_alone_and_legacy_invite_cannot_enroll(team_ledger):
     ledger = team_ledger
     target = invite_member(ledger)

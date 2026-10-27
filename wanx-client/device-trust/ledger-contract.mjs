@@ -11,6 +11,7 @@ export const LEDGER_ACTIONS = Object.freeze([
   'owner-policy.activate-v2', 'device.add-manager', 'principal.invite', 'device.revoke',
   'device.review-descendants', 'principal.revoke', 'recovery.setup', 'recovery.rotate',
   'recovery.recover', 'backup.create', 'backup.restore', 'ownership.transfer-prepare',
+  'network-wifi.authorize', 'network-wifi.revoke',
 ]);
 const CONTEXT = ['boxId', 'boxKeyThumbprint', 'ownershipEpoch', 'rosterVersion', 'rosterDigest', 'policyVersion'];
 export const V1_BINDING_FIELDS = Object.freeze(['bindingId', 'principalId', 'clientId', 'role', 'status',
@@ -140,6 +141,8 @@ function args(action, value) {
     case 'device.revoke': exact(value, ['bindingId', 'mode']); token(value.bindingId); oneOf(value.mode, ['normal', 'emergency-lock']); break;
     case 'device.review-descendants': exact(value, ['bindingIds']); sorted(value.bindingIds, token, 16, 1); break;
     case 'principal.revoke': exact(value, ['principalId']); token(value.principalId); break;
+    case 'network-wifi.authorize': exact(value, ['bindingId', 'expiresAt', 'delegable']); token(value.bindingId); expiry(value.expiresAt); boolean(value.delegable); break;
+    case 'network-wifi.revoke': exact(value, ['bindingId']); token(value.bindingId); break;
     case 'recovery.setup': case 'recovery.rotate': case 'recovery.recover':
       exact(value, ['expectedRecoveryVersion', 'newRecovery', ...(action === 'recovery.recover' ? ['expectedPrincipalSecurityVersion', 'target'] : [])]);
       integer(value.expectedRecoveryVersion, action === 'recovery.setup');
