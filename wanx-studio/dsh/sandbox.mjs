@@ -40,7 +40,20 @@ export async function sandboxCommand({taskRoot,port,extraEnv={},probe=false}){
 export function spawnSandbox(spec){return spawn(spec.command,spec.args,{env:spec.env,stdio:['pipe','pipe','pipe'],detached:true})}
 export async function stopGroup(child){
   if(!child?.pid)return;
-  try{process.kill(-child.pid,'SIGTERM')}catch(e){if(e.code!=='ESRCH')throw e}
-  const exited=await Promise.race([new Promise(resolve=>{if(child.exitCode!==null||child.signalCode)resolve(true);else child.once('exit',()=>resolve(true))}),new Promise(resolve=>setTimeout(()=>resolve(false),1500))]);
-  if(!exited){try{process.kill(-child.pid,'SIGKILL')}catch(e){if(e.code!=='ESRCH')throw e}}
+  const alive=()=>{
+    try{process.kill(-child.pid,0);return true}
+    catch(error){
+      if(error.code==='ESRCH')return false;
+      // Darwin can briefly return EPERM while an exited member is reaped.
+      // That is not evidence of closure: keep waiting, then enforce KILL.
+      if(error.code==='EPERM')return true;
+      throw error;
+    }
+  };
+  try{process.kill(-child.pid,'SIGTERM')}catch(e){if(e.code==='ESRCH')return;throw e}
+  // A wrapper may exit before its native descendants. Its exit event does not
+  // prove that the process group has drained.
+  const deadline=performance.now()+1500;
+  while(alive()&&performance.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  if(alive()){try{process.kill(-child.pid,'SIGKILL')}catch(e){if(e.code!=='ESRCH')throw e}}
 }

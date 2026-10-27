@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 import os
 import signal
+import shutil
 import sys
 import time
 from uuid import uuid4
@@ -13,7 +14,7 @@ from .local_authority import to_thread
 from .contracts import StudioError, digest
 from .foundation import FOUNDATION_PROMPT, foundation_policy
 from .store import public
-from .codex_config import runtime_config, config_fingerprint
+from .codex_config import runtime_config, resolve_runtime, config_fingerprint
 
 
 class Runner:
@@ -31,26 +32,51 @@ class Runner:
     async def preflight(self, fresh=False, for_turn=False, owner=None):
         # The real native worker performs the connection/policy handshake once.
         # A build must not launch and discard a second Codex just to probe it.
-        if for_turn:
-            return {'available':bool(await to_thread(runtime_config,'wanx_task',self.svc,owner)),'executor':'Codex','transport':'app-server','modelCalls':0,'code':'CODEX_NOT_CONFIGURED'}
+        base={'available':False,'executor':'Codex','transport':'app-server','modelCalls':0,
+              'check':'configuration' if for_turn else 'protocol'}
         async with self.probing:
-            config=await to_thread(runtime_config,'wanx_task',self.svc,owner)
-            stamp=config_fingerprint(config)
+            try:
+                config,summary=await to_thread(resolve_runtime,'wanx_task',self.svc,owner)
+            except StudioError as error:
+                return {**base,'code':error.code}
+            base['configuration']=summary
+            node=await to_thread(shutil.which,'node')
+            if not node:
+                return {**base,'code':'CODEX_NODE_MISSING'}
+            if for_turn:
+                return {**base,'available':True}
+            stamp=config_fingerprint({'runtime':config,'node':node})
             if self.cached and not fresh and getattr(self,'cached_stamp',None)==stamp and time.monotonic()-self.cached_at<60:
                 return self.cached
-            if not config:
-                return {'available':False,'executor':'Codex','code':'CODEX_NOT_CONFIGURED'}
             env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','TMPDIR'}}
-            proc=await asyncio.create_subprocess_exec('node',str(self.svc.project_root/'tools/probe-codex.mjs'),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,cwd=self.svc.project_root,env={**env,**config,'WANX_PYTHON_PATH':sys.executable},start_new_session=True)
+            proc=None
             try:
+                proc=await asyncio.create_subprocess_exec(node,str(self.svc.project_root/'tools/probe-codex.mjs'),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,cwd=self.svc.project_root,env={**env,**config,'WANX_PYTHON_PATH':sys.executable},start_new_session=True)
                 out,_=await asyncio.wait_for(proc.communicate(),40)
-                self.cached=json.loads(out)
-            except BaseException as error:
-                if isinstance(error,asyncio.CancelledError):
+                result=json.loads(out)
+                if type(result) is not dict or type(result.get('available')) is not bool or result.get('modelCalls')!=0:
+                    raise ValueError('invalid probe result')
+                if result['available'] and getattr(proc,'returncode',0):
+                    raise ValueError('unsuccessful probe process')
+                result={**base,**result,'configuration':summary}
+            except asyncio.CancelledError:
+                if proc is not None:
+                    await self.svc.native_codex.stop(proc,grace_seconds=3)
+                raise
+            except FileNotFoundError:
+                result={**base,'code':'CODEX_NODE_MISSING'}
+            except asyncio.TimeoutError:
+                result={**base,'code':'CODEX_PROBE_TIMEOUT'}
+            except Exception:
+                result={**base,'code':'PREFLIGHT_FAILED'}
+            if proc is not None:
+                try:
+                    await self.svc.native_codex.stop(proc,grace_seconds=3)
+                except asyncio.CancelledError:
                     raise
-                self.cached={'available':False,'executor':'Codex','code':'PREFLIGHT_FAILED','modelCalls':0}
-            finally:
-                await self.svc.native_codex.stop(proc)
+                except Exception:
+                    result={**base,'code':'CODEX_PROBE_CLEANUP_FAILED'}
+            self.cached=result
             self.cached_at=time.monotonic()
             self.cached_stamp=stamp
             return self.cached

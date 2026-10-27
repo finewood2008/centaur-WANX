@@ -146,7 +146,7 @@ async def test_preflight_cache_is_bound_to_owner_and_current_device_configuratio
     class Probe:
         async def communicate(self):return b'{"available":true,"modelCalls":0}',b''
     async def spawn(*args,**kwargs):calls.append(kwargs['env']);return Probe()
-    async def stop(_):pass
+    async def stop(_,**kwargs):pass
     service.native_codex=SimpleNamespace(stop=stop)
     monkeypatch.setattr('asyncio.create_subprocess_exec',spawn)
     runner=Runner(service)

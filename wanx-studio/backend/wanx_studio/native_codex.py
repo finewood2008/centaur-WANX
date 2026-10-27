@@ -69,11 +69,11 @@ class NativeCodex:
         else:
             await self.stop(proc)
 
-    async def stop(self, proc):
+    async def stop(self, proc, *, grace_seconds=1):
         # Revocation, user cancellation and service shutdown can race. A second
         # cancellation must never let the caller acknowledge physical closure
         # while the worker is still alive.
-        cleanup = asyncio.create_task(self._stop(proc))
+        cleanup = asyncio.create_task(self._stop(proc, grace_seconds=grace_seconds))
         cancelled = False
         while not cleanup.done():
             try:
@@ -89,7 +89,7 @@ class NativeCodex:
         if cancelled:
             raise asyncio.CancelledError
 
-    async def _stop(self, proc):
+    async def _stop(self, proc, *, grace_seconds=1):
         from .local_authority import physical_close_uncertain, requires_physical_close
         try:
             if os.name == 'nt':
@@ -109,7 +109,7 @@ class NativeCodex:
                 return
             if proc.returncode is None:
                 try:
-                    await asyncio.wait_for(proc.wait(), 1)
+                    await asyncio.wait_for(proc.wait(), grace_seconds)
                 except TimeoutError:
                     pass
             try:
