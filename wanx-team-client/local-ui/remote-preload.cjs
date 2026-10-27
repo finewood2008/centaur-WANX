@@ -122,6 +122,7 @@ const actions = {
 
   "team.login": input=>ipcRenderer.invoke("wanx-client:team",{operation:"login",input}),
   "team.join": input=>ipcRenderer.invoke("wanx-client:team",{operation:"join",input}),
+  "team.security": input=>ipcRenderer.invoke("wanx-client:team",{operation:"security",input}),
   "team.identity": input=>ipcRenderer.invoke("wanx-client:team",{operation:"identity",input}),
   "team.catalog": input=>ipcRenderer.invoke("wanx-client:team",{operation:"catalog",input}),
   "team.open": input=>ipcRenderer.invoke("wanx-client:team",{operation:"open",input}),

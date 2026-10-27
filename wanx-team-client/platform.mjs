@@ -167,7 +167,11 @@ export function createPlatformClient({
               endpoint,
           ),
         };
-      })])],
+      })])].map(device => localDataAccess && !localDataAccess.isProtectedBox(device.deviceId)
+        // Cloud reachability does not approve this computer's local data keys.
+        // Preserve server denials and offline states so their cause stays visible.
+        ? { ...device, canOpen: false, ...(device.accessState === 'ready' ? { accessState: 'device_approval_required' } : {}) }
+        : device),
       directory,
       platform,
       network: { ...network, enabled, peers: [] },

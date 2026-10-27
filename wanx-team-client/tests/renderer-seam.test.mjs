@@ -11,6 +11,7 @@ import vm from "node:vm";
 import { EventEmitter } from "node:events";
 import { installElectronBluetoothPicker } from "@nexusaos/device-discovery-electron/main";
 import { registerControlActions } from "../shell/control.mjs";
+import { createTeamService, registerTeamIPC } from "../shell/team-service.mjs";
 import { BOX_SESSION_ERROR_CODES } from "../octop/platform.mjs";
 
 const indexURL = new URL("../local-ui/renderer/index.html", import.meta.url);
@@ -175,6 +176,12 @@ async function harness(initial = state(), installed = [application], options = {
     support: options.support,
     aiDialogue: options.aiDialogue,
     applications, uiState, getState: snapshot, publishState: publish,
+    openDeviceTrust: async () => { calls.push(["device-trust-window", "overview"]); },
+  });
+  if (options.teamSecurity) registerTeamIPC({
+    ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
+    isTrusted: event => event.sender === contents && event.senderFrame === frame,
+    team: createTeamService({ client, applications, openDeviceTrust: async input => { calls.push(["device-trust-window", input.view]); } }),
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
   const window = { addEventListener(){}, wanxBluetooth: {
@@ -1158,6 +1165,122 @@ test("box permission and transport states stay distinct from provisioning", asyn
   h.update({ ...state("ready", "ready", "box-102"), phase: "recovering" });
   assert.match(h.app.innerHTML, /正在恢复连接/);
   assert.doesNotMatch(h.app.innerHTML, /当前连接/);
+});
+
+test("team box device approval opens the existing security window without attempting a connection", async () => {
+  const h = await harness({ ...state(), team: {}, devices: [
+    { ...devices[0], accessState: "device_approval_required", canOpen: false, networkReady: true },
+  ] }, [], { teamSecurity: true });
+  h.navigate("boxes");
+  const card = h.app.innerHTML.match(/<article class="device-card[\s\S]*?<\/article>/)?.[0];
+  assert.ok(card);
+  assert.match(card, /本机设备待批准/);
+  assert.match(card, /云账号关联不代表这台电脑已获准访问/);
+  assert.match(card, /成员.*管理员邀请/);
+  assert.match(card, /管理员.*已批准的管理设备/);
+  assert.match(card, /data-team-action="join"/);
+  assert.doesNotMatch(card, /可连接|data-action="connect"/);
+  assert.doesNotMatch(h.app.innerHTML, /可以连接盒子并使用应用/);
+  await h.click("connect", { deviceId: "box-102" });
+  await h.click(undefined, { teamAction: "join" });
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 0);
+  assert.deepEqual(h.calls.filter(([name]) => name === "device-trust-window"), [["device-trust-window", "team"]]);
+});
+
+test("team cloud access denial explains account permissions without offering device approval or connect", async () => {
+  const h = await harness({ ...state(), team: {}, devices: [
+    { ...devices[0], accessState: "access_denied", canOpen: false, networkReady: true },
+  ] });
+  h.navigate("boxes");
+  const card = h.app.innerHTML.match(/<article class="device-card[\s\S]*?<\/article>/)?.[0];
+  assert.match(card, /未获访问权限/);
+  assert.match(card, /服务器未允许当前账号在这台电脑访问盒子/);
+  assert.match(card, /管理员核对设备与客户端授权/);
+  assert.doesNotMatch(card, /可连接|data-action="connect"|data-team-action="join"|刷新|网络/);
+  assert.doesNotMatch(h.app.innerHTML, /可以连接盒子并使用应用/);
+});
+
+test("approved team box remains connectable and locked identity has an explicit unlock entry", async () => {
+  const h = await harness({ ...state(), team: {}, dataIdentity: { profileId: "local-1", phase: "unlocked" }, devices: [
+    { ...devices[0], authorization: "local-trust-v1", networkReady: true },
+  ] });
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /可连接/);
+  assert.match(h.app.innerHTML, /data-action="connect" data-device-id="box-102"/);
+  await h.click("connect", { deviceId: "box-102" });
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:connect-box").length, 1);
+  h.update({ ...state(), team: {}, devices: [
+    { ...devices[0], authorization: "local-trust-v1", accessState: "locked", canOpen: false, networkReady: false },
+  ] });
+  const card = h.app.innerHTML.match(/<article class="device-card[\s\S]*?<\/article>/)?.[0];
+  assert.match(card, /本地身份已锁定/);
+  assert.match(card, /data-action="device-trust-open"[^>]*>解锁本地身份/);
+  assert.doesNotMatch(card, /data-action="connect"/);
+  h.update({ ...state(), team: {}, dataIdentity: { profileId: "local-1", phase: "locked" } });
+  assert.match(h.app.innerHTML, /data-action="device-trust-open"[^>]*>解锁本地身份/);
+  await h.click("device-trust-open");
+  assert.deepEqual(h.calls.filter(([name]) => name === "device-trust-window"), [["device-trust-window", "overview"]]);
+});
+
+test("authenticated cloud account with locked local identity is guided to unlock instead of logging in again", async () => {
+  const initial = { ...state(), team: {}, dataIdentity: { profileId: "local-1", phase: "locked" } };
+  const h = await harness(initial);
+  assert.match(h.app.innerHTML, /<h1>解锁本地身份<\/h1>/);
+  assert.match(h.app.innerHTML, /云账号已登录/);
+  assert.match(h.app.innerHTML, /class="button primary wide" data-action="device-trust-open"[^>]*>解锁本地身份/);
+  assert.doesNotMatch(h.app.innerHTML, /登录万象平台|登录并进入|data-form="auth"|name="password"/);
+  await h.click("device-trust-open");
+  assert.deepEqual(h.calls.filter(([name]) => name === "device-trust-window"), [["device-trust-window", "overview"]]);
+  h.update({ ...initial, dataIdentity: { ...initial.dataIdentity, phase: "unlocked" } });
+  assert.match(h.app.innerHTML, /我的应用/);
+  assert.doesNotMatch(h.app.innerHTML, /<h1>解锁本地身份<\/h1>|data-form="auth"/);
+});
+
+test("locked authenticated identity rejects a stale cloud login submission before IPC", async () => {
+  const initial = { ...state(), team: {}, dataIdentity: { profileId: "local-1", phase: "locked" } };
+  const h = await harness({ ...initial, account: { phase: "signed_out" } }, [], {
+    loginFailure: "ACCOUNT_ALREADY_SIGNED_IN",
+  });
+  assert.ok(h.form("auth"));
+  h.update(initial);
+  assert.equal(h.form("auth"), undefined);
+  await h.submit("auth", { username: "13800000000", password: "example-password" });
+  assert.equal(h.calls.filter(([name]) => name === "wanx-client:login-password").length, 0);
+  assert.doesNotMatch(h.app.innerHTML, /ACCOUNT_ALREADY_SIGNED_IN/);
+});
+
+for (const phase of ["signed_out", "authenticating"]) {
+  test(`locked local identity preserves ${phase} cloud login behavior`, async () => {
+    const h = await harness({ ...state(), account: { phase }, team: {}, dataIdentity: { profileId: "local-1", phase: "locked" } });
+    assert.match(h.app.innerHTML, /<h1>登录万象平台<\/h1>/);
+    assert.ok(h.form("auth"));
+    await h.submit("auth", { username: "13800000000", password: "example-password" });
+    assert.equal(h.calls.filter(([name]) => name === "wanx-client:login-password").length, phase === "signed_out" ? 1 : 0);
+  });
+}
+
+test("empty team box list explains local approval while the ordinary cloud list retains setup", async () => {
+  const h = await harness({ ...state(), team: {}, devices: [] }, [], { teamSecurity: true });
+  h.navigate("boxes");
+  assert.match(h.app.innerHTML, /尚无已批准的盒子/);
+  assert.match(h.app.innerHTML, /云账号关联不代表这台电脑已获准访问/);
+  assert.match(h.app.innerHTML, /data-team-action="join"/);
+  assert.doesNotMatch(h.app.innerHTML, /可以连接盒子并使用应用|发现附近的盒子，完成配网和账号绑定/);
+  h.update({ ...state(), devices: [] });
+  assert.match(h.app.innerHTML, /发现附近的盒子，完成配网和账号绑定/);
+});
+
+for (const [code, message] of [
+  ["TEAM_DEVICE_APPROVAL_REQUIRED", /云账号与设备批准.*管理员.*批准/],
+  ["LOCAL_IDENTITY_LOCKED", /本地身份与设备批准.*解锁本地身份/],
+  ["LOCAL_DATA_LOCAL_IDENTITY_LOCKED", /本地身份与设备批准.*解锁本地身份/],
+]) test(`team connection error gives actionable guidance for ${code}`, async () => {
+  const h = await harness({ ...state(), team: {} }, [], { connectFailure: code });
+  h.navigate("boxes");
+  await h.click("connect", { deviceId: "box-102" });
+  const alert = h.app.innerHTML.match(/<p class="inline-error" role="alert">([\s\S]*?)<\/p>/)?.[1];
+  assert.match(alert, message);
+  assert.doesNotMatch(alert, /刷新设备|检查盒子网络与服务/);
 });
 
 
