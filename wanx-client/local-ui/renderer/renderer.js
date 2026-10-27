@@ -938,7 +938,7 @@ function marketErrorMessage(error) {
     MARKET_BUSY: "此应用正在处理中，请稍后再试。",
     MARKET_NOT_CONFIGURED: "应用市场尚未配置完成，请联系管理员。",
     CLIENT_UPDATE_REQUIRED: "请先更新万象，再启动新的业务。已打开的应用可继续保存工作。",
-    CLIENT_VERSION_INCOMPATIBLE: "请先在设置中更新万象，再安装或打开此应用。",
+    CLIENT_VERSION_INCOMPATIBLE: "此应用与当前万象版本不兼容，请检查万象和应用更新，或联系管理员确认适配版本。",
     BACKEND_CONTRACT_INCOMPATIBLE: "此应用需要更新盒端服务，请联系盒主更新后再试。",
     APPLICATION_RESOURCES_PENDING: "应用已安装。连接盒子后打开，万象会检查盒端准备状态。",
     APPLICATION_RESOURCES_NOT_READY: "盒端尚未完成应用准备，请保持盒子联网后重试。",
@@ -983,11 +983,11 @@ function candidateLabel(candidate) {
       backend_evidence_stale: "盒子状态还未确认，请连接盒子并刷新后再试。",
       expert_not_ready: "此应用需要的助手尚未准备好，请联系盒主完成准备。",
       expert_version_unknown: "无法确认现有助手是否适用。现有内容已保留，请联系维护人员检查。",
-      client_version: "请先在设置中更新万象，再安装此应用。",
+      client_version: "此应用与当前万象版本不兼容，请检查万象和应用更新，或联系管理员确认适配版本。",
       authorization_unverified: "应用使用权限尚未确认，请重新登录后重试，或联系盒主。",
       compatible_history_requires_recovery: "此盒子需要受支持的历史应用版本。请保留现有数据并联系应用提供方完成兼容恢复。",
     reinstall_required: "此版本需管理员协助重新安装。",
-    }[candidate.reason];
+    }[candidate.reason === "CLIENT_VERSION_INCOMPATIBLE" ? "client_version" : candidate.reason];
     if (reason) return reason;
   }
   return {
