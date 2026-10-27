@@ -11,6 +11,7 @@ import {visualPrompt} from './visual-feedback.mjs';
 import {redact} from './events.mjs';
 import {NativeSession} from './native-session.mjs';
 import {serveWorker} from './worker.mjs';
+import {runtimeEnvironment,runtimeEffort} from './runtime-env.mjs';
 const root=fileURLToPath(new URL('..',import.meta.url));
 await serveWorker(async({emit:send,request})=>{
  let config,files,native,terminal,terminalPending,terminalController,finish,finished,closed=true,submitted=false,planNeeded=false;
@@ -45,12 +46,12 @@ const proxy=http.createServer(async(req,res)=>{
   finished=new Promise(resolve=>finish=resolve);let prompt;
   try{
    if(!process.env.WANX_CODEX_CONFIG||!process.env.WANX_CODEX_PATH)throw new Error('CODEX_NOT_CONFIGURED');
-   const settings=JSON.parse(process.env.WANX_CODEX_CONFIG),baseEnv={PATH:process.env.PATH,LANG:process.env.LANG||'en_US.UTF-8',TMPDIR:process.env.TMPDIR};
+   const settings=JSON.parse(process.env.WANX_CODEX_CONFIG),baseEnv=runtimeEnvironment();
    native??=new NativeSession({binary:process.env.WANX_CODEX_PATH,config:settings,env:baseEnv,onEvent:emit,onTrace:e=>emit({type:'terminal_diagnostic',...e})});
    const session=await native.open({cwd:config.taskRoot,sessionId:config.sessionId,scope:config.scope||'build',mcpServers:{wanx_task:{command:process.execPath,args:[path.join(root,'codex/tools.mjs')],env:{WANX_TASK_PROXY:`http://127.0.0.1:${proxy.address().port}`,WANX_TASK_TOKEN:token}}}});
    emit({type:'session',sessionId:session.sessionId,reused:session.reused,transport:'app-server',workerPid:process.pid,appServerPid:native.server.child.pid});
    emit({type:'status',text:session.reused?'Codex 会话已复用，正在继续开发':'Codex 原生会话已就绪，正在开始开发'});
-   prompt=native.prompt([{type:'text',text:'你是万象受控小应用开发者。只使用 wanx_task MCP 工具完成任务；不要调用 Shell、apply_patch、读取任意本机路径、安装依赖或调用外部连接器。先用 read_material 获取冻结方案和固定运行契约，用 list_sources/read_source 获取已有源码。已有应用优先使用 patch_source 精确修改相关片段，保留其他字节；新建文件或确需全量替换时使用 write_source。用 update_plan 向用户公开简要步骤和进展；公开说明正在做什么，用户只观看过程，不审批命令、不参与编码、不回答开发中的临时问题。必须保留原始目标和范围，无法从方案解决的实质缺口使用 require_plan 结束本轮；技术细节自行选择。最后调用 validate_app 提交成功版本后立即结束，不能替用户验收。'},...visualPrompt(config.visualReview)],{effort:'medium',onStarted(){
+   prompt=native.prompt([{type:'text',text:'你是万象受控小应用开发者。只使用 wanx_task MCP 工具完成任务；不要调用 Shell、apply_patch、读取任意本机路径、安装依赖或调用外部连接器。先用 read_material 获取冻结方案和固定运行契约，用 list_sources/read_source 获取已有源码。已有应用优先使用 patch_source 精确修改相关片段，保留其他字节；新建文件或确需全量替换时使用 write_source。用 update_plan 向用户公开简要步骤和进展；公开说明正在做什么，用户只观看过程，不审批命令、不参与编码、不回答开发中的临时问题。必须保留原始目标和范围，无法从方案解决的实质缺口使用 require_plan 结束本轮；技术细节自行选择。最后调用 validate_app 提交成功版本后立即结束，不能替用户验收。'},...visualPrompt(config.visualReview)],{effort:runtimeEffort(settings),onStarted(){
     emit({type:'status',text:'已开始处理本轮开发需求',phase:'turn_started'});
     // The developer turn has already started. Its observation UI is optional.
     terminalPending=startTerminal({server:native.server,sessionId:session.sessionId,view:native.viewer(session.sessionId),binary:process.env.WANX_CODEX_PATH,python:process.env.WANX_PYTHON_PATH||'python3',config:settings,env:baseEnv,taskRoot:native.cwd,root,emit,signal:terminalController.signal}).then(value=>{

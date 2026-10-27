@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import time
 from uuid import uuid4
+from .local_authority import to_thread
 from .contracts import StudioError,digest,has_credentials
 from .prd_patch import apply_patch,rows
 from .codex_config import runtime_config
@@ -77,7 +78,7 @@ class ProductManager:
    self.pause(owner,pid,'WORKBENCH_SESSION_EXPIRED');return
   try:
    await self.prep.guard_async(owner,p,planning=True)
-   if not runtime_config():raise StudioError('CODEX_NOT_CONFIGURED',409)
+   if not await to_thread(runtime_config,'wanx_interview',self.svc,owner):raise StudioError('CODEX_NOT_CONFIGURED',409)
   except StudioError as error:
    self.pause(owner,pid,error.code);return
   turn=queued['id'];text=queued['text']
@@ -93,9 +94,10 @@ class ProductManager:
   self.prep.mutate(owner,pid,'interview-begin',begin)
   from .local_authority import start_background
   try:job=await start_background(self.svc,owner,pid,turn,'interview',lambda:self.run(owner,pid,turn,text))
-  except BaseException:
+  except BaseException as error:
+   code=error.code if isinstance(error,StudioError) else 'STUDIO_TASK_AUTHORIZATION_DENIED'
    def denied(p):
-    state=p['preparation']['interview'];state.update(state='failed',error='STUDIO_TASK_AUTHORIZATION_DENIED')
+    state=p['preparation']['interview'];state.update(state='failed',error=code)
     next(t for t in state['turns'] if t['id']==turn)['state']='paused'
    self.prep.mutate(owner,pid,'interview-denied',denied)
    raise
@@ -238,8 +240,8 @@ class ProductManager:
   proc=None;worker=None;idle=False;completed=False
   try:
    prepared=await self.prepare_context(owner,pid,turn)
-   p=self.live(owner,pid,turn);state=p['preparation']['interview'];config=runtime_config('wanx_interview')
-   settings=json.loads(config['WANX_CODEX_CONFIG']);settings['model_reasoning_effort']='medium';config['WANX_CODEX_CONFIG']=json.dumps(settings)
+   p=self.live(owner,pid,turn);state=p['preparation']['interview'];config=await to_thread(runtime_config,'wanx_interview',self.svc,owner)
+   if not config:raise StudioError('CODEX_NOT_CONFIGURED',409)
    task_root=self.svc.store.root/'interviews'/pid;task_root.mkdir(parents=True,exist_ok=True,mode=0o700)
    reviewing=any(t['id']==turn and t.get('kind')=='completeness-review' for t in state['turns'])
    task='对已经共同整理的当前 PRD 检查信息完备性。保持原话、既有决定和原始目标；如果仍有影响产品行为的缺口继续向用户提问，否则核对数据保存结构并调用 complete_prd。此次是系统核对任务，不是用户新增了业务要求；不启动开发。' if reviewing else text or '从客户端任务简报和资料开始深度访谈。'

@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {NativeSession} from './native-session.mjs';
 import {serveWorker} from './worker.mjs';
 import {visualPrompt} from './visual-feedback.mjs';
+import {runtimeEnvironment,runtimeEffort} from './runtime-env.mjs';
 
 const root=fileURLToPath(new URL('..',import.meta.url));
 await serveWorker(async({emit,request})=>{
@@ -23,7 +24,7 @@ await serveWorker(async({emit,request})=>{
  return {async close(){active=null;await native?.close();proxy.closeAllConnections();proxy.close()},async run(config){
   active=config;
   try{
-   const env={PATH:process.env.PATH,LANG:process.env.LANG||'en_US.UTF-8',TMPDIR:process.env.TMPDIR},settings=JSON.parse(process.env.WANX_CODEX_CONFIG);
+   const env=runtimeEnvironment(),settings=JSON.parse(process.env.WANX_CODEX_CONFIG);
    native??=new NativeSession({binary:process.env.WANX_CODEX_PATH,config:settings,env,onTrace(e){if(active)emit({type:'diagnostic',...e})},onEvent(e){
     if(!active)return;
     if(e.type==='message')emit({type:'text',text:e.text});
@@ -33,7 +34,7 @@ await serveWorker(async({emit,request})=>{
    const session=await native.open({cwd:config.cwd,sessionId:config.sessionId,scope:config.scope||config.cwd,mcpServers:{wanx_interview:{command:process.execPath,args:[path.join(root,'codex/interview-tools.mjs')],env:{WANX_INTERVIEW_PROXY:`http://127.0.0.1:${proxy.address().port}`,WANX_INTERVIEW_TOKEN:token,WANX_INTERVIEW_MODE:config.mode||'initial'}}}});
    emit({type:'session',...session,transport:'app-server'});
    emit({type:'status',text:session.reused?'已复用 Codex 会话，正在处理本轮输入':'Codex 原生会话已就绪，正在处理本轮输入'});
-   await native.prompt([{type:'text',text:config.prompt},...visualPrompt(config.visualReview)],{effort:'medium'});
+   await native.prompt([{type:'text',text:config.prompt},...visualPrompt(config.visualReview)],{effort:runtimeEffort(settings)});
    emit({type:'complete'});
   }finally{active=null}
  }};

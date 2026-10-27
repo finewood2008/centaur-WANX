@@ -103,6 +103,9 @@ def build_app(server: OctopServer) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         async with AsyncExitStack() as stack:
+            from octop.api.device_models import device_model_lifespan
+
+            await stack.enter_async_context(device_model_lifespan(application, server))
             for name in ("space_mcp", "starlink_mcp"):
                 mcp = getattr(application.state, name, None)
                 if mcp is not None:

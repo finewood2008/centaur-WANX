@@ -97,7 +97,7 @@ def runtime(handler=None, **kwargs):
     return result, catalog, admin
 
 
-async def invoke(runtime, body=None, headers=None):
+async def invoke(runtime, body=None, headers=None, *, endpoint="chat/completions"):
     app = FastAPI()
     runtime.register_routes(app)
     key = runtime.entries["primary"]["key"]
@@ -105,8 +105,8 @@ async def invoke(runtime, body=None, headers=None):
         transport=httpx.ASGITransport(app=app), base_url="http://local"
     ) as client:
         return await client.post(
-            "/model-providers/primary/v1/chat/completions",
-            json=body or {"model": "chat-model", "messages": []},
+            "/model-providers/primary/v1/" + endpoint,
+            json=body if body is not None else {"model": "chat-model", "messages": []},
             headers=headers or {"Authorization": "Bearer " + key},
         )
 
@@ -565,4 +565,438 @@ async def test_v3_models_are_refreshed_from_qeetoken_without_admin_policy_or_key
         assert admin.rows[0]["api_key"] == proxy_key
         assert len(requests) == 2
     finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_responses_preserves_function_calls_outputs_and_followup_input():
+    requests = []
+    outputs = [
+        {
+            "id": "resp_1",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "read_source",
+                    "arguments": "{}",
+                }
+            ],
+        },
+        {
+            "id": "resp_2",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}],
+                }
+            ],
+        },
+    ]
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200, json=outputs[len(requests) - 1], headers={"set-cookie": "upstream=secret"}
+        )
+
+    rt, _, admin = runtime(handler)
+    try:
+        await rt.reconcile()
+        inputs = [{"role": "user", "content": [{"type": "input_text", "text": "read it"}]}]
+        first = {
+            "model": "chat-model",
+            "input": inputs,
+            "instructions": "Use the provided tools.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "read_source",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "reasoning": {"effort": "high"},
+            "store": False,
+            "stream": False,
+        }
+        second = {
+            **first,
+            "input": inputs
+            + outputs[0]["output"]
+            + [{"type": "function_call_output", "call_id": "call_1", "output": "source"}],
+        }
+        for body, expected in zip((first, second), outputs, strict=True):
+            response = await invoke(
+                rt,
+                body,
+                {
+                    "Authorization": "Bearer " + rt.entries["primary"]["key"],
+                    "Cookie": "local=secret",
+                    "X-Injected": "bad",
+                },
+                endpoint="responses",
+            )
+            assert response.status_code == 200
+            assert response.json() == expected
+            assert "set-cookie" not in response.headers
+        assert [request.url.path for request in requests] == ["/v1/responses", "/v1/responses"]
+        assert [json.loads(request.content) for request in requests] == [first, second]
+        assert all(
+            request.headers["authorization"] == "Bearer supplier-secret-never-persist"
+            for request in requests
+        )
+        assert all(
+            "cookie" not in request.headers and "x-injected" not in request.headers
+            for request in requests
+        )
+        # Enabling Builder Responses must not opt ordinary WANX chat into native tools.
+        assert "native_tool_search" not in admin.rows[0]["models"][0]
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {},
+        {"model": 1, "input": []},
+        {"model": "chat-model", "input": {}},
+        {"model": "chat-model", "input": [], "stream": "true"},
+    ],
+)
+async def test_responses_rejects_invalid_envelopes_without_calling_upstream(body):
+    async def handler(request):
+        pytest.fail("invalid Responses request reached upstream")
+
+    rt, _, _ = runtime(handler)
+    try:
+        await rt.reconcile()
+        response = await invoke(rt, body, endpoint="responses")
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "MODEL_PROVIDER_REQUEST_INVALID"
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_responses_reuses_credential_model_lease_and_owner_checks():
+    async def handler(request):
+        pytest.fail("unauthorized Responses request reached upstream")
+
+    rt, catalog, _ = runtime(
+        handler, authority_check=lambda snapshot: snapshot["ownerAccountId"] == "owner"
+    )
+    body = {"model": "chat-model", "input": "hello"}
+    try:
+        await rt.reconcile()
+        assert (
+            await invoke(rt, body, {"Authorization": "Bearer wrong"}, endpoint="responses")
+        ).status_code == 401
+        assert (
+            await invoke(rt, {**body, "model": "unlisted"}, endpoint="responses")
+        ).status_code == 403
+        catalog.value["providers"][0]["enabled"] = False
+        assert (await invoke(rt, body, endpoint="responses")).status_code == 403
+        catalog.value["providers"][0]["enabled"] = True
+        catalog.value["ownerAccountId"] = "other"
+        assert (await invoke(rt, body, endpoint="responses")).status_code == 403
+        catalog.expired = True
+        assert (await invoke(rt, body, endpoint="responses")).status_code == 503
+    finally:
+        await rt.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 429, 500])
+async def test_responses_upstream_errors_do_not_expose_supplier_credentials(status):
+    async def handler(request):
+        return httpx.Response(status, text="supplier-secret-never-persist credential rejected")
+
+    rt, _, _ = runtime(handler)
+    try:
+        await rt.reconcile()
+        response = await invoke(rt, {"model": "chat-model", "input": []}, endpoint="responses")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "MODEL_PROVIDER_UPSTREAM_FAILED"
+        assert "supplier-secret" not in response.text
+    finally:
+        await rt.close()
+
+
+class ResponseEventStream(httpx.AsyncByteStream):
+    first = b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello"}\n\n'
+    last = b'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}\n\n'
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self):
+        yield self.first
+        await self.release.wait()
+        yield self.last
+
+    async def aclose(self):
+        self.closed = True
+
+
+def start_responses_stream(runtime, *, on_body=None):
+    """Exercise ASGI delivery directly; httpx.ASGITransport buffers the stream."""
+    app = FastAPI()
+    runtime.register_routes(app)
+    messages, first_delivered = [], asyncio.Event()
+    raw = json.dumps({"model": "chat-model", "input": "hello", "stream": True}).encode()
+    incoming = asyncio.Queue()
+    incoming.put_nowait({"type": "http.request", "body": raw, "more_body": False})
+
+    async def send(message):
+        messages.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_delivered.set()
+            if on_body is not None:
+                on_body(message["body"])
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/model-providers/primary/v1/responses",
+        "query_string": b"",
+        "headers": [
+            (b"authorization", ("Bearer " + runtime.entries["primary"]["key"]).encode()),
+            (b"content-type", b"application/json"),
+        ],
+    }
+    return asyncio.create_task(app(scope, incoming.get, send)), messages, first_delivered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", ["complete", "expired", "disabled", "owner", "rotate", "cancel"])
+async def test_responses_sse_is_incremental_and_stops_on_revocation_or_cancel(finish):
+    stream = ResponseEventStream()
+
+    async def handler(request):
+        assert request.url.path == "/v1/responses"
+        assert request.headers["accept"] == "text/event-stream"
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    rt, catalog, _ = runtime(handler)
+    task = None
+    try:
+        await rt.reconcile()
+        task, messages, delivered = start_responses_stream(rt)
+        await asyncio.wait_for(delivered.wait(), 1)
+        assert messages[0]["status"] == 200
+        # The first event reaches the caller while the upstream remains open.
+        assert not task.done() and not stream.closed
+        chunks = [m["body"] for m in messages if m["type"] == "http.response.body"]
+        assert b"".join(chunks) == stream.first
+        if finish == "complete":
+            stream.release.set()
+        elif finish == "expired":
+            catalog.expired = True
+        elif finish == "disabled":
+            catalog.value["providers"][0]["enabled"] = False
+        elif finish == "owner":
+            catalog.value["ownershipEpoch"] += 1
+        elif finish == "rotate":
+            catalog.value["providers"][0]["apiKey"] = "rotated-supplier-secret"
+        else:
+            task.cancel()
+        result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        if finish == "cancel":
+            assert isinstance(result[0], asyncio.CancelledError)
+        else:
+            assert result == [None]
+        data = b"".join(m.get("body", b"") for m in messages)
+        assert data == stream.first + (stream.last if finish == "complete" else b"")
+        assert stream.closed and not rt.requests
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await rt.close()
+
+
+class RediscoveryResponseStream(ResponseEventStream):
+    middle = b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":" world"}\n\n'
+
+    def __init__(self):
+        super().__init__()
+        self.continue_stream = asyncio.Event()
+
+    async def __aiter__(self):
+        yield self.first
+        await self.continue_stream.wait()
+        yield self.middle
+        await self.release.wait()
+        yield self.last
+
+
+@pytest.mark.asyncio
+async def test_v3_model_rediscovery_preserves_active_response_with_unchanged_authority():
+    discovery_started, allow_discovery, checked_during_discovery = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    middle_delivered = asyncio.Event()
+    model_requests = 0
+    stream = RediscoveryResponseStream()
+
+    async def upstream(request):
+        nonlocal model_requests
+        if request.url.path == "/v1/models":
+            model_requests += 1
+            if model_requests > 1:
+                discovery_started.set()
+                await allow_discovery.wait()
+            return httpx.Response(200, json={"data": [{"id": "chat-model"}]})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    def authority(snapshot):
+        if discovery_started.is_set():
+            checked_during_discovery.set()
+        return True
+
+    async def applied():
+        pass
+
+    rt, catalog, _ = runtime(upstream, authority_check=authority)
+    catalog.value["schemaVersion"] = 3
+    catalog.value["providers"][0]["allowedModels"] = []
+    catalog.acknowledge_applied = applied
+    tasks = []
+    try:
+        await rt.reconcile()
+        previous_key = rt.entries["primary"]["key"]
+        response, messages, delivered = start_responses_stream(
+            rt, on_body=lambda chunk: middle_delivered.set() if chunk == stream.middle else None
+        )
+        tasks.append(response)
+        await asyncio.wait_for(delivered.wait(), 1)
+        refresh = asyncio.create_task(rt.reconcile())
+        tasks.append(refresh)
+        await asyncio.wait_for(discovery_started.wait(), 1)
+        # Let the real periodic stream guard check the catalog while /models is blocked.
+        await asyncio.wait_for(checked_during_discovery.wait(), 1)
+        stream.continue_stream.set()
+        middle = asyncio.create_task(middle_delivered.wait())
+        tasks.append(middle)
+        await asyncio.wait_for(
+            asyncio.wait({middle, response}, return_when=asyncio.FIRST_COMPLETED), 1
+        )
+        assert middle_delivered.is_set(), "unchanged V3 discovery revoked the active response"
+        assert not response.done() and not refresh.done()
+        allow_discovery.set()
+        await asyncio.wait_for(refresh, 1)
+        assert rt.entries["primary"]["key"] == previous_key
+        stream.release.set()
+        await asyncio.wait_for(response, 1)
+        assert (
+            b"".join(message.get("body", b"") for message in messages)
+            == stream.first + stream.middle + stream.last
+        )
+        assert stream.closed and not rt.requests
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await rt.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["failure", "removed", "key", "ownership"])
+async def test_v3_model_rediscovery_still_revokes_invalid_active_response(change):
+    discovery_started, allow_discovery = asyncio.Event(), asyncio.Event()
+    row_update_started, allow_row_update = asyncio.Event(), asyncio.Event()
+    model_requests = 0
+    stream = ResponseEventStream()
+
+    async def upstream(request):
+        nonlocal model_requests
+        if request.url.path == "/v1/models":
+            model_requests += 1
+            if model_requests > 1:
+                discovery_started.set()
+                await allow_discovery.wait()
+                if change == "failure":
+                    return httpx.Response(503, text="supplier-secret-never-persist")
+                if change == "removed":
+                    return httpx.Response(200, json={"data": [{"id": "replacement-model"}]})
+            return httpx.Response(200, json={"data": [{"id": "chat-model"}]})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=stream)
+
+    async def applied():
+        pass
+
+    rt, catalog, admin = runtime(upstream)
+    original_admin = admin._admin
+
+    async def update_row(method, path, **kwargs):
+        if change == "removed" and method == "PATCH" and "models" in kwargs.get("json", {}):
+            row_update_started.set()
+            await allow_row_update.wait()
+        return await original_admin(method, path, **kwargs)
+
+    admin._admin = update_row
+    catalog.value["schemaVersion"] = 3
+    catalog.value["providers"][0]["allowedModels"] = []
+    catalog.acknowledge_applied = applied
+    tasks = []
+    try:
+        await rt.reconcile()
+        previous_key = rt.entries["primary"]["key"]
+        response, messages, delivered = start_responses_stream(rt)
+        tasks.append(response)
+        await asyncio.wait_for(delivered.wait(), 1)
+        if change == "key":
+            catalog.value["providers"][0]["apiKey"] = "rotated-supplier-secret"
+        elif change == "ownership":
+            catalog.value["ownershipEpoch"] += 1
+        refresh = asyncio.create_task(rt.reconcile())
+        tasks.append(refresh)
+        await asyncio.wait_for(discovery_started.wait(), 1)
+        if change in {"key", "ownership"}:
+            # True authorization changes revoke before slow discovery returns.
+            await asyncio.wait_for(response, 1)
+            assert not refresh.done() and "primary" not in rt.entries
+        allow_discovery.set()
+        if change == "failure":
+            with pytest.raises(BridgeAuthError, match="MODEL_PROVIDER_MODELS_UNAVAILABLE"):
+                await asyncio.wait_for(refresh, 1)
+            assert "primary" not in rt.entries
+            assert not admin.rows[0]["enabled"] and admin.rows[0]["models"] == []
+        else:
+            if change == "removed":
+                await asyncio.wait_for(row_update_started.wait(), 1)
+                await asyncio.wait_for(response, 1)
+                assert not refresh.done()
+                allow_row_update.set()
+            await asyncio.wait_for(refresh, 1)
+            if change == "removed":
+                assert rt.entries["primary"]["key"] == previous_key
+                assert [model["id"] for model in rt.entries["primary"]["models"]] == [
+                    "replacement-model"
+                ]
+            else:
+                assert rt.entries["primary"]["key"] != previous_key
+        await asyncio.wait_for(response, 1)
+        assert b"".join(message.get("body", b"") for message in messages) == stream.first
+        assert stream.closed and not rt.requests
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await rt.close()

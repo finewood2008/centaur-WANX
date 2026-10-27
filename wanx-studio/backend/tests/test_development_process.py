@@ -106,7 +106,7 @@ async def test_codex_startup_failure_is_persisted_in_process_history(tmp_path,mo
     with svc.store.transaction():
         p=svc.store.get('alice',p['id'])
         p['tasks'].append({'id':'startup','state':'running','events':[]});svc.store.save(p)
-    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda:None)
+    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda *a:None)
     try:
         await svc.runner.run('alice',p,'startup','开发')
         task=svc.store.get('alice',p['id'])['tasks'][-1]
@@ -196,7 +196,7 @@ async def test_cancelled_preflight_reaps_probe_process(tmp_path,monkeypatch):
     async def spawn(*args,**kwargs):
         proc=await original(*args,**kwargs)
         processes.append(proc);entered.set();return proc
-    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda:{'WANX_CODEX_PATH':'synthetic'})
+    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda *a:{'WANX_CODEX_PATH':'synthetic'})
     monkeypatch.setattr('asyncio.create_subprocess_exec',spawn)
     try:
         task=asyncio.create_task(svc.runner.preflight());await entered.wait();task.cancel()

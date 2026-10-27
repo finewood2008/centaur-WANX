@@ -128,6 +128,8 @@ def install(app: Any, server: Any) -> None:
     if policy and (policy["boxId"] != config.box_id or policy["gatewayId"] != config.gateway_id):
         raise DataProtocolError("LOCAL_DATA_CONTEXT_CHANGED")
     app.state.local_data_required = True
+    app.state.local_data_gate_config = config
+    app.state.local_data_required_policy = policy
     app.add_exception_handler(DataProtocolError, protocol_error)
 
     async def authorize(scope: dict[str, Any], context: Any) -> None:

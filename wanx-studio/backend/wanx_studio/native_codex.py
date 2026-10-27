@@ -1,12 +1,12 @@
 """Private persistent workers, never shared across owners, projects or roles."""
 import asyncio
-import json
 import os
 import signal
 import sys
 from dataclasses import dataclass
 
 from .contracts import StudioError
+from .codex_config import config_fingerprint
 
 
 @dataclass
@@ -28,7 +28,7 @@ class NativeCodex:
         try:
             if getattr(self.svc, 'closing', False):
                 raise StudioError('STUDIO_CLOSED', 409)
-            fingerprint = json.dumps(config, sort_keys=True)
+            fingerprint = config_fingerprint(config)
             old = self.workers.get(key)
             if old and old.proc.returncode is None and old.fingerprint == fingerprint:
                 return old

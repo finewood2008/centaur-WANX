@@ -26,7 +26,7 @@ def test_disabled_or_arbitrary_commands_cannot_be_bound(svc):
 async def test_engine_checks_are_explicit_and_never_claim_model_inference(svc):
  svc.engines.provider=lambda _:CONFIG
  calls=[]
- async def probe(fresh=False):calls.append(fresh);return {'available':False,'code':'PREFLIGHT_FAILED','modelCalls':0}
+ async def probe(fresh=False,owner=None):calls.append(fresh);return {'available':False,'code':'PREFLIGHT_FAILED','modelCalls':0}
  svc.runner.preflight=probe
  assert svc.engines.list('alice')['items'][0]['status']=='unchecked' and calls==[]
  result=await svc.engines.check('alice','codex')
@@ -44,7 +44,7 @@ async def test_intake_binds_default_and_explicit_check_recovers_only_unbound_int
  # default, but still executes real probe/preflight paths before passing.
  def unbind(p):p.pop('engine')
  svc.store.mutate('alice',p['id'],'legacy-unbound-test',{},unbind)
- async def probe(fresh=False):return {'available':True,'modelCalls':0}
+ async def probe(fresh=False,owner=None):return {'available':True,'modelCalls':0}
  svc.runner.preflight=probe
  result=await svc.preparation.check('alice',p['id'],{'operationId':'recover-intake-engine'})
  assert result['engine']['id']=='codex'

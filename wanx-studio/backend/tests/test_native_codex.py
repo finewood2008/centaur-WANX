@@ -47,7 +47,7 @@ async def test_failed_or_cancelled_worker_is_reaped_and_can_be_retried(tmp_path)
 async def test_build_readiness_never_spawns_a_throwaway_probe(monkeypatch):
     async def forbidden(*args,**kwargs):raise AssertionError('duplicate preflight process')
     monkeypatch.setattr(asyncio,'create_subprocess_exec',forbidden)
-    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda:{'WANX_CODEX_PATH':'synthetic'})
+    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda *a:{'WANX_CODEX_PATH':'synthetic'})
     runner=Runner(SimpleNamespace())
     assert (await runner.preflight(for_turn=True))['available']
 
