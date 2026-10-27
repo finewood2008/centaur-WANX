@@ -30,9 +30,63 @@ Codex 是 WANX 镜像中的固定版本运行依赖。镜像构建阶段安装�
 
 配置未变化的 V3 模型列表刷新保留有效代理令牌与活动请求；发现失败、模型移除或设备授权变化仍会撤销相关调用。云端配置变化在后续同步时生效，离线时仅使用尚未过期的设备租约；租约最长 300 秒。Builder 的本地团队权限另由每任务的本地可信上下文检查，不把本地团队版本与云端授权版本混用。
 
+## 主机配置与引擎登记
+
+2026-10-27 的主机配置参考说明记录了另一台 macOS 开发机使用全局 Codex 和 ChatGPT 登录的情况。正式盒端采用本节的受管配置；参考机的 CLI 0.162.1、模型名称和个人登录缓存不作为镜像默认配置。
+
+在运行 WANX 的同一服务账号下准备 Python 3.12+、Node.js 22.14+ 和完整 Builder 服务目录。按锁文件安装依赖；服务编译需要 esbuild 等开发依赖，不能仅安装生产依赖。Node 必须在服务 PATH 中，Codex 则从 Builder 的 `node_modules/.bin/codex` 读取，无需全局安装或执行 `codex login`。
+
+源码运行可自动发现 `wanx-studio/`；wheel 部署设置 `WANX_STUDIO_ROOT` 指向包含 `package.json`、`backend/`、`codex/`、`core/`、`tools/`、关联帮助模块和匹配 Node 依赖的服务目录。桌面客户端包不能替代这个目录。
+
+服务账号必须能写 WANX 数据目录及临时目录。Codex 持久状态位于 `$OCTOP_HOME/.wanx-app-studio/codex/<owner hash>/`，访谈和开发使用同一用户的隔离状态。不要复制开发者的 `~/.codex/auth.json`，也不要向 runner 的 `env` 填入 API Key、代理或自定义启动命令。
+
+有可用设备 Provider 时，新用户的默认受信引擎为：
+
+```json
+{"codex":{"enabled":true,"command":"codex","args":["app-server"],"env":{},"trusted":true}}
+```
+
+已保存的用户引擎配置优先，明确禁用不会被自动覆盖。使用 `GET /api/acp` 维护现有配置时，注意 `PUT /api/acp` 替换整个 runners 列表，应保留其他引擎。引擎登记控制能否使用 Codex，实际模型仍来自 Admin 设备 Provider，不从该登记写入新的凭据或模型设置。
+
+受管模式的推理强度沿用所选模型的能力元数据；元数据没有指定时不强行发送 effort。非受管开发主机沿用已有主机配置及 medium turn 强度。不要把参考机的模型和推理强度硬编码到盒端。
+
+## 配置检查与验收结果
+
+镜像阶段可在服务目录执行：
+
+```bash
+node tools/verify-bundled-codex.mjs
+```
+
+它使用临时隔离状态核对固定 CLI 版本和 app-server 握手，不读取宿主登录、不发送模型请求。该检查不验证 Admin Provider 是否已同步。
+
+运行中的盒子应由团队管理员通过现有登录与盒子上下文打开开物，点击引擎检查；对应 `POST /api/app-studio/engines/check`，请求体为 `{"engineId":"codex"}`。需要完整报告时，在同一认证上下文读取 `GET /api/app-studio/preflight`。该接口解析当前用户实际使用的 Provider 和隔离状态，报告 `configurationSource`、`binarySource`、模型和推理强度，以及 `cliVersion`、`nodeVersion`；不会返回令牌、完整配置文件、环境或状态目录路径。
+
+完整探针报告 `check:"protocol"`、`modelCalls:0`。任务入场仅检查配置时报告 `check:"configuration"`，实际 worker 随后自行握手，不额外启动一次探针。两者都不能证明模型额度充足或产品构建成功。配置或本地代理令牌变化后，预检缓存和 worker 会按新的配置指纹更新。
+
+不要在受管盒端用无 service/owner 参数的 `runtime_config()` 来替代上述检查；该调用面向非受管开发主机，会选择主机 PATH 与个人 home。底层 `probe-codex.mjs` 的私有启动环境应由 WANX 生成，失败输出固定 JSON 并以非零状态退出，不要求运维手写令牌。
+
+| 错误码 | 检查方向 |
+|---|---|
+| `CODEX_OWNER_REQUIRED` | 从万象重新建立当前用户与盒子上下文。 |
+| `CODEX_DEVICE_PROVIDER_UNAVAILABLE` | 检查 Admin Provider 启用状态、设备租约和可用 GPT 文本模型；不改为宿主登录。 |
+| `CODEX_BUNDLE_MISSING` | 检查随包 CLI、完整依赖和服务目录；通过匹配的 WANX 组件重新部署。 |
+| `CODEX_HOST_CLI_MISSING` | 仅非受管开发主机：检查服务账号 PATH 中的 Codex。 |
+| `CODEX_NODE_MISSING` | 检查服务 PATH 中的 Node.js。 |
+| `CODEX_CONFIG_INVALID` | 检查实际状态目录内 config.toml 的格式和相关字段类型。 |
+| `CODEX_STATE_UNAVAILABLE` / `CODEX_TEMP_DIRECTORY_UNAVAILABLE` | 检查服务账号权限、目录和磁盘状态。 |
+| `CODEX_VERSION_FAILED` / `CODEX_VERSION_INVALID` / `CODEX_DEPENDENCIES_MISSING` | 检查安装完整性和锁定版本。 |
+| `CODEX_PROBE_TIMEOUT` / `PREFLIGHT_FAILED` | 重试连接检查，核对组件版本与服务进程状态。 |
+| `CODEX_INTERRUPTED` | 检查已取消，可重新发起；探针会清理本次启动的进程。 |
+| `CODEX_PROBE_CLEANUP_FAILED` / `CODEX_CLEANUP_FAILED` | 检查探针进程和临时目录是否能正常清理。 |
+
+最后在测试设备使用合成资料完成一次多轮 PRD、构建校验、试用保存和后续修改，并验证普通成员不能发起构建、不同用户和项目不串会话。记录组件版本、无凭据的配置摘要及构建记录；真实任务会消耗模型额度，离线握手不能替代这一步。
+
 ## 升级与回退
 
 Codex 随 WANX 镜像切换，沿用盒端现有镜像健康检查与失败回退。具备 Builder 升级保护能力的新镜像在后台任务期间持有活动锁；OTA 获得独占升级锁后才允许停机，期间新任务不能入场。忙碌时保持现有任务运行，待任务结束后重试升级。
+
+备份应包含 Builder 数据、产物及上述按用户隔离的 Codex 状态；活动 SQLite 使用一致性备份。回滚保留历史版本和会话，不通过删除状态目录来重新配置。
 
 旧镜像没有活动锁协议，第一次迁移仍须安排无构建、访谈或编辑任务的空闲窗口。新版本之间的升级才具备原子任务保护。不要将旧镜像的优雅停机误认为等待 Builder 任务完成。
 

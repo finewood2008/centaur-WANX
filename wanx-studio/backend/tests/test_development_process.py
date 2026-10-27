@@ -196,7 +196,7 @@ async def test_cancelled_preflight_reaps_probe_process(tmp_path,monkeypatch):
     async def spawn(*args,**kwargs):
         proc=await original(*args,**kwargs)
         processes.append(proc);entered.set();return proc
-    monkeypatch.setattr('wanx_studio.runner.runtime_config',lambda *a:{'WANX_CODEX_PATH':'synthetic'})
+    monkeypatch.setattr('wanx_studio.runner.resolve_runtime',lambda *a:({'WANX_CODEX_PATH':'synthetic'},{}))
     monkeypatch.setattr('asyncio.create_subprocess_exec',spawn)
     try:
         task=asyncio.create_task(svc.runner.preflight());await entered.wait();task.cancel()
