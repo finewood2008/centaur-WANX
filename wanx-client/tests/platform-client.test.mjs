@@ -2484,3 +2484,101 @@ test("a native engine outage reconnects the user's box after the engine returns"
   assert.equal(h.sessions[0].closed, true, "a destroyed tunnel agent must retire its old session");
   assert.equal(h.sessions.length, 2, "fresh box authentication, never reuse the closed gateway");
 });
+
+
+for (const consumerURL of ["https://boss.nexusaos.qitus.cn/prod-api", "https://boss.nexusaos.qitus.cn/consumer-api"]) {
+  test(`production startup warms its fixed network pin while cloud authority is pending: ${new URL(consumerURL).pathname}`, async t => {
+    const identity = { accountId: "production-test-account", clientId: "production-test-client" };
+    const saved = { version: 1, ...identity, networkSessionId: "production-test-session", managementURL: "https://p2p.qeeshu.com" };
+    const store = memoryResume(); await store.save(saved);
+    const h = harness(t, { consumerURL, resumeStore: store, restoreIdentity: identity, serverSession: saved.networkSessionId,
+      savedKeys: new Set([JSON.stringify({ ...identity, networkSessionId: saved.networkSessionId })]) });
+    const prepared = deferred();
+    h.override(async input => { if (input.path.endsWith("/prepare")) await prepared.promise; });
+    const opening = h.client.initialize();
+    try {
+      await tick(); await tick();
+      assert.equal(h.transports.length, 1, "the fixed production endpoint can warm before cloud preparation finishes");
+      assert.equal(h.transports[0].network.snapshot().phase, "ready");
+      assert.equal(h.client.snapshot().devices[0].canOpen, false);
+      await assert.rejects(h.client.connectBox("box-1"), { code: "NETWORK_NOT_READY" });
+    } finally { prepared.resolve(); await opening; }
+    assert.equal(h.transports.length, 1, "fresh cloud confirmation reuses only the matching warmed engine");
+    assert.equal(h.client.snapshot().devices[0].canOpen, true);
+  });
+}
+
+for (const changed of [{ accountId: "other-account" }, { clientId: "other-client" }, { managementURL: "https://other.invalid" }]) {
+  test(`production prewarming rejects saved identity or endpoint mismatch: ${Object.keys(changed)[0]}`, async t => {
+    const identity = { accountId: "production-test-account", clientId: "production-test-client" };
+    const store = memoryResume();
+    await store.save({ version: 1, ...identity, networkSessionId: "production-test-session", managementURL: "https://p2p.qeeshu.com", ...changed });
+    const h = harness(t, { consumerURL: "https://boss.nexusaos.qitus.cn/prod-api", resumeStore: store,
+      restoreIdentity: identity, serverSession: "production-test-session" });
+    const prepared = deferred();
+    h.override(async input => { if (input.path.endsWith("/prepare")) await prepared.promise; });
+    const opening = h.client.initialize();
+    try { await tick(); await tick(); assert.equal(h.transports.length, 0); }
+    finally { prepared.resolve(); await opening; }
+  });
+}
+
+test("production prewarming closes the cached transport when the cloud confirms a different session", async t => {
+  const identity = { accountId: "production-test-account", clientId: "production-test-client" };
+  const store = memoryResume();
+  await store.save({ version: 1, ...identity, networkSessionId: "old-session", managementURL: "https://p2p.qeeshu.com" });
+  const h = harness(t, { consumerURL: "https://boss.nexusaos.qitus.cn/prod-api", resumeStore: store,
+    restoreIdentity: identity, serverSession: "new-session", savedKeys: new Set(["old-session", "new-session"].map(networkSessionId => JSON.stringify({ ...identity, networkSessionId }))) });
+  const prepared = deferred();
+  h.override(async input => { if (input.path.endsWith("/prepare")) await prepared.promise; });
+  const opening = h.client.initialize();
+  try { await tick(); await tick(); assert.equal(h.transports[0]?.identity.networkSessionId, "old-session");
+    assert.equal(h.client.snapshot().devices[0].canOpen, false); }
+  finally { prepared.resolve(); await opening; }
+  assert.equal(h.transports.length, 2);
+  assert.equal(h.transports[0].closed, true);
+  assert.equal(h.transports[1].identity.networkSessionId, "new-session");
+  assert.equal(h.client.snapshot().devices[0].canOpen, true);
+});
+
+for (const failure of ["revoked", "endpoint_changed"]) {
+  test(`production prewarming cannot survive failed cloud confirmation: ${failure}`, async t => {
+    const identity = { accountId: "production-test-account", clientId: "production-test-client" };
+    const store = memoryResume();
+    await store.save({ version: 1, ...identity, networkSessionId: "production-test-session", managementURL: "https://p2p.qeeshu.com" });
+    const h = harness(t, { consumerURL: "https://boss.nexusaos.qitus.cn/prod-api", resumeStore: store,
+      restoreIdentity: identity, serverSession: "production-test-session",
+      savedKeys: new Set([JSON.stringify({ ...identity, networkSessionId: "production-test-session" })]) });
+    const prepared = deferred();
+    h.override(async input => {
+      if (input.path.endsWith("/prepare")) await prepared.promise;
+      if (input.path === "/app-api/network/restore") {
+        if (failure === "revoked") throw fail("NETWORK_SESSION_REVOKED", 403);
+        return { enrollmentId: "production-test-session", networkSessionId: "production-test-session", phase: "ready",
+          managementUrl: "https://boss.nexusaos.qitus.cn:19445", leaseExpiresAt: Date.now() / 1000 + 300 };
+      }
+    });
+    const opening = h.client.initialize();
+    try { await tick(); await tick(); assert.equal(h.transports.length, 1); assert.equal(h.client.snapshot().devices[0].canOpen, false); }
+    finally { prepared.resolve(); await opening; }
+    assert.equal(h.transports[0].closed, true);
+    assert.equal(h.client.snapshot().devices.some(d => d.canOpen), false);
+    assert.equal(h.client.snapshot().platform.reason, failure === "revoked" ? "NETWORK_SESSION_REVOKED" : "NETWORK_INVALID_RESPONSE");
+  });
+}
+
+
+for (const consumerURL of ["https://isolated.invalid/consumer-api", "http://boss.nexusaos.qitus.cn/prod-api",
+  "https://user:synthetic@boss.nexusaos.qitus.cn/prod-api", "https://boss.nexusaos.qitus.cn.evil.invalid/prod-api"]) {
+  test(`automatic non-production Consumer never warms from a cached production endpoint: ${new URL(consumerURL).origin}`, async t => {
+    const identity = { accountId: "production-test-account", clientId: "production-test-client" };
+    const store = memoryResume();
+    await store.save({ version: 1, ...identity, networkSessionId: "production-test-session", managementURL: "https://p2p.qeeshu.com" });
+    const h = harness(t, { consumerURL, resumeStore: store, restoreIdentity: identity, serverSession: "production-test-session" });
+    const prepared = deferred();
+    h.override(async input => { if (input.path.endsWith("/prepare")) await prepared.promise; });
+    const opening = h.client.initialize();
+    try { await tick(); await tick(); assert.equal(h.transports.length, 0); }
+    finally { prepared.resolve(); await opening; }
+  });
+}

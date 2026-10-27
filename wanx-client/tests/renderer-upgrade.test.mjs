@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { assertApplicationCompatibility } from "../applications/compatibility.mjs";
 
 const source = (await Promise.all(["discovery-selection.js", "wallet.bundle.js", "personal-space.js", "app-catalog.js", "store-carousel.js", "support.js", "renderer.js"].map(name => readFile(new URL(`../local-ui/renderer/${name}`, import.meta.url), "utf8")))).join("\n");
 const client = { current: { productVersion: "0.1.4", buildId: "dev-abc123", distributionClass: "development", platform: "darwin", arch: "arm64" }, phase: "development" };
@@ -177,8 +178,8 @@ test("late task polling from a different selected box never replaces current sta
   assert.equal(timers.size, 0);
 });
 
-test("new application compatibility errors direct users to update WanX or ask the owner", async () => {
-  for (const [code, message] of [["CLIENT_VERSION_INCOMPATIBLE", /设置中更新万象/], ["BACKEND_CONTRACT_INCOMPATIBLE", /联系盒主更新/]]) {
+test("application compatibility errors distinguish client mismatch from box updates", async () => {
+  for (const [code, message] of [["CLIENT_VERSION_INCOMPATIBLE", /与当前万象版本不兼容.*检查万象和应用更新/], ["BACKEND_CONTRACT_INCOMPATIBLE", /联系盒主更新/]]) {
     const initial = state();
     initial.applications = [{ applicationId: "app-1", name: "测试应用", version: "1.0.0" }];
     const h = await harness(initial, action => { if (action === "applications.request-open") throw new Error(code); });
@@ -188,6 +189,37 @@ test("new application compatibility errors direct users to update WanX or ask th
     assert.doesNotMatch(h.app.innerHTML, /暂时无法完成应用市场操作/);
   }
 });
+
+test("a client above an application's upper bound gets neutral compatibility guidance", async () => {
+  const manifest = { protocolVersion: 2, compatibility: {
+    backendProductId: "wanx", clientRange: ">=0.1.4 <1.0.0", hostProtocolRange: ">=1.0.0 <2.0.0",
+    backendContracts: [], requiredExperts: [], localDataSchema: { readRange: ">=1.0.0 <2.0.0", writeVersion: "1.0.0" },
+  } };
+  const initial = state();
+  initial.upgrades.client = { ...client, current: { ...client.current, productVersion: "1.0.1" } };
+  initial.applications = [{ applicationId: "app-1", name: "测试应用", version: "0.1.0" }];
+  const h = await harness(initial, action => {
+    if (action === "applications.request-open") return assertApplicationCompatibility(manifest, {
+      getCompatibilityContext: () => ({ clientVersion: "1.0.1", hostProtocol: 1 }), phase: "import",
+    });
+  });
+  await h.click("show-applications");
+  await h.click("applications-launch", { applicationId: "app-1" });
+  assert.match(h.app.innerHTML, /与当前万象版本不兼容.*检查万象和应用更新/);
+  assert.match(h.app.innerHTML, /联系管理员确认适配版本/);
+  assert.doesNotMatch(h.app.innerHTML, /请先在设置中更新万象|请先升级万象/);
+});
+
+for (const reason of ["client_version", "CLIENT_VERSION_INCOMPATIBLE"]) {
+  test(`client incompatibility candidate ${reason} gives neutral compatibility guidance`, async () => {
+    const h = await harness(state(), action => action === "market.list" ? { ok: true, value: { items: [{ applicationId: "app-1", name: "测试应用" }] } }
+      : action === "market.candidate" ? { ok: true, value: { status: "incompatible", reason } } : undefined);
+    await h.click("show-applications");
+    assert.match(h.app.innerHTML, /与当前万象版本不兼容.*检查万象和应用更新/);
+    assert.match(h.app.innerHTML, /联系管理员确认适配版本/);
+    assert.doesNotMatch(h.app.innerHTML, /请先在设置中更新万象|请先升级万象|data-action="market-install"/);
+  });
+}
 
 test("unknown assistant, authorization and data compatibility keep existing content with a useful next step", async () => {
   for (const [code, message] of [["EXPERT_VERSION_UNKNOWN", /现有内容已保留/], ["APP_AUTHORIZATION_UNVERIFIED", /重新登录后重试/], ["APPLICATION_DATA_COMPATIBILITY_UNKNOWN", /保留当前版本/]]) {
