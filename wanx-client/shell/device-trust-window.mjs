@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { isControlSender } from './security.mjs';
 import { LEDGER_CAPABILITIES } from '../device-trust/ledger-contract.mjs';
+import { validateWifiCandidate } from './offline-wifi-transport.mjs';
+import { installElectronBluetoothPicker } from '@nexusaos/device-discovery-electron/main';
 
 const documentURL = new URL('../local-ui/device-trust/index.html', import.meta.url).href;
 const preloadPath = fileURLToPath(new URL('../local-ui/device-trust-preload.cjs', import.meta.url));
-const views = new Set(['overview', 'identity', 'first-root', 'join', 'approval', 'devices', 'security', 'enrollment', 'recovery', 'backup', 'transfer']);
+const views = new Set(['overview', 'identity', 'first-root', 'join', 'approval', 'devices', 'security', 'enrollment', 'recovery', 'backup', 'transfer', 'wifi']);
 const enrollment = { boxId: 'token', targetInfo: 'ledger-import', capabilities: 'optional-capabilities',
   grants: 'grants', delegableGrants: 'delegable-grants', expiresAt: 'expiry', delegationExpiresAt: 'expiry' };
 const methods = {
@@ -41,6 +43,11 @@ const methods = {
   saveBackupArchive: { boxId: 'token', requestId: 'digest' },
   prepareOwnershipTransfer: { boxId: 'token' },
   refreshOwnershipTransfer: { boxId: 'token', requestId: 'digest' },
+  beginOfflineWifi: { boxId: 'token', selected: 'wifi-candidate' }, scanOfflineWifi: {},
+  prepareOfflineWifi: { ssid: 'wifi-ssid', security: 'wifi-security', hidden: 'boolean', password: 'wifi-password' },
+  confirmOfflineWifi: { reviewHandle: 'digest', passphrase: 'secret' }, cancelOfflineWifi: {},
+  prepareWifiAuthorization: { boxId: 'token', bindingId: 'token', expiresAt: 'expiry', delegable: 'boolean' },
+  prepareWifiRevocation: { boxId: 'token', bindingId: 'token' },
 };
 const failure = code => Object.assign(new Error(code), { code });
 function errorCode(error) {
@@ -65,6 +72,13 @@ function validate(input, schema) {
     throw failure('LOCAL_TRUST_INVALID_INPUT');
   for (const key of keys) {
     const value = input[key], kind = schema[key];
+    if (kind === 'wifi-candidate') { validateWifiCandidate(value); continue; }
+    if (kind === 'wifi-security') { if (!['open', 'wpa_personal'].includes(value)) throw failure('LOCAL_TRUST_INVALID_INPUT'); continue; }
+    if (kind === 'wifi-ssid' || kind === 'wifi-password') {
+      if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value) ||
+        Buffer.byteLength(value, 'utf8') > (kind === 'wifi-ssid' ? 32 : 64) || (kind === 'wifi-ssid' && !value.length)) throw failure('LOCAL_TRUST_INVALID_INPUT');
+      continue;
+    }
     if (kind === 'boolean') { if (typeof value !== 'boolean') throw failure('LOCAL_TRUST_INVALID_INPUT'); continue; }
     if (kind === 'backup-profile') { if (!['semantica-private-v1', 'wanx-personal-v1'].includes(value)) throw failure('LOCAL_TRUST_INVALID_INPUT'); continue; }
     if (kind === 'tokens' || kind === 'capabilities' || kind === 'optional-capabilities') {
@@ -104,13 +118,22 @@ function validate(input, schema) {
 
 // All cryptography, trust decisions and transport belong to the main-owned service.
 // This adapter only accepts fixed business actions from this one local document.
-export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, parentWindow, onError = () => {} }) {
+export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, parentWindow, onError = () => {}, wifiTransport,
+  installPicker = installElectronBluetoothPicker }) {
   let window, context = { view: 'overview' }, generation = 0, disposed = false, active = false;
   let lockPending = Promise.resolve(), openPending = Promise.resolve(), loadPending;
   const registrations = [];
+  let disposePicker;
+  const ensurePicker = () => {
+    if (wifiTransport && !disposePicker && window && !window.isDestroyed()) disposePicker = installPicker({
+      webContents: window.webContents, ipcMain, documentUrl: documentURL, scanTimeoutMs: 30000,
+      clock: { monotonicMs: () => performance.now() },
+    });
+  };
   function invalidate(reason) {
     generation++;
     active = false;
+    wifiTransport?.invalidate(); disposePicker?.(); disposePicker = undefined;
     // Invoke synchronously so the service invalidates signing intents before an
     // already-running asynchronous confirmation can resume.
     try {
@@ -148,6 +171,7 @@ export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, paren
         try {
           const value = await service[method](input);
           if (current !== generation || !trusted(event)) throw failure('LOCAL_TRUST_CONTEXT_CHANGED');
+          if (['unlock', 'createProfile'].includes(method)) ensurePicker();
           return { ok: true, value: read ? { ...value, window: { ...context } } : value };
         } finally {
           if (!read && current === generation) active = false;
@@ -189,10 +213,14 @@ export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, paren
       });
       window = created;
       const contents = created.webContents;
+      wifiTransport?.attach(contents, documentURL);
       let loaded = false, closedWithLock = false;
       const allowedFiles = new Set(['index.html', 'view.mjs', 'styles.css'].map(name => new URL(`../local-ui/device-trust/${name}`, import.meta.url).href));
-      contents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-      contents.session.setPermissionCheckHandler(() => false);
+      allowedFiles.add(new URL('../local-ui/renderer/device-setup.bundle.js', import.meta.url).href);
+      const bluetoothPermission = (source, permission) => Boolean(wifiTransport && source === contents && permission === 'bluetooth' &&
+        contents.mainFrame?.url === documentURL && service.snapshot()?.profile?.locked === false);
+      contents.session.setPermissionRequestHandler((source, permission, callback) => callback(bluetoothPermission(source, permission)));
+      contents.session.setPermissionCheckHandler(bluetoothPermission);
       contents.session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !allowedFiles.has(details.url) }));
       contents.setWindowOpenHandler(() => ({ action: 'deny' }));
       for (const name of ['will-navigate', 'will-frame-navigate', 'will-redirect', 'will-attach-webview']) {
@@ -204,6 +232,7 @@ export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, paren
       contents.on('render-process-gone', () => { void invalidate('renderer-crashed'); });
       created.on('close', () => { closedWithLock = true; void invalidate('window-closed'); });
       created.on('closed', () => {
+        wifiTransport?.detach(contents);
         if (window === created) {
           if (!closedWithLock && !disposed) void invalidate('window-closed');
           window = undefined;
@@ -214,6 +243,7 @@ export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, paren
       catch (error) { void invalidate('load-failed'); created.destroy(); throw failure(errorCode(error)); }
       if (disposed || created.isDestroyed()) return;
       loaded = true;
+      ensurePicker();
       created.show();
       created.focus();
   }
@@ -232,6 +262,7 @@ export function createDeviceTrustWindow({ BrowserWindow, ipcMain, service, paren
       if (window && !window.isDestroyed()) window.destroy();
       window = undefined;
       await pending;
+      wifiTransport?.dispose();
     },
   };
 }

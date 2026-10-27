@@ -26,6 +26,10 @@ const fields = {
   provideRestoreKey: ['boxId', 'requestId'], saveBackupArchive: ['boxId', 'requestId'],
   prepareOwnershipTransfer: ['boxId'],
   refreshOwnershipTransfer: ['boxId', 'requestId'],
+  beginOfflineWifi: ['boxId', 'selected'], scanOfflineWifi: [],
+  prepareOfflineWifi: ['ssid', 'security', 'hidden', 'password'],
+  confirmOfflineWifi: ['reviewHandle', 'passphrase'], cancelOfflineWifi: [],
+  prepareWifiAuthorization: ['boxId', 'bindingId', 'expiresAt', 'delegable'], prepareWifiRevocation: ['boxId', 'bindingId'],
 };
 const api = Object.fromEntries(Object.entries(fields).map(([method, keys]) => [method, async (input = {}) => {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
@@ -46,3 +50,26 @@ api.onChanged = listener => {
   return () => ipcRenderer.removeListener('wanx:device-trust:changed', receive);
 };
 contextBridge.exposeInMainWorld('wanxDeviceTrust', Object.freeze(api));
+// This renderer relays bounded GATT frames only. It cannot ask main to sign a
+// byte string, choose a remote URL or export a key.
+contextBridge.exposeInMainWorld('wanxSetupTransport', Object.freeze({
+  scanTimeoutMs: 30000,
+  subscribe(listener) {
+    if (typeof listener !== 'function') throw new TypeError('listener must be a function');
+    const receive = (_event, request) => listener(request);
+    ipcRenderer.on('wanx:local-wifi:transport', receive);
+    return () => ipcRenderer.removeListener('wanx:local-wifi:transport', receive);
+  },
+  reply: result => ipcRenderer.send('wanx:local-wifi:transport-result', result),
+  status() {},
+}));
+contextBridge.exposeInMainWorld('wanxDiscovery', Object.freeze({
+  subscribe(onCandidates, onSettled) {
+    if (typeof onCandidates !== 'function' || typeof onSettled !== 'function') throw new TypeError('listener must be a function');
+    const candidates = (_event, value) => onCandidates(value), settled = (_event, value) => onSettled(value);
+    ipcRenderer.on('nexusaos:discovery:candidates', candidates); ipcRenderer.on('nexusaos:discovery:settled', settled);
+    return () => { ipcRenderer.removeListener('nexusaos:discovery:candidates', candidates); ipcRenderer.removeListener('nexusaos:discovery:settled', settled); };
+  },
+  select: (sessionId, candidateId) => ipcRenderer.send('nexusaos:discovery:select', { sessionId, candidateId }),
+  cancel: sessionId => ipcRenderer.send('nexusaos:discovery:cancel', { sessionId }),
+}));

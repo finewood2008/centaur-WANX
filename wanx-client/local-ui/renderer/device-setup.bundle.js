@@ -524,7 +524,12 @@ ${match.responseMessageType}`;
     "pairing.cancel.result",
     "wifi.scan.result",
     "wifi.apply.result",
-    "job.status.result"
+    "job.status.result",
+    "local.wifi.start.result",
+    "local.wifi.authorize.result",
+    "local.wifi.challenge.result",
+    "local.wifi.token.result",
+    "local.wifi.receipt.result"
   ]);
   function frameBytes(value, max) {
     if (!Array.isArray(value) || !value.length || value.length > max || value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255))

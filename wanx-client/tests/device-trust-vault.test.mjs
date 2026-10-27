@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, createHmac, createPublicKey, verify } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 import { chmod, lstat, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +7,7 @@ import test from 'node:test';
 import { createIdentityVault } from '../device-trust/identity-vault.mjs';
 import { publicKeyThumbprint, requestDigest, verifyApprovalSignature, verifyCancelProof, verifyRequestProof } from '../device-trust/binding-contract.mjs';
 import { firstRootDigest } from '../device-trust/management-contract.mjs';
+import { signWifiProof, verifyWifiProof, wifiDigest } from '../device-trust/offline-wifi-contract.mjs';
 
 const vector = JSON.parse(await readFile(new URL('../../contracts/local-trust/v1/vectors.json', import.meta.url)));
 const passphrase = 'synthetic local passphrase only';
@@ -41,6 +42,44 @@ function verifyJws(jws, publicKey) {
   return JSON.parse(Buffer.from(payload, 'base64url').toString());
 }
 
+async function wifiFixture(t) {
+  const f = await fixture(t), key = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const id = Buffer.alloc(32, 1).toString('base64url'), descriptor = { boxId: 'wifi-box', boxKey: key.publicKey.export({ format: 'jwk' }),
+    tlsSpkiSha256: id, baseUrl: 'https://127.0.0.1:9443' };
+  await f.vault.writeState({ schemaVersion: 1, boxes: { 'wifi-box': { descriptor, principalId: 'joined-principal',
+    bindingId: 'my-binding', checkpoint: { ownershipEpoch: 3 } } } });
+  const context = { boxId: 'wifi-box', boxKeyThumbprint: publicKeyThumbprint(descriptor.boxKey), ownershipEpoch: 3,
+    authorityBootId: 'boot-one', authorizationVersion: 5, bindingId: 'my-binding', bindingRevision: 2,
+    principalId: 'joined-principal', principalSecurityVersion: 1, clientId: f.profile.clientId, approvalKeyVersion: 1 };
+  const ble = { pairingSessionId: 'session-1', challengeCanonicalSha256: 'a'.repeat(64), rsaSpkiSha256: 'b'.repeat(64) };
+  const receipt = { schemaVersion: 1, purpose: 'centuarai.local-wifi.session-receipt.v1', context, ble,
+    sessionId: id, challengeDigest: id, tokenCiphertextSha256: 'c'.repeat(64), applyNonce: id, issuedAt: 100, expiresAt: 220 };
+  const sessionReceipt = signWifiProof('session-receipt', receipt, key.privateKey);
+  const payload = { schemaVersion: 1, purpose: 'centuarai.local-wifi.apply.v1', sessionDigest: wifiDigest(receipt),
+    applyNonce: id, requestId: 'request-1', counter: '1', ciphertextSha256: 'd'.repeat(64) };
+  return { ...f, payload, context, ble, receipt, sessionReceipt };
+}
+test('offline Wi-Fi approval uses a fresh local passphrase and a box-signed receipt for this binding', async t => {
+  const f = await wifiFixture(t), input = { boxId: 'wifi-box', sessionReceipt: f.sessionReceipt, payload: f.payload };
+  await assert.rejects(f.vault.signOfflineWifiApply({ ...input, passphrase: otherPassphrase }), code('UNLOCK_FAILED'));
+  const proof = await f.vault.signOfflineWifiApply({ ...input, passphrase });
+  assert.deepEqual(verifyWifiProof('apply', proof, f.profile.approvalKey), f.payload);
+  assert.throws(() => f.vault.signOfflineWifiApply({ ...input, payload: { ...f.payload, sessionDigest: Buffer.alloc(32, 2).toString('base64url') }, passphrase }), code('IDENTITY_MISMATCH'));
+  assert.throws(() => f.vault.signOfflineWifiApply({ ...input, boxId: 'other-box', passphrase }), code('IDENTITY_MISMATCH'));
+  const intent = { schemaVersion: 1, purpose: 'centuarai.local-wifi.intent.v1', boxId: 'wifi-box',
+    boxKeyThumbprint: f.context.boxKeyThumbprint, ownershipEpoch: 3, bindingId: 'my-binding', clientId: f.profile.clientId,
+    ble: f.ble, nonce: Buffer.alloc(32, 3).toString('base64url') };
+  assert.deepEqual(verifyWifiProof('intent', f.vault.signOfflineWifiIntent(intent), f.profile.accessKey), intent);
+  assert.throws(() => f.vault.signOfflineWifiIntent({ ...intent, bindingId: 'some-other-binding' }), code('IDENTITY_MISMATCH'));
+});
+test('locking while offline Wi-Fi ApprovalKey is decrypting prevents a late proof', async t => {
+  const f = await wifiFixture(t);
+  const pending = f.vault.signOfflineWifiApply({ boxId: 'wifi-box', sessionReceipt: f.sessionReceipt, payload: f.payload, passphrase });
+  f.vault.lock('suspend');
+  await assert.rejects(pending, /LOCAL_IDENTITY_/);
+  assert.equal(f.vault.snapshot().locked, true);
+});
+
 test('fresh vault creates only independent public metadata, purpose-separated encrypted slots and authenticated state', async (t) => {
   const f = await fixture(t, { create: false });
   assert.deepEqual(f.vault.snapshot(), { loaded: true, exists: false, locked: true, generation: 0, profile: null });
@@ -60,7 +99,8 @@ test('fresh vault creates only independent public metadata, purpose-separated en
   assert.deepEqual(f.vault.readState(), { schemaVersion: 1, boxes: {} });
   assert.deepEqual(Object.keys(f.vault).sort(), ['close', 'createProfile', 'load', 'lock', 'readState', 'signApproval',
     'signBinding', 'signCancel', 'signDataSession', 'signDataSessionIntent', 'signFirstRoot', 'signRead', 'signLedgerPrepare', 'signLedgerRead', 'signLedgerAuthChallenge', 'signLedgerAuthMutationChallenge', 'signBackupIO', 'signRestoreKey',
-    'signLedgerMutation', 'signLedgerTarget', 'snapshot', 'subscribe', 'unlock', 'writeState'].sort());
+    'signLedgerMutation', 'signLedgerTarget', 'snapshot', 'subscribe', 'unlock', 'writeState',
+    'signOfflineWifiIntent', 'signOfflineWifiSession', 'signOfflineWifiApply'].sort());
   if (process.platform !== 'win32') {
     assert.equal((await lstat(f.directory)).mode & 0o077, 0);
     assert.equal((await lstat(f.file)).mode & 0o077, 0);

@@ -1,0 +1,34 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createDeviceTrustCoordinator } from '../device-trust/coordinator.mjs';
+import { startLedgerRuntime } from './ledger-runtime-harness.mjs';
+
+test('desktop explicit Wi-Fi authorization and revocation round-trip through real pinned HTTPS and local ApprovalKey', async t => {
+  const runtime = await startLedgerRuntime(t), directory = await mkdtemp(path.join(os.tmpdir(), 'wifi-governance-'));
+  const service = await createDeviceTrustCoordinator({ directory });
+  t.after(async () => { service.close(); await rm(directory, { recursive: true, force: true }); });
+  const passphrase = 'synthetic wifi governance passphrase', boxId = runtime.descriptor.boxId;
+  await service.createProfile({ passphrase });
+  const first = await service.prepareFirstRoot({ deliveryPacket: runtime.deliveryPacket });
+  await service.confirmFirstRoot({ reviewHandle: first.reviewHandle, passphrase });
+  await runtime.command('migrate');
+  const current = await service.refreshSecurityState({ boxId });
+  assert.equal(current.grants.some(grant => grant.resourceId === 'network:wifi'), false);
+  const input = { boxId, bindingId: current.self.bindingId, expiresAt: null, delegable: true };
+  let review = await service.prepareWifiAuthorization(input);
+  assert.equal(review.action, 'network-wifi.authorize');
+  assert.deepEqual(review.args, { bindingId: input.bindingId, expiresAt: null, delegable: true });
+  await assert.rejects(service.confirmSecurityMutation({ reviewHandle: review.reviewHandle, passphrase: 'wrong but long local passphrase' }));
+  assert.equal((await service.refreshSecurityState({ boxId })).grants.some(grant => grant.resourceId === 'network:wifi'), false);
+  review = await service.prepareWifiAuthorization(input);
+  assert.equal((await service.confirmSecurityMutation({ reviewHandle: review.reviewHandle, passphrase })).state, 'committed');
+  const granted = (await service.refreshSecurityState({ boxId })).grants.find(grant => grant.resourceId === 'network:wifi' && grant.bindingId === input.bindingId);
+  assert.equal(granted.resourceScope, 'shared'); assert.deepEqual(granted.actions, ['write']);
+  assert.deepEqual(granted.delegableActions, ['write']);
+  const revoked = await service.prepareWifiRevocation({ boxId, bindingId: input.bindingId });
+  assert.equal((await service.confirmSecurityMutation({ reviewHandle: revoked.reviewHandle, passphrase })).state, 'committed');
+  assert.equal((await service.refreshSecurityState({ boxId })).grants.filter(grant => grant.resourceId === 'network:wifi' && grant.bindingId === input.bindingId).every(grant => grant.status === 'revoked'), true);
+});

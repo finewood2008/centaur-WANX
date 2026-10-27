@@ -51,6 +51,11 @@ test('Wi-Fi scan passes the renderer transport allowlist and reaches GATT', asyn
     assert.deepEqual([...h.requests[0].frame], [1, 2, 3]);
   } finally { await h.transport.dispose(); }
 });
+for (const operation of ['start', 'authorize', 'challenge', 'token', 'receipt']) test(`offline Wi-Fi ${operation} response reaches the bounded GATT relay`, async () => {
+  const h = harness();
+  try { assert.equal((await h.request({ ...match, responseMessageType: `local.wifi.${operation}.result` })).ok, true); }
+  finally { await h.transport.dispose(); }
+});
 
 test('Wi-Fi scan support still rejects unknown response types and oversized frames', async () => {
   const h = harness();

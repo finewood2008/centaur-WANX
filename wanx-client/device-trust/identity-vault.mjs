@@ -19,6 +19,7 @@ import { signLedgerPrepare as signPrepareProof, signLedgerRead as signLedgerRead
   signLedgerMutation as signMutationProof, signLedgerTargetAccess, signLedgerTargetApproval,
   validateLedgerPrepare, validateLedgerRead, validateLedgerMutation } from './ledger-contract.mjs';
 import { validateBackupIOProof, signBackupIOProof, validateRestoreKeyProof, signRestoreKeyProof } from './backup-contract.mjs';
+import { validateWifiPayload, verifyWifiProof, signWifiProof, wifiDigest } from './offline-wifi-contract.mjs';
 
 const derive = promisify(scrypt);
 const KDF = 'scrypt-131072-8-1';
@@ -440,8 +441,44 @@ export function createIdentityVault({ directory, clock = Date.now, protectDirect
       && publicKeyThumbprint(target.approvalKey) === publicKeyThumbprint(envelope.profile.approvalKey), 'IDENTITY_MISMATCH');
   }
 
+  function requireWifiActor(context) {
+    unlocked();
+    const association = state.boxes?.[context.boxId];
+    requireCondition(association?.bindingId === context.bindingId &&
+      (!context.principalId || association.principalId === context.principalId) &&
+      context.clientId === envelope.profile.clientId &&
+      association.checkpoint?.ownershipEpoch === context.ownershipEpoch &&
+      publicKeyThumbprint(association.descriptor.boxKey) === context.boxKeyThumbprint, 'IDENTITY_MISMATCH');
+    return association;
+  }
+  function wifiReceipt(kind, receipt, boxId) {
+    unlocked();
+    const association = state.boxes?.[boxId];
+    requireCondition(Boolean(association), 'IDENTITY_MISMATCH');
+    const value = verifyWifiProof(kind, receipt, association.descriptor.boxKey);
+    requireCondition(value.context.boxId === boxId, 'IDENTITY_MISMATCH');
+    requireWifiActor(value.context);
+    return value;
+  }
+
   return Object.freeze({
     load, snapshot, createProfile, unlock, lock, readState, writeState,
+    signOfflineWifiIntent(input) {
+      const payload = validateWifiPayload('intent', input); requireWifiActor(payload);
+      return withAccess(payload, (value, key) => signWifiProof('intent', value, key));
+    },
+    signOfflineWifiSession({ boxId, challenge, payload }) {
+      const checked = wifiReceipt('challenge', challenge, boxId), value = validateWifiPayload('session-access', payload);
+      requireCondition(value.challengeDigest === wifiDigest(checked), 'IDENTITY_MISMATCH');
+      return withAccess(value, (body, key) => signWifiProof('session-access', body, key), { checkClient: false });
+    },
+    signOfflineWifiApply({ boxId, sessionReceipt, payload, passphrase, guard }) {
+      const checked = wifiReceipt('session-receipt', sessionReceipt, boxId), value = validateWifiPayload('apply', payload);
+      requireCondition(value.sessionDigest === wifiDigest(checked) && value.applyNonce === checked.applyNonce, 'IDENTITY_MISMATCH');
+      return withApproval({ payload: value, passphrase, guard }, (body, key) => {
+        requireWifiActor(checked.context); return signWifiProof('apply', body, key);
+      });
+    },
     signRead: (payload) => withAccess(payload, signReadProof),
     signDataSessionIntent(payload) {
       const value = validateSessionIntentPayload(payload);

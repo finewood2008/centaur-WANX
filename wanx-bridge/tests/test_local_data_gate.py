@@ -45,6 +45,7 @@ def native(tmp_path):
         str(tmp_path / "test.sock"),
         tmp_path,
     )
+    issued_at = now()
     proof = {
         "schemaVersion": 1,
         "purpose": "centuarai.local-data.gateway-request",
@@ -55,8 +56,8 @@ def native(tmp_path):
         "operationId": encode(b"o" * 32),
         "parentOperationId": None,
         "jti": secrets.token_urlsafe(32),
-        "issuedAtMs": now(),
-        "expiresAtMs": now() + 2000,
+        "issuedAtMs": issued_at,
+        "expiresAtMs": issued_at + 2000,
         "boxId": "box",
         "boxKeyThumbprint": config.box_key_thumbprint,
         "ownershipEpoch": 1,
@@ -90,6 +91,7 @@ def native(tmp_path):
         state["calls"].append(operation)
         if operation == "observe":
             state.setdefault("inventories", []).append(body["activeOperationIds"])
+            issued_at = now()
             payload = {
                 "schemaVersion": 1,
                 "purpose": "centuarai.local-data.gateway-observation",
@@ -102,8 +104,8 @@ def native(tmp_path):
                 else body["gateNonce"],
                 "requestDigest": encode(hashlib.sha256(canonical(body)).digest()),
                 "accepted": True,
-                "issuedAtMs": now(),
-                "expiresAtMs": now() + 1000,
+                "issuedAtMs": issued_at,
+                "expiresAtMs": issued_at + 1000,
             }
             return httpx.Response(200, text=sign_gateway_observation(payload, key))
         if state["revoked"] and operation != "closed":
@@ -142,6 +144,7 @@ def native(tmp_path):
                 "action",
             )
         }
+        issued_at = now()
         payload.update(
             schemaVersion=1,
             purpose="centuarai.local-data.gateway-lease",
@@ -149,8 +152,8 @@ def native(tmp_path):
             gateNonce=body["gateNonce"],
             gatewayProofDigest=gateway_proof_digest(state["proof"]),
             state=state["phase"],
-            issuedAtMs=now(),
-            expiresAtMs=now() + 1000,
+            issuedAtMs=issued_at,
+            expiresAtMs=issued_at + 1000,
         )
         return httpx.Response(200, text=sign_gateway_lease(payload, key))
 

@@ -75,6 +75,7 @@ import { createLocalDataAccess } from "../device-trust/data-session.mjs";
 import { createRecoveryFiles } from "./recovery-files.mjs";
 import { createBackupFiles } from "./backup-files.mjs";
 import { createDeviceTrustWindow } from "./device-trust-window.mjs";
+import { createOfflineWifiTransport } from "./offline-wifi-transport.mjs";
 import { registerDeviceTrustLifecycle } from "./device-trust-lifecycle.mjs";
 
 import { testPackageIdentity, TEST_APP_ID, TEST_PRODUCT_NAME } from "../updates/test-build.mjs";
@@ -241,8 +242,10 @@ if (process.argv.includes("--wanx-managed-app")) {
         stagingDirectory: path.join(userData, "local-data-staging"),
         protectDirectory: directory => protectPrivateDirectory(directory, { packaged: app.isPackaged }),
       });
+      const offlineWifiTransport = createOfflineWifiTransport({ ipcMain });
       const deviceTrust = await createDeviceTrustCoordinator({
         vault: localVault, files: recoveryFiles, backupFiles,
+        wifiTransportFactory: offlineWifiTransport,
         ensureBackupNamespace: input => localDataAccess.ensureBackupNamespace(input),
       });
       client = createPlatformClient({
@@ -459,6 +462,7 @@ if (process.argv.includes("--wanx-managed-app")) {
       }
       const deviceTrustWindow = createDeviceTrustWindow({
         BrowserWindow, ipcMain, service: deviceTrust, parentWindow: control,
+        wifiTransport: offlineWifiTransport,
         onError: () => reportError(new Error("LOCAL_TRUST_WINDOW_UNAVAILABLE")),
       });
       const stopDeviceTrustLifecycle = registerDeviceTrustLifecycle({ app, powerMonitor, service: {

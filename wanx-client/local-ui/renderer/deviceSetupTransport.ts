@@ -35,6 +35,11 @@ const responseTypes = new Set([
   "wifi.scan.result",
   "wifi.apply.result",
   "job.status.result",
+  "local.wifi.start.result",
+  "local.wifi.authorize.result",
+  "local.wifi.challenge.result",
+  "local.wifi.token.result",
+  "local.wifi.receipt.result",
 ]);
 function frameBytes(value: unknown, max: number): Uint8Array {
   if (
