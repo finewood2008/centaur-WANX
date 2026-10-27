@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -9,6 +10,21 @@ from wanx_bridge.local_data_install import provision_gateway
 from wanx_bridge.local_data_protocol import public_jwk, public_key_thumbprint
 from wanx_bridge.local_trust_config import LocalTrustConfig, LocalTrustError
 from wanx_bridge.local_trust_runtime import runtime_lock
+
+
+@pytest.mark.parametrize("first", ["_", "-"])
+def test_random_gateway_id_satisfies_downstream_protocol(configured, monkeypatch, first):
+    from wanx_bridge import local_data_install
+    from wanx_bridge.local_data_protocol import token
+
+    random_value = first + "a" * 42
+    monkeypatch.setattr(
+        local_data_install, "secrets", SimpleNamespace(token_urlsafe=lambda size: random_value)
+    )
+    descriptor = provision_gateway(configured.directory)
+    token(descriptor["gatewayId"])
+    assert descriptor["gatewayId"].endswith(random_value)
+    assert json.loads((configured.directory / "gateway-descriptor.json").read_text()) == descriptor
 
 
 def test_gateway_key_is_distinct_create_only_and_private(configured):

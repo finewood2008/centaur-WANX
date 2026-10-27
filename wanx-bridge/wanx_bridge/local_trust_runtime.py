@@ -124,12 +124,34 @@ def runtime_lock(directory):
         os.close(fd)
 
 
+class _RuntimeServer(uvicorn.Server):
+    _runtime_signals_owned = False
+
+    def capture_signals(self):
+        if self._runtime_signals_owned:
+            return contextlib.nullcontext()
+        return super().capture_signals()
+
+    async def serve_with_cleanup(self, cleanup, sockets=None):
+        # Uvicorn replays signals when this scope exits. Drain the IPC listeners
+        # and their authority before restoring/replaying the original handlers.
+        with super().capture_signals():
+            self._runtime_signals_owned = True
+            try:
+                await self.serve(sockets=sockets)
+            finally:
+                try:
+                    await cleanup.aclose()
+                finally:
+                    self._runtime_signals_owned = False
+
+
 def server_for(
     config: LocalTrustConfig, service: LocalTrustService, application=None
-) -> uvicorn.Server:
+) -> _RuntimeServer:
     from .local_data_transport import LocalDataHTTPProtocol, LocalDataWebSocketProtocol
 
-    return uvicorn.Server(
+    return _RuntimeServer(
         uvicorn.Config(
             application or create_app(service, authority=config.authority),
             host=config.bind_host,
@@ -155,7 +177,7 @@ async def _serve(config: LocalTrustConfig, runtime_guard=None) -> None:
     authority = await asyncio.to_thread(
         LocalTrustAuthority,
         config.state_directory,
-        boot_id=secrets.token_urlsafe(32),
+        boot_id="boot-" + secrets.token_urlsafe(32),
     )
     service = LocalTrustService(authority)
     components = None
@@ -196,7 +218,9 @@ async def _serve(config: LocalTrustConfig, runtime_guard=None) -> None:
             cleanup.push_async_callback(broker.close)
             cleanup.push_async_callback(gateway.close)
             cleanup.push_async_callback(sessions.close)
-        await server_for(config, service, components[0] if components else None).serve()
+        await server_for(config, service, components[0] if components else None).serve_with_cleanup(
+            cleanup
+        )
 
 
 class RuntimeDispatcher:

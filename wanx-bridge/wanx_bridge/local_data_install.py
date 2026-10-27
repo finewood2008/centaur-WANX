@@ -42,7 +42,7 @@ def provision_gateway(directory: Path):
         key = ec.generate_private_key(ec.SECP256R1())
         descriptor = {
             "schemaVersion": 1,
-            "gatewayId": secrets.token_urlsafe(32),
+            "gatewayId": "gateway-" + secrets.token_urlsafe(32),
             "gatewayKey": public_jwk(key),
         }
         _create(

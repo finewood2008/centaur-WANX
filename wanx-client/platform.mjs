@@ -855,7 +855,9 @@ export function createPlatformClient({
   });
   async function afterLogin(action, { waitForDevices = true } = {}) {
     if (closed) throw fail("ACCOUNT_CANCELLED");
-    if (account.snapshot().phase === "authenticated")
+    // Restore installs its session before publishing authenticated. Reject a
+    // second login before cancel() can invalidate that startup's device read.
+    if (account.snapshot().phase === "authenticated" || account.getIdentity())
       throw fail("ACCOUNT_ALREADY_SIGNED_IN");
     cancel();
     const generation = epoch;

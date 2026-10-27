@@ -167,7 +167,11 @@ export function createPlatformClient({
               endpoint,
           ),
         };
-      })])],
+      })])].map(device => localDataAccess && !localDataAccess.isProtectedBox(device.deviceId)
+        // Cloud reachability does not approve this computer's local data keys.
+        // Preserve server denials and offline states so their cause stays visible.
+        ? { ...device, canOpen: false, ...(device.accessState === 'ready' ? { accessState: 'device_approval_required' } : {}) }
+        : device),
       directory,
       platform,
       network: { ...network, enabled, peers: [] },
@@ -842,7 +846,9 @@ export function createPlatformClient({
   });
   async function afterLogin(action, { waitForDevices = true } = {}) {
     if (closed) throw fail("ACCOUNT_CANCELLED");
-    if (account.snapshot().phase === "authenticated")
+    // Restore installs its session before publishing authenticated. Reject a
+    // second login before cancel() can invalidate that startup's device read.
+    if (account.snapshot().phase === "authenticated" || account.getIdentity())
       throw fail("ACCOUNT_ALREADY_SIGNED_IN");
     cancel();
     const generation = epoch;

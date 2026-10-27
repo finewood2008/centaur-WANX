@@ -102,6 +102,7 @@ const expandedDetails = new Set();
 let busy = false;
 let busyRequest = null;
 function busyFor(action) { return busyRequest?.action === action; }
+function authBusy() { return busy || currentState?.account?.phase === "authenticating"; }
 function activityLabel(label) { return `<span class="activity-spinner" aria-hidden="true"></span>${escapeHTML(label)}`; }
 let boxUpdatePollTimer;
 let boxUpdatePollKey = null;
@@ -296,6 +297,7 @@ function statusLabel(device) {
     service_unavailable: "账号服务待更新", access_denied: "未获访问权限",
     authorization_unavailable: "盒子授权组件待更新", authorization_pending: "正在同步访问权限",
     network_unconfigured: "盒子尚未接入网络", identity_unavailable: "盒子身份待就绪",
+    device_approval_required: "本机设备待批准", locked: "本地身份已锁定",
   }[device.accessState];
   if (accessLabel) return accessLabel;
   if (["denied", "forbidden", "unauthorized", "revoked", "ownership_conflict"].includes(device.accessState)) return "需要访问权限";
@@ -316,11 +318,16 @@ function recoveryLabel() {
 }
 
 function deviceCanConnect(device) {
+  if (["device_approval_required", "locked", "access_denied"].includes(device.accessState)) return false;
   return device.canOpen !== false && device.networkReady !== false && (device.canOpen === true || device.accessState === "ready");
 }
 
 function authorizationHint() {
   return "请保持电脑和盒子联网，授权同步完成后会自动更新；长时间未完成可点击刷新。";
+}
+
+function deviceApprovalHint() {
+  return "云账号关联不代表这台电脑已获准访问。成员请接受管理员邀请并等待设备批准；管理员请在已批准的管理设备上处理邀请与批准。";
 }
 
 function deviceCard(device) {
@@ -339,6 +346,10 @@ function deviceCard(device) {
     ? `<button class="button small activity-button" aria-busy="true" disabled><span class="activity-spinner" aria-hidden="true"></span>正在连接…</button>`
     : selected
     ? `<button class="button small" data-action="disconnect" ${busy ? "disabled" : ""}>断开</button>`
+    : device.accessState === "device_approval_required"
+    ? `<button class="button small" data-team-action="join" ${busy ? "disabled" : ""}>云账号与设备批准</button>`
+    : device.accessState === "locked"
+    ? `<button class="button small" data-action="device-trust-open" ${busy ? "disabled" : ""}>解锁本地身份</button>`
     : available && (device.local || currentState.networkReady)
       ? `<button class="button small" data-action="connect" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>${currentState.activeDeviceId ? "切换并连接" : "连接"}</button>`
       : available
@@ -347,17 +358,17 @@ function deviceCard(device) {
           : `<span class="muted">${escapeHTML(statusLabel(device))}</span>`;
   return `<article class="device-card ${selected ? "selected" : ""}">
     <img class="device-icon" src="./assets/centaurai-mark.png" alt="" />
-    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : ""}${connectionFailure?.deviceId === device.deviceId ? `<p class="inline-error" role="alert">${escapeHTML(connectionFailure.message)}</p>` : ""}</div>
+    <div class="device-main"><h3>${escapeHTML(device.name || device.displayName || "万象盒子")}</h3><p class="device-meta"><span class="status-dot ${selected ? "ready" : ""}"></span>${device.local ? "本机服务 · " : ""}${escapeHTML(statusLabel(device))}</p>${device.accessState === "authorization_pending" ? `<p class="device-meta">${authorizationHint()}</p>` : device.accessState === "device_approval_required" ? `<p class="device-meta">${deviceApprovalHint()}</p>` : device.accessState === "access_denied" ? '<p class="device-meta">服务器未允许当前账号在这台电脑访问盒子，请管理员核对设备与客户端授权。</p>' : ""}${connectionFailure?.deviceId === device.deviceId ? `<p class="inline-error" role="alert">${escapeHTML(connectionFailure.message)}</p>` : ""}</div>
     <div class="device-action">${action}${!currentState.dataIdentity?.profileId && (device.deviceRole === "owner" || device.role === "owner") ? `${!device.local ? `<button class="text-button" data-action="configure-network" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>配置网络</button>` : ""}<button class="text-button" data-action="support-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>远程协助</button><button class="text-button" data-action="transfer-open" data-device-id="${escapeHTML(device.deviceId)}" ${busy ? "disabled" : ""}>转移所有权</button>` : ""}</div></article>`;
 }
 
 function networkStatus() {
   if (currentState.dataIdentity?.profileId) return currentState.canLaunchApplications
     ? { label: "本地身份已连接", detail: "已验证这台设备的访问授权。" }
-    : { label: "本地身份", detail: "请在本地设备安全中解锁身份并选择已授权盒子。" };
+    : { label: "本地身份", detail: currentState.dataIdentity.phase === "unlocked" ? "请选择已批准的盒子；尚无盒子时请接受团队邀请。" : "请在“本地身份与设备批准”中解锁身份。" };
   if (currentState.activeDeviceId && currentState.connection?.mode === "local") return { label: "本机已连接", detail: "正在使用这台电脑上的万象服务。" };
   if (currentState.network?.enabled === false) return { label: "网络尚未就绪", detail: "请检查本机网络后点击“刷新设备”重试。" };
-  if (currentState.networkReady) return { label: "网络已连接", detail: "可以连接盒子并使用应用。" };
+  if (currentState.networkReady) return { label: "网络已连接", detail: currentState.team ? "网络已就绪；盒子的账号权限与本机设备批准状态请见下方。" : "可以连接盒子并使用应用。" };
   if (currentState.platform?.reason === "NETWORK_REVOCATION_PENDING")
     return { label: "网络会话清理中", detail: "服务器正在清理旧连接，完成后将自动重连；传输会保留进度等待恢复。" };
   if (currentState.platform?.reason === "NETWORK_LEASE_EXPIRED")
@@ -476,13 +487,18 @@ function updatePasswordCodeButtons() {
   if (waiting) passwordResendTimer = setTimeout(updatePasswordCodeButtons, 1000);
 }
 
+function needsLocalUnlock() {
+  return currentState.account?.phase === "authenticated" && Boolean(currentState.dataIdentity?.profileId) && currentState.dataIdentity.phase === "locked";
+}
+
 function authView() {
   const register = authMode === "register";
   const reset = authMode === "reset";
   const newPassword = register || reset;
+  const unlocking = needsLocalUnlock();
   return `<div class="auth-layout"><section class="auth-card">
     <button class="auth-brand brand-button" data-action="desktop-about" aria-label="关于万象"><img class="brand-mark" src="./assets/centaurai-mark.png" alt="半人马" /><span class="brand-copy"><strong>半人马AI-万象<span class="brand-edition">团队版</span></strong><small>CentaurAI-WanX Studio</small></span></button>
-    <h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
+    ${unlocking ? `<h1>解锁本地身份</h1><p class="muted">云账号已登录。请解锁这台电脑的本地身份，继续访问已批准的盒子。</p>${notice ? `<p class="notice error" role="status">${escapeHTML(notice)}</p>` : ""}<button class="button primary wide" data-action="device-trust-open" ${busy ? "disabled" : ""}>解锁本地身份</button>` : `<h1>${reset ? "找回密码" : register ? "注册万象平台" : "登录万象平台"}</h1><p class="muted">连接你的盒子，发现和使用 AI 应用。</p>
         ${reset ? `<p class="muted">通过账号绑定的手机号验证身份，重置后请用新密码登录。</p>` : `<div class="tabs"><button class="tab ${!register ? "active" : ""}" data-action="auth-login" ${busy ? "disabled" : ""}>登录</button><button class="tab ${register ? "active" : ""}" data-action="auth-register" ${busy ? "disabled" : ""}>注册</button></div>`}
         <form id="auth-form" data-form="auth" data-mode="${authMode}" novalidate>
           <label for="account-name">手机号</label>
@@ -492,10 +508,10 @@ function authView() {
           ${newPassword ? passwordFields("account", reset ? "send-reset-code" : "send-registration-code", reset ? resetResendAt : resendAt) : ""}
           ${!newPassword ? `<label class="remember-login"><input type="checkbox" name="remember" checked ${busy ? "disabled" : ""} />记住账号密码</label>` : ""}
           <div data-auth-notice class="notice ${codeSent ? "success" : "error"}" role="status" ${notice ? "" : "hidden"}>${escapeHTML(notice)}</div>
-          <button class="button primary wide" type="submit" ${busy ? "disabled" : ""}>${busy ? authBusyLabel() : authSubmitLabel()}</button>
+          <button class="button primary wide" type="submit" ${authBusy() ? "disabled" : ""}>${authBusy() ? authBusyLabel() : authSubmitLabel()}</button>
         </form>
-        <button class="text-button auth-help" data-action="${reset ? "auth-login" : "auth-reset"}" ${busy ? "disabled" : ""}>${reset ? "返回登录" : "忘记密码？"}</button>
-    <div class="team-auth-entry"><button class="text-button" data-action="device-trust-open">本地身份与设备批准</button><button class="text-button" data-team-action="join">接受团队邀请</button>${currentState.dataIdentity?.phase === "unlocked" ? '<button class="text-button" data-action="local-return">返回已批准的本地身份</button>' : ""}</div></section></div>`;
+        <button class="text-button auth-help" data-action="${reset ? "auth-login" : "auth-reset"}" ${busy ? "disabled" : ""}>${reset ? "返回登录" : "忘记密码？"}</button>`}
+    <div class="team-auth-entry">${unlocking ? "" : `<button class="text-button" data-action="device-trust-open">${currentState.dataIdentity?.profileId && currentState.dataIdentity.phase === "locked" ? "解锁本地身份" : "本地身份与设备批准"}</button>`}<button class="text-button" data-team-action="join">接受团队邀请</button>${currentState.dataIdentity?.phase === "unlocked" ? '<button class="text-button" data-action="local-return">返回已批准的本地身份</button>' : ""}</div></section></div>`;
 }
 
 function updateBytes(value) {
@@ -793,7 +809,7 @@ function boxesView() {
     ${boxVersionSummaryView()}
     <div class="box-resource-grid"><div><span>可用存储</span><strong>${resourceSize(metrics?.volume?.free)}</strong><small>总容量 ${resourceSize(metrics?.volume?.total)}</small></div><div><span>万象占用</span><strong>${storage && !storage.complete ? "≥ " : ""}${resourceSize(storage?.bytes)}</strong><small title="万象数据、应用与运行组件，含日志、缓存、历史版本和回收站；重叠文件仅计一次。按文件大小汇总，每 30 秒更新。">${storage ? storage.complete ? "数据、应用与运行组件" : "部分目录暂时无法读取" : ready ? "等待盒子返回完整统计" : "连接后显示实际状态"}</small></div><div><span>CPU 使用率</span><strong>${metrics?.cpu ? `${metrics.cpu.percent.toFixed(1)}%` : "—"}</strong><small>盒子当前负载</small></div><div><span>内存使用</span><strong>${metrics?.memory ? `${metrics.memory.percent.toFixed(1)}%` : "—"}</strong><small>${metrics?.memory ? `${resourceSize(metrics.memory.used)} / ${resourceSize(metrics.memory.total)}` : "连接后显示实际状态"}</small></div></div></section>
     ${maintenanceToolsView()}
-    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
+    <section class="content-section" aria-label="设备管理"><div class="box-section-heading"><div><h3>已关联的盒子 <span class="count">${devices.length}</span></h3><p class="muted ${refreshing ? "activity-status" : ""}" role="status">${refreshing ? '<span class="activity-spinner" aria-hidden="true"></span>正在读取最新设备状态…' : "连接或切换盒子后，文件空间和应用将使用所选盒子。"}</p></div></div>${devices.length ? `<div class="box-device-grid">${devices.map(deviceCard).join("")}</div>` : currentState.team || currentState.dataIdentity?.profileId ? `<div class="empty-state"><h3>尚无已批准的盒子</h3><p>${deviceApprovalHint()}</p><button class="button small" data-team-action="join">云账号与设备批准</button></div>` : `<div class="empty-state"><h3>还没有盒子</h3><p>发现附近的盒子，完成配网和账号绑定。</p><button class="button small" data-action="provisioning">添加盒子</button></div>`}</section>
     ${ownershipView()}
     ${supportView.render()}
   </div></div>${confirmationView()}`;
@@ -1393,7 +1409,7 @@ function authBusyLabel() {
     "auth.login": "正在登录…",
     "auth.register": "正在创建账号…",
     "auth.reset-password": "正在重置密码…",
-  }[busyRequest?.action] || "处理中…";
+  }[busyRequest?.action] || (currentState?.account?.phase === "authenticating" ? "正在恢复登录…" : "处理中…");
 }
 
 // State broadcasts must not detach the pressed control before Chromium emits click.
@@ -1590,8 +1606,8 @@ function render(state) {
     app.querySelector?.(`[data-form="${formName}"]`)?.replaceWith(retainedForm);
     const submit = retainedForm.querySelector('button[type="submit"]');
     if (submit) {
-      submit.disabled = busy;
-      const pending = authForm ? busy && ["auth.login", "auth.register", "auth.reset-password"].includes(busyRequest?.action)
+      submit.disabled = authForm ? authBusy() : busy;
+      const pending = authForm ? currentState?.account?.phase === "authenticating" || busy && ["auth.login", "auth.register", "auth.reset-password"].includes(busyRequest?.action)
         : passwordForm ? busyFor("auth.change-password") : profileForm ? busyFor("profile.save") : false;
       submit.classList.toggle("activity-button", pending);
       submit.setAttribute("aria-busy", String(pending));
@@ -1714,6 +1730,9 @@ function connectionErrorMessage(error) {
   const code = String(error?.code || error?.message || "")
     .replace(/^Error invoking remote method 'wanx-client:connect-box': (?:Error: )?/, "");
   const messages = {
+    TEAM_DEVICE_APPROVAL_REQUIRED: "此电脑尚未获准访问盒子。请打开“云账号与设备批准”，接受邀请并由管理员批准这台设备后再连接。",
+    LOCAL_IDENTITY_LOCKED: "本地身份已锁定。请打开“本地身份与设备批准”，解锁本地身份后再连接。",
+    LOCAL_DATA_LOCAL_IDENTITY_LOCKED: "本地身份已锁定。请打开“本地身份与设备批准”，解锁本地身份后再连接。",
     health_unavailable: "连接盒子失败：盒端服务暂不可达，请检查盒子网络和服务后重试。",
     health_timeout: "连接盒子超时：盒端服务未及时响应，请稍后重试。",
     health_invalid: "连接盒子失败：盒端服务健康检查未通过，请联系管理员检查服务版本与状态。",
@@ -2418,6 +2437,7 @@ app.addEventListener("submit", async (event) => {
     return;
   }
   if (event.target.dataset.form !== "auth") return;
+  if (authBusy() || needsLocalUnlock()) return;
   event.preventDefault();
   const data = Object.fromEntries(new FormData(event.target));
   authUsername = String(data.username || "").trim();

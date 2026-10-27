@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createPlatformClient } from "../platform.mjs";
 import { createClient } from "../client.mjs";
 import { createNetwork } from "../network/index.mjs";
+import { createTeamConnection } from "../shell/team-connection.mjs";
 
 const deferred = () => {
   let resolve;
@@ -121,6 +122,7 @@ function harness(t, options = {}) {
   const client = createPlatformClient({
     account,
     localBoxes: options.localBoxes,
+    localDataAccess: options.localDataAccess,
     readPreference: options.readPreference || (options.enabled === undefined ? undefined : async () => options.enabled),
     pollIntervalMs: 1,
     renewIntervalMs: options.renewIntervalMs ?? 60_000,
@@ -1191,6 +1193,65 @@ test("a rejected duplicate login cannot cancel the active network lease", async 
   assert.equal(h.client.snapshot().account.accountId, "13800000001");
   assert.equal(h.client.snapshot().phase, "ready");
 });
+
+function localApproval({ locked = false, approved = false } = {}) {
+  return {
+    snapshot: () => ({ phase: locked ? "locked" : "unlocked", profileId: approved ? "local-profile" : null }),
+    listBoxes: () => approved ? [{ boxId: device.deviceId, locked }] : [],
+    isProtectedBox: id => approved && id === device.deviceId,
+    subscribe: () => () => {},
+  };
+}
+
+test("team cloud directory cannot advertise a usable network peer as locally approved", async t => {
+  const localDataAccess = localApproval();
+  const h = harness(t, { localDataAccess });
+  const team = createTeamConnection({ base: h.client, localDataAccess });
+  await team.loginPassword({ phone: "account-a" });
+  const listed = team.snapshot().devices[0];
+  assert.equal(team.snapshot().platform.phase, "ready");
+  assert.equal(listed.networkReady, true, "network readiness remains independent of device approval");
+  assert.equal(listed.canOpen, false);
+  assert.equal(listed.accessState, "device_approval_required");
+  await assert.rejects(team.connectBox(device.deviceId), { code: "TEAM_DEVICE_APPROVAL_REQUIRED" });
+  assert.equal(h.sessions.length, 0, "cloud credentials must never bypass the local approval gate");
+});
+
+test("registered development boxes also require team device approval before offering connect", async t => {
+  const h = harness(t, { localDataAccess: localApproval(), enabled: false,
+    localBoxes: { list: async () => [{ deviceId: "development-box", displayName: "开发盒子", local: true,
+      canOpen: true, accessState: "ready", serviceUrl: "http://127.0.0.1:8088" }] },
+  });
+  await h.client.initialize();
+  await h.client.loginPassword({ phone: "account-a" });
+  const listed = h.client.snapshot().devices.find(box => box.deviceId === "development-box");
+  assert.equal(listed.canOpen, false);
+  assert.equal(listed.accessState, "device_approval_required");
+  await assert.rejects(h.client.connectBox(listed.deviceId), { code: "TEAM_DEVICE_APPROVAL_REQUIRED" });
+});
+
+for (const accessState of ["access_denied", "network_unconfigured", "authorization_pending"]) {
+  test(`team local approval must not hide cloud ${accessState}`, async t => {
+    const h = harness(t, { localDataAccess: localApproval(), enabled: false });
+    h.override(input => input.path === "/app-api/network/boxes"
+      ? { boxes: [{ ...device, accessState }] } : undefined);
+    await h.client.initialize();
+    await h.client.loginPassword({ phone: "account-a" });
+    assert.equal(h.client.snapshot().devices[0].accessState, accessState);
+    assert.equal(h.client.snapshot().devices[0].canOpen, false);
+  });
+}
+
+for (const locked of [false, true]) {
+  test(`team approved device retains its ${locked ? "locked" : "connectable"} state`, async t => {
+    const h = harness(t, { localDataAccess: localApproval({ approved: true, locked }) });
+    const listed = h.client.snapshot().devices[0];
+    assert.equal(listed.authorization, "local-trust-v1");
+    assert.equal(listed.accessState, locked ? "locked" : "ready");
+    assert.equal(listed.canOpen, !locked);
+    assert.equal(listed.networkReady, !locked);
+  });
+}
 
 test("a failed preference write cannot remove an existing hard lease deadline", async (t) => {
   const h = harness(t, {
