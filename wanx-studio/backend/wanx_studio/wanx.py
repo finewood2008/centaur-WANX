@@ -1,11 +1,14 @@
-"""Trusted integration, loaded in WANX only. Credentials never leave this process."""
+"""Trusted WANX integration; only scoped local proxy credentials reach Codex."""
 from __future__ import annotations
 
 import asyncio
 from .local_authority import to_thread
 import json
+import os
+import re
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse
@@ -26,6 +29,10 @@ def output_budget(body,model):
 class WanxModels:
     def __init__(self, services):
         self.services=services
+        # Keep the deployment boundary stable if configuration is revoked later.
+        self.device_managed=os.getenv('WANX_MODEL_PROVIDERS_ENABLED') not in {None,'0'} or any(
+            os.getenv(key) for key in ['WANX_PLATFORM_DEVICE_ID','WANX_MODEL_PROVIDERS_IDENTITY_DEVICE_ID']+
+            [prefix+name for prefix in ('WANX_MODEL_PROVIDERS_','WANX_RESOURCES_') for name in ('API_BASE','DEVICE_ID','KEY_FILE')])
         self.selection=services.settings_repo.get_active_model()
         self.info=self.resolve()
 
@@ -76,6 +83,41 @@ class WanxModels:
         provider,model=selected
         row=self.services.provider_repo.get_by_name(self.selection[0])
         return digest([self.selection,provider.id,getattr(provider,'base_url',None),model.id,model.max_output_tokens,getattr(row,'updated_at',None)])
+
+    def codex_provider(self):
+        """Read only the device-leased QeeToken route, never a user's cloud key."""
+        if not self.device_managed or os.getenv('WANX_MODEL_PROVIDERS_ENABLED')=='0':
+            return None
+        from octop.infra.agents.providers.store import ProviderStore
+        row=self.services.provider_repo.get_by_name('admin-managed-qeetoken')
+        if row is None or not row.enabled or not row.api_key or not (row.note or '').startswith('wanx-admin-model-provider-v1:'):
+            return None
+        try:
+            endpoint=urlsplit(row.base_url or '')
+            endpoint.port
+        except ValueError:
+            return None
+        if endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','::1','localhost'} or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment or endpoint.path!='/model-providers/qeetoken/v1':
+            return None
+        provider=next((p for p in ProviderStore(self.services.provider_repo).build_harness_configs() if p.id==row.name),None)
+        if provider is None:return None
+        models=[m.id for m in provider.models if m.id.startswith('gpt-') and not re.search(r'embed|rerank|image|audio|realtime|transcri|tts',m.id,re.I)]
+        if not models:return None
+        active=self.services.settings_repo.get_active_model()
+        selected=active[1] if active[0]==row.name and active[1] in models else sorted(models)[0]
+        capability=ProviderStore(self.services.provider_repo).get_model_reasoning_capability(row.name+'/'+selected)
+        effort=None
+        if capability and capability['adapter']=='openai_reasoning_effort':
+            effort=capability['default_effort'] or ('medium' if 'medium' in capability['efforts'] else None)
+        return {'model':selected,'base_url':row.base_url,'api_key':row.api_key,
+                'reasoning':bool(capability),'reasoning_effort':effort}
+
+    def codex_runners(self,settings,user_id):
+        if self.device_managed and self.codex_provider():
+            return settings.load_runners(user_id,defaults={'codex':{
+                'command':'codex','args':['app-server'],'trusted':True,'enabled':True,
+            }})
+        return settings.load_runners(user_id)
 
     async def __call__(self, owner, body):
         from langchain_core.messages import SystemMessage,HumanMessage,AIMessage,ToolMessage
@@ -171,7 +213,7 @@ def mount_wanx(app,server,project_root:Path,*,catalog_services=None):
         service=StudioService(server.paths.root/'.wanx-app-studio',project_root,models,files)
         server._wanx_studio_service=service
     service.runner=Runner(service)
-    service.engines.provider=lambda owner:server.app_runtime.agent_registry.acp_settings.load_runners(int(owner.split(":",1)[1]))
+    service.engines.provider=lambda owner:models.codex_runners(server.app_runtime.agent_registry.acp_settings,int(owner.split(":",1)[1]))
     from .context_sources import WanxContextSources
     from .team import TeamPublications
     from .local_authority import LocalStudioAuthority

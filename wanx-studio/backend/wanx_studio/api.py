@@ -155,7 +155,7 @@ def create_router(svc: StudioService, identity, *, local_preview=False):
 
     @router.get('/preflight',summary='Check native Codex app-server connectivity without model calls')
     async def preflight(owner=Depends(identity)):
-        return {**await svc.runner.preflight(),'maxExecutionSeconds':svc.runner.TASK_TIMEOUT_SECONDS}
+        return {**await svc.runner.preflight(owner=owner),'maxExecutionSeconds':svc.runner.TASK_TIMEOUT_SECONDS}
 
     @router.get('/capabilities',summary='Read the fixed versioned runtime capability catalog')
     async def capabilities(owner=Depends(identity)):

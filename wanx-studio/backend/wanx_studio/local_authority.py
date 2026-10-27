@@ -6,6 +6,7 @@ import asyncio
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, replace
 import logging
+import os
 
 from .contracts import StudioError
 
@@ -224,11 +225,26 @@ class LocalStudioAuthority:
 
 
 async def start_background(service, owner, project_id, task_id, purpose, factory):
-    authority = getattr(service, "local_authority", None)
-    if authority is None:
-        return asyncio.create_task(factory())
-    await authority.prepare(service, owner, project_id)
-    return await authority.spawn(owner, project_id, task_id, purpose, factory)
+    from .upgrade_guard import background_lock
+
+    # Admission and OTA use the same inode. Acquire before any awaited setup so
+    # an idle check cannot race a newly admitted interview, edit, or build.
+    lock = await background_lock(service.store.root) if os.name == "posix" else None
+    try:
+        authority = getattr(service, "local_authority", None)
+        if authority is None:
+            task = asyncio.create_task(factory())
+        else:
+            await authority.prepare(service, owner, project_id)
+            task = await authority.spawn(owner, project_id, task_id, purpose, factory)
+    except BaseException:
+        if lock is not None:
+            lock.close()
+        raise
+    if lock is not None:
+        # Also runs if the task is cancelled before its first instruction.
+        task.add_done_callback(lambda _: lock.close())
+    return task
 
 
 async def to_thread(function, /, *args, **kwargs):

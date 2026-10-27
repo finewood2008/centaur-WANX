@@ -130,7 +130,7 @@ class Preparation:
  def fingerprint(self,owner,p):
   provider=getattr(self.svc,'context_provider',None)
   model=self.svc.model
-  return digest({'owner':owner,'instance':str(self.svc.store.root.resolve()),'contract':CONTRACT_VERSION,'model':model.fingerprint() if hasattr(model,'fingerprint') else bool(model),'engine':p.get('engine'),'codex':__import__('wanx_studio.codex_config',fromlist=['runtime_config']).runtime_config(),'files':bool(self.svc.files),'background':provider.fingerprint() if provider else None,'references':p['preparation']['references'],'revision':p['preparation']['revision']})
+  return digest({'owner':owner,'instance':str(self.svc.store.root.resolve()),'contract':CONTRACT_VERSION,'model':model.fingerprint() if hasattr(model,'fingerprint') else bool(model),'engine':p.get('engine'),'codex':__import__('wanx_studio.codex_config',fromlist=['runtime_config']).runtime_config('wanx_task',self.svc,owner),'files':bool(self.svc.files),'background':provider.fingerprint() if provider else None,'references':p['preparation']['references'],'revision':p['preparation']['revision']})
  def gaps(self,p):
   x=p['preparation'];decisions=x.get('gapDecisions',{})
   return [g for g in x['gaps'] if digest(g) not in decisions]
@@ -325,7 +325,7 @@ class Preparation:
      code=e.code if isinstance(e,StudioError) else 'CAPABILITY_PROBE_FAILED'
      status='permission_denied' if 'FORBIDDEN' in code or 'DENIED' in code else 'configuration_missing' if code in {'MODEL_NOT_CONFIGURED','FILES_UNAVAILABLE','CONTEXT_UNAVAILABLE','SEMANTICA_NOT_CONFIGURED'} else 'failed'
      results[cap]={'status':status,'code':code,'at':time.time()}
-   codex=await self.svc.runner.preflight(fresh=True)
+   codex=await self.svc.runner.preflight(fresh=True,owner=owner)
    report={'version':1,'contractVersion':CONTRACT_VERSION,'operationId':op,'fingerprint':fingerprint,'required':required,'results':results,'codex':codex,'environment':'isolated-probe-runtime','at':time.time()}
    def change(p):
     if fingerprint!=self.fingerprint(owner,p):raise StudioError('CAPABILITY_SET_CHANGED',409)
