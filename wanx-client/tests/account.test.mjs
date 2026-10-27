@@ -21,6 +21,33 @@ function memoryStore() {
 }
 const reply = (data, status = 200) =>
   new Response(JSON.stringify({ code: status, data }), { status });
+
+for (const name of ["TimeoutError", "AbortError"]) {
+  test(`numeric DOMException ${name} remains a retryable network error`, async () => {
+    const account = createAccount({
+      store: memoryStore(),
+      fetch: async (url, options) => {
+        if (url.endsWith("/login")) {
+          return reply({ accountId: "account-one", clientId: JSON.parse(options.body).clientId,
+            accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresIn: 3600 });
+        }
+        throw new DOMException("Request interrupted", name);
+      },
+    });
+    try {
+      await account.loginPassword({ phone: "13800138000", password: "fixture-password" });
+      await assert.rejects(account.request({ method: "POST", path: "/app-api/network/restore", body: {} }),
+        { code: "ACCOUNT_NETWORK_ERROR" });
+      const controller = new AbortController();
+      controller.abort();
+      await assert.rejects(account.request({ method: "POST", path: "/app-api/network/restore", body: {}, signal: controller.signal }),
+        { code: "ACCOUNT_CANCELLED" });
+    } finally {
+      await account.close();
+    }
+  });
+}
+
 function fixture(extra = {}) {
   const calls = [];
   const store = extra.store || memoryStore();
