@@ -427,9 +427,65 @@ class LoopInteractions:
         )
         token = _locale.set(locale)
         try:
-            return await self._handle_inbound(msg)
+            result = await self._handle_inbound(msg)
+            if result is not None:
+                return result
+            return await self._personal_owner_guard(msg)
         finally:
             _locale.reset(token)
+
+    async def _personal_owner_guard(self, msg: InboundMessage) -> str | None:
+        """A first-party personal assistant must not share its owner's memory with bot visitors."""
+        if msg.channel_type in {"dashboard", "cli"}:
+            return None
+        agent = await self.service._db(self.service.repos.agent_repo.get, msg.tenant_id)
+        user = (
+            await self.service._db(self.service.repos.user_repo.get, agent.user_id)
+            if agent
+            else None
+        )
+        try:
+            prefs = json.loads(user.preferences_json or "{}") if user else {}
+        except ValueError:
+            prefs = {}
+        dedicated = bool(
+            agent
+            and agent.template_name == "centaurloop"
+            and agent.agent_id == f"centaurloop-{agent.user_id}"
+        )
+        if not dedicated and (
+            not isinstance(prefs, dict) or prefs.get("wanx_assistant_agent_id") != msg.tenant_id
+        ):
+            return None
+        if (
+            chat_type_from_message(msg) != "dm"
+            or not msg.channel_subject
+            or msg.channel_subject.chat_type not in {"", "dm", "single"}
+        ):
+            return tr("assistant.owner_private", _locale.get())
+        rows = await self.service._db(self.service.repos.loop_repo.bindings, agent.user_id)
+        binding = next(
+            (
+                r
+                for r in rows
+                if r["agent_id"] == msg.tenant_id
+                and r["channel_id"] == msg.channel_id
+                and r["subject_id"] == msg.channel_subject.subject_id
+                and r["status"] == "active"
+            ),
+            None,
+        )
+        if binding:
+            try:
+                await self.require_binding(
+                    agent.user_id, binding["agent_id"], binding["binding_id"]
+                )
+                # Verified owner messages continue through native conversation.
+                # The retired task workspace must not turn chat into loop drafts.
+                return None
+            except OctopError:
+                pass
+        return tr("assistant.owner_required", _locale.get())
 
     async def _handle_inbound(self, msg: InboundMessage) -> str | None:
         if msg.channel_type in {"dashboard", "cli"}:

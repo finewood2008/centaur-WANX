@@ -8,6 +8,7 @@ import semver from "semver";
 import { assertApplicationPlatform, isComparableApplicationVersion, readApplicationManifest, resolveApplicationEntry, validateApplicationManifest } from "./manifest.mjs";
 import { extractApplicationArchive } from "./archive.mjs";
 import { assertApplicationCompatibility } from "./compatibility.mjs";
+import { localBindingScope } from './local-binding-scope.mjs';
 
 const fail = (code) => Object.assign(new Error(code), { code });
 const safePart = value => value.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -15,6 +16,11 @@ const operationIdValid = value => typeof value === "string" && /^[A-Za-z0-9_-]{1
 function bindingSelection(value, artifactId, code = "APPLICATION_CURRENT_INVALID") {
   if (!value || !["bindingSetId", "operationId", "bindingScope"].some(key => Object.hasOwn(value, key))) return {};
   const scope = value.bindingScope;
+  if (scope?.schemaVersion === 2 || scope?.authorization === 'local-trust-v1') {
+    if (typeof value.bindingSetId !== 'string' || !/^[a-f0-9]{64}$/.test(value.bindingSetId) || !operationIdValid(value.operationId)) throw fail(code);
+    try { return { bindingSetId: value.bindingSetId, operationId: value.operationId, bindingScope: localBindingScope(scope, { artifactId }) }; }
+    catch { throw fail(code); }
+  }
   if (typeof value.bindingSetId !== "string" || !/^[a-f0-9]{64}$/.test(value.bindingSetId) || !operationIdValid(value.operationId) ||
       !scope || scope.artifactId !== artifactId || !Number.isSafeInteger(scope.ownershipEpoch) || scope.ownershipEpoch < 1 ||
       [scope.accountId, scope.deviceId].some(item => typeof item !== "string" || !item || item.length > 256)) throw fail(code);

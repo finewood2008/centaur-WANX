@@ -418,6 +418,8 @@ class Workspaces(SpaceSync):
                         )
                     result = dict(self._entry(db, mapping[item_id]))
                 else:
+                    if item["space_id"] != space_id:
+                        self._invalidate_share_roots(db, item_id)
                     required: dict[str, tuple[int, str]] = {}
                     for current in ids:
                         row = self._entry(db, current, trash=True)

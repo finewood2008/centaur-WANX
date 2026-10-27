@@ -163,8 +163,11 @@ async def _serve(config: LocalTrustConfig, runtime_guard=None) -> None:
         # Register each owner before starting it. A partial start or failed
         # shutdown must still drain the other listeners before the sole ledger.
         cleanup.push_async_callback(service.close)
+        from .local_team_config import load_team_identity_policy
         from .local_trust_operations_loader import create_operation_provider
 
+        team_policy = await asyncio.to_thread(load_team_identity_policy)
+        await service.execute_authority(authority.configure_team_identity, team_policy)
         provider = await service.execute_authority(create_operation_provider, authority)
         if provider is not None:
             cleanup.push_async_callback(asyncio.to_thread, provider.close)
@@ -276,10 +279,13 @@ async def data_application(
         public_jwk,
         public_key_thumbprint,
         sign_data_response,
+        sign_gateway_grants,
         sign_gateway_lease,
+        sign_gateway_members,
         sign_gateway_observation,
         sign_gateway_request,
         sign_gateway_resources,
+        sign_gateway_task,
         verify_gateway_request,
     )
     from .local_data_routes import application_policy, child_policy, route_policy
@@ -322,6 +328,9 @@ async def data_application(
         gateway_lease_signer=lambda payload: sign_gateway_lease(payload, gateway_key),
         gateway_resources_signer=lambda payload: sign_gateway_resources(payload, gateway_key),
         gateway_observation_signer=lambda payload: sign_gateway_observation(payload, gateway_key),
+        gateway_members_signer=lambda payload: sign_gateway_members(payload, gateway_key),
+        gateway_task_signer=lambda payload: sign_gateway_task(payload, gateway_key),
+        gateway_grants_signer=lambda payload: sign_gateway_grants(payload, gateway_key),
         required_audiences=frozenset(settings.upstreams),
         worker_required=operation_provider is not None,
         gateway_id=settings.gateway_id,

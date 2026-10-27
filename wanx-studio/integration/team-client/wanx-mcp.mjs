@@ -5,6 +5,7 @@ const fail=(code,status=400)=>Object.assign(Error(code),{code,status});
 const object=properties=>({type:'object',additionalProperties:false,properties});
 const string={type:'string',maxLength:128};
 const integer=(min,max)=>({type:'integer',minimum:min,maximum:max});
+const identifier={type:'string',minLength:1,maxLength:128,pattern:'^[A-Za-z0-9_-]+$'};
 const spaceSchema=structuredClone(schema);delete spaceSchema.properties.link;
 spaceSchema.required=['action'];spaceSchema.properties.grant_id=string;
 const tool=(name,description,inputSchema,readOnlyHint=true)=>({name,description,inputSchema,annotations:{readOnlyHint,destructiveHint:false,idempotentHint:readOnlyHint,openWorldHint:false}});
@@ -17,15 +18,15 @@ const spaceTools=[
 const knowledgeTools=[
  tool('xingtu_warehouse','读取 Key 对应的星图仓库概况。仓库由 Key 决定。',object({})),
  tool('xingtu_documents','读取授权仓的材料信息。',object({limit:integer(1,200),offset:integer(0,Number.MAX_SAFE_INTEGER)})),
- tool('xingtu_graph','读取授权仓的真实知识图谱与来源，遵循当前保护规则。',object({limit:integer(1,500),entity_id:string})),
+ tool('xingtu_graph','读取本机会话所批准仓库的知识图谱与来源，遵循当前保护规则。',object({limit:integer(1,500),entity_id:identifier})),
  tool('xingtu_search','检索授权仓的证据，返回受保护的片段及来源。', {...object({query:{type:'string',minLength:1,maxLength:2000},limit:integer(1,50)}),required:['query']}),
- tool('xingtu_evidence','按 ID 读取授权仓内的证据，不能跨仓。',{...object({evidence_id:{...string,minLength:1}}),required:['evidence_id']}),
+ tool('xingtu_evidence','按 ID 读取本机会话所批准仓库内的受保护证据。',{...object({evidence_id:identifier}),required:['evidence_id']}),
 ];
 function validate(args,s){
  if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!Object.hasOwn(s.properties,k)))throw fail('MCP_ARGUMENT_INVALID');
  for(const k of s.required||[])if(args[k]===undefined)throw fail('MCP_ARGUMENT_INVALID');
  for(const [key,value]of Object.entries(args)){const p=s.properties[key];
-  if(p.type==='string'&&(typeof value!=='string'||value.length<(p.minLength||0)||value.length>(p.maxLength||Infinity)||p.enum&&!p.enum.includes(value)))throw fail('MCP_ARGUMENT_INVALID');
+  if(p.type==='string'&&(typeof value!=='string'||value.length<(p.minLength||0)||value.length>(p.maxLength||Infinity)||p.enum&&!p.enum.includes(value)||p.pattern&&!new RegExp(p.pattern).test(value)))throw fail('MCP_ARGUMENT_INVALID');
   if(p.type==='integer'&&(!Number.isSafeInteger(value)||value<p.minimum||value>p.maximum))throw fail('MCP_ARGUMENT_INVALID');
  }
 }
@@ -53,7 +54,7 @@ export function createWanxMcp({resolve,kind}){
    id=body.id??null;
    const reply=result=>send(200,{jsonrpc:'2.0',id,result});
    if(body.id===undefined){if(!['notifications/initialized','notifications/cancelled'].includes(body.method))throw fail('MCP_INVALID_NOTIFICATION');return send(202)}
-   if(body.method==='initialize')return reply({protocolVersion:versions.includes(body.params?.protocolVersion)?body.params.protocolVersion:versions.at(-1),capabilities:{tools:{}},serverInfo:{name:kind==='space'?'wanx-space':'xingtu',title:kind==='space'?'空间 MCP':'星图 MCP',version:'1.0.0'},instructions:kind==='space'?'仅操作空间 Key 获准的文件范围。星图使用独立 MCP 地址和仓库 Key。客户端需保持运行。':'仅访问仓库 Key 绑定的星图知识。空间文件使用独立 MCP 地址和空间 Key。客户端需保持运行。'});
+   if(body.method==='initialize')return reply({protocolVersion:versions.includes(body.params?.protocolVersion)?body.params.protocolVersion:versions.at(-1),capabilities:{tools:{}},serverInfo:{name:kind==='space'?'wanx-space':'xingtu',title:kind==='space'?'空间 MCP':'星图 MCP',version:'1.0.0'},instructions:kind==='space'?'仅操作空间 Key 获准的文件范围。星图使用独立 MCP 地址和仓库 Key。客户端需保持运行。':'仅访问本机会话 Key 绑定的已批准星图仓库；仅材料、图谱、证据读取和脱敏检索。空间文件使用独立 MCP 地址和空间 Key。客户端需保持运行。'});
    if(body.method==='ping')return reply({});
    if(body.method==='tools/list')return reply({tools});
    if(body.method==='tools/call'){

@@ -51,24 +51,25 @@ function connection({load,fetcher}){
 
 test('Keychain failure neither deletes team credentials nor switches accounts',async()=>{
   const f=connection({load:async()=>{throw Error('SECURE_STORAGE_READ_FAILED')}});
-  await assert.rejects(f.client.initialize(),/SECURE_STORAGE_READ_FAILED/);
-  assert.deepEqual(f.counts(),{clears:0,baseStarts:0});
-  assert.equal(f.client.snapshot().account.provider,'team-server');
+  await f.client.initialize();
+  assert.equal(f.client.snapshot().team.legacyMigrationRequired,true);
+  assert.deepEqual(f.counts(),{clears:0,baseStarts:1});
+  assert.equal(f.client.snapshot().account.phase,'signed_out');
   await f.client.close();
 });
 
 test('temporary server failure preserves the saved team login',async()=>{
   const f=connection({load:async()=>({origin:'https://team.example.com',token:'test-token',expiresAt:Date.now()+60000}),fetcher:async()=>new Response('',{status:503})});
   await f.client.initialize();
-  assert.deepEqual(f.counts(),{clears:0,baseStarts:0});
+  assert.deepEqual(f.counts(),{clears:0,baseStarts:1});
   await f.client.close();
 });
 
-test('expired or revoked team logins are still cleared',async()=>{
+test('legacy credentials, including expired tokens, are only a migration signal and never transmitted',async()=>{
   for(const expired of [true,false]){
     const f=connection({load:async()=>({origin:'https://team.example.com',token:'test-token',expiresAt:Date.now()+(expired?-60000:60000)}),fetcher:async()=>new Response('',{status:401})});
     await f.client.initialize();
-    assert.deepEqual(f.counts(),{clears:1,baseStarts:0});
+    assert.deepEqual(f.counts(),{clears:0,baseStarts:1});
     await f.client.close();
   }
 });

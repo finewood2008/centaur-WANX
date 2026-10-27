@@ -227,6 +227,7 @@ class LocalTrustAuthority:
         self._closed = False
         self._commit_callbacks = None
         self._commit_observer = None
+        self._team_identity_policy = None
         self._db = _open(self.directory, verify_only=_verify_only)
         self._ledger = None
         try:
@@ -1005,6 +1006,81 @@ class LocalTrustAuthority:
 
     def read_v2(self, proof, now):
         return self._v2().read_v2(proof, now)
+
+    def configure_team_identity(self, policy):
+        from .local_team_protocol import validate_policy
+
+        if policy is not None:
+            validate_policy(policy)
+        with self._lock:
+            _need(not self._closed, "LOCAL_TRUST_CLOSED")
+            meta = self._meta()
+            _need(
+                "team" not in meta or meta["team"]["cloudPolicy"] == policy,
+                "LOCAL_TRUST_IDENTITY_POLICY_REQUIRED",
+            )
+            self._team_identity_policy = (
+                json.loads(wire.canonical(policy)) if policy is not None else None
+            )
+
+    def team_policy(self, now):
+        from .local_team_service import TeamService
+
+        return TeamService(self).policy(now)
+
+    def submit_team_request(self, request_proof, approval_proof, cloud_proof, now):
+        from .local_team_service import TeamService
+
+        return TeamService(self).submit(request_proof, approval_proof, cloud_proof, now)
+
+    def read_team_request(self, proof, now):
+        from .local_team_service import TeamService
+
+        return TeamService(self).read_request(proof, now)
+
+    def consent_team_request(self, request_id, target_access_proof, target_approval_proof, now):
+        from .local_team_service import TeamService
+
+        return TeamService(self).consent(
+            request_id, target_access_proof, target_approval_proof, now
+        )
+
+    def get_team_authorization(self, binding_id, now):
+        from .local_ledger_engine import binding, binding_valid
+        from .local_team_ledger import team_authorization
+
+        with self._transaction(now) as meta:
+            snapshot = self._v2().snapshot(meta)
+            row = binding(snapshot, binding_id)
+            _need(binding_valid(snapshot, row, now), "LOCAL_TRUST_ACCESS_DENIED")
+            return team_authorization(snapshot, row, now)
+
+    def get_team_members(self, binding_id, now):
+        from .local_ledger_engine import binding, live, principal
+        from .local_team_ledger import team_authorization
+
+        with self._transaction(now) as meta:
+            snapshot = self._v2().snapshot(meta)
+            row = binding(snapshot, binding_id)
+            _need(row is not None, "LOCAL_TRUST_ACCESS_DENIED")
+            auth = team_authorization(snapshot, row, now)
+            _need(
+                auth is not None
+                and bool(set(auth["permissions"]) & {"members.read", "applications.manage"}),
+                "LOCAL_TRUST_ACCESS_DENIED",
+            )
+            return [
+                {key: member[key] for key in ("membershipId", "principalId", "status", "revision")}
+                for member in snapshot["team"]["members"]
+                if member["status"] == "active"
+                and live(member["expiresAt"], now)
+                and principal(snapshot, member["principalId"])["status"] == "active"
+            ]
+
+    def consume_team_migration(self, request_id, plan_digest, now):
+        from .local_team_migration import consume
+
+        return consume(self, request_id, plan_digest, now)
 
     def install_effect_provider(self, provider, *, generation):
         evidence._digest(generation)

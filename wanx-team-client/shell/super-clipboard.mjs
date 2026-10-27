@@ -3,6 +3,7 @@ import {readFile, lstat, writeFile, unlink} from 'node:fs/promises';
 import path from 'node:path';
 import {createSharedNote} from './shared-note.mjs';
 import {createClipboardCache, CACHE_LIMIT} from './clipboard-cache.mjs';
+import {dataOwnerKey, dataInteractionKey} from '../device-trust/data-context.mjs';
 
 export const CLIP_FILE_LIMIT=20*1024*1024, CLIP_TEXT_LIMIT=1024*1024;
 const CHUNK=1024*1024, QUOTA=1024*1024*1024;
@@ -23,23 +24,26 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
   const cache=await createClipboardCache(path.join(directory,'encrypted'),Buffer.from(state.key,'base64'));
   await cache.clean(new Set([...state.tasks.map(t=>t.id),...state.cache.map(t=>t.id)]));
   for(const t of state.tasks)if(active(t)&&t.phase!=='paused')t.phase='waiting';
-  let closed=false,job=null,timer=null,scope=null,loaded=null,listKey='',epoch=0,writes=Promise.resolve(),mutations=Promise.resolve();
+  let closed=false,job=null,timer=null,scope=null,loaded=null,listKey='',epoch=0,writes=Promise.resolve(),mutations=Promise.resolve(),interaction=null;
   let view={kind:'all',query:'',trash:false},cacheWrites=Promise.resolve(),reservedCache=0;
   const reserveCache = amount => {const p=cacheWrites.catch(()=>{}).then(async()=>{await evict(amount+reservedCache);reservedCache+=amount;return ()=>{reservedCache-=amount;};});cacheWrites=p;return p;};
-  let storageError=null,note=null;const downloads=new Map();
+  let storageError=null,note=null,contextGeneration=0;const downloads=new Map(),requests=new Set();
+  const ticket=()=>({scope,generation:contextGeneration});
+  const assertTicket=value=>{if(closed||!value.scope||value.scope!==scope||value.generation!==contextGeneration)throw fail('SPACE_CONTEXT_CHANGED');};
   const persist=()=>{const copy=structuredClone(state);writes=writes.catch(()=>{}).then(async()=>{await store.save(copy);if(storageError){storageError=null;notify();wake();}});return writes.catch(()=>{storageError='SECURE_STORAGE_WRITE_FAILED';job?.controller.abort();throw fail(storageError);});};
   const serial=fn=>{const result=mutations.catch(()=>{}).then(fn);mutations=result;return result;};
-  const accountKey=()=>{const s=client.snapshot();return s.account?.phase==='authenticated'?JSON.stringify([serviceURL,s.account.accountId]):null;};
-  const online=()=>client.snapshot().phase==='ready'&&personalSpace.snapshot().scope===scope;
+  const accountKey=()=>dataOwnerKey(client.snapshot(),serviceURL);
+  const online=()=>!!scope&&!!dataInteractionKey(client.snapshot(),serviceURL)&&personalSpace.snapshot().scope===scope;
   function sync(){
     const account=accountKey(),s=client.snapshot(),box=s.connection?.deviceId||(account?state.bindings[account]:null);
     if(account&&s.connection?.deviceId&&state.bindings[account]!==s.connection.deviceId){state.bindings[account]=s.connection.deviceId;void persist().catch(()=>notify());}
     const next=account&&box?JSON.stringify([account,box]):null;
-    if(next!==scope){scope=next;epoch++;loaded=null;listKey='';job?.controller.abort();}
+    const nextInteraction=dataInteractionKey(s,serviceURL);
+    if(next!==scope||nextInteraction!==interaction){scope=next;interaction=nextInteraction;epoch++;contextGeneration++;loaded=null;listKey='';job?.controller.abort();for(const controller of requests)controller.abort();downloads.clear();}
     if(!online())job?.controller.abort();notify();wake();note?.wake();
   }
   function snapshot(){
-    return {scope,online:online(),note:note?.snapshot(),boxId:scope?JSON.parse(scope)[1]:null,error:storageError,
+    return {scope,dataOwnerId:accountKey(),dataContextId:dataInteractionKey(client.snapshot(),serviceURL),online:online(),note:note?.snapshot(),boxId:scope?JSON.parse(scope)[1]:null,error:storageError,
       tasks:state.tasks.filter(t=>t.scope===scope&&active(t)).map(({id,name,kind,size,offset,phase,error,batch})=>({id,name,kind,size,offset,phase,error,batch})),
       items:loaded?.items||[],usage:loaded?.usage||{used:0,reserved:0,limit:QUOTA},revision:loaded?.revision,next_offset:loaded?.next_offset};
   }
@@ -47,8 +51,12 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
   function wake(delay=0){clearTimeout(timer);if(!closed){timer=setTimeout(()=>void pump(),delay);timer.unref?.();}}
   async function request(route,options={},bound=scope){
     if(!bound||bound!==scope||!online())throw fail('BOX_CONNECTION_REQUIRED');
-    const result=await personalSpace.clipboardRequest(route,options,bound);
-    if(bound!==scope||!accountKey())throw fail('SPACE_CONTEXT_CHANGED');return result;
+    const current=ticket(),controller=new AbortController();requests.add(controller);
+    try{
+      const signal=options.signal?AbortSignal.any([controller.signal,options.signal]):controller.signal;
+      const result=await personalSpace.clipboardRequest(route,{...options,signal},bound);
+      assertTicket(current);if(!accountKey())throw fail('SPACE_CONTEXT_CHANGED');return result;
+    }finally{requests.delete(controller);}
   }
   async function refresh({kind='all',query='',trash=false,offset=0,poll=false}={}){
     if(!online())return snapshot();view={kind,query,trash};const bound=scope,tag=++epoch;
@@ -70,8 +78,9 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
     }
     if(used+required+leaseBytes>CACHE_LIMIT)throw fail('CLIPBOARD_CACHE_FULL');
   }
-  async function capture(input={}){return serial(async()=>{
+  async function capture(input={}){const current=ticket();return serial(async()=>{
     if(storageError)throw fail(storageError);if(!scope)throw fail(accountKey()?'BOX_CONNECTION_REQUIRED':'ACCOUNT_LOGIN_REQUIRED');
+    assertTicket(current);
     const bound=scope,paths=input.paths||[],descriptors=[];
     if(!Array.isArray(paths)||paths.length>20)throw fail('CLIPBOARD_LIMIT');
     if(paths.length){
@@ -99,7 +108,7 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
         if(d.kind==='image'&&imageType(bytes)!==d.mime)throw fail('CLIPBOARD_IMAGES_ONLY');
         const id=uuid();await cache.put(id,bytes);created.push({id,kind:d.kind,name:d.name,mime:d.mime,size:bytes.length,digest:hash(bytes),device:deviceName});
       }
-      if(bound!==scope||!accountKey())throw fail('SPACE_CONTEXT_CHANGED');
+      assertTicket(current);if(!accountKey())throw fail('SPACE_CONTEXT_CHANGED');
       const tasks=created.map(item=>({...item,scope:bound,batch,phase:online()?'queued':'waiting',offset:0,attempt:0,created:Date.now()}));
       state.batches.push({id:batch,scope:bound,items:created});state.tasks.push(...tasks);
       try{await persist();}catch(e){state.batches=state.batches.filter(b=>b.id!==batch);state.tasks=state.tasks.filter(t=>t.batch!==batch);throw e;}
@@ -150,17 +159,18 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
     else throw fail('CLIPBOARD_INVALID');await persist();notify();wake();return snapshot();
   }
   async function content(id){
-    valid(id);const bound=scope;
+    valid(id);const bound=scope,current=ticket();
     const item=await request(`/${id}`); // Revalidate deletion/expiry even when local bytes are cached.
     if(item.state!=='ready')throw fail('CLIPBOARD_NOT_READY');
     let bytes;try{bytes=await cache.read(id);if(hash(bytes)!==item.digest)bytes=null;}catch{}
+    assertTicket(current);
     if(!bytes){
       if(downloads.has(id))return downloads.get(id);
       const promise=(async()=>{const release=await reserveCache(item.size+28);try{const chunks=[];
         for(let offset=0;offset<item.size;offset+=CHUNK){const r=await request(`/${id}/content?offset=${offset}&length=${CHUNK}&expected=${item.version}`,{raw:true},bound);if(hash(r.bytes)!==r.headers['x-content-sha256'])throw fail('SPACE_CHUNK_INVALID');chunks.push(r.bytes);}
-        const data=Buffer.concat(chunks);if(hash(data)!==item.digest)throw fail('SPACE_CHUNK_INVALID');await cache.put(id,data);
-        state.cache=state.cache.filter(c=>c.id!==id);state.cache.push({id,scope:bound,size:item.size,used:Date.now(),item});await persist();return {item,bytes:data};}finally{release();}
-      })().finally(()=>downloads.delete(id));downloads.set(id,promise);return promise;
+        const data=Buffer.concat(chunks);if(hash(data)!==item.digest)throw fail('SPACE_CHUNK_INVALID');assertTicket(current);await cache.put(id,data);assertTicket(current);
+        state.cache=state.cache.filter(c=>c.id!==id);state.cache.push({id,scope:bound,size:item.size,used:Date.now(),item});await persist();assertTicket(current);return {item,bytes:data};}finally{release();}
+      })().finally(()=>{if(downloads.get(id)===promise)downloads.delete(id);});downloads.set(id,promise);return promise;
     }
     return {item,bytes};
   }
@@ -169,31 +179,32 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
     if(old.file&&path.resolve(old.file).startsWith(path.resolve(directory,'handoff')+path.sep))await unlink(old.file).catch(()=>{});
   }
   async function copy(id){
-    const bound=scope,{item,bytes}=await content(id);if(bound!==scope)throw fail('SPACE_CONTEXT_CHANGED');
+    const current=ticket(),{item,bytes}=await content(id);assertTicket(current);
     if(item.kind==='text'){await systemClipboard.writeText(bytes.toString('utf8'));await clearLease();}
     else if(item.kind==='image'){await systemClipboard.writeImage(bytes);await clearLease();}
     else throw fail('CLIPBOARD_IMAGES_ONLY');
     return {copied:true};
   }
   async function operation(action,input={}){
+    const current=ticket();
     if(action==='snapshot')return snapshot();if(action==='refresh')return refresh(input);
     if(action==='note-save'){await note.save(input.blocks);return snapshot();}
     if(action==='note-refresh'){await note.refresh();return snapshot();}
     if(action==='note-command'){await note.command(input.action);return snapshot();}
     if(action==='capture')return capture(input);
-    if(action==='note-paste'){const bound=scope,data=await systemClipboard.read();if(bound!==scope)throw fail('SPACE_CONTEXT_CHANGED');return typeof data.text==='string'&&!data.paths&&!data.image?{...snapshot(),text:data.text}:capture(data);}
-    if(action==='paste')return capture(await systemClipboard.read());
-    if(action==='choose'){const bound=scope,paths=await chooseFiles(input);if(bound!==scope)throw fail('SPACE_CONTEXT_CHANGED');return paths.length?capture({paths}):snapshot();}
+    if(action==='note-paste'){const data=await systemClipboard.read();assertTicket(current);return typeof data.text==='string'&&!data.paths&&!data.image?{...snapshot(),text:data.text}:capture(data);}
+    if(action==='paste'){const data=await systemClipboard.read();assertTicket(current);return capture(data);}
+    if(action==='choose'){const paths=await chooseFiles(input);assertTicket(current);return paths.length?capture({paths}):snapshot();}
     if(action==='transfer')return transfer(input.action,input.id);
     if(action==='copy')return copy(input.id);
     if(action==='preview'){
       const task=state.tasks.find(t=>t.id===input.id&&t.scope===scope&&t.kind==='image'&&t.phase!=='canceled');
       const cached=state.cache.find(t=>t.id===input.id&&t.scope===scope&&t.item?.kind==='image');
       const attached=note.snapshot().blocks?.some(b=>b.type==='image'&&b.item===input.id);
-      if(scope&&(task||attached&&cached)){try{const item=task||cached.item,bytes=await cache.read(input.id);if(hash(bytes)!==item.digest)throw fail('CLIPBOARD_CACHE_DAMAGED');return {item,data:bytes.toString('base64')};}catch(error){if(!online())throw error;}}
-      const {item,bytes}=await content(input.id);return {item,data:bytes.toString('base64')};
+      if(scope&&(task||attached&&cached)){try{const item=task||cached.item,bytes=await cache.read(input.id);assertTicket(current);if(hash(bytes)!==item.digest)throw fail('CLIPBOARD_CACHE_DAMAGED');return {item,data:bytes.toString('base64')};}catch(error){assertTicket(current);if(!online())throw error;}}
+      const {item,bytes}=await content(input.id);assertTicket(current);return {item,data:bytes.toString('base64')};
     }
-    if(action==='download'){const bound=scope,{item,bytes}=await content(input.id),file=await chooseDownload(item.original_name||item.name);if(!file)return {canceled:true};if(bound!==scope)throw fail('SPACE_CONTEXT_CHANGED');await writeFile(file,bytes);return {saved:true};}
+    if(action==='download'){const {item,bytes}=await content(input.id);assertTicket(current);const file=await chooseDownload(item.original_name||item.name);assertTicket(current);if(!file)return {canceled:true};await writeFile(file,bytes);return {saved:true};}
     if(action==='manage'){await request('/manage',{method:'POST',body:input});return refresh(view);}
     if(action==='export'){return request(`/${valid(input.id)}/export`,{method:'POST',body:{id:input.export_id||uuid(),expected:input.expected,parent:input.parent||'',space_id:input.space_id||'personal'}});}
     throw fail('CLIPBOARD_INVALID');
@@ -201,5 +212,5 @@ export async function createSuperClipboard({client,personalSpace,serviceURL,stor
   note=createSharedNote({notes:state.notes,scope:()=>scope,online,request,persist,changed:notify,retryMs:retryBaseMs,
     imagesReady:(blocks,bound)=>blocks.filter(b=>b.type==='image').every(b=>!state.tasks.some(t=>t.id===b.item&&t.scope===bound&&t.phase!=='complete'))});
   const unsubscribe=client.subscribe(sync);sync();await persist();
-  return {snapshot,operation,async close(){closed=true;clearTimeout(timer);unsubscribe();job?.controller.abort();await mutations.catch(()=>{});await note.close();while(job)await new Promise(r=>setTimeout(r,10));await persist();}};
+  return {snapshot,operation,async close(){closed=true;contextGeneration++;clearTimeout(timer);unsubscribe();job?.controller.abort();for(const controller of requests)controller.abort();await mutations.catch(()=>{});await note.close();while(job)await new Promise(r=>setTimeout(r,10));await persist();}};
 }

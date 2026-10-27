@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from .local_authority import to_thread
 import os
 import json
 import secrets
@@ -151,7 +152,7 @@ class StudioService:
     async def change_project_metadata(self, owner, project_id, body):
         self.authorize_management(owner)
         if body['action']!='delete':
-            return await asyncio.to_thread(self.project_metadata,owner,project_id,body)
+            return await to_thread(self.project_metadata,owner,project_id,body)
         key=(owner,project_id)
         async with self.preparation.lock(owner,project_id):
             p=self.store.get(owner,project_id,allow_deleted=True)
@@ -351,8 +352,11 @@ class StudioService:
     async def add_artifact(self, owner, project_id, task_id, files):
         self.authorize_management(owner)
         # Trust-owned compiler; never executes generated code in the service.
-        proc = await asyncio.create_subprocess_exec("node",str(self.project_root/"tools/compile-artifact.mjs"),stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,cwd=self.project_root)
-        out,_ = await asyncio.wait_for(proc.communicate(json.dumps({"files":files}).encode()),30)
+        proc = await asyncio.create_subprocess_exec("node",str(self.project_root/"tools/compile-artifact.mjs"),stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,cwd=self.project_root,start_new_session=True)
+        try:
+            out,_ = await asyncio.wait_for(proc.communicate(json.dumps({"files":files}).encode()),30)
+        finally:
+            await self.native_codex.stop(proc)
         if proc.returncode:
             raise StudioError("ARTIFACT_VALIDATION_FAILED",422)
         compiled = json.loads(out)
@@ -500,7 +504,7 @@ class StudioService:
             if not team:raise StudioError('REPORTS_UNAVAILABLE',409)
             from octop.infra.knowledge.reports import PrivateReports
             try:
-                result=await asyncio.to_thread(PrivateReports(team.services).invoke,team.user(owner),s['app'],s['environment'],method.split('.')[1],params)
+                result=await to_thread(PrivateReports(team.services).invoke,team.user(owner),s['app'],s['environment'],method.split('.')[1],params)
                 self.runtime(owner,token)  # A revoked session must not receive late results.
                 return result
             except PermissionError as exc:raise StudioError('REPORT_ACCESS_DENIED',403) from exc
@@ -512,15 +516,24 @@ class StudioService:
             if set(params)-{"warehouseId","query","document_ids","entity_types","limit","id"}:raise StudioError("KNOWLEDGE_INPUT_INVALID")
             from octop.infra.semantica.team_data import read_bound
             from octop.infra.semantica.client import SemanticaError
-            try:return await read_bound(self.team.services,owner,s["app"],method.split(".")[1],params)
+            try:
+                authority=getattr(self,'local_authority',None)
+                context=authority.context(owner) if authority else None
+                if context is not None:
+                    warehouse=params.get('warehouseId')
+                    if not isinstance(warehouse,str):raise StudioError('KNOWLEDGE_INPUT_INVALID')
+                    await authority.resources(owner,[{'resourceId':'team:knowledge:'+warehouse,'actions':['read']}])
+                result=await read_bound(self.team.services,owner,s["app"],method.split(".")[1],params,context=context)
+                self.runtime(owner,token)
+                return result
             except SemanticaError as exc:raise StudioError(exc.code,exc.status) from None
         if method.startswith("data."):
-            return await asyncio.to_thread(self.data,s,method,params)
+            return await to_thread(self.data,s,method,params)
         if method == "model.generate":
             if set(params) - {"prompt"} or not isinstance(params.get("prompt"),str) or not 1 <= len(params["prompt"]) <= 24000:
                 raise StudioError("MODEL_INPUT_INVALID")
             from .delivery import selection
-            model_id = await asyncio.to_thread(selection, self, s)
+            model_id = await to_thread(selection, self, s)
             result = await self.generate(owner,s["app"] if "publicationDigest" in s else s["project"],{"messages":[{"role":"user","content":params["prompt"]}],"max_tokens":4096},published_runtime="publicationDigest" in s, runtime_model=model_id)
             self.runtime(owner, token)
             return {"text":result["choices"][0]["message"].get("content", ""),"usage":result.get("usage")}

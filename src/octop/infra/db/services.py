@@ -19,6 +19,7 @@ from octop.infra.db.repos.dialogue import DialogueRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.local_data_principals import LocalDataPrincipalRepo
+from octop.infra.db.repos.local_team_resources import LocalTeamResourceRepo
 from octop.infra.db.repos.loops import LoopRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
@@ -29,6 +30,7 @@ from octop.infra.db.repos.sessions import SessionRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.skill_packages import SkillPackageRepo
 from octop.infra.db.repos.sso import SsoRepo
+from octop.infra.db.repos.team_applications import TeamApplicationRepo
 from octop.infra.db.repos.thread_messages import ThreadMessageRepo
 from octop.infra.db.repos.threads import ThreadRepo
 from octop.infra.db.repos.trajectory_events import TrajectoryEventRepo
@@ -73,6 +75,8 @@ class RepoBundle:
     self_model_repo: SelfModelRepo
     dialogue_repo: DialogueRepo
     local_data_principal_repo: LocalDataPrincipalRepo | None = None
+    local_team_resource_repo: LocalTeamResourceRepo | None = None
+    team_application_repo: TeamApplicationRepo | None = None
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -80,6 +84,8 @@ class RepoBundle:
             db=db,
             user_repo=UserRepo(db),
             local_data_principal_repo=LocalDataPrincipalRepo(db),
+            local_team_resource_repo=LocalTeamResourceRepo(db),
+            team_application_repo=TeamApplicationRepo(db),
             user_policy_repo=UserPolicyRepo(db),
             invite_repo=InviteRepo(db),
             agent_repo=AgentRepo(db),
@@ -133,6 +139,16 @@ class SharedServices:
     def local_data_principal_repo(self) -> LocalDataPrincipalRepo:
         assert self.repos.local_data_principal_repo is not None
         return self.repos.local_data_principal_repo
+
+    @property
+    def local_team_resource_repo(self) -> LocalTeamResourceRepo:
+        assert self.repos.local_team_resource_repo is not None
+        return self.repos.local_team_resource_repo
+
+    @property
+    def team_application_repo(self) -> TeamApplicationRepo:
+        assert self.repos.team_application_repo is not None
+        return self.repos.team_application_repo
 
     @property
     def user_policy_repo(self) -> UserPolicyRepo:

@@ -73,14 +73,14 @@ def selection(svc, session):
 
 
 def mount(router, svc, identity):
-    import asyncio
+    from .local_authority import to_thread
 
     auth = Depends(identity)
 
     @router.get("/_client/projects/{project_id}/runtime-model", include_in_schema=False)
     async def runtime_model(project_id: str, owner=auth):
-        return await asyncio.to_thread(read, svc, owner, project_id)
+        return await to_thread(read, svc, owner, project_id)
 
     @router.put("/_client/projects/{project_id}/runtime-model", include_in_schema=False)
     async def update_runtime_model(project_id: str, body: RuntimeModel, owner=auth):
-        return await asyncio.to_thread(save, svc, owner, project_id, body.model_dump())
+        return await to_thread(save, svc, owner, project_id, body.model_dump())

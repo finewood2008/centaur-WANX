@@ -6,12 +6,16 @@ import json
 import os
 import stat
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from wanx_bridge import local_wifi_broker as module
 from wanx_bridge.local_wifi_protocol import LocalWifiError
+
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="Unix socket permissions")
 
 
 def packet(path="/v1/wifi/challenge", body=b"{}", extra=b""):
@@ -48,9 +52,11 @@ async def request(broker, raw):
 
 
 @pytest.fixture
-def configured(tmp_path, monkeypatch):
-    directory = tmp_path / "network"
-    directory.mkdir(mode=0o700)
+def configured(monkeypatch, request):
+    # Keep the complete socket path below AF_UNIX limits on macOS as well.
+    temporary = tempfile.TemporaryDirectory(prefix="wifi-")
+    request.addfinalizer(temporary.cleanup)
+    directory = Path(temporary.name)
     calls = []
 
     def action(body, now):

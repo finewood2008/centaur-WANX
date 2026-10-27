@@ -1068,6 +1068,8 @@
       "ASSISTANT_KNOWLEDGE_CONFLICT": "Another administrator changed this authorization. Refresh before saving.",
       "ASSISTANT_KNOWLEDGE_UNAVAILABLE": "The Starlink warehouse is unavailable. Check its service and state."
     },
-    "conversation_error": "Could not update this conversation. Refresh its state and try again; existing content is preserved."
+    "conversation_error": "Could not update this conversation. Refresh its state and try again; existing content is preserved.",
+    "owner_required": "Verify your personal channel in Channel settings in WANX Chat before continuing.",
+    "owner_private": "This conversation only accepts verified owner direct messages. Please continue in a private chat."
   }
 }

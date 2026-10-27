@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "wanx-bridge"))
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT / "wanx-bridge/tests"))
 from centuarai_local_data_gate.native_policy import check_octop_request
 from test_local_data_gateway import network as network
 from test_local_data_gateway import proof
+from test_local_data_sessions import nonce
 
 from octop.api.common.local_data import _check_configuration, _check_private_resources, _resolve
 from octop.infra.agents.assistant_profile import AssistantProfiles
@@ -30,13 +32,32 @@ from octop.infra.agents.middleware.local_data import local_data_live_check
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Requires Unix local data broker")
 
 
+@pytest.mark.parametrize("team_session", [False, True])
 async def test_native_assistant_local_owner_isolation_and_no_cloud_fallback(
-    env_with_provider, network
+    env_with_provider, network, team_session
 ):
     client, server, admin = env_with_provider
     app = client._octop_app
     app.state.local_data_required = True
     identities = []
+    if team_session:
+        h = network.h
+        h.view["team"] = {
+            "schemaVersion": 1,
+            "boxId": h.view["boxId"],
+            "ownershipEpoch": h.view["ownershipEpoch"],
+            "principalId": h.view["principalId"],
+            "membershipId": nonce(33),
+            "membershipRevision": 1,
+            "roleId": "manager",
+            "permissions": ["applications.manage", "members.read", "resources.manage"],
+        }
+        h.view["authorizationVersion"] += 1
+        await h.service.invalidate_authority()
+        h.session = h.response(
+            await h.service.create_session(await h.session_proof("centaurai.wanx.dialogue")),
+            "session",
+        )
 
     async def authorize(scope, context):
         check_octop_request(scope, context.claims)
@@ -51,15 +72,27 @@ async def test_native_assistant_local_owner_isolation_and_no_cloud_fallback(
     network.native.app = app
     counter = 100
 
-    async def request(path, method="GET", body=None):
+    def sign(path, **kwargs):
+        payload, _ = proof(network, path, **kwargs)
+        payload["applicationId"] = network.h.session["applicationId"]
+        return network.h.signed(payload)
+
+    async def request(path, method="GET", body=None, data_context=None):
         nonlocal counter
         counter += 1
         data = b"" if body is None else json.dumps(body).encode()
         selectors = {} if body is None else {"contentType": "application/json"}
-        _, signed = proof(network, path, method=method, data=data, n=counter, selectors=selectors)
-        headers = {"x-centuarai-data-proof": signed}
+        if data_context is not None:
+            selectors["dataContext"] = data_context
+        headers = {
+            "x-centuarai-data-proof": sign(
+                path, method=method, data=data, n=counter, selectors=selectors
+            )
+        }
         if body is not None:
             headers["content-type"] = "application/json"
+        if data_context is not None:
+            headers["x-wanx-data-context"] = data_context
         return await network.client.request(method, path, content=data, headers=headers)
 
     response = await request("/api/assistant/profile", "POST")
@@ -67,6 +100,9 @@ async def test_native_assistant_local_owner_isolation_and_no_cloud_fallback(
     aid = response.json()["agent_id"]
     owner, context = identities[-1]
     assert owner.local_data and not owner.is_admin
+    if team_session:
+        assert owner.local_team["membershipId"] == nonce(33)
+        assert owner.local_team_context is context
     assert server.services.agent_repo.get(aid).user_id == owner.id
     assert (await request("/api/assistant/profile", "POST")).json()["agent_id"] == aid
     for path in (
@@ -109,14 +145,16 @@ async def test_native_assistant_local_owner_isolation_and_no_cloud_fallback(
         {"type": "token", "content": "local synthetic answer"}
     ]
     ws_path = f"/api/agents/{aid}/chat/ws"
+    ws_nonce = 200
 
     class SignedConnection(ClientConnection):
         async def handshake(self, additional_headers=None, user_agent_header=None):
+            nonlocal ws_nonce
+            ws_nonce += 1
             handshake = self.protocol.connect()
-            _, signed = proof(
-                network,
+            signed = sign(
                 ws_path,
-                n=200,
+                n=ws_nonce,
                 transport="websocket",
                 selectors={"webSocketKey": handshake.headers["Sec-WebSocket-Key"]},
             )
@@ -210,3 +248,29 @@ async def test_native_assistant_local_owner_isolation_and_no_cloud_fallback(
         ).status_code == 403
     # A valid cloud administrator bearer still cannot select a local principal.
     assert (await network.client.post("/api/assistant/profile", headers=admin)).status_code == 403
+    if team_session:
+        # Team roles and selected shared objects never replace the assistant's
+        # private owner. The dialogue application's grants stay personal.
+        for selected in ("team:management", f"team:agent:{aid}", "team:knowledge:ABC123"):
+            assert (
+                await request("/api/assistant/profile", "POST", data_context=selected)
+            ).status_code == 403
+        async with connect(
+            "wss" + network.url[5:] + ws_path,
+            ssl=ssl._create_unverified_context(),
+            proxy=None,
+            compression=None,
+            create_connection=SignedConnection,
+            close_timeout=0.5,
+        ) as websocket:
+            await websocket.send(json.dumps({"type": "subscribe", "thread_id": tid}))
+            network.h.view["team"]["membershipRevision"] += 1
+            network.h.view["authorizationVersion"] += 1
+            await network.h.service.invalidate_authority()
+            async with asyncio.timeout(3):
+                with pytest.raises(ConnectionClosed):
+                    while True:
+                        await websocket.recv()
+        previous = len(identities)
+        assert (await request("/api/assistant/profile", "POST")).status_code == 403
+        assert len(identities) == previous

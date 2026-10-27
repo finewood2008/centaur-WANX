@@ -30,7 +30,7 @@ class Engines:
   default=row[0] if row else 'codex' if any(i['id']=='codex' and i['adapted'] and i['enabled'] for i in items) else None
   return {'version':1,'items':items,'defaultId':default,'location':'WANX 服务 · '+socket.gethostname()}
  async def check(self,owner,key):
-  item=self.require(owner,key);result=await self.svc.runner.preflight(fresh=True)
+  item=self.require(owner,key);result=await self.svc.runner.preflight(fresh=True,owner=owner)
   self.checks[(owner,key,item['fingerprint'])]={'status':'available' if result['available'] else 'failed','code':result.get('code'),'at':time.time()}
   return self.list(owner)
  def require(self,owner,key):

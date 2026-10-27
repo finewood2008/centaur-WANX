@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import os
 import re
 from typing import Any
 
@@ -17,6 +19,35 @@ def store_bindings(
 ) -> dict[str, Any]:
     value = copy.deepcopy(configuration)
     if FIELD not in value:
+        return value
+    if getattr(user, "local_data", False):
+        from octop.infra.users.team_authority import require_team_permission, team_context
+
+        require_team_permission(user, "applications.manage")
+        if not re.fullmatch(r"ai\.wanx\.selfmade\.[a-f0-9]{32}", app_id):
+            raise SemanticaError("SEMANTICA_INVALID_REQUEST", 422)
+        context = team_context(user)
+        bindings = value[FIELD]
+        if not isinstance(bindings, dict) or len(bindings) > 100:
+            raise SemanticaError("SEMANTICA_INVALID_REQUEST", 422)
+        grants = []
+        normalized = {}
+        for warehouse, item in sorted(bindings.items()):
+            resource = "team:knowledge:" + warehouse
+            saved = {
+                "resourceId": resource,
+                "boxId": context.claims["boxId"],
+                "ownershipEpoch": context.claims["ownershipEpoch"],
+            }
+            if not re.fullmatch(
+                r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", warehouse
+            ) or item not in ({"resourceId": resource}, saved):
+                raise SemanticaError("ACCESS_KEY_SCOPE_DENIED", 403)
+            grants.append({"resourceId": resource, "actions": ["read"]})
+            normalized[warehouse] = saved
+        context.authorize_resources_sync(grants)
+        context.require_live()
+        value[FIELD] = normalized
         return value
     if user.role != "admin" or not re.fullmatch(r"ai\.wanx\.selfmade\.[a-f0-9]{32}", app_id):
         raise SemanticaError("SEMANTICA_ADMIN_REQUIRED", 403)
@@ -48,13 +79,72 @@ def store_bindings(
 
 
 async def read_bound(
-    services: Any, owner: str, app_id: str, action: str, params: dict[str, Any]
+    services: Any,
+    owner: str,
+    app_id: str,
+    action: str,
+    params: dict[str, Any],
+    *,
+    context: Any = None,
 ) -> dict[str, Any]:
     deployment = services.application_repo.deployment(app_id)
     warehouse = params.get("warehouseId")
     if not isinstance(warehouse, str) or not re.fullmatch(r"[a-f0-9-]{36}", warehouse):
         raise SemanticaError("ACCESS_KEY_SCOPE_DENIED", 403)
     binding = (deployment or {}).get("configuration", {}).get(FIELD, {}).get(warehouse)
+    if context is not None:
+        from centuarai_local_data_gate import GateContext
+
+        from .local_team_client import LocalSemanticaClient
+
+        if not isinstance(context, GateContext):
+            raise SemanticaError("SEMANTICA_RESOURCE_FORBIDDEN", 403)
+        context.check_cached()
+        expected = {
+            "resourceId": "team:knowledge:" + warehouse,
+            "boxId": context.claims["boxId"],
+            "ownershipEpoch": context.claims["ownershipEpoch"],
+        }
+        if binding != expected:
+            raise SemanticaError("ACCESS_KEY_SCOPE_DENIED", 403)
+        claims = context.claims
+        uid = await asyncio.to_thread(
+            services.local_data_principal_repo.resolve,
+            context.principal_namespace,
+            claims["boxKeyThumbprint"],
+            claims["ownershipEpoch"],
+            claims["principalId"],
+        )
+        if owner != "wanx:" + str(uid):
+            raise SemanticaError("ACCESS_KEY_SCOPE_DENIED", 403)
+        local_client = await asyncio.to_thread(
+            LocalSemanticaClient.from_file, context, services.paths.root / "semantica.json"
+        )
+        prefix = "/warehouses/" + warehouse
+        if action == "search":
+            if set(params) - {"warehouseId", "query", "document_ids", "entity_types", "limit"}:
+                raise SemanticaError("SEMANTICA_QUERY_NOT_ALLOWED", 422)
+            return await local_client.request(
+                "POST",
+                prefix + "/search",
+                payload={key: value for key, value in params.items() if key != "warehouseId"},
+            )
+        if action == "documents" and set(params) == {"warehouseId"}:
+            return await local_client.request("GET", prefix + "/documents")
+        if action == "graph" and set(params) == {"warehouseId"}:
+            return await local_client.request("GET", prefix + "/graph")
+        if (
+            action == "evidence"
+            and set(params) == {"warehouseId", "id"}
+            and isinstance(params["id"], str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", params["id"])
+        ):
+            return await local_client.request("GET", prefix + "/evidence/" + params["id"])
+        raise SemanticaError("SEMANTICA_OPERATION_NOT_ALLOWED", 403)
+    from centuarai_local_data_gate import load_required_policy
+
+    if os.environ.get("OCTOP_LOCAL_DATA_MODE") == "required" or load_required_policy() is not None:
+        raise SemanticaError("SEMANTICA_RESOURCE_FORBIDDEN", 403)
     if not binding or set(binding) != {"reference", "box"}:
         raise SemanticaError("ACCESS_KEY_SCOPE_DENIED", 403)
     client = SemanticaClient.from_file(

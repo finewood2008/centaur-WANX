@@ -251,6 +251,8 @@ if (process.argv.includes("--wanx-managed-app")) {
       client = createPlatformClient({
         account,
         localDataAccess,
+        consumerURL: process.env.WANX_CONSUMER_URL || DEFAULT_CONSUMER_URL,
+        managementURL: process.env.WANX_NETWORK_MANAGEMENT_URL || undefined,
         localBoxes: createLocalBoxes(),
         creditsServiceURL,
         measure: timed,
@@ -258,12 +260,13 @@ if (process.argv.includes("--wanx-managed-app")) {
           filePath: path.join(userData, "network-resume.enc"),
           safeStorage,
         }),
-        createTransport(identity) {
+        createTransport(identity, { managementURL } = {}) {
           const scope = createHash("sha256")
-            .update(JSON.stringify(identity || "direct"))
+            .update(JSON.stringify(identity ? { ...identity, managementURL } : "direct"))
             .digest("hex");
           const network = createNetwork({
             binaryPath,
+            managementURL,
             createSidecar(options) {
               const sidecar = createSidecar(options);
               return {

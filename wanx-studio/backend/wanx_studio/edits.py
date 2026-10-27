@@ -9,6 +9,7 @@ import os
 import time
 from uuid import uuid4
 
+from .local_authority import to_thread
 from .contracts import StudioError, Solution, check_manifest, compatible, digest, has_credentials
 from .prd import ProductRequirement
 from .prd_patch import apply_patch, rows
@@ -286,7 +287,14 @@ class Edits:
             if edit['state'] != 'preparing':
                 return
             self.contexts[key] = (eid, edit['contextId'])
-            job = asyncio.create_task(self.run(owner, pid, eid))
+            from .local_authority import start_background
+            try:
+                job = await start_background(self.svc, owner, pid, eid, 'edit', lambda: self.run(owner, pid, eid))
+            except BaseException as error:
+                code=error.code if isinstance(error,StudioError) else 'STUDIO_TASK_AUTHORIZATION_DENIED'
+                self.contexts.pop(key,None)
+                self.mutate(owner,pid,eid,lambda _p,e:e.update(state='failed',error=code))
+                raise
             self.jobs[key] = job; self.svc.background.add(job); job.add_done_callback(self.svc.background.discard)
 
     def live(self, owner, pid, eid):
@@ -392,9 +400,8 @@ class Edits:
     async def analyse(self, owner, pid, eid):
         from .codex_config import runtime_config
         p, edit = self.live(owner, pid, eid)
-        config = runtime_config('wanx_interview')
+        config = await to_thread(runtime_config,'wanx_interview',self.svc,owner)
         if not config:raise StudioError('CODEX_NOT_CONFIGURED', 409)
-        settings = json.loads(config['WANX_CODEX_CONFIG']); settings['model_reasoning_effort'] = 'medium'; config['WANX_CODEX_CONFIG'] = json.dumps(settings)
         folder = self.svc.store.root/'edits'/eid; folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         env = {k: v for k, v in os.environ.items() if k in {'PATH', 'LANG', 'TMPDIR'}}
         worker=await self.svc.native_codex.acquire((owner,pid,'edit'),'interview.mjs',config);proc=worker.proc

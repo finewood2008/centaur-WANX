@@ -20,6 +20,7 @@ from wanx_bridge.local_trust_service import LocalTrustService
     "failure",
     [
         None,
+        "team-policy",
         "provider",
         "wifi-init",
         "wifi-start",
@@ -35,8 +36,17 @@ async def test_protected_runtime_owns_wifi_and_drains_it_before_single_authority
 ):
     events, services, wifi_instances, brokers = [], [], [], []
     loop_thread = threading.get_ident()
+    team_policy = object()
 
     class Authority:
+        def configure_team_identity(self, policy):
+            assert policy is team_policy
+            assert threading.get_ident() != loop_thread
+            assert services[0]._execution_lock.locked()
+            events.append("team-configure")
+            if failure == "team-policy":
+                raise RuntimeError("fixture-team-policy")
+
         def close(self):
             events.append("authority-close")
 
@@ -61,6 +71,7 @@ async def test_protected_runtime_owns_wifi_and_drains_it_before_single_authority
 
     def create_provider(value):
         assert value is authority
+        assert events == ["team-configure"]
         return Provider()
 
     class Wifi:
@@ -131,8 +142,9 @@ async def test_protected_runtime_owns_wifi_and_drains_it_before_single_authority
     monkeypatch.setitem(
         sys.modules, "wanx_bridge.local_wifi_broker", SimpleNamespace(LocalWifiBroker=Broker)
     )
-    from wanx_bridge import local_trust_operations_loader
+    from wanx_bridge import local_team_config, local_trust_operations_loader
 
+    monkeypatch.setattr(local_team_config, "load_team_identity_policy", lambda: team_policy)
     monkeypatch.setattr(local_trust_operations_loader, "create_operation_provider", create_provider)
     config = SimpleNamespace(state_directory=tmp_path, data_config=tmp_path / "data.json")
     if failure:
@@ -141,13 +153,13 @@ async def test_protected_runtime_owns_wifi_and_drains_it_before_single_authority
     else:
         await runtime._serve(config, guard)
     assert events[-1] == "authority-close"
-    assert events.count("provider-close") == 1
+    assert events.count("provider-close") == (0 if failure == "team-policy" else 1)
     if brokers:
         assert events.count("wifi-close") == 1
         assert events.index("wifi-close") < events.index("authority-close")
-    if failure not in ("provider", "wifi-init"):
+    if failure not in ("team-policy", "provider", "wifi-init"):
         assert brokers, events
-    if failure in ("wifi-init", "wifi-start"):
+    if failure in ("team-policy", "wifi-init", "wifi-start"):
         assert "https-start" not in events
     if "https-start" in events:
         for name in ("sessions", "gateway", "data-broker"):

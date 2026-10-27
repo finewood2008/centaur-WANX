@@ -24,13 +24,22 @@ function projectState(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const account = source.account || { phase: "signed_out" };
   const authenticated = account.phase === "authenticated";
+  const localMode = Boolean(source.dataIdentity?.profileId);
+  const localUnlocked = localMode && source.dataIdentity.phase === "unlocked";
+  const availableIdentity = localMode ? localUnlocked : authenticated;
   const connection = source.connection || null;
   const networkAvailable = source.network?.enabled !== false &&
     source.platform?.phase === "ready" && ["ready", "recovering"].includes(source.network?.phase);
   const networkReady = networkAvailable && source.network?.phase === "ready";
   // Existing connections follow confirmed data-path health, not management churn.
-  const connected = authenticated && source.phase === "ready" && Boolean(connection?.deviceId) &&
-    (connection.mode === "local" || (networkAvailable && connection.mode === "netbird"));
+  const selected = source.dataIdentity?.selected;
+  const connected = source.phase === "ready" && Boolean(connection?.deviceId) && (localMode
+    ? localUnlocked && connection.authorization === "local-trust-v1" && selected?.boxId === connection.deviceId && Boolean(selected?.sessionId)
+    : authenticated && (connection.mode === "local" || (networkAvailable && connection.mode === "netbird")));
+  const dataOwnerId = localUnlocked && selected ? JSON.stringify(["local-trust-v1", source.dataIdentity.profileId,
+    selected.boxId, selected.boxKeyThumbprint, selected.ownershipEpoch, selected.principalId]) : null;
+  const dataContextId = connected && localMode ? JSON.stringify([dataOwnerId, source.dataIdentity.clientId,
+    source.dataIdentity.generation, selected.bindingId, selected.authorizationVersion, selected.sessionId]) : null;
   const devices = Array.isArray(source.devices)
     ? source.devices.map((device) => ({
         ...device,
@@ -43,8 +52,9 @@ function projectState(raw) {
   return {
     ...source,
     connectionPhase: source.phase || "disconnected",
-    route: authenticated ? "applications" : "auth",
-    phase: !authenticated
+    dataOwnerId, dataContextId,
+    route: availableIdentity ? "applications" : "auth",
+    phase: !availableIdentity
       ? account.phase === "authenticating"
         ? "authenticating"
         : "signed_out"
@@ -56,7 +66,7 @@ function projectState(raw) {
       displayName: account.profile?.displayName || "万象用户",
     },
     devices,
-    networkReady,
+    networkReady: localMode ? localUnlocked : networkReady,
     canLaunchApplications: connected,
     canOpenDashboard: connected && Boolean(connection.gatewayURL),
     availableDevices: devices.filter((device) => device.accessState === "ready"),
@@ -77,11 +87,12 @@ async function rawState() {
 async function dataRequest(action,input){const r=await ipcRenderer.invoke("wanx-client:data",{action,input});if(!r?.ok)throw new Error(r?.code||"TEAM_DATA_REQUEST_FAILED");return r.value}
 async function mcpRequest(action,input){const r=await ipcRenderer.invoke("wanx-client:mcp",{action,input});if(!r?.ok)throw new Error(r?.code||"MCP_UNAVAILABLE");return r.value}
 const actions = {
+  "device-trust.open": () => ipcRenderer.invoke("wanx-client:device-trust-open", {}),
  "wanx.mcp-details":()=>mcpRequest("details"),
  "wanx.mcp-copy":input=>mcpRequest("copy",input),
  ...Object.fromEntries(["share-details","create-share-key","reveal-share-key","copy-share-key","copy-share-value","release-share-key"].map(name=>["data."+name,input=>dataRequest(name,input)])),
  "data.install-starlink":input=>dataRequest("install-starlink",input),
- ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff","channels-list","channels-detail","channels-save","channels-toggle","channels-delete","channels-test","channels-start","channels-poll","channels-cancel"].map(method=>[`dialogue.${method}`,input=>ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`,input)])),
+ ...Object.fromEntries(["load","open","send","stop","watch","unwatch","model","legacy-open","upload","release","resume","artifact","history-update","history-export","space-list","space-grant","release-context","knowledge-list","knowledge-grant","knowledge-evidence","usage","polish","version","version-select","handoff","channels-list","channels-detail","channels-save","channels-toggle","channels-delete","channels-test","channels-start","channels-poll","channels-cancel","channels-verification","channels-verify-start","channels-verify-confirm","channels-verify-revoke","history-list"].map(method=>[`dialogue.${method}`,input=>ipcRenderer.invoke(`wanx-client:ai-dialogue-${method}`,input)])),
   "data.assistant-access":input=>dataRequest("assistant-access",input),
   "data.assistant-access-update":input=>dataRequest("assistant-access-update",input),
   "data.initialize":input=>dataRequest("initialize",input),
@@ -247,7 +258,7 @@ const actions = {
 for (const method of ["snapshot", "refresh", "stat", "list", "mkdir", "move", "trash", "restore", "purge", "uploads", "download", "downloads", "transfer", "preview", "restore-version"])
   actions[`space.${method}`] = input => ipcRenderer.invoke(`wanx-client:space-${method}`, input);
 
-for (const method of ["spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"])
+for (const method of ["share-create", "share-list", "share-detail", "share-copy", "share-revoke", "share-dismiss", "spaces", "space-manage", "file-transfer", "storage-set", "storage-choose", "mcp-drives","mcp-manage","mcp-rotate","mcp-state", "mcp-issue", "mcp-revoke", "mcp-grant", "mcp-revoke-grant", "mcp-folders", "mcp-archive", "mcp-prompt", "mcp-copy"])
   actions[`space.links-${method}`] = input => ipcRenderer.invoke(`wanx-client:space-links-${method}`, input);
 
 for (const method of ["snapshot","refresh","capture","paste","choose","transfer","copy","preview","download","manage","export","note-save","note-refresh","note-command","note-paste"])

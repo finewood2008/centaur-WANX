@@ -45,7 +45,7 @@ def native(tmp_path):
         str(tmp_path / "test.sock"),
         tmp_path,
     )
-    issued_at = now()
+    issued = now()
     proof = {
         "schemaVersion": 1,
         "purpose": "centuarai.local-data.gateway-request",
@@ -56,8 +56,8 @@ def native(tmp_path):
         "operationId": encode(b"o" * 32),
         "parentOperationId": None,
         "jti": secrets.token_urlsafe(32),
-        "issuedAtMs": issued_at,
-        "expiresAtMs": issued_at + 2000,
+        "issuedAtMs": issued,
+        "expiresAtMs": issued + 2000,
         "boxId": "box",
         "boxKeyThumbprint": config.box_key_thumbprint,
         "ownershipEpoch": 1,
@@ -91,7 +91,7 @@ def native(tmp_path):
         state["calls"].append(operation)
         if operation == "observe":
             state.setdefault("inventories", []).append(body["activeOperationIds"])
-            issued_at = now()
+            issued = now()
             payload = {
                 "schemaVersion": 1,
                 "purpose": "centuarai.local-data.gateway-observation",
@@ -104,8 +104,8 @@ def native(tmp_path):
                 else body["gateNonce"],
                 "requestDigest": encode(hashlib.sha256(canonical(body)).digest()),
                 "accepted": True,
-                "issuedAtMs": issued_at,
-                "expiresAtMs": issued_at + 1000,
+                "issuedAtMs": issued,
+                "expiresAtMs": issued + 1000,
             }
             return httpx.Response(200, text=sign_gateway_observation(payload, key))
         if state["revoked"] and operation != "closed":
@@ -144,7 +144,7 @@ def native(tmp_path):
                 "action",
             )
         }
-        issued_at = now()
+        issued = now()
         payload.update(
             schemaVersion=1,
             purpose="centuarai.local-data.gateway-lease",
@@ -152,9 +152,13 @@ def native(tmp_path):
             gateNonce=body["gateNonce"],
             gatewayProofDigest=gateway_proof_digest(state["proof"]),
             state=state["phase"],
-            issuedAtMs=issued_at,
-            expiresAtMs=issued_at + 1000,
+            issuedAtMs=issued,
+            expiresAtMs=issued + 1000,
         )
+        if claims["schemaVersion"] == 2:
+            from centuarai_local_data_gate.protocol import digest
+
+            payload.update(schemaVersion=2, teamDigest=digest(claims["team"]))
         return httpx.Response(200, text=sign_gateway_lease(payload, key))
 
     transport = httpx.MockTransport(handle_broker)
@@ -180,6 +184,41 @@ def native(tmp_path):
 
     gate = LocalDataGateMiddleware(app, config=config, broker=client)
     return config, key, proof, state, gate, client
+
+
+@pytest.mark.asyncio
+async def test_native_fixture_uses_one_clock_sample_per_signed_payload(request, monkeypatch):
+    from types import SimpleNamespace
+
+    import centuarai_local_data_gate.client as gate_client
+    import centuarai_local_data_gate.middleware as gate_middleware
+
+    current = now()
+
+    def tick():
+        nonlocal current
+        current += 1
+        return current
+
+    monkeypatch.setitem(globals(), "now", tick)
+    clock = SimpleNamespace(time=lambda: (current + 0.5) / 1000, monotonic=time.monotonic)
+    monkeypatch.setattr(gate_client, "time", clock)
+    monkeypatch.setattr(gate_middleware, "time", clock)
+    _, key, proof, state, gate, broker = request.getfixturevalue("native")
+    assert proof["expiresAtMs"] - proof["issuedAtMs"] == 2000
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=gate), base_url="http://native"
+    ) as client:
+        response = await client.post(
+            "/api/echo",
+            content=b"data",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Centuarai-Gateway-Proof": sign_gateway_request(proof, key),
+            },
+        )
+    assert response.status_code == 200 and len(state["handler"]) == 1
+    await broker.close()
 
 
 @pytest.mark.asyncio

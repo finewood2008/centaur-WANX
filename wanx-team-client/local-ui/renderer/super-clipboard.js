@@ -4,11 +4,11 @@
   const icon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true">${({close:'<path d="m6 6 12 12M6 18 18 6"/>',image:'<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/>',back:'<path d="m14 5-7 7 7 7"/>',note:'<path d="M5 3h14v18H5zM9 8h6M9 12h6M9 16h4"/>',more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'})[name]||''}</svg>`;
   const messages={CLIPBOARD_IMAGES_ONLY:'这里只接收文字和图片，普通文件请上传到空间。',CLIPBOARD_LIMIT:'一次最多20张图片，单张最大20 MB；本批内容未加入。',CLIPBOARD_NOTE_LIMIT:'便签文字和结构最多1 MB，请精简后继续。',CLIPBOARD_NOTE_BUSY:'请等待当前内容同步完成后再操作。',CLIPBOARD_VIRTUAL_FILE:'请粘贴截图或已保存到本机的图片。',CLIPBOARD_EMPTY:'没有可粘贴的文字或图片。',SPACE_CONTEXT_CHANGED:'账号或盒子已切换，本次操作已停止。',ACCOUNT_LOGIN_REQUIRED:'请先登录并选择盒子。',BOX_CONNECTION_REQUIRED:'请先选择要保存到的盒子。',CLIPBOARD_NOTE_CONFLICT:'其他设备已修改便签，本机草稿已保留。',CLIPBOARD_CACHE_FULL:'本机缓存已满，请先完成图片同步。',SECURE_STORAGE_WRITE_FAILED:'本机草稿保存失败，请保持窗口打开后重试。',CLIPBOARD_QUOTA:'盒子便签空间不足，本机草稿仍保留。'};
   let host=null,state={items:[],tasks:[]},container=null,opened=false,active=false,poll=null,closeTimer=null,writing=Promise.resolve(),localEdits=0,renderedScope=null,rendered='',composing=false,selection=null,error='',returnFocus=null;
-  const urls=new Map(),imageLoads=new Set();let lastPersist='',modalAction=null;
+  const urls=new Map(),imageLoads=new Set();let lastPersist='',modalAction=null,contextGeneration=0;
   const message=e=>messages[e.code||e.message]||'暂未同步到盒子，本机草稿会保留并自动重试。';
   const editor=()=>container?.querySelector('.clipboard-note-editor');
   const boxName=()=>host?.devices?.find(d=>d.deviceId===state.boxId)?.displayName||host?.connection?.name||'上次连接的盒子';
-  async function call(method,input={}){const scope=state.scope,r=await window.wanxClient.action('clipboard.'+method,{...input,scope});if(!r.ok)throw Object.assign(Error(r.code),{code:r.code});if(scope!==state.scope)throw Object.assign(Error('SPACE_CONTEXT_CHANGED'),{code:'SPACE_CONTEXT_CHANGED'});return r.value;}
+  async function call(method,input={}){const scope=state.scope,generation=contextGeneration,r=await window.wanxClient.action('clipboard.'+method,{...input,scope});if(!r.ok)throw Object.assign(Error(r.code),{code:r.code});if(scope!==state.scope||generation!==contextGeneration)throw Object.assign(Error('SPACE_CONTEXT_CHANGED'),{code:'SPACE_CONTEXT_CHANGED'});return r.value;}
   function blocks(){
     const output=[];let text='';
     const flush=()=>{if(text){output.push({type:'text',text});text='';}};
@@ -63,6 +63,7 @@
     void loadImages();
   }
   function update(next){
+    if(host?.dataIdentity?.profileId&&(!host.dataOwnerId||next.dataOwnerId!==host.dataOwnerId||next.dataContextId!==host.dataContextId))return;
     if(next.scope!==state.scope){for(const u of urls.values())URL.revokeObjectURL(u);urls.clear();selection=null;renderedScope=null;lastPersist='';error='';if(editor())editor().replaceChildren();}
     if(next.note?.phase==='saved'&&error===message({code:'ECONNREFUSED'}))error='';
     state=next;paint();
@@ -154,5 +155,5 @@
   document.addEventListener('click',event=>{if(event.target.closest('[data-action="clipboard-toggle"]')){event.preventDefault();event.stopPropagation();void toggle().catch(e=>{error=message(e);paint(false);});}else if(opened&&!panelMode&&!container.contains(event.target)&&!composing){void toggle(false).catch(e=>{error=message(e);paint(false);});}},true);
   document.addEventListener('keydown',event=>{if(opened&&event.key==='Escape'&&!event.isComposing){event.preventDefault();event.stopImmediatePropagation();if(container.querySelector('.clipboard-note-modal').hasChildNodes()){modalAction=null;container.querySelector('.clipboard-note-modal').replaceChildren();}else void toggle();}},true);
   window.addEventListener?.('resize',position);window.wanxClient.onClipboardState?.(update);
-  window.wanxClipboard={hostState(next){if(host&&next.account?.accountId!==host.account?.accountId||next.route==='auth'){selection=null;if(opened)void toggle(false);}host=next;reflect();},setActive(value){active=value;if(!active&&opened)void toggle(false);reflect();},toggle};
+  window.wanxClipboard={hostState(next){const changed=host&&(next.dataIdentity?.profileId||host.dataIdentity?.profileId?next.dataContextId!==host.dataContextId:next.account?.accountId!==host.account?.accountId);if(changed||next.route==='auth'){contextGeneration++;selection=null;opened=false;composing=false;clearInterval(poll);clearTimeout(closeTimer);for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();state={items:[],tasks:[],scope:null};renderedScope=null;rendered='';lastPersist='';modalAction=null;if(container){container.hidden=true;container.inert=true;container.classList.remove('is-open');editor()?.replaceChildren();container.querySelector('.clipboard-note-modal')?.replaceChildren();}}host=next;reflect();},setActive(value){active=value;if(!active&&opened)void toggle(false);reflect();},toggle};
 })();

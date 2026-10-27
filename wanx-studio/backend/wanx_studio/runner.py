@@ -9,10 +9,11 @@ import sys
 import time
 from uuid import uuid4
 
+from .local_authority import to_thread
 from .contracts import StudioError, digest
 from .foundation import FOUNDATION_PROMPT, foundation_policy
 from .store import public
-from .codex_config import runtime_config
+from .codex_config import runtime_config, config_fingerprint
 
 
 class Runner:
@@ -27,34 +28,31 @@ class Runner:
         self.leases={}
         self.jobs={}
 
-    async def preflight(self, fresh=False, for_turn=False):
+    async def preflight(self, fresh=False, for_turn=False, owner=None):
         # The real native worker performs the connection/policy handshake once.
         # A build must not launch and discard a second Codex just to probe it.
         if for_turn:
-            return {'available':bool(runtime_config()),'executor':'Codex','transport':'app-server','modelCalls':0,'code':'CODEX_NOT_CONFIGURED'}
+            return {'available':bool(await to_thread(runtime_config,'wanx_task',self.svc,owner)),'executor':'Codex','transport':'app-server','modelCalls':0,'code':'CODEX_NOT_CONFIGURED'}
         async with self.probing:
-            if self.cached and not fresh and time.monotonic()-self.cached_at<60:
+            config=await to_thread(runtime_config,'wanx_task',self.svc,owner)
+            stamp=config_fingerprint(config)
+            if self.cached and not fresh and getattr(self,'cached_stamp',None)==stamp and time.monotonic()-self.cached_at<60:
                 return self.cached
-            config=runtime_config()
             if not config:
                 return {'available':False,'executor':'Codex','code':'CODEX_NOT_CONFIGURED'}
             env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','TMPDIR'}}
-            proc=await asyncio.create_subprocess_exec('node',str(self.svc.project_root/'tools/probe-codex.mjs'),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,cwd=self.svc.project_root,env={**env,**config,'WANX_PYTHON_PATH':sys.executable})
+            proc=await asyncio.create_subprocess_exec('node',str(self.svc.project_root/'tools/probe-codex.mjs'),stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,cwd=self.svc.project_root,env={**env,**config,'WANX_PYTHON_PATH':sys.executable},start_new_session=True)
             try:
                 out,_=await asyncio.wait_for(proc.communicate(),40)
                 self.cached=json.loads(out)
             except BaseException as error:
-                if proc.returncode is None:
-                    proc.terminate()
-                    try:
-                        await asyncio.wait_for(proc.wait(),5)
-                    except TimeoutError:
-                        proc.kill()
-                        await proc.wait()
                 if isinstance(error,asyncio.CancelledError):
                     raise
                 self.cached={'available':False,'executor':'Codex','code':'PREFLIGHT_FAILED','modelCalls':0}
+            finally:
+                await self.svc.native_codex.stop(proc)
             self.cached_at=time.monotonic()
+            self.cached_stamp=stamp
             return self.cached
 
     async def start(self, owner, project_id, body, *, iterative=None, edit_id=None):
@@ -113,7 +111,17 @@ class Runner:
             p=self.svc.store.get(owner,project_id)
             if edit_id:p=self.svc.edits.execution_project(owner,p,p['tasks'][-1])
             self.touch(owner,project_id)
-            job=asyncio.create_task(self.run(owner,p,task_id,body['instruction']))
+            from .local_authority import start_background
+            try:
+                job=await start_background(self.svc,owner,project_id,task_id,'build',lambda:self.run(owner,p,task_id,body['instruction']))
+            except BaseException as error:
+                code=error.code if isinstance(error,StudioError) else 'STUDIO_TASK_AUTHORIZATION_DENIED'
+                def denied(project):
+                    task=next(t for t in project['tasks'] if t['id']==task_id)
+                    task.update(state='failed',error=code,finishedAt=time.time())
+                    project['stage']='failed'
+                self.svc.store.mutate(owner,project_id,'task-denied-'+task_id,{'task':task_id},denied)
+                raise
             self.jobs[task_id]=job
             self.svc.background.add(job)
             job.add_done_callback(self.svc.background.discard)
@@ -163,7 +171,7 @@ class Runner:
             task=next(t for t in p['tasks'] if t['id']==task_id)
             if task['state']=='queued':
                 self.event(owner,p['id'],task_id,{'type':'status','text':'开发任务已保存，正在检查本机开发环境…'})
-                check=await self.preflight(for_turn=True)
+                check=await self.preflight(for_turn=True,owner=owner)
                 if not check['available']:
                     self.event(owner,p['id'],task_id,{'type':'status','text':'开发环境检查未通过：'+check.get('code','PREFLIGHT_FAILED')})
                     raise StudioError('ISOLATION_UNAVAILABLE',409)
@@ -209,7 +217,7 @@ class Runner:
     async def execute(self, owner, p, task_id, instruction):
         project_id=p['id']
         env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','TMPDIR'}}
-        config_env=runtime_config()
+        config_env=await to_thread(runtime_config,'wanx_task',self.svc,owner)
         if not config_env:
             raise StudioError('CODEX_NOT_CONFIGURED',409)
         worker=await self.svc.native_codex.acquire((owner,project_id,'build'),'driver.mjs',config_env)

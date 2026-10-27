@@ -17,8 +17,8 @@ async function verify() {
       window.box = { phase:'ready', account:{phase:'authenticated',accountId:'synthetic-owner',clientId:'pc'}, connection:{deviceId:'synthetic-box',gatewayURL:'http://127.0.0.1',name:'Synthetic box'} };
       window.ui = createAIDialogueView({ request:window.nativeRequest=async(method,input)=>{
         calls.push({method,input});let value={scope};
-        if(method==='dialogue.load')value={scope,models:[{id:'fixture/one',name:'One',provider:'fixture',input:['text']},{id:'fixture/two',name:'Two',provider:'fixture',input:['text']}],defaultModel:'fixture/one',sessions:[{thread_id:'thread-1',title:'Synthetic conversation'}],legacySessions:[]};
-        if(method==='dialogue.open')value={scope,conversation:{id:'thread-1',active_thread_id:'thread-1',revision:0,context:{space:{enabled:false},knowledge:{enabled:false,warehouses:[]}},versions:[{thread_id:'thread-1',kind:'original'}]},history:{thread_id:'thread-1',messages:[],model_ref:'fixture/one',turn_active:false,hitl_pending:null}};
+        if(method==='dialogue.load')value={scope,capabilities:window.testCapabilities,models:[{id:'fixture/one',name:'One',provider:'fixture',input:['text']},{id:'fixture/two',name:'Two',provider:'fixture',input:['text']}],defaultModel:'fixture/one',sessions:[{thread_id:'thread-1',title:'Synthetic conversation'}],legacySessions:[]};
+        if(method==='dialogue.open')value={scope,conversation:{id:'thread-1',active_thread_id:'thread-1',revision:0,context:window.testConversationContext||{space:{enabled:false},knowledge:{enabled:false,warehouses:[]}},versions:[{thread_id:'thread-1',kind:'original'}]},history:{thread_id:'thread-1',messages:[],model_ref:'fixture/one',turn_active:false,hitl_pending:null}};
         if(method==='dialogue.channels-list')value={scope,items:channelRows};
         if(method==='dialogue.channels-save'){const row={id:'channel-1',kind:input.kind,name:input.name,enabled:true,status:'connected'};channelRows=[row];value={scope,channel:row};}
         if(method==='dialogue.channels-detail')value={scope,channel:channelRows[0],values:{app_id:'synthetic-app'},configured:['app_secret']};
@@ -77,6 +77,7 @@ async function verify() {
       ui.hostState(box);await until(()=>ui.snapshot().scope==='synthetic-scope');
       check(ui.snapshot().draft===''&&ui.snapshot().conversationId===null,'reconnect restored another account draft');
       check(!document.querySelector('[data-chat-history]').hidden,'reconnected full assistant must restore the default history state');
+      check(!document.querySelector('[data-top-space]').hidden&&!document.querySelector('[data-chat-knowledge-entry]').hidden&&!document.querySelector('[data-chat-attach]').hidden&&!document.querySelector('[data-assistant-channels]').hidden,'omitted capabilities must preserve cloud controls');
       const miniHost=document.createElement('div');miniHost.id='assistant-mini-host';document.body.append(miniHost);
       const mini=createAIDialogueView({compact:true,request:nativeRequest});mini.hostState(box);mini.visible(true);mini.mount(miniHost);
       await until(()=>mini.snapshot().scope==='synthetic-scope');
@@ -90,6 +91,34 @@ async function verify() {
       document.querySelector('[data-assistant-channels]').click();await until(()=>document.querySelectorAll('.ai-channel-card').length===4);
       const dialog=document.querySelector('.ai-channels-dialog');check(dialog.scrollWidth<=dialog.clientWidth,'narrow channel settings overflow horizontally');
       dialog.querySelector('[data-channel-action="close"]').click();
+    })().catch(error=>{console.error(error.stack);throw error})`);
+    await control.webContents.executeJavaScript(`(async()=>{
+      testCapabilities={knowledge:false,space:false,channels:false,attachments:false};scope='local-capabilities';
+      testConversationContext={space:{enabled:true,selection:{mode:'all'}},knowledge:{enabled:true,warehouses:[{id:'stale-warehouse'}]}};
+      ui.hostState({...box,account:{phase:'signed_out'},dataIdentity:{profileId:'local-profile'},dataContextId:'local-generation'});
+      await until(()=>ui.snapshot().scope==='local-capabilities');
+      const attach=document.querySelector('[data-chat-attach]'),channels=document.querySelector('[data-assistant-channels]');
+      check(attach.hidden&&attach.disabled&&channels.hidden&&channels.disabled,'unavailable attachment/channel controls remain actionable');
+      check(document.querySelector('[data-top-space]').hidden&&document.querySelector('[data-chat-knowledge-entry]').hidden,'unavailable sources remain visible');
+      document.querySelector('[data-chat-action="open"][data-id="thread-1"]').click();
+      await until(()=>ui.snapshot().conversationId==='thread-1'&&!document.querySelector('[data-chat-input]').disabled);
+      check(!ui.snapshot().context.space.enabled&&!ui.snapshot().context.knowledge.enabled,'stored conversation restored unavailable grants');
+      const start=calls.length;
+      ui.event({type:'handoff',scope,draft:'Local text remains available',attachments:[{handle:'stale-file',name:'stale.txt'}],context:testConversationContext});
+      await until(()=>ui.snapshot().draft==='Local text remains available');
+      check(ui.snapshot().attachments.length===0&&!ui.snapshot().context.space.enabled&&!ui.snapshot().context.knowledge.enabled,'handoff restored unavailable context');
+      attach.dispatchEvent(new MouseEvent('click',{bubbles:true}));channels.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+      for(const key of ['space','knowledge']){
+        const toggle=document.querySelector('[data-chat-'+key+'-toggle]');toggle.checked=true;toggle.dispatchEvent(new Event('change',{bubbles:true}));
+        document.querySelector('[data-chat-action="'+key+'-confirm"]').click();
+      }
+      await new Promise(resolve=>setTimeout(resolve,20));
+      check(!calls.slice(start).some(c=>/^dialogue\.(?:upload|space-|knowledge-|channels-)/.test(c.method)),'unavailable controls or stale handoff dispatched a request');
+      check(!document.querySelector('dialog[open]'),'unavailable control opened a dialog');
+      document.querySelector('[data-chat-composer]').requestSubmit();
+      await until(()=>calls.slice(start).some(c=>c.method==='dialogue.send'));
+      const sent=calls.slice(start).find(c=>c.method==='dialogue.send').input;
+      check(sent.prompt==='Local text remains available'&&sent.attachments.length===0&&!sent.spaceEnabled&&!sent.knowledgeEnabled,'local text send retained unavailable context');
     })().catch(error=>{console.error(error.stack);throw error})`);
     process.stdout.write('AI_DIALOGUE_UI_PASS\n');app.exit(0);
   } catch(error) { console.error(error);app.exit(1); }

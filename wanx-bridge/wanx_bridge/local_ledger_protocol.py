@@ -5,6 +5,7 @@ from __future__ import annotations
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from . import local_management_protocol as wire
+from . import local_team_protocol as team_protocol
 from . import local_trust_protocol as evidence
 from .local_resource_catalog import validate_resource_grants
 
@@ -41,6 +42,7 @@ ACTIONS = frozenset(
         "network-wifi.revoke",
     }
 )
+ACTIONS |= team_protocol.ACTIONS
 TYPES = {
     name: "centuarai-local-ledger-" + name + "+jws"
     for name in (
@@ -162,6 +164,8 @@ def target(value, *, full=True):
 
 def validate_args(action, value):
     evidence._require(type(action) is str and action in ACTIONS)
+    if action in team_protocol.ACTIONS:
+        return team_protocol.validate_args(action, value)
     if action == "network-wifi.authorize":
         evidence._fields(value, {"bindingId", "expiresAt", "delegable"})
         evidence._token(value["bindingId"])
@@ -395,6 +399,7 @@ def validate_read(value):
             "transfer-status",
             "data-effect",
             "recovery-state",
+            *sorted(team_protocol.READ_OPERATIONS),
         )
     )
     if operation == "self-binding":
@@ -403,7 +408,15 @@ def validate_read(value):
             and value["bindingId"] == value["actor"]["bindingId"]
             and value["requestId"] is None
         )
-    elif operation in ("mutation-status", "operation-status", "transfer-status", "data-effect"):
+    elif operation in (
+        "mutation-status",
+        "operation-status",
+        "transfer-status",
+        "data-effect",
+        "team-association",
+        "team-request",
+        "team-device-review",
+    ):
         evidence._digest(value["requestId"])
         evidence._require(value["bindingId"] is None)
     else:
@@ -647,7 +660,7 @@ def resource_grant(value):
         evidence._integer(value[field])
     _tokens(value["sourceGrantIds"], minimum=0, maximum=256)
     evidence._require(
-        value["resourceScope"] in ("principal-private", "shared")
+        value["resourceScope"] in ("principal-private", "shared", "team-shared")
         and value["status"] in ("active", "suspended", "revoked")
     )
     validate_resource_grants([{"resourceId": value["resourceId"], "actions": value["actions"]}])
@@ -814,6 +827,39 @@ def validate_response(value):
         },
         "checkpoint": {"context", "eventDigest", "authorizationVersion"},
         "restore-key-received": {"operationId", "archiveSha256", "receivedAt"},
+        "team-policy": {"context", "policy"},
+        "team-state": {"context", "members", "invitations", "resources", "requests"},
+        "self-member": {"context", "member"},
+        "self-resources": {
+            "context",
+            "principalId",
+            "bindingId",
+            "bindingRevision",
+            "approvedGrants",
+            "availableGrants",
+        },
+        "team-device-review": {"context", "requestId", "mutationDigest", "target"},
+        "team-association": {"receipt"},
+        "team-request": {
+            "requestId",
+            "request",
+            "cloudProof",
+            "state",
+            "expiresAt",
+            "review",
+            "targetAccessProof",
+            "targetApprovalProof",
+            "receipt",
+        },
+        "team-request-receipt": {"requestId", "state", "expiresAt"},
+        "migration-consumed": {
+            "requestId",
+            "planDigest",
+            "principalId",
+            "membershipId",
+            "ownershipEpoch",
+            "consumedAt",
+        },
     }
     kind = value["kind"]
     evidence._require(type(kind) is str and kind in fields)
@@ -825,7 +871,16 @@ def validate_response(value):
             body["context"]["boxId"] == value["boxId"]
             and body["context"]["boxKeyThumbprint"] == value["boxKeyThumbprint"]
         )
-    if kind == "transfer-status":
+    if kind == "migration-consumed":
+        for name in ("requestId", "planDigest", "membershipId"):
+            evidence._digest(body[name])
+        evidence._token(body["principalId"])
+        evidence._integer(body["ownershipEpoch"])
+        evidence._integer(body["consumedAt"])
+        evidence._require(body["consumedAt"] == value["issuedAt"])
+    elif kind.startswith("team-") or kind in ("self-member", "self-resources"):
+        team_protocol.validate_response_body(kind, body)
+    elif kind == "transfer-status":
         for field in ("requestId", "transferId"):
             evidence._digest(body[field])
         evidence._integer(body["sourceOwnershipEpoch"])
@@ -1057,11 +1112,21 @@ def sign_response(owner, kind, body, now):
         "issuedAt": now,
         "body": body,
     }
-    return wire._sign(payload, owner._key, TYPES["response"], validate_response)
+    typ, maximum = _response_encoding(kind)
+    return wire._sign(payload, owner._key, typ, validate_response, max_bytes=maximum)
+
+
+def _response_encoding(kind):
+    # A fixed operation returns several individually bounded proofs for review.
+    # It cannot enlarge any request, mutation or ordinary response proof.
+    if kind == "team-request":
+        return "centuarai-local-team-request-response+jws", 65536
+    return TYPES["response"], evidence.MAX_JWS_BYTES
 
 
 def verify_response(proof, box_key, *, box_id, kind):
-    value = wire._decode(proof, TYPES["response"], validate_response)
+    typ, maximum = _response_encoding(kind)
+    value = wire._decode(proof, typ, validate_response, max_bytes=maximum)
     evidence._verify(proof, evidence._public_key(box_key))
     evidence._require(
         value["boxId"] == box_id

@@ -9,10 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import inspect
 import re
 import secrets
 import time
+
+from centuarai_local_data_gate.team import (
+    merge_grants,
+    resource_binding_route,
+    resource_needs,
+    resource_write_route,
+    team_resource,
+    validate_members,
+    validate_team,
+)
 
 from .local_data_effects import PhysicalEffects
 from .local_data_protocol import (
@@ -23,6 +34,7 @@ from .local_data_protocol import (
     decode_session_locator,
     digest,
     digest32,
+    encode,
     fields,
     gateway_proof_digest,
     grants,
@@ -82,6 +94,9 @@ class LocalDataSessions:
         route_policy,
         child_policy=None,
         gateway_resources_signer=None,
+        gateway_members_signer=None,
+        gateway_task_signer=None,
+        gateway_grants_signer=None,
         gateway_observation_signer=None,
         required_audiences=(),
         worker_required=False,
@@ -106,6 +121,9 @@ class LocalDataSessions:
         self.box_response_signer, self.gateway_signer = box_response_signer, gateway_signer
         self.gateway_verifier, self.gateway_lease_signer = gateway_verifier, gateway_lease_signer
         self.gateway_resources_signer = gateway_resources_signer
+        self.gateway_members_signer = gateway_members_signer
+        self.gateway_task_signer = gateway_task_signer
+        self.gateway_grants_signer = gateway_grants_signer
         self.gateway_observation_signer = gateway_observation_signer
         need(set(required_audiences) <= {"octop", "clipboard", "semantica", "semantica-mcp"})
         self.application_policy, self.route_policy, self.child_policy = (
@@ -244,6 +262,8 @@ class LocalDataSessions:
                     "bodyBytes",
                     "state",
                     "constraints",
+                    "requiredGrants",
+                    "observation",
                 )
             }
         )
@@ -401,7 +421,9 @@ class LocalDataSessions:
             "grants",
             "expiresAt",
         }
-        fields(view, required)
+        fields(view, required | ({"team"} if "team" in view else set()))
+        if view.get("team") is not None:
+            validate_team(view["team"], view)
         need(
             view["boxId"] == self.box_id
             and view["boxKeyThumbprint"] == self.box_key_thumbprint
@@ -472,6 +494,9 @@ class LocalDataSessions:
                 view["authorizationVersion"] >= context["authorizationVersion"],
                 "LOCAL_DATA_CONTEXT_CHANGED",
             )
+            # Membership/role/ACL mutations cannot upgrade a live channel. A
+            # changed team capability closes it; fresh approval opens a new one.
+            need(view.get("team") == context.get("team"), "LOCAL_DATA_CONTEXT_CHANGED")
             allowed = [
                 {
                     "resourceId": g["resourceId"],
@@ -802,6 +827,8 @@ class LocalDataSessions:
                 self.box_key_thumbprint, view["ownershipEpoch"], view["principalId"]
             ),
         }
+        if view.get("team") is not None:
+            context["team"] = _clone(view["team"])
         async with self._lock:
             current, tick = self._now()
             self._running()
@@ -943,7 +970,11 @@ class LocalDataSessions:
         )
         need(
             route["audience"] in ("octop", "clipboard", "semantica", "semantica-mcp")
-            and route["resourceId"] in ("wanx", "space", "space:personal", "clipboard", "semantica")
+            and (
+                route["resourceId"] in ("wanx", "space", "space:personal", "clipboard", "semantica")
+                or context.get("team") is not None
+                and team_resource(route["resourceId"])
+            )
             and route["action"] in ("execute", "read", "write"),
             "LOCAL_DATA_ROUTE_DENIED",
         )
@@ -1184,6 +1215,8 @@ class LocalDataSessions:
             "action": route["action"],
             "serviceContext": route["serviceContext"],
         }
+        if context.get("team") is not None:
+            payload.update(schemaVersion=2, team=_clone(context["team"]))
         try:
             validate_gateway_request(payload)
             signed = self.gateway_signer(payload)
@@ -1256,7 +1289,7 @@ class LocalDataSessions:
                 now + max(0, int((cache["deadline"] - mono) * 1000)),
             )
             need(now < end, "LOCAL_DATA_SESSION_EXPIRED")
-        return {
+        result = {
             "schemaVersion": 1,
             "purpose": "centuarai.local-data.gateway-lease",
             "audience": route["audience"],
@@ -1288,6 +1321,9 @@ class LocalDataSessions:
             "issuedAtMs": now,
             "expiresAtMs": end,
         }
+        if context.get("team") is not None:
+            result.update(schemaVersion=2, teamDigest=digest(context["team"]))
+        return result
 
     async def _sign_lease(self, payload):
         signed = self.gateway_lease_signer(payload)
@@ -1411,13 +1447,33 @@ class LocalDataSessions:
             need(
                 operation["parentOperationId"] is None
                 and operation["nativeState"] == "active"
-                and operation["context"]["applicationId"] == "wanx-host"
-                and operation["observation"]["method"] == "POST"
-                and operation["route"]["upstreamPath"]
-                in (
-                    "/api/platform/applications/readiness",
-                    "/api/platform/applications/prepare",
-                    "/api/platform/applications/candidates/prepare",
+                and "task" not in operation["constraints"]
+                and (
+                    operation["context"]["applicationId"] == "wanx-host"
+                    and operation["observation"]["method"] == "POST"
+                    and operation["route"]["upstreamPath"]
+                    in (
+                        "/api/platform/applications/readiness",
+                        "/api/platform/applications/prepare",
+                        "/api/platform/applications/candidates/prepare",
+                    )
+                    or operation["context"]["applicationId"] in {"wanx-host", "ai.wanx.studio"}
+                    and operation["route"]["resourceId"] == "team:management"
+                    and "applications.manage"
+                    in operation["context"].get("team", {}).get("permissions", [])
+                    and resource_binding_route(
+                        operation["observation"]["method"], operation["route"]["upstreamPath"]
+                    )
+                    and resource_needs(body["grants"])
+                    or operation["context"]["applicationId"].startswith("ai.wanx.selfmade.")
+                    and operation["route"]["resourceId"]
+                    == "team:application:" + operation["context"]["applicationId"]
+                    and operation["observation"]["method"] == "POST"
+                    and re.fullmatch(
+                        r"/api/app-studio/runtime/[A-Za-z0-9_-]{1,128}/(?:invoke|files)",
+                        operation["route"]["upstreamPath"],
+                    )
+                    and resource_needs(body["grants"])
                 ),
                 "LOCAL_DATA_FORBIDDEN",
             )
@@ -1429,23 +1485,257 @@ class LocalDataSessions:
                 ),
                 "LOCAL_DATA_FORBIDDEN",
             )
-            need(
-                operation["requiredGrants"] is None
-                or operation["requiredGrants"] == body["grants"],
-                "LOCAL_DATA_CONTEXT_CHANGED",
-            )
-            operation["requiredGrants"] = _clone(body["grants"])
+            if operation["route"]["upstreamPath"].startswith("/api/app-studio/") and any(
+                grant["resourceId"] == "wanx" and "write" in grant["actions"]
+                for grant in body["grants"]
+            ):
+                need(
+                    resource_write_route(
+                        operation["observation"]["method"], operation["route"]["upstreamPath"]
+                    ),
+                    "LOCAL_DATA_SCOPE_DENIED",
+                )
+            aggregate = merge_grants(operation["requiredGrants"] or [], body["grants"])
+            grants(aggregate)
+            if operation["route"]["upstreamPath"].startswith("/api/platform/applications/"):
+                need(
+                    operation["requiredGrants"] is None
+                    or operation["requiredGrants"] == body["grants"],
+                    "LOCAL_DATA_CONTEXT_CHANGED",
+                )
+            operation["requiredGrants"] = _clone(aggregate)
             payload = {
                 **self._lease_payload(operation, body, "active", now, mono),
                 "purpose": "centuarai.local-data.gateway-resources",
                 "requestDigest": request_digest,
-                "grants": _clone(body["grants"]),
+                "grants": _clone(aggregate),
             }
         signed = self.gateway_resources_signer(payload)
         now, mono = self._now()
         async with self._lock:
             self._op_live(self._operations.get(body["operationId"]), now, mono)
             need(now < payload["expiresAtMs"], "LOCAL_DATA_SESSION_EXPIRED")
+        return signed
+
+    async def native_task_start(self, body, *, audience):
+        fields(
+            body,
+            {
+                "operationId",
+                "nativeGateGeneration",
+                "gateNonce",
+                "projectId",
+                "taskId",
+                "taskPurpose",
+            },
+        )
+        for name in ("projectId", "taskId"):
+            need(type(body[name]) is str and re.fullmatch(r"[a-f0-9]{32}", body[name]) is not None)
+        need(audience == "octop" and self.gateway_task_signer is not None, "LOCAL_DATA_FORBIDDEN")
+        await self.assert_live(body["operationId"], minimum_cache_ms=750)
+        now, mono = self._now()
+        async with self._lock:
+            parent = self._operations.get(body["operationId"])
+            self._native_match(parent, body, audience, now, mono)
+            context = parent["context"]
+            need(
+                parent["nativeState"] == "active"
+                and parent["parentOperationId"] is None
+                and "task" not in parent["constraints"]
+                and context["applicationId"] == "ai.wanx.studio"
+                and parent["route"]["resourceId"] == "team:management"
+                and parent["route"]["action"] == "execute"
+                and "applications.manage" in context.get("team", {}).get("permissions", []),
+                "LOCAL_DATA_FORBIDDEN",
+            )
+            prefix = "/api/app-studio/"
+            project = body["projectId"]
+            paths = {
+                "build": {
+                    prefix + "projects/" + project + "/build",
+                    prefix + "_builder/projects/" + project + "/build",
+                    prefix + "_client/launch/" + project + "/start",
+                },
+                "interview": {prefix + "projects/" + project + "/interview/turns"},
+                "edit": {prefix + "_builder/projects/" + project + "/edits"},
+            }
+            if body["taskPurpose"] == "edit" and re.fullmatch(
+                prefix + "_builder/projects/" + project + r"/edits/[a-f0-9]{32}/(?:answer|retry)",
+                parent["route"]["upstreamPath"],
+            ):
+                paths["edit"].add(parent["route"]["upstreamPath"])
+            need(
+                parent["observation"]["method"] == "POST"
+                and parent["route"]["upstreamPath"] in paths.get(body["taskPurpose"], set()),
+                "LOCAL_DATA_SCOPE_DENIED",
+            )
+            tasks = [
+                op
+                for op in self._operations.values()
+                if "task" in op["constraints"] and self._reserved(op)
+            ]
+            need(
+                len(tasks) < 32 and sum(op["sessionId"] == parent["sessionId"] for op in tasks) < 4,
+                "LOCAL_DATA_CAPACITY",
+            )
+            need(
+                not any(op["constraints"]["task"]["taskId"] == body["taskId"] for op in tasks),
+                "LOCAL_DATA_REPLAY",
+            )
+            observation = {
+                **parent["observation"],
+                "bodyBytes": 0,
+                "bodySha256": encode(hashlib.sha256(b"").digest()),
+            }
+            operation = self._reserve_operation(
+                self._sessions[parent["sessionId"]],
+                context,
+                parent["route"],
+                observation,
+                now,
+                mono,
+            )
+            operation.update(
+                state="active",
+                nativeState="active",
+                nativeGeneration=body["nativeGateGeneration"],
+                gatewayFinished=True,
+                gatewayTransportClosed=True,
+                proofDigest=parent["proofDigest"],
+                gatewayProof=parent["gatewayProof"],
+            )
+            operation["constraints"]["task"] = {
+                "parentRequestId": parent["operationId"],
+                **{key: body[key] for key in ("projectId", "taskId", "taskPurpose")},
+            }
+            operation["requiredGrants"] = _clone(parent["requiredGrants"])
+            self.effects.operation(operation)
+            payload = self._task_payload(operation, body, "active", now, mono)
+        return await self._sign_task(payload)
+
+    def _task_payload(self, operation, body, state, now, mono):
+        return {
+            **self._lease_payload(operation, body, state, now, mono),
+            "purpose": "centuarai.local-data.gateway-task",
+            **operation["constraints"]["task"],
+            "grants": _clone(operation["requiredGrants"] or []),
+        }
+
+    async def _sign_task(self, payload):
+        signed = self.gateway_task_signer(payload)
+        if payload["state"] != "closed":
+            now, mono = self._now()
+            async with self._lock:
+                self._op_live(self._operations.get(payload["operationId"]), now, mono)
+                need(now < payload["expiresAtMs"], "LOCAL_DATA_SESSION_EXPIRED")
+        return signed
+
+    async def native_task_check(self, body, *, audience):
+        fields(body, {"operationId", "nativeGateGeneration", "gateNonce"})
+        await self.assert_live(body["operationId"], minimum_cache_ms=750)
+        now, mono = self._now()
+        async with self._lock:
+            operation = self._operations.get(body["operationId"])
+            self._native_match(operation, body, audience, now, mono)
+            need(audience == "octop" and "task" in operation["constraints"], "LOCAL_DATA_FORBIDDEN")
+            payload = self._task_payload(operation, body, "active", now, mono)
+        return await self._sign_task(payload)
+
+    async def native_task_close(self, body, *, audience):
+        fields(body, {"operationId", "nativeGateGeneration", "gateNonce", "outcome"})
+        need(body["outcome"] in {"completed", "cancelled", "denied", "outcome-unknown"})
+        now, mono = self._now()
+        async with self._lock:
+            operation = self._operations.get(body["operationId"])
+            need(
+                audience == "octop"
+                and operation is not None
+                and "task" in operation["constraints"]
+                and operation["nativeGeneration"] == body["nativeGateGeneration"],
+                "LOCAL_DATA_FORBIDDEN",
+            )
+            self._native_nonce(operation, body["gateNonce"], now)
+            # Only the native worker reports this after process and I/O drain.
+            # Logical invalidation and missed checks never mark physical closure.
+            operation.update(nativeState="closed", nativeClosed=True)
+            events = self._close_op_locked(operation, body["outcome"])
+            self.effects.operation(operation)
+            payload = self._task_payload(operation, body, "closed", now, mono)
+        await self._notify(events)
+        return await self._sign_task(payload)
+
+    async def native_resource_grants(self, body, *, audience):
+        fields(body, {"operationId", "nativeGateGeneration", "gateNonce"})
+        need(audience == "octop" and self.gateway_grants_signer is not None, "LOCAL_DATA_FORBIDDEN")
+        await self.assert_live(body["operationId"], minimum_cache_ms=750)
+        now, mono = self._now()
+        async with self._lock:
+            operation = self._operations.get(body["operationId"])
+            self._native_match(operation, body, audience, now, mono)
+            context = operation["context"]
+            need(
+                operation["nativeState"] == "active"
+                and "task" not in operation["constraints"]
+                and operation["route"]["resourceId"] == "team:management"
+                and "applications.manage" in context.get("team", {}).get("permissions", []),
+                "LOCAL_DATA_FORBIDDEN",
+            )
+            payload = {
+                **self._lease_payload(operation, body, "active", now, mono),
+                "purpose": "centuarai.local-data.gateway-grants",
+                "grants": _clone(context["grants"]),
+                "requestDigest": digest(body),
+            }
+        signed = self.gateway_grants_signer(payload)
+        await self.assert_live(body["operationId"])
+        return signed
+
+    async def native_team_members(self, body, *, audience):
+        """Read current members for an admitted management request, never all users."""
+        fields(body, {"operationId", "nativeGateGeneration", "gateNonce"})
+        digest32(body["nativeGateGeneration"])
+        need(
+            audience == "octop" and self.gateway_members_signer is not None, "LOCAL_DATA_FORBIDDEN"
+        )
+        snapshot = await self.assert_live(body["operationId"])
+        now, mono = self._now()
+        async with self._lock:
+            operation = self._operations.get(body["operationId"])
+            self._native_match(operation, body, audience, now, mono)
+            team = operation["context"].get("team")
+            need(
+                operation["nativeState"] == "active"
+                and "task" not in operation["constraints"]
+                and operation["route"]["resourceId"] == "team:management"
+                and team is not None
+                and bool(set(team["permissions"]) & {"members.read", "applications.manage"}),
+                "LOCAL_DATA_FORBIDDEN",
+            )
+            binding = operation["context"]["bindingId"]
+
+        def query():
+            return self.authority.get_team_members(binding, self.wall_clock_ms() // 1000)
+
+        members = _clone(await self.execute_authority(query))
+        validate_members(members)
+        await self.assert_live(body["operationId"], minimum_cache_ms=750)
+        now, mono = self._now()
+        async with self._lock:
+            operation = self._operations.get(body["operationId"])
+            self._op_live(operation, now, mono)
+            need(
+                operation["nativeGeneration"] == body["nativeGateGeneration"]
+                and operation["context"].get("team") == snapshot["context"].get("team"),
+                "LOCAL_DATA_CONTEXT_CHANGED",
+            )
+            payload = {
+                **self._lease_payload(operation, body, "active", now, mono),
+                "purpose": "centuarai.local-data.gateway-members",
+                "requestDigest": digest(body),
+                "members": members,
+            }
+        signed = self.gateway_members_signer(payload)
+        await self.assert_live(body["operationId"])
         return signed
 
     async def native_observe(self, body, *, audience):
@@ -1582,7 +1872,7 @@ class LocalDataSessions:
         need(
             self.child_policy is not None
             and (audience, body["audience"])
-            in {("clipboard", "octop"), ("semantica-mcp", "semantica")},
+            in {("clipboard", "octop"), ("semantica-mcp", "semantica"), ("octop", "semantica")},
             "LOCAL_DATA_ROUTE_DENIED",
         )
         parent = await self.assert_live(body["parentOperationId"])
@@ -1597,10 +1887,16 @@ class LocalDataSessions:
             child_actions.append("read")
         need(
             route["audience"] == body["audience"]
-            and _allows(
-                [{"resourceId": parent["route"]["resourceId"], "actions": child_actions}],
-                route["resourceId"],
-                route["action"],
+            and (
+                _allows(
+                    [{"resourceId": parent["route"]["resourceId"], "actions": child_actions}],
+                    route["resourceId"],
+                    route["action"],
+                )
+                or audience == "octop"
+                and body["audience"] == "semantica"
+                and route["action"] == "read"
+                and _allows(parent["requiredGrants"] or [], route["resourceId"], "read")
             ),
             "LOCAL_DATA_FORBIDDEN",
         )

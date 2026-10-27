@@ -1,10 +1,14 @@
-"""Trusted integration, loaded in WANX only. Credentials never leave this process."""
+"""Trusted WANX integration; only scoped local proxy credentials reach Codex."""
 from __future__ import annotations
 
 import asyncio
+from .local_authority import to_thread
 import json
+import os
+import re
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse
@@ -25,6 +29,10 @@ def output_budget(body,model):
 class WanxModels:
     def __init__(self, services):
         self.services=services
+        # Keep the deployment boundary stable if configuration is revoked later.
+        self.device_managed=os.getenv('WANX_MODEL_PROVIDERS_ENABLED') not in {None,'0'} or any(
+            os.getenv(key) for key in ['WANX_PLATFORM_DEVICE_ID','WANX_MODEL_PROVIDERS_IDENTITY_DEVICE_ID']+
+            [prefix+name for prefix in ('WANX_MODEL_PROVIDERS_','WANX_RESOURCES_') for name in ('API_BASE','DEVICE_ID','KEY_FILE')])
         self.selection=services.settings_repo.get_active_model()
         self.info=self.resolve()
 
@@ -76,11 +84,46 @@ class WanxModels:
         row=self.services.provider_repo.get_by_name(self.selection[0])
         return digest([self.selection,provider.id,getattr(provider,'base_url',None),model.id,model.max_output_tokens,getattr(row,'updated_at',None)])
 
+    def codex_provider(self):
+        """Read only the device-leased QeeToken route, never a user's cloud key."""
+        if not self.device_managed or os.getenv('WANX_MODEL_PROVIDERS_ENABLED')=='0':
+            return None
+        from octop.infra.agents.providers.store import ProviderStore
+        row=self.services.provider_repo.get_by_name('admin-managed-qeetoken')
+        if row is None or not row.enabled or not row.api_key or not (row.note or '').startswith('wanx-admin-model-provider-v1:'):
+            return None
+        try:
+            endpoint=urlsplit(row.base_url or '')
+            endpoint.port
+        except ValueError:
+            return None
+        if endpoint.scheme!='http' or endpoint.hostname not in {'127.0.0.1','::1','localhost'} or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment or endpoint.path!='/model-providers/qeetoken/v1':
+            return None
+        provider=next((p for p in ProviderStore(self.services.provider_repo).build_harness_configs() if p.id==row.name),None)
+        if provider is None:return None
+        models=[m.id for m in provider.models if m.id.startswith('gpt-') and not re.search(r'embed|rerank|image|audio|realtime|transcri|tts',m.id,re.I)]
+        if not models:return None
+        active=self.services.settings_repo.get_active_model()
+        selected=active[1] if active[0]==row.name and active[1] in models else sorted(models)[0]
+        capability=ProviderStore(self.services.provider_repo).get_model_reasoning_capability(row.name+'/'+selected)
+        effort=None
+        if capability and capability['adapter']=='openai_reasoning_effort':
+            effort=capability['default_effort'] or ('medium' if 'medium' in capability['efforts'] else None)
+        return {'model':selected,'base_url':row.base_url,'api_key':row.api_key,
+                'reasoning':bool(capability),'reasoning_effort':effort}
+
+    def codex_runners(self,settings,user_id):
+        if self.device_managed and self.codex_provider():
+            return settings.load_runners(user_id,defaults={'codex':{
+                'command':'codex','args':['app-server'],'trusted':True,'enabled':True,
+            }})
+        return settings.load_runners(user_id)
+
     async def __call__(self, owner, body):
         from langchain_core.messages import SystemMessage,HumanMessage,AIMessage,ToolMessage
         from octop_harness.llm.factory import build_chat_model
         from octop_harness.llm.session_header import aclose_session_http_clients
-        selected=await asyncio.to_thread(self.resolve)
+        selected=await to_thread(self.resolve)
         if not selected:
             raise StudioError('RUNTIME_MODEL_UNAVAILABLE' if getattr(self, '_runtime_id', None) else 'MODEL_NOT_CONFIGURED',409)
         provider,model=selected
@@ -146,6 +189,7 @@ def mount_wanx(app,server,project_root:Path,*,catalog_services=None):
         return PersonalSpace(server.paths.root/'.wanx-personal-space',int(owner.removeprefix('wanx:')))
 
     async def files(owner,ids):
+        await service.local_authority.resources(owner,[{'resourceId':'wanx','actions':['read']}])
         def read():
             storage=space(owner)
             result=[]
@@ -162,37 +206,46 @@ def mount_wanx(app,server,project_root:Path,*,catalog_services=None):
                     raise StudioError('FILE_NOT_UTF8') from None
                 result.append({'id':item_id,'name':meta['name'],'text':text})
             return result
-        return await asyncio.to_thread(read)
+        return await to_thread(read)
 
     service=getattr(server,'_wanx_studio_service',None)
     if service is None or getattr(service,'closing',False):
         service=StudioService(server.paths.root/'.wanx-app-studio',project_root,models,files)
         server._wanx_studio_service=service
     service.runner=Runner(service)
-    service.engines.provider=lambda owner:server.app_runtime.agent_registry.acp_settings.load_runners(int(owner.split(":",1)[1]))
+    service.engines.provider=lambda owner:models.codex_runners(server.app_runtime.agent_registry.acp_settings,int(owner.split(":",1)[1]))
     from .context_sources import WanxContextSources
-    service.context_provider=WanxContextSources(server,space,files)
-
     from .team import TeamPublications
-    service.team=TeamPublications(service,server.services)
+    from .local_authority import LocalStudioAuthority
+    service.local_authority=LocalStudioAuthority(server.services,lambda:bool(getattr(app.state,'local_data_required',False)))
+    service.context_provider=WanxContextSources(server,space,files,service.local_authority)
+    service.team=TeamPublications(service,server.services,local_authority=service.local_authority)
 
     async def identity(request:Request,user=Depends(current_user)):
-        if user.application_id!='wanx':
+        import re
+        if user.application_id!='wanx' and not (service.local_authority.required() and re.fullmatch(r'ai\.wanx\.selfmade\.[a-f0-9]{32}',user.application_id)):
             raise StudioError('STUDIO_IDENTITY_FORBIDDEN',403)
         owner='wanx:'+str(user.id)
-        service.team.user(owner)
-        if not user.is_admin:
-            import re
-            path=request.url.path.removeprefix('/api/app-studio')
-            allowed=(request.method=='GET' and (path in {'/context','/projects'} or re.fullmatch(r'/projects/[a-f0-9]{32}/install/[a-f0-9]{64}',path))) or (request.method=='POST' and (re.fullmatch(r'/apps/[a-z][a-z0-9.-]*/runtime',path) or re.fullmatch(r'/runtime/[A-Za-z0-9_-]+/(invoke|files)',path))) or (request.method=='DELETE' and re.fullmatch(r'/runtime/[A-Za-z0-9_-]+',path))
-            if not allowed:raise StudioError('STUDIO_ADMIN_REQUIRED',403)
-        return owner
+        token=service.local_authority.enter(user)
+        try:
+            service.team.user(owner)
+            if not service.team.is_admin(owner):
+                import re
+                path=request.url.path.removeprefix('/api/app-studio')
+                allowed=(request.method=='GET' and (path in {'/context','/projects'} or re.fullmatch(r'/projects/[a-f0-9]{32}/install/[a-f0-9]{64}',path) or re.fullmatch(r'/apps/ai\.wanx\.selfmade\.[a-f0-9]{32}(?:/install)?',path))) or (request.method=='POST' and (re.fullmatch(r'/apps/[a-z][a-z0-9.-]*/runtime',path) or re.fullmatch(r'/runtime/[A-Za-z0-9_-]+/(invoke|files)',path))) or (request.method=='DELETE' and re.fullmatch(r'/runtime/[A-Za-z0-9_-]+',path))
+                if not allowed:raise StudioError('STUDIO_ADMIN_REQUIRED',403)
+                if service.local_authority.required() and request.method=='GET' and path in {'/context','/projects'}:
+                    raise StudioError('STUDIO_ADMIN_REQUIRED',403)
+            yield owner
+        finally:
+            service.local_authority.reset(token)
 
     router=create_router(service,identity)
 
     @router.get('/files',summary='List owner file metadata for the trusted text-file picker')
     async def list_files(parent:str='',owner=Depends(identity)):
-        return await asyncio.to_thread(space(owner).listing,parent,False)
+        await service.local_authority.resources(owner,[{'resourceId':'wanx','actions':['read']}])
+        return await to_thread(space(owner).listing,parent,False)
 
     @app.exception_handler(StudioError)
     async def failure(_request,error):

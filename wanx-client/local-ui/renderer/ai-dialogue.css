@@ -336,3 +336,23 @@
 .ai-history-leading>svg{display:block;flex:none;width:14px;height:14px;stroke-linecap:round;stroke-linejoin:round}
 .ai-history-leading[aria-expanded="true"]{background:#f0e9de;border-color:#d5c5b1;color:#80654d}
 @media(max-width:700px){.ai-heading-left{gap:9px}.ai-history-leading span{display:none}}
+
+/* Connection and owner identity are separate, explicit steps. */
+.ai-channel-verification{margin:20px 0;padding:20px;border:1px solid #e5ded3;border-radius:16px;background:#f8f5ef}
+.ai-channel-verification-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.ai-channel-verification-heading small{display:block;font-size:11px;color:#978975;margin-bottom:5px}
+.ai-channel-verification-heading strong{font-size:16px;color:#494036}
+.ai-channel-verification-step{font-size:11px;color:#917c62;padding:5px 9px;border:1px solid #e2d8c9;border-radius:20px}
+.ai-channel-verification p{font-size:12px;line-height:1.7;color:#8a7d6b;margin:12px 0}
+.ai-channel-verification button{font:inherit;font-size:12px;border:1px solid #e2d8ca;background:#fffdf8;color:#80664e;border-radius:9px;padding:9px 12px;cursor:pointer}
+.ai-channel-verification button.ai-channel-primary{background:#a75c40;border-color:#a75c40;color:white}
+.ai-channel-verification-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ai-channel-verification-received{display:grid;gap:6px;background:#fffdf9;border-radius:10px;padding:12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
+.ai-channel-verification-received span{color:#91816b}
+.ai-channel-binding-name small{display:block;font-size:10px;font-weight:400;color:#a0917e;margin-top:4px}
+@media(max-width:600px){.ai-channel-verification{padding:15px}}
+
+.ai-history-item>small.ai-history-source{flex:none;max-width:62px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:5px;padding:2px 5px;background:#ece7df;color:#93836e;font-size:9px;line-height:1.4}
+.ai-history-item>small.ai-history-source[data-source="weixin"]{background:#e9efe5;color:#708763}
+.ai-history-item>small.ai-history-source[data-source="wecom"],.ai-history-item>small.ai-history-source[data-source="dingtalk"]{background:#e7edf2;color:#6f879b}
+.ai-history-item>small.ai-history-source[data-source="feishu"]{background:#eee9f3;color:#8a769c}

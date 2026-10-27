@@ -173,6 +173,7 @@ async function harness(initial = state(), installed = [application], options = {
     creditWallet: options.creditWallet,
     accountProfile: options.accountProfile,
     support: options.support,
+    aiDialogue: options.aiDialogue,
     applications, uiState, getState: snapshot, publishState: publish,
   });
   let bluetoothStatus = { status: options.bluetoothStatus || "available" }, bluetoothListener;
@@ -544,6 +545,23 @@ test("Centaurloop uses its Admin application ID for installed artwork and featur
   assert.match(h.app.innerHTML, /app-detail-title[^>]*>后台环名称<\/h2>/);
   assert.match(h.app.innerHTML, /assets\/app-icons\/loop-v1.png/);
   assert.match(h.app.innerHTML, /loop-product-v1.png/);
+});
+
+test("retired task workspace does not bypass standalone Loop compatibility", async () => {
+  const loop = { applicationId: "centaurai.wanx.centaurloop", name: "半人马环", version: "0.10.4" };
+  const methods = [];
+  const h = await harness(state("ready", "ready", "box-102"), [], {
+    list: async () => ({ items: [loop] }),
+    candidate: async () => ({ status: "incompatible", reason: "wanx_version", release: { version: "0.10.4" } }),
+    aiDialogue: { action: async method => { methods.push(method); return {}; } },
+  });
+  assert.doesNotMatch(h.app.innerHTML, /data-action="open-loop-engine"/);
+  assert.match(h.app.innerHTML, /请先升级万象/);
+  await h.click("store-details", { applicationId: loop.applicationId });
+  assert.doesNotMatch(h.app.innerHTML, /data-action="open-loop-engine"/);
+  assert.match(h.app.innerHTML, /尚未安装/);
+  assert.deepEqual(methods, []);
+  assert.equal(h.launches.length, 0);
 });
 
 for (const mode of ["unlisted", "offline", "blank"]) test(`installed names remain available when Admin metadata is ${mode}`, async () => {
@@ -2723,14 +2741,14 @@ test("catalog product pages have bundled icons, product posters and a safe back 
 });
 
 test("administrator opens the bundled Builder from applications and sees 开物 in navigation; members cannot see it",async()=>{
-  const identity={role:"admin",displayName:"测试管理员"};
+  const identity={roleId:"owner",permissions:["applications.manage"],displayName:"测试管理员"};
   const h=await harness(state("ready","ready","box-102"),[],{teamIdentity:identity});
   assert.match(h.app.innerHTML,/data-action="show-construction"[^>]*>开物/);
   assert.match(h.app.innerHTML,/万象·开物/);assert.match(h.app.innerHTML,/打开开物/);
   assert.doesNotMatch(h.app.innerHTML,/builder-v1.png/);
   await h.click("applications-launch",{applicationId:"ai.wanx.studio"});
   assert.deepEqual(h.launches,[["ai.wanx.studio",undefined]]);
-  identity.role="user";
+  identity.permissions=[];
   h.update({...state("ready","ready","box-102"),account:{phase:"authenticated",accountId:"member"}});
   await new Promise(resolve=>setImmediate(resolve));
   assert.doesNotMatch(h.app.innerHTML,/data-action="show-construction"|data-application="ai.wanx.studio"/);

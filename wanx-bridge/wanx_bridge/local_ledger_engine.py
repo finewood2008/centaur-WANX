@@ -43,6 +43,7 @@ ACTION_CAPS = {
     "backup.restore": "backup.restore",
     "ownership.transfer-prepare": "ownership.transfer",
 }
+ACTION_EVENTS.update({action: action + ".committed" for action in protocol.team_protocol.ACTIONS})
 
 
 def need(value, code="LOCAL_TRUST_AUTHORIZATION_DENIED"):
@@ -139,6 +140,27 @@ def validate_read_capacity(snapshot, context, now, *, reserve=0):
     header = {"alg": "ES256", "typ": protocol.TYPES["response"]}
     overhead = len(evidence._encode(wire.canonical(header))) + 2 + 86
 
+    def terminal_capacity(value, field=None):
+        """Reserve terminal representations before growth, never at revocation."""
+        if type(value) is dict:
+            return {key: terminal_capacity(item, key) for key, item in value.items()}
+        if type(value) is list:
+            return [terminal_capacity(item) for item in value]
+        if type(value) is bool:
+            return False  # The longer JSON boolean.
+        if type(value) is int or value is None and field == "retiredAtSequence":
+            return 9007199254740991
+        if field == "usedByMembershipId" and value is None:
+            return evidence._encode(bytes(32))
+        if type(value) is str:
+            return {
+                "status": "suspended",
+                "state": "transfer_frozen",
+                "role": "manage",
+                "roleId": "manager",
+            }.get(field, value)
+        return value
+
     def check(kind, body):
         value = {
             "schemaVersion": 2,
@@ -149,6 +171,8 @@ def validate_read_capacity(snapshot, context, now, *, reserve=0):
             "issuedAt": now,
             "body": body,
         }
+        if "team" in snapshot:
+            value = terminal_capacity(value)
         size = overhead + len(evidence._encode(wire.canonical(value)))
         need(size + reserve <= evidence.MAX_JWS_BYTES, "LOCAL_TRUST_CAPACITY")
 
@@ -177,6 +201,29 @@ def validate_read_capacity(snapshot, context, now, *, reserve=0):
         if item["ownershipEpoch"] == context["ownershipEpoch"]
     ]
     check("membership-directory", {"context": context, "members": members})
+    if "team" in snapshot:
+        from .local_team_ledger import summary
+
+        check(
+            "team-state",
+            {
+                "context": context,
+                "members": [summary(item) for item in snapshot["team"]["members"]],
+                "invitations": snapshot["team"]["invitations"],
+                "resources": snapshot["team"]["resources"],
+                "requests": [
+                    {
+                        "requestId": evidence._encode(bytes(32)),
+                        "principalId": "x" * 128,
+                        "invitationId": evidence._encode(bytes(32)),
+                        "subject": "x" * 128,
+                        "expiresAt": 9007199254740991,
+                        "state": "pending",
+                    }
+                ]
+                * 8,
+            },
+        )
 
 
 def binding_valid(snapshot, row, now, *, delegation=False, seen=None):
@@ -393,7 +440,15 @@ def _new_binding(
 def _new_grants(snapshot, row, target, sequence, *, sources=(), principal_grants=False):
     delegates = {item["resourceId"]: item["actions"] for item in target["delegableGrants"]}
     for resource in target["grants"]:
-        resolved = resolve_resource(row["principalId"], resource["resourceId"])
+        if resource["resourceId"].startswith("team:"):
+            resolved = resolve_resource(
+                row["principalId"],
+                resource["resourceId"],
+                box_id=snapshot["team"]["boxId"],
+                ownership_epoch=row["ownershipEpoch"],
+            )
+        else:
+            resolved = resolve_resource(row["principalId"], resource["resourceId"])
         binding_id = None if principal_grants else row["bindingId"]
         identifier = "grant:" + wire.digest(
             {
@@ -439,6 +494,15 @@ def descendants(snapshot, identifiers):
         if additional <= found:
             return found - set(identifiers)
         found |= additional
+
+
+def effect_scope(mutation, effects, box_id):
+    action = mutation["action"]
+    if action in ("device.revoke", "team.device-resources"):
+        return {"kind": "binding", "id": mutation["args"]["bindingId"]}
+    if action in ("ownership.transfer-prepare", "team.activate", "team.resource-set"):
+        return {"kind": "ownership", "id": box_id}
+    return {"kind": "principal", "id": effects["targetPrincipalId"]}
 
 
 def retire_bindings(snapshot, revoked, suspended, sequence):
@@ -510,11 +574,21 @@ def record_delta(before, after, invalidated):
         if row["retiredAtSequence"] is not None and oldkeys.get(row["thumbprint"]) != row
     )
     result["invalidatedRequestIds"] = sorted(invalidated)
+    if before.get("team") != after.get("team"):
+        result["team"] = clone(after.get("team"))
     return result
 
 
 def transition(snapshot, mutation, now, sequence, *, invalidated=()):
     """Compute the complete result; callers separately verify every required PoP."""
+    if mutation["action"] in protocol.team_protocol.ACTIONS:
+        from .local_team_ledger import transition as team_transition
+
+        return team_transition(snapshot, mutation, now, sequence, invalidated=invalidated)
+    need(
+        not ("team" in snapshot and mutation["action"] == "principal.invite"),
+        "LOCAL_TRUST_CLOUD_IDENTITY_REQUIRED",
+    )
     before = snapshot
     snapshot = clone(snapshot)
     actor = mutation["actor"]
@@ -1067,6 +1141,10 @@ def transition(snapshot, mutation, now, sequence, *, invalidated=()):
         member["status"] = "suspended"
         member["principalSecurityVersion"] += 1
     snapshot["authorizationVersion"] += 1
+    if "team" in snapshot:
+        from .local_team_ledger import synchronize_associations
+
+        synchronize_associations(before, snapshot, now)
     _sort(snapshot)
     redacted = action == "principal.revoke" or any(
         binding(before, item) and binding(before, item)["principalId"] != actor["principalId"]
@@ -1149,12 +1227,34 @@ def verify_proofs(snapshot, mutation, proofs, now, *, operation_plan=None):
         "LOCAL_BINDING_CONTEXT_MISMATCH",
     )
     action, args = mutation["action"], mutation["args"]
-    target_required = action in ("device.add-manager", "principal.invite", "recovery.recover")
+    target_required = (
+        action
+        in (
+            "device.add-manager",
+            "principal.invite",
+            "recovery.recover",
+            "team.migration-authorize",
+            "team.device-resources",
+        )
+        or action in protocol.team_protocol.ASSOCIATION_ACTIONS
+    )
+    target = None
+    if action in ("team.device-resources", "team.migration-authorize"):
+        target = binding(
+            snapshot, args["bindingId" if action == "team.device-resources" else "targetBindingId"]
+        )
+        need(target is not None)
+    elif target_required:
+        target = (
+            args["request"]["target"]
+            if action in protocol.team_protocol.ASSOCIATION_ACTIONS
+            else args["target"]
+        )
     recovery_required = action.startswith("recovery.")
     source_required = action == "backup.restore"
     for field, required in (
         ("targetAccessProof", target_required),
-        ("targetApprovalProof", target_required),
+        ("targetApprovalProof", target_required and target["approvalKey"] is not None),
         ("recoveryMaterialProof", recovery_required),
         ("sourceRecoveryProof", source_required),
     ):
@@ -1163,18 +1263,20 @@ def verify_proofs(snapshot, mutation, proofs, now, *, operation_plan=None):
             "LOCAL_BINDING_INVALID",
         )
     if target_required:
+        need(target is not None)
         protocol.verify_additional_proof(
             proofs["targetAccessProof"],
             mutation,
-            args["target"]["accessKey"],
+            target["accessKey"],
             purpose="target-access",
         )
-        protocol.verify_additional_proof(
-            proofs["targetApprovalProof"],
-            mutation,
-            args["target"]["approvalKey"],
-            purpose="target-approval",
-        )
+        if target["approvalKey"] is not None:
+            protocol.verify_additional_proof(
+                proofs["targetApprovalProof"],
+                mutation,
+                target["approvalKey"],
+                purpose="target-approval",
+            )
     if recovery_required:
         protocol.verify_additional_proof(
             proofs["recoveryMaterialProof"],
@@ -1324,6 +1426,8 @@ def read_snapshot(db, meta):
         "authorizationVersion": meta["authorizationVersion"],
         "dataPlanePolicy": meta["dataPlanePolicy"],
     }
+    if "team" in meta:
+        result["team"] = clone(meta["team"])
     for name, table, order in (
         ("principals", "principals", "principal_id"),
         ("bindings", "bindings_v2", "binding_id"),
@@ -1803,7 +1907,8 @@ class LedgerV2:
         action, args = mutation["action"], mutation["args"]
         principals = (
             {args["principalId"]}
-            if action == "principal.revoke"
+            if action
+            in ("principal.revoke", "team.member-suspend", "team.member-revoke", "team.member-role")
             else {mutation["actor"]["principalId"]}
             if action == "recovery.recover"
             else set()
@@ -1813,9 +1918,16 @@ class LedgerV2:
             identifiers = {args["bindingId"]} | descendants(snapshot, {args["bindingId"]})
         result = []
         for row in self.db.execute(
-            "SELECT request_id,value,approval FROM requests WHERE state='pending'"
+            "SELECT request_id,kind,value,approval FROM requests WHERE state='pending'"
         ):
             request = json.loads(row["value"])
+            if row["kind"] == "team":
+                request = request["request"]
+                if (
+                    action == "team.invite-revoke"
+                    and request["invitationId"] == args["invitationId"]
+                ):
+                    result.append(row["request_id"])
             if request["principalId"] in principals or action == "ownership.transfer-prepare":
                 result.append(row["request_id"])
         for row in self.db.execute(
@@ -1826,9 +1938,12 @@ class LedgerV2:
                 value["actor"]["principalId"] in principals
                 or value["actor"]["bindingId"] in identifiers
                 or action == "ownership.transfer-prepare"
+                or action == "team.invite-revoke"
+                and value["action"] == "team.member-admit"
+                and value["args"]["request"]["invitationId"] == args["invitationId"]
             ):
                 result.append(row["request_id"])
-        return sorted(result)
+        return sorted(set(result))
 
     def prepare_mutation(self, prepare_proof, now):
         value = protocol.decode_prepare(prepare_proof)
@@ -1836,6 +1951,7 @@ class LedgerV2:
             snapshot = self.snapshot(meta)
             row = authority_actor(snapshot, value["actor"], now)
             protocol.verify_prepare(prepare_proof, actor_key(row, value["actor"], prepare=True))
+            self._validate_team_configuration(value, snapshot)
             need(
                 all(value[key] == item for key, item in self.owner._context(meta).items()),
                 "LOCAL_BINDING_CONTEXT_MISMATCH",
@@ -1849,6 +1965,9 @@ class LedgerV2:
                     "LOCAL_TRUST_REQUEST_CONFLICT",
                 )
                 return existing["review"]
+            from .local_team_service import TeamService
+
+            TeamService(self.owner).check_prepared_request(value, now)
             need(
                 self.db.execute(
                     "SELECT COUNT(*) FROM mutation_requests WHERE state='prepared'"
@@ -1912,6 +2031,19 @@ class LedgerV2:
             )
             return review
 
+    def _validate_team_configuration(self, value, snapshot):
+        configured = getattr(self.owner, "_team_identity_policy", None)
+        if value["action"] == "team.activate":
+            need(
+                configured is not None and value["args"]["cloudPolicy"] == configured,
+                "LOCAL_TRUST_IDENTITY_POLICY_REQUIRED",
+            )
+        if "team" in snapshot:
+            need(
+                configured is not None and snapshot["team"]["cloudPolicy"] == configured,
+                "LOCAL_TRUST_IDENTITY_POLICY_REQUIRED",
+            )
+
     @staticmethod
     def _ack_body(event, event_digest, mutation, result):
         return {
@@ -1970,6 +2102,7 @@ class LedgerV2:
                 "LOCAL_BINDING_CONTEXT_MISMATCH",
             )
             snapshot = self.snapshot(meta)
+            self._validate_team_configuration(value, snapshot)
             verify_proofs(snapshot, value, proofs, now, operation_plan=saved.get("operationPlan"))
             if value["action"].startswith("backup."):
                 need(
@@ -2046,6 +2179,8 @@ class LedgerV2:
                 policyVersion=after["policyVersion"],
                 authorizationVersion=after["authorizationVersion"],
             )
+            if "team" in after:
+                meta["team"] = after["team"]
             self.owner._save_meta(meta)
             saved.update(state="committed", proofs=proofs, ack=ack)
             self.db.execute(
@@ -2070,6 +2205,11 @@ class LedgerV2:
                         "UPDATE mutation_requests SET state='cancelled',value=? WHERE request_id=?",
                         (wire.canonical(other).decode("ascii"), identifier),
                     )
+            if value["action"] == "team.member-admit":
+                self.db.execute(
+                    "UPDATE requests SET state='approved',ack=? WHERE request_id=? AND kind='team' AND state='pending'",
+                    (ack, protocol.team_protocol.request_digest(value["args"]["request"])),
+                )
             self.owner._observe_commit(value["requestId"])
             return ack
 
@@ -2251,7 +2391,11 @@ class LedgerV2:
             except evidence.BindingProtocolError as exc:
                 raise evidence.BindingProtocolError("LOCAL_TRUST_READ_DENIED") from exc
             member = principal(snapshot, value["actor"]["principalId"])
-            if operation == "self-binding":
+            if operation in protocol.team_protocol.READ_OPERATIONS:
+                from .local_team_service import TeamService
+
+                body = TeamService(self.owner).read_body(operation, value, snapshot, row, meta, now)
+            elif operation == "self-binding":
                 body = {
                     "bindingId": row["bindingId"],
                     "principalId": row["principalId"],
@@ -2354,13 +2498,7 @@ class LedgerV2:
                     box_id=meta["boxId"],
                     kind="mutation-ack",
                 )["body"]
-                scope = (
-                    {"kind": "binding", "id": mutation["args"]["bindingId"]}
-                    if mutation["action"] == "device.revoke"
-                    else {"kind": "ownership", "id": meta["boxId"]}
-                    if mutation["action"] == "ownership.transfer-prepare"
-                    else {"kind": "principal", "id": saved["effects"]["targetPrincipalId"]}
-                )
+                scope = effect_scope(mutation, saved["effects"], meta["boxId"])
                 expected = {
                     "operationId": value["requestId"],
                     "targetScope": scope,
@@ -2439,7 +2577,7 @@ class LedgerV2:
                     break
                 limits += [predecessor["expiresAt"], predecessor["delegationExpiresAt"]]
                 parent = predecessor["createdByBindingId"]
-            return {
+            result = {
                 **self.owner._context(meta),
                 "authorizationVersion": meta["authorizationVersion"],
                 "bindingId": row["bindingId"],
@@ -2454,6 +2592,14 @@ class LedgerV2:
                 "grants": grant_list(grants),
                 "expiresAt": minimum(*limits),
             }
+            if "team" in snapshot:
+                from .local_team_ledger import filter_grants, team_authorization
+
+                result["team"] = team_authorization(snapshot, row, now)
+                need(result["team"] is not None, "LOCAL_TRUST_CLOUD_IDENTITY_REQUIRED")
+                result["grants"] = filter_grants(snapshot, row, result["grants"], now)
+                need(bool(result["grants"]), "LOCAL_TRUST_ACCESS_DENIED")
+            return result
 
     def get_effect_commit(self, request_id):
         """Private immutable commit metadata for the colocated effect tracker."""
@@ -2474,24 +2620,22 @@ class LedgerV2:
             event = json.loads(row[0])
             mutation = saved["mutation"]
             action = mutation["action"]
-            if action == "ownership.transfer-prepare":
-                target_scope = {"kind": "ownership", "id": meta["boxId"]}
+            target_scope = effect_scope(mutation, saved["effects"], meta["boxId"])
+            if target_scope["kind"] == "ownership":
                 affected = [
                     row["bindingId"]
                     for row in self.snapshot(meta)["bindings"]
                     if row["ownershipEpoch"] == ack["ownershipEpoch"]
                 ]
             else:
-                target_scope = (
-                    {"kind": "binding", "id": mutation["args"]["bindingId"]}
-                    if action == "device.revoke"
-                    else {"kind": "principal", "id": saved["effects"]["targetPrincipalId"]}
-                )
                 affected = [
                     row["bindingId"]
                     for row in event["body"]["delta"]["bindings"]
                     if row["status"] in ("revoked", "suspended")
                 ]
+                if action == "team.device-resources":
+                    identifiers = {mutation["args"]["bindingId"]}
+                    affected.extend(identifiers | descendants(self.snapshot(meta), identifiers))
             jobs = []
             for job_row in self.db.execute(
                 "SELECT operation_id,value FROM local_operations ORDER BY operation_id"

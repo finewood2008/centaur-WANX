@@ -175,6 +175,47 @@ def test_role_and_cloud_identity_are_not_network_authority(ledger):
     assert wifi.db.execute("SELECT count(*) FROM wifi_challenges").fetchone()[0] == 0
 
 
+def test_real_team_roles_require_explicit_wifi_grants_and_revoke_live_sessions(ledger):
+    from test_local_team import activate_team, admit_member, invite_member
+
+    ledger.team = activate_team(ledger)
+    manager = invite_member(ledger, role="manager")
+    admit_member(ledger, manager)
+    owner_before = ledger.authority.get_authorization(ledger.root.binding_id, NOW + 14)
+    manager_auth = ledger.authority.get_authorization(manager.binding_id, NOW + 14)
+    assert owner_before["team"]["roleId"] == "owner"
+    assert manager_auth["team"]["roleId"] == "manager"
+    assert "resources.manage" in manager_auth["team"]["permissions"]
+    wifi = LocalWifiAuthority(ledger.authority)
+    for device in (ledger.root, manager):
+        with pytest.raises(protocol.LocalWifiError, match="FORBIDDEN"):
+            wifi.challenge(intent(ledger, device), NOW + 14)
+
+    authorize(ledger, now=NOW + 15)
+    owner_authorized = ledger.authority.get_authorization(ledger.root.binding_id, NOW + 15)
+    assert {"resourceId": "network:wifi", "actions": ["write"]} in owner_authorized["grants"]
+    assert owner_authorized["team"]["permissions"] == owner_before["team"]["permissions"]
+    assert (
+        owner_authorized["team"]["membershipRevision"] > owner_before["team"]["membershipRevision"]
+    )
+    approved = open_session(ledger, wifi, now=NOW + 16)
+    assert wifi.consume(apply_body(approved), NOW + 16)["execute"] is True
+    pending = open_session(ledger, wifi, now=NOW + 17)
+    with pytest.raises(protocol.LocalWifiError, match="FORBIDDEN"):
+        wifi.challenge(intent(ledger, manager), NOW + 17)
+
+    revoke(ledger, now=NOW + 18)
+    owner_revoked = ledger.authority.get_authorization(ledger.root.binding_id, NOW + 18)
+    assert all(grant["resourceId"] != "network:wifi" for grant in owner_revoked["grants"])
+    assert (
+        owner_revoked["team"]["membershipRevision"] > owner_authorized["team"]["membershipRevision"]
+    )
+    with pytest.raises(protocol.LocalWifiError, match="FORBIDDEN"):
+        wifi.consume(apply_body(pending), NOW + 19)
+    with pytest.raises(protocol.LocalWifiError, match="FORBIDDEN"):
+        wifi.challenge(intent(ledger), NOW + 19)
+
+
 @pytest.mark.parametrize(
     "change",
     [

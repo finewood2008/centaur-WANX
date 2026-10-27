@@ -91,6 +91,7 @@ class PersonalSpace:
         _safe_file(self.database, missing=True)
         with self._db() as db:
             db.executescript("""
+                CREATE TABLE IF NOT EXISTS space_share_epochs (id TEXT PRIMARY KEY, epoch INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS entries (
                     id TEXT PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL,
                     kind TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
@@ -315,10 +316,21 @@ class PersonalSpace:
             )
             return dict(self._entry(db, row["id"]))
 
+    def _invalidate_share_roots(self, db: sqlite3.Connection, item_id: str) -> None:
+        # A restored or returned resource must not revive a previously invalid HTTP share.
+        db.execute(
+            """WITH RECURSIVE tree(id) AS (
+            SELECT ? UNION ALL SELECT e.id FROM entries e JOIN tree t ON e.parent=t.id)
+            INSERT INTO space_share_epochs SELECT id,1 FROM tree WHERE 1
+            ON CONFLICT(id) DO UPDATE SET epoch=epoch+1""",
+            (item_id,),
+        )
+
     def trash(self, item_id: str) -> None:
         with self._db() as db:
             self._entry(db, item_id)
             self._ordinary(db, item_id)
+            self._invalidate_share_roots(db, item_id)
             db.execute(
                 "UPDATE entries SET trashed=?,version=version+1 WHERE id=?", (time.time(), item_id)
             )

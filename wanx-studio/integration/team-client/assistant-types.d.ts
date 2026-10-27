@@ -2,6 +2,10 @@ export interface AssistantSourceContext {
   space: { enabled: boolean; selection?: {mode:'all'|'space'|'folder';space_id?:string;folder_id?:string}; label?:string };
   knowledge: { enabled:boolean; data_scope?:'personal'|'team'; warehouses:Array<{id:string;name?:string}> };
 }
+export interface AssistantSourceDefaults {
+  context:AssistantSourceContext;
+  validation_errors:Array<{source:string;id?:string;name?:string;code:string}>;
+}
 export interface AssistantConversation {
   id:string;
   active_thread_id:string;
@@ -12,7 +16,7 @@ export interface AssistantConversation {
 }
 export interface AssistantConversationList {
   recent_conversation_id:string|null;
-  items:Array<{thread_id:string;active_thread_id:string;title:string;last_active:number;created_at:number}>;
+  items:Array<{thread_id:string;active_thread_id:string;channel_type?:string;title:string;last_active:number;created_at:number}>;
 }
 export interface AssistantUsage {
   input_tokens?:number; output_tokens?:number; total_tokens?:number;
@@ -26,6 +30,7 @@ export type AssistantChannelKind = 'weixin'|'wecom'|'feishu'|'dingtalk';
 export interface AssistantChannel {
   id:string; kind:AssistantChannelKind; name:string; enabled:boolean;
   status:'connected'|'connecting'|'disabled'|'error';
+  verification?:AssistantChannelVerification;
 }
 export interface AssistantChannelDetail {
   channel:AssistantChannel;
@@ -36,3 +41,8 @@ export interface AssistantChannelQR {
   handle:string; status:'waiting'; interval:number; qr?:string;
 }
 export type AssistantChannelPoll = {status:'waiting';qr?:string}|{status:'failed'|'expired'}|{status:'success';channel:AssistantChannel};
+
+export interface AssistantChannelVerification {
+  status:'unverified'|'awaiting_message'|'awaiting_confirmation'|'active'|'invalid'|'expired'|'revoked';
+  expiresAt?:number; name?:string; preview?:string;
+}

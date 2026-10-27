@@ -158,8 +158,10 @@ def first_root_digest(value: Any) -> str:
     return evidence._encode(hashlib.sha256(canonical_first_root(value)).digest())
 
 
-def _decode(jws: Any, typ: str, validator, *, secret: bool = False) -> dict:
-    evidence._require(type(jws) is str and jws.isascii() and len(jws) <= evidence.MAX_JWS_BYTES)
+def _decode(
+    jws: Any, typ: str, validator, *, secret: bool = False, max_bytes: int = evidence.MAX_JWS_BYTES
+) -> dict:
+    evidence._require(type(jws) is str and jws.isascii() and len(jws) <= max_bytes)
     parts = jws.split(".")
     evidence._require(len(parts) == 3)
     header = evidence._parse(evidence._decode(parts[0]))
@@ -170,7 +172,15 @@ def _decode(jws: Any, typ: str, validator, *, secret: bool = False) -> dict:
     return payload
 
 
-def _sign(payload: Any, key: Any, typ: str, validator, *, secret: bool = False) -> str:
+def _sign(
+    payload: Any,
+    key: Any,
+    typ: str,
+    validator,
+    *,
+    secret: bool = False,
+    max_bytes: int = evidence.MAX_JWS_BYTES,
+) -> str:
     validator(payload)
     if secret:
         evidence._require(type(key) is bytes and len(key) == 32)
@@ -179,7 +189,7 @@ def _sign(payload: Any, key: Any, typ: str, validator, *, secret: bool = False) 
     proof = jwt.api_jws.encode(
         canonical(payload), key, algorithm="HS256" if secret else "ES256", headers={"typ": typ}
     )
-    evidence._require(len(proof) <= evidence.MAX_JWS_BYTES)
+    evidence._require(len(proof) <= max_bytes)
     return proof
 
 

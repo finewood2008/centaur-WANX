@@ -208,12 +208,25 @@ class RecommendBody(Contract):
 
 
 class AccessBody(Contract):
-    user_id: int = Field(gt=0)
+    user_id: int | None = Field(default=None, gt=0, description="Legacy native account only.")
+    membership_id: str | None = Field(
+        default=None,
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+        description="Current box-approved team membership; required for local team requests.",
+    )
     enabled: bool
     only_if_missing: bool = Field(
         default=False,
         description="Grant only when no access decision exists; preserve existing grants and revocations.",
     )
+
+    @model_validator(mode="after")
+    def one_identity(self) -> AccessBody:
+        if (self.user_id is None) == (self.membership_id is None):
+            raise ValueError("exactly one access identity is required")
+        return self
 
 
 class AccessResponse(Contract):
@@ -221,6 +234,7 @@ class AccessResponse(Contract):
     enabled: bool
     username: str
     updated_at: int
+    membership_id: str | None = None
 
 
 class ProductManifest(Contract):

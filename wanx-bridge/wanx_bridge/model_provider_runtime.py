@@ -105,8 +105,8 @@ def _models(values: Any, secret: str) -> list[dict[str, Any]]:
         if NON_CHAT.search(ident) or NON_CHAT.search(task):
             continue
         model: dict[str, Any] = {"id": ident, "name": ident, "enabled": True}
-        # Preserve useful non-secret catalog metadata, never native-tool-search:
-        # this adapter exposes Chat Completions, not the Responses protocol.
+        # Ordinary WANX callers still use Chat Completions. Builder's Responses
+        # route must not opt those callers into native-tool-search implicitly.
         for key in (
             "context_window",
             "context_length",
@@ -243,15 +243,16 @@ class ModelProviderRuntime:
                     continue
                 fingerprint = _fingerprint(snapshot, provider)
                 entry = self.entries.get(ident)
-                if (
-                    entry is None
-                    or entry["fingerprint"] != fingerprint
-                    or snapshot.get("schemaVersion") == 3
-                ):
-                    self.entries.pop(ident, None)
+                unchanged = entry is not None and entry["fingerprint"] == fingerprint
+                if not unchanged or snapshot.get("schemaVersion") == 3:
+                    # V3 refreshes /models on every poll. Keep the authorized
+                    # entry usable while an unchanged provider is rediscovered.
+                    if not unchanged:
+                        self.entries.pop(ident, None)
                     try:
                         models = await self._discover(provider)
                     except (BridgeAuthError, httpx.HTTPError, TimeoutError, OSError) as exc:
+                        self.entries.pop(ident, None)
                         provider_error = (
                             exc
                             if isinstance(exc, BridgeAuthError)
@@ -274,6 +275,10 @@ class ModelProviderRuntime:
                         else secrets.token_urlsafe(32),
                         "models": models,
                     }
+                    if unchanged:
+                        # Removed models stop immediately, even if persisting
+                        # the refreshed WANX row takes longer than discovery.
+                        self.entries[ident] = entry
                 wanted = {
                     "name": name,
                     "kind": "openai",
@@ -425,7 +430,9 @@ class ModelProviderRuntime:
             await self._check(ident, credential, model)
             await asyncio.sleep(0.25)
 
-    async def _proxy(self, ident: str, request: Request) -> Response:
+    async def _proxy(
+        self, ident: str, request: Request, endpoint: str = "chat/completions"
+    ) -> Response:
         raw = bytearray()
         async with asyncio.timeout(30):
             async for chunk in request.stream():
@@ -436,11 +443,14 @@ class ModelProviderRuntime:
             body = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
         except ValueError:
             raise fail("MODEL_PROVIDER_REQUEST_INVALID", 400) from None
-        if (
-            not isinstance(body, dict)
-            or not isinstance(body.get("model"), str)
-            or not isinstance(body.get("messages"), list)
-        ):
+        if not isinstance(body, dict) or not isinstance(body.get("model"), str):
+            raise fail("MODEL_PROVIDER_REQUEST_INVALID", 400)
+        if endpoint == "responses":
+            if not isinstance(body.get("input", []), (str, list)) or (
+                "stream" in body and type(body["stream"]) is not bool
+            ):
+                raise fail("MODEL_PROVIDER_REQUEST_INVALID", 400)
+        elif not isinstance(body.get("messages"), list):
             raise fail("MODEL_PROVIDER_REQUEST_INVALID", 400)
         credential, model = request.headers.get("authorization", ""), body["model"]
         provider = await self._check(ident, credential, model)
@@ -473,7 +483,7 @@ class ModelProviderRuntime:
         try:
             upstream_request = self.client.build_request(
                 "POST",
-                public_https(provider["baseUrl"]) + "/chat/completions",
+                public_https(provider["baseUrl"]) + "/" + endpoint,
                 json=body,
                 headers={
                     "Authorization": "Bearer " + provider["apiKey"],
@@ -534,10 +544,9 @@ class ModelProviderRuntime:
         )
 
     def register_routes(self, app: FastAPI) -> None:
-        @app.post("/model-providers/{provider_id}/v1/chat/completions", include_in_schema=False)
-        async def chat(provider_id: str, request: Request) -> Response:
+        async def proxy(provider_id: str, request: Request, endpoint: str) -> Response:
             try:
-                return await self._proxy(provider_id, request)
+                return await self._proxy(provider_id, request, endpoint)
             except BridgeAuthError as exc:
                 return JSONResponse(
                     {"error": {"code": exc.code, "message": exc.code}}, status_code=exc.status
@@ -552,6 +561,14 @@ class ModelProviderRuntime:
                     },
                     status_code=503,
                 )
+
+        @app.post("/model-providers/{provider_id}/v1/chat/completions", include_in_schema=False)
+        async def chat(provider_id: str, request: Request) -> Response:
+            return await proxy(provider_id, request, "chat/completions")
+
+        @app.post("/model-providers/{provider_id}/v1/responses", include_in_schema=False)
+        async def responses(provider_id: str, request: Request) -> Response:
+            return await proxy(provider_id, request, "responses")
 
     async def close(self) -> None:
         self.closed = True

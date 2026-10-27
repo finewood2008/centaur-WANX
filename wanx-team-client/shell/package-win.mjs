@@ -171,7 +171,7 @@ async function main() {
       nodeGypRebuild: false,
       directories: { output },
       files: [
-        "client.mjs", "platform.mjs", "account/**", "shell/**",
+        "client.mjs", "platform.mjs", "account/**", "device-trust/**", "shell/**",
         "local-ui/**", "network/**", "octop/**", "app-host/**",
         "applications/**", "studio/**", "updates/**", "resources/**", "package.json", "README.md",
         "node_modules/ws/**", "node_modules/semver/**", "node_modules/yauzl/**",

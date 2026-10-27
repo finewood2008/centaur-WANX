@@ -1,12 +1,12 @@
 """Private persistent workers, never shared across owners, projects or roles."""
 import asyncio
-import json
 import os
 import signal
 import sys
 from dataclasses import dataclass
 
 from .contracts import StudioError
+from .codex_config import config_fingerprint
 
 
 @dataclass
@@ -28,7 +28,7 @@ class NativeCodex:
         try:
             if getattr(self.svc, 'closing', False):
                 raise StudioError('STUDIO_CLOSED', 409)
-            fingerprint = json.dumps(config, sort_keys=True)
+            fingerprint = config_fingerprint(config)
             old = self.workers.get(key)
             if old and old.proc.returncode is None and old.fingerprint == fingerprint:
                 return old
@@ -49,10 +49,14 @@ class NativeCodex:
             raise
 
     async def release(self, worker, healthy):
+        from .local_authority import requires_physical_close
+        # A local task's closure receipt describes drained OS workers. Do not
+        # keep its authenticated native process alive for another lease.
+        healthy = healthy and not requires_physical_close()
         try:
             if not healthy:
-                self.workers.pop(worker.key, None)
                 await self.stop(worker.proc)
+                self.workers.pop(worker.key, None)
         finally:
             self.locks[worker.key].release()
 
@@ -66,25 +70,71 @@ class NativeCodex:
             await self.stop(proc)
 
     async def stop(self, proc):
-        if proc.returncode is not None:
-            return
-        if os.name == 'nt':
-            killer = await asyncio.create_subprocess_exec('taskkill', '/PID', str(proc.pid), '/T', '/F', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            await killer.wait()
-        else:
+        # Revocation, user cancellation and service shutdown can race. A second
+        # cancellation must never let the caller acknowledge physical closure
+        # while the worker is still alive.
+        cleanup = asyncio.create_task(self._stop(proc))
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            cleanup.result()
+        except BaseException:
+            from .local_authority import physical_close_uncertain
+            physical_close_uncertain()
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _stop(self, proc):
+        from .local_authority import physical_close_uncertain, requires_physical_close
+        try:
+            if os.name == 'nt':
+                killer = await asyncio.create_subprocess_exec('taskkill', '/PID', str(proc.pid), '/T', '/F', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await killer.wait()
+                if killer.returncode and requires_physical_close():
+                    raise StudioError('STUDIO_WORKER_CLOSE_UNCONFIRMED', 503)
+                if proc.returncode is None:
+                    await asyncio.wait_for(proc.wait(), 2)
+                return
+            # Each native worker/compiler has its own session/process group.
+            # A reaped leader does not prove its descendants are gone.
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except ProcessLookupError:
-                pass
-        try:
-            await asyncio.wait_for(proc.wait(), 4)
-        except TimeoutError:
+                await proc.wait()
+                return
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), 1)
+                except TimeoutError:
+                    pass
             try:
-                if os.name == 'nt':proc.kill()
-                else:os.killpg(proc.pid, signal.SIGKILL)
+                os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # A just-reaped orphan can briefly be owned by the OS reaper.
+                # Confirm disappearance below; EPERM is never proof of exit.
+                pass
             await proc.wait()
+            deadline = asyncio.get_running_loop().time() + 1
+            while True:
+                try:
+                    os.killpg(proc.pid, 0)
+                except ProcessLookupError:
+                    return
+                except PermissionError:
+                    pass
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise StudioError('STUDIO_WORKER_CLOSE_UNCONFIRMED', 503)
+                await asyncio.sleep(.02)
+        except BaseException:
+            physical_close_uncertain()
+            raise
 
     async def close(self):
         await asyncio.gather(*(self.stop(w.proc) for w in self.workers.values()), return_exceptions=True)

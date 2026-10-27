@@ -31,6 +31,11 @@ async def broker(monkeypatch):
                 "native_closed",
                 "child_hop",
                 "native_authorize_resources",
+                "native_team_members",
+                "native_resource_grants",
+                "native_task_start",
+                "native_task_check",
+                "native_task_close",
                 "native_observe",
             )
         }
@@ -74,6 +79,39 @@ async def exchange(broker, data):
     with contextlib.suppress(BrokenPipeError, ConnectionResetError):
         await writer.wait_closed()
     return result
+
+
+@pytest.mark.asyncio
+async def test_migration_consume_is_root_only_without_native_audience(broker, monkeypatch):
+    from wanx_bridge.local_data_protocol import canonical, encode
+
+    value, calls = broker
+    consumed = []
+
+    def consume(request_id, plan_digest, now):
+        consumed.append((request_id, plan_digest, now))
+        return "box.signed.ledger-receipt"
+
+    async def execute(fn):
+        return fn()
+
+    value.sessions.authority = SimpleNamespace(consume_team_migration=consume)
+    value.sessions.execute_authority = execute
+    value.sessions.wall_clock_ms = lambda: 2000000000000
+    body = canonical({"requestId": encode(b"r" * 32), "planDigest": encode(b"p" * 32)})
+    raw = request(body, target="/v1/team-migration/consume")
+    raw = raw.replace(b"X-Centuarai-Native-Audience: octop\r\n", b"")
+    monkeypatch.setattr(module, "peer_uid", lambda connection: 10001)
+    assert (await exchange(value, raw)).startswith(b"HTTP/1.1 403")
+    assert consumed == [] and calls == []
+    monkeypatch.setattr(module, "peer_uid", lambda connection: 0)
+    assert (await exchange(value, request(body, target="/v1/team-migration/consume"))).startswith(
+        b"HTTP/1.1 403"
+    )
+    assert consumed == []
+    response = await exchange(value, raw)
+    assert response.startswith(b"HTTP/1.1 200") and response.endswith(b"box.signed.ledger-receipt")
+    assert consumed == [(encode(b"r" * 32), encode(b"p" * 32), 2000000000)] and calls == []
 
 
 @pytest.mark.asyncio

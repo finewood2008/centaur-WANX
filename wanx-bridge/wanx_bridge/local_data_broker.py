@@ -12,7 +12,7 @@ import struct
 import sys
 from pathlib import Path
 
-from .local_data_protocol import DataProtocolError, canonical, need
+from .local_data_protocol import DataProtocolError, canonical, digest32, fields, need
 
 
 def decode_object(raw):
@@ -93,6 +93,21 @@ class LocalDataBroker:
         self.socket_inode = (info.st_dev, info.st_ino)
         return self
 
+    async def _consume_migration(self, body, *, audience):
+        fields(body, {"requestId", "planDigest"})
+        digest32(body["requestId"])
+        digest32(body["planDigest"])
+        need(audience is None, "LOCAL_DATA_FORBIDDEN")
+
+        def consume():
+            return self.sessions.authority.consume_team_migration(
+                body["requestId"], body["planDigest"], self.sessions.wall_clock_ms() // 1000
+            )
+
+        # The sole authority validates the completed root-owned journal and
+        # signs an idempotent ledger receipt; this broker cannot mint one.
+        return await self.sessions.execute_authority(consume)
+
     async def _reply(self, writer, status, body, content_type):
         need(len(body) <= 65536)
         header = (
@@ -126,6 +141,12 @@ class LocalDataBroker:
                 "/v1/closed": self.sessions.native_closed,
                 "/v1/child": self.sessions.child_hop,
                 "/v1/authorize-resources": self.sessions.native_authorize_resources,
+                "/v1/team-members": self.sessions.native_team_members,
+                "/v1/resource-grants": self.sessions.native_resource_grants,
+                "/v1/task-start": self.sessions.native_task_start,
+                "/v1/task-check": self.sessions.native_task_check,
+                "/v1/task-close": self.sessions.native_task_close,
+                "/v1/team-migration/consume": self._consume_migration,
                 "/v1/observe": self.sessions.native_observe,
             }.get(request[1])
             need(operation is not None, "LOCAL_DATA_ROUTE_DENIED")
@@ -154,10 +175,13 @@ class LocalDataBroker:
                 }
             )
             audience = headers.get("x-centuarai-native-audience")
-            need(
-                audience in self.audience_uids and uid in self.audience_uids[audience],
-                "LOCAL_DATA_FORBIDDEN",
-            )
+            if request[1] == "/v1/team-migration/consume":
+                need(uid == 0 and audience is None, "LOCAL_DATA_FORBIDDEN")
+            else:
+                need(
+                    audience in self.audience_uids and uid in self.audience_uids[audience],
+                    "LOCAL_DATA_FORBIDDEN",
+                )
             need(
                 headers.get("host") == "local-data"
                 and headers.get("content-type") == "application/json"

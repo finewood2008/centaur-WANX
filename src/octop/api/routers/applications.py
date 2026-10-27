@@ -158,6 +158,7 @@ def recommend_release(
     "/admin/applications/{application_id}/access",
     summary="Product access metadata",
     response_model=list[AccessResponse],
+    response_model_exclude_none=True,
 )
 def list_access(
     application_id: str,
@@ -171,6 +172,7 @@ def list_access(
     "/admin/applications/{application_id}/access",
     summary="Grant or revoke product access",
     response_model=AccessResponse,
+    response_model_exclude_none=True,
 )
 def put_access(
     application_id: str,
@@ -179,7 +181,12 @@ def put_access(
     service: ApplicationService = Depends(application_service),
 ) -> AccessResponse:
     return service.put_access(
-        user, application_id, body.user_id, body.enabled, only_if_missing=body.only_if_missing
+        user,
+        application_id,
+        body.user_id,
+        body.enabled,
+        only_if_missing=body.only_if_missing,
+        membership_id=body.membership_id,
     )
 
 
