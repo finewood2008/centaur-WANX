@@ -269,7 +269,7 @@ try {
     await new Promise(resolve => realTimeout(resolve, 50));
     window.qeeMode = true; if (button('show-credits')) button('show-credits').click(); walletPoll();
     await until(() => document.body.textContent.includes('1 USD = 1 积分'));
-    check(document.querySelector('.wallet-usage').textContent.includes('消耗不足 1 积分') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
+    check(document.querySelector('.wallet-usage').textContent.includes('消耗不足 0.01 积分') && document.body.textContent.includes('客厅盒子'), 'actual consumption missing');
     check(document.body.textContent.includes('20:00:00'), 'server timezone not applied');
     check(document.querySelector('.wallet-usage table tbody tr'), 'usage row missing');
     button('credits-open').click();

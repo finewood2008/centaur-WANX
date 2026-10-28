@@ -2139,8 +2139,17 @@
   }
   function displayCreditAtoms(value, context = "balance") {
     const formatted = formatCreditAtoms(value);
+    if (context === "consumption") {
+      const amount = creditAtoms(value);
+      if (amount === 0n) return "0.00";
+      const magnitude = amount < 0n ? -amount : amount;
+      const rounded = (magnitude + 5000n) / 10000n;
+      if (rounded === 0n) return `${formatted.direction === "debt" ? "\u6B20\u8D39" : "\u6D88\u8017"}\u4E0D\u8DB3 0.01 \u79EF\u5206`;
+      const whole = (rounded / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+      return `${amount < 0n ? "-" : ""}${whole}.${String(rounded % 100n).padStart(2, "0")}`;
+    }
     if (formatted.text !== "<1") return formatted.text;
-    return `${formatted.direction === "debt" ? "\u6B20\u8D39" : context === "consumption" ? "\u6D88\u8017" : "\u4F59\u989D"}\u4E0D\u8DB3 1 \u79EF\u5206`;
+    return `${formatted.direction === "debt" ? "\u6B20\u8D39" : "\u4F59\u989D"}\u4E0D\u8DB3 1 \u79EF\u5206`;
   }
   function validateCreditWallet(value, accountId) {
     if (!object(value) || value.view_version !== "2" || value.currency_rule_id !== "usd-credit-100-v2" || value.credit_scale !== 6 || typeof value.account_id !== "string" || accountId && value.account_id !== accountId || !["pending", "stale", "synced"].includes(value.sync_state) || !Number.isSafeInteger(value.pending_executions) || value.pending_executions < 0 || creditAtoms(value.remote_sequence) < 0n) throw invalid();
@@ -2165,6 +2174,7 @@
     schedule = (fn, ms) => setTimeout(fn, ms),
     cancel = (timer) => clearTimeout(timer),
     qr,
+    getBoxName = (deviceId) => deviceId,
     onTiming = () => {
     },
     monotonic = () => globalThis.performance?.now?.() ?? now()
@@ -2478,7 +2488,7 @@
       ${registrationView()}
       ${typeof remote.spent_credit_atoms === "string" ? `<p class="muted">\u7D2F\u8BA1\u6D88\u8017 ${esc(displayCreditAtoms(remote.spent_credit_atoms, "consumption"))} \xB7 \u5DF2\u7EA0\u6B63 ${esc(displayCreditAtoms(remote.correction_credit_atoms))} \xB7 \u51C0\u6D88\u8017 ${esc(displayCreditAtoms(remote.net_spent_credit_atoms, "consumption"))}</p>` : ""}
       ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} \u7B14\u8C03\u7528\u6B63\u5728\u7ED3\u7B97\u6216\u6838\u5BF9\uFF0C\u6700\u7EC8\u6D88\u8017\u4EE5\u7ED3\u7B97\u7ED3\u679C\u4E3A\u51C6\u3002</p>` : ""}</section>
-      <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, "consumption"))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
+      <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(getBoxName(item.device_id) || item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, "consumption"))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? "disabled" : ""}>\u67E5\u770B\u66F4\u591A</button>` : ""}</section>`;
     }
     const usd = (value) => {
@@ -2490,7 +2500,7 @@
       return `<section aria-label="\u4F59\u989D\u540C\u6B65\u72B6\u6001"><p>${esc(state)}${remote.synced_at ? ` \xB7 ${esc(date(remote.synced_at))}` : ""}</p>
       <p class="muted">1 USD = 1 \u79EF\u5206${remote.balance_usd_atoms !== null ? ` \xB7 \u4F59\u989D $${esc(usd(remote.balance_usd_atoms))} \xB7 \u7D2F\u8BA1\u6D88\u8017 $${esc(usd(remote.spent_usd_atoms))}` : ""}</p>
       ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} \u7B14\u8C03\u7528\u6B63\u5728\u7ED3\u7B97\u6216\u6838\u5BF9\uFF0C\u6700\u7EC8\u6D88\u8017\u4EE5\u7ED3\u7B97\u7ED3\u679C\u4E3A\u51C6\u3002</p>` : ""}</section>
-      <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u8F93\u5165 / \u8F93\u51FA tokens</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, "consumption"))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
+      <section class="wallet-usage" aria-label="\u6D88\u8D39\u6D41\u6C34"><h3>\u6D88\u8D39\u6D41\u6C34</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="\u53EF\u6EDA\u52A8\u6D88\u8D39\u8BB0\u5F55"><table><thead><tr><th>\u65F6\u95F4</th><th>\u76D2\u5B50</th><th>\u6A21\u578B</th><th>\u8F93\u5165 / \u8F93\u51FA tokens</th><th>\u6D88\u8017\u79EF\u5206</th></tr></thead><tbody>${usage.map((item) => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(getBoxName(item.device_id) || item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, "consumption"))}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">\u6682\u65E0\u5DF2\u7ED3\u7B97\u6D88\u8D39\u3002</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? "disabled" : ""}>\u67E5\u770B\u66F4\u591A</button>` : ""}</section>`;
     }
     function registrationView() {

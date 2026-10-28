@@ -18,7 +18,11 @@ test("six-place accounting displays tiny debt, true zero and half-up totals exac
   }
   assert.equal(displayCreditAtoms('1'), '余额不足 1 积分');
   assert.equal(displayCreditAtoms('-1'), '欠费不足 1 积分');
-  assert.equal(displayCreditAtoms('1', 'consumption'), '消耗不足 1 积分');
+  assert.equal(displayCreditAtoms('0', 'consumption'), '0.00');
+  assert.equal(displayCreditAtoms('1', 'consumption'), '消耗不足 0.01 积分');
+  assert.equal(displayCreditAtoms('1000000', 'consumption'), '1.00');
+  assert.equal(displayCreditAtoms('1500000', 'consumption'), '1.50');
+  assert.equal(displayCreditAtoms('1998060000', 'consumption'), '1,998.06');
   for (const value of ["-0", "01", "1.0", 1, "9223372036854775808"]) {
     assert.throws(() => formatCreditAtoms(value), { code: "CREDITS_INVALID_RESPONSE" });
   }

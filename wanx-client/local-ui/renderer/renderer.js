@@ -31,13 +31,20 @@ const dialogueModelSettings = window.createDialogueModelSettingsView?.({
 });
 const storeCarousel = window.createStoreCarousel();
 const featuredApplicationIds = ['centaurai.wanx.zhijun', 'centaurai.wanx.centaurloop', 'centaurai.wanx.dialogue', 'centaurai.wanx.ai-browser'];
-const creditsView = window.createWalletView({ request: async (action, input) => {
-  const response = await window.wanxClient.action(action, input);
-  if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
-  if (!response.ok) throw Object.assign(new Error(response.code), { code: response.code, request_id: response.request_id, details: response.details, retryable: response.retryable });
-  return response.value;
-}, changed: () => { if (currentState) render(currentState); },
-  onTiming: value => { void window.wanxClient.recordPaymentTiming?.(value); } });
+const creditsView = window.createWalletView({
+  getBoxName: deviceId => {
+    const device = currentState?.devices?.find(item => item.deviceId === deviceId);
+    return device?.name || device?.displayName || (currentState?.connection?.deviceId === deviceId ? currentState.connection?.name : null) || deviceId;
+  },
+  request: async (action, input) => {
+    const response = await window.wanxClient.action(action, input);
+    if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) { acceptRemoteState(response.state); throw new Error("ACCOUNT_SESSION_CHANGED"); }
+    if (!response.ok) throw Object.assign(new Error(response.code), { code: response.code, request_id: response.request_id, details: response.details, retryable: response.retryable });
+    return response.value;
+  },
+  changed: () => { if (currentState) render(currentState); },
+  onTiming: value => { void window.wanxClient.recordPaymentTiming?.(value); },
+});
 const supportView = window.createSupportView({ request: async (action, input) => {
   const response = await window.wanxClient.action(action, input);
   if (response.state && JSON.stringify([response.state.account?.phase, response.state.account?.accountId, response.state.account?.clientId]) !== JSON.stringify([currentState?.account?.phase, currentState?.account?.accountId, currentState?.account?.clientId])) throw new Error("SUPPORT_SESSION_CHANGED");

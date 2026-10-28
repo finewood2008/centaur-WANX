@@ -76,8 +76,17 @@ export function formatCreditAtoms(value) {
 
 export function displayCreditAtoms(value, context = "balance") {
   const formatted = formatCreditAtoms(value);
+  if (context === "consumption") {
+    const amount = creditAtoms(value);
+    if (amount === 0n) return "0.00";
+    const magnitude = amount < 0n ? -amount : amount;
+    const rounded = (magnitude + 5000n) / 10000n;
+    if (rounded === 0n) return `${formatted.direction === "debt" ? "欠费" : "消耗"}不足 0.01 积分`;
+    const whole = (rounded / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return `${amount < 0n ? "-" : ""}${whole}.${String(rounded % 100n).padStart(2, "0")}`;
+  }
   if (formatted.text !== "<1") return formatted.text;
-  return `${formatted.direction === "debt" ? "欠费" : context === "consumption" ? "消耗" : "余额"}不足 1 积分`;
+  return `${formatted.direction === "debt" ? "欠费" : "余额"}不足 1 积分`;
 }
 
 export function validateCreditWallet(value, accountId) {

@@ -972,7 +972,8 @@ const remoteWallet = { account_id: 'alice', billing_backend: 'qeetoken', currenc
   remote_sequence: '2', sync_state: 'synced', synced_at: '2026-10-18T02:00:00Z', pending_executions: 1 };
 
 test('QeeToken wallet displays integer balance, tiny consumption and server timezone with escaped metadata', async () => {
-  const { view } = setup({ request: async action => {
+  const { view } = setup({ getBoxName: deviceId => deviceId === '<script>box</script>' ? '<客厅盒子>' : deviceId,
+    request: async action => {
     if (action === 'wallet.balance') return envelope({ ...balance, billing_backend: 'qeetoken' });
     if (action === 'wallet.wallet') return envelope(remoteWallet);
     if (action === 'wallet.usage') return envelope({ items: [{ event_id: 'event', account_sequence: '2', debit_usd_atoms: '60', debit_credit_atoms: '1',
@@ -982,9 +983,10 @@ test('QeeToken wallet displays integer balance, tiny consumption and server time
   const html = view.render();
   assert.match(html, /class="credits-total">2,000<span>/);
   assert.match(html, /1 USD = 1 积分/); assert.match(html, /1999\.99999940/); assert.match(html, /0\.00000060/);
-  assert.match(html, /<td>消耗不足 1 积分<\/td>/);
+  assert.match(html, /<td>消耗不足 0.01 积分<\/td>/);
+  assert.match(html, /<td>&lt;客厅盒子&gt;<\/td>/);
   assert.match(html, /10:00:00/); assert.match(html, /1 笔调用正在结算/);
-  assert.match(html, /&lt;script&gt;box/); assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /<script>/); assert.doesNotMatch(html, /<script>box<\/td>/);
 });
 
 test('QeeToken initialization remains unknown and a stale wallet is labelled explicitly', async () => {

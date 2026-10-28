@@ -6,7 +6,8 @@ const pendingOrder = value => value && !['credited', 'closed'].includes(value.di
 export function createWalletView({ request, changed, storage = globalThis.localStorage,
   uuid = () => globalThis.crypto.randomUUID(), now = () => Date.now(),
   schedule = (fn, ms) => setTimeout(fn, ms), cancel = timer => clearTimeout(timer), qr,
-  onTiming = () => {}, monotonic = () => globalThis.performance?.now?.() ?? now() }) {
+  getBoxName = deviceId => deviceId, onTiming = () => {},
+  monotonic = () => globalThis.performance?.now?.() ?? now() }) {
   let identity = null, account = null, generation = 0, timer = null, qrTimer = null, loading = false, writing = false;
   let catalog = null, balance = null, order = null, dialogOpen = false, selectedAmount = null;
   let error = '', intent = null, qrImage = null, recoveryReady = false, recovering = false;
@@ -264,7 +265,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
       ${registrationView()}
       ${typeof remote.spent_credit_atoms === 'string' ? `<p class="muted">累计消耗 ${esc(displayCreditAtoms(remote.spent_credit_atoms, 'consumption'))} · 已纠正 ${esc(displayCreditAtoms(remote.correction_credit_atoms))} · 净消耗 ${esc(displayCreditAtoms(remote.net_spent_credit_atoms, 'consumption'))}</p>` : ''}
       ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} 笔调用正在结算或核对，最终消耗以结算结果为准。</p>` : ''}</section>
-      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, 'consumption'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
+      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(getBoxName(item.device_id) || item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, 'consumption'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? 'disabled' : ''}>查看更多</button>` : ''}</section>`;
   }
   const usd = value => { const atoms = creditAtoms(value), magnitude = atoms < 0n ? -atoms : atoms;
@@ -274,7 +275,7 @@ export function createWalletView({ request, changed, storage = globalThis.localS
     return `<section aria-label="余额同步状态"><p>${esc(state)}${remote.synced_at ? ` · ${esc(date(remote.synced_at))}` : ''}</p>
       <p class="muted">1 USD = 1 积分${remote.balance_usd_atoms !== null ? ` · 余额 $${esc(usd(remote.balance_usd_atoms))} · 累计消耗 $${esc(usd(remote.spent_usd_atoms))}` : ''}</p>
       ${remote.pending_executions ? `<p role="status">${esc(remote.pending_executions)} 笔调用正在结算或核对，最终消耗以结算结果为准。</p>` : ''}</section>
-      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>输入 / 输出 tokens</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, 'consumption'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
+      <section class="wallet-usage" aria-label="消费流水"><h3>消费流水</h3>${usage.length ? `<div class="wallet-usage-scroll" tabindex="0" aria-label="可滚动消费记录"><table><thead><tr><th>时间</th><th>盒子</th><th>模型</th><th>输入 / 输出 tokens</th><th>消耗积分</th></tr></thead><tbody>${usage.map(item => `<tr><td>${esc(date(item.occurred_at))}</td><td>${esc(getBoxName(item.device_id) || item.device_id)}</td><td>${esc(item.model)}</td><td>${esc(item.input_tokens)} / ${esc(item.output_tokens)}</td><td>${esc(displayCreditAtoms(item.debit_credit_atoms, 'consumption'))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无已结算消费。</p>'}
       ${nextUsage ? `<button class="text-button" data-action="credits-usage-more" ${usageLoading ? 'disabled' : ''}>查看更多</button>` : ''}</section>`;
   }
   function registrationView() {
